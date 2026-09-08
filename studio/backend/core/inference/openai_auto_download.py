@@ -158,7 +158,7 @@ def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
     return text.lower().startswith("unsloth/")
 
 
-def looks_like_quant(variant: Optional[str]) -> bool:
+def looks_like_quant(variant: Optional[str], *, allow_root_stem: bool = False) -> bool:
     """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 
     Neither a namespace nor a colon proves a request was meant for this server
@@ -186,8 +186,13 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     normalized = label.replace("\\", "/")
     if "/" in normalized or is_h3_denoiser_variant_key(normalized):
         return True
+    # Only where the caller HOLDS the repo's listing, so this is a key we actually minted. The
+    # shape alone cannot tell a lone tagged build's key from a foreign provider's tag -- an Ollama
+    # reference like ``8b-instruct-q4_0-fp16`` mints identically -- and on the Hub-failure paths
+    # admitting it turns a 404 that should fall through to that provider into a refusal.
     if (
-        extract_quant_token(normalized) is not None
+        allow_root_stem
+        and extract_quant_token(normalized) is not None
         and gguf_variant_key(f"{normalized}.gguf") == normalized
     ):
         return True
@@ -328,7 +333,7 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
         # per checkpoint, and keying this map on the bare label left every one of those rows a hard miss here: a 404
         # instead of the download.
         quant = gguf_variant_key(name)
-        if not looks_like_quant(quant):
+        if not looks_like_quant(quant, allow_root_stem = True):
             # With no recognized quant token the extractors part ways: this one takes the last hyphenated segment ("7b"
             # of llama-7b) while the plan and worker key the whole stem, so advertising ours dispatches an unresolvable
             # variant.
@@ -916,7 +921,7 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
             # org/repo:Q4_K_M with a 404 and the worker's fallback was never reached. Unambiguous only, for the same
             # reason.
             exact = _bare_quant_alias(wanted, lowered)
-        if exact is not None or looks_like_quant(wanted):
+        if exact is not None or looks_like_quant(wanted, allow_root_stem = True):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
     # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant

@@ -3231,6 +3231,12 @@ def _find_local_gguf_by_variant(
     owned.sort()
     if owned:
         return str(_local_gguf_load_path(owned[0]))
+    # No file OWNS the request, so this is the legacy bare spelling of a qualified key. It may
+    # stand in for exactly one build; when two builds of one quant are cached (``-mtp`` beside
+    # ``-fp16``) it names neither, and returning the first by name loads a checkpoint the user
+    # did not ask for. ``plan_for_variant`` already refuses the same request.
+    if len({_gguf_variant_key(f.relative_to(p).as_posix()).lower() for f in matches}) > 1:
+        return None
     if matches:
         return str(_local_gguf_load_path(matches[0]))
     return None

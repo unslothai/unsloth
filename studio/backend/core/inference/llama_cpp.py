@@ -3603,6 +3603,19 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
             owned = sorted(f for f in main_files if _gguf_variant_key(f).lower() == variant_key)
             if owned:
                 return owned
+            # Nothing owns the key, so the request is the legacy bare spelling of a qualified
+            # one. It may stand in for exactly one build; across two builds of a single quant it
+            # names neither, and the looser tiers below would hand llama-server a mixed set of
+            # two checkpoints. ``plan_for_variant`` already refuses the same request.
+            from hub.utils.gguf import bare_quant_alias
+
+            aliased = {
+                _gguf_variant_key(f).lower()
+                for f in main_files
+                if bare_quant_alias(_gguf_variant_key(f)).lower() == variant_key
+            }
+            if len(aliased) > 1:
+                return []
         except Exception as e:
             logger.warning("Failed to derive GGUF variant keys: %s", e)
 

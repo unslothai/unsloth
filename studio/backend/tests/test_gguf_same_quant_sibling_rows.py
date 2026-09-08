@@ -377,3 +377,51 @@ def test_the_main_candidate_predicate_stays_in_lockstep():
         assert is_main_gguf_variant_path(path, key) == (
             is_main_gguf_candidate(path) and gguf_variant_key(path).lower() == key.lower()
         )
+
+
+def test_the_load_guard_compares_the_two_spellings_symmetrically():
+    """A build can be LOADED through the legacy bare pin and deleted through its advertised
+    qualified row, or the reverse. A one-directional check covered only the second, so the first
+    unlinked a model that was resident."""
+    from hub.services.models.deletion import _loaded_repo_variant_blocks_delete
+
+    bare, qualified = "q4_0", "gemma-4-31B_q4_0-it"
+    assert _loaded_repo_variant_blocks_delete("r", "r", qualified, bare) is True
+    assert _loaded_repo_variant_blocks_delete("r", "r", bare, qualified) is True
+    assert _loaded_repo_variant_blocks_delete("r", "r", "Q8_0", qualified) is False
+
+
+def test_the_loaders_refuse_a_bare_pin_that_names_two_builds(tmp_path):
+    """``plan_for_variant`` refuses an ambiguous bare quant, but the loader fallbacks matched on
+    the LABEL and took the first file by name -- so a stale pin ran a different checkpoint once
+    both qualified rows had been downloaded."""
+    snapshot = _materialize(
+        tmp_path / "two", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)]
+    )
+    assert _find_local_gguf_by_variant(str(snapshot), "Q4_K_M") is None
+    assert _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+
+
+def test_a_lone_tagged_build_still_loads_under_its_legacy_bare_pin(tmp_path):
+    """The refusal above must not cost the single-build repos their bare spelling."""
+    snapshot = _materialize(tmp_path / "one", [("gemma-4-31B_q4_0-it.gguf", 17)])
+    assert _find_local_gguf_by_variant(str(snapshot), "q4_0") == str(
+        snapshot / "gemma-4-31B_q4_0-it.gguf"
+    )
+    assert _gguf_files_for_variant(["gemma-4-31B_q4_0-it.gguf"], "q4_0") == [
+        "gemma-4-31B_q4_0-it.gguf"
+    ]
+
+
+def test_a_foreign_provider_tag_is_not_one_of_our_rows():
+    """``looks_like_quant`` gates a Hub 404 between a refusal and falling through to another
+    server. An Ollama tag mints the same shape as a lone tagged build's key, so the root-stem
+    test is only offered where the caller actually holds the repo's listing."""
+    from core.inference.openai_auto_download import looks_like_quant
+
+    for tag in ("8b-instruct-q4_0", "8b-instruct-q4_0-fp16", "70b-instruct-q8_0-f16"):
+        assert looks_like_quant(tag) is False
+    assert looks_like_quant("gemma-4-31B_q4_0-it", allow_root_stem = True) is True
+    # The shapes that never needed the listing are unaffected.
+    assert looks_like_quant("Q4_K_M") is True
+    assert looks_like_quant("distilled/model-Q6_K") is True

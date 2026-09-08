@@ -882,6 +882,31 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
     return matches[0] if len(matches) == 1 else None
 
 
+def variant_spellings_may_name_one_build(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two variant spellings can name the SAME build, for a fail-closed load guard.
+
+    Symmetric, because either side may hold either spelling: a build can be LOADED through the
+    legacy bare quant and deleted through its advertised qualified row, or loaded through the
+    qualified row and deleted through the bare pin. Deliberately loose -- and looser than
+    :func:`accepts_bare_quant_alias`, so an H3 stem counts too -- since a false match only
+    refuses a delete while a false miss unlinks a model that is resident.
+    """
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    for key, bare in ((left, right), (right, left)):
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
+            return True
+    return False
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 

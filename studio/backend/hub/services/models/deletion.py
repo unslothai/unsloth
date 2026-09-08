@@ -19,6 +19,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     accepts_bare_quant_alias,
     bare_quant_alias,
+    variant_spellings_may_name_one_build,
     extract_quant_token,
     gguf_variant_key,
     is_qualified_gguf_variant_key,
@@ -621,15 +622,12 @@ def _loaded_repo_variant_blocks_delete(
         return True
     if not loaded_variant:
         return True
-    if loaded_variant.lower() == delete_variant.lower():
-        return True
     # ``_variant_keys_to_delete`` resolves the legacy bare quant onto the one qualified key that
-    # answers to it, so the guard has to accept that spelling too. Comparing the two strings
-    # literally let a bare request unlink the build that was loaded under its qualified key.
-    return (
-        accepts_bare_quant_alias(loaded_variant)
-        and bare_quant_alias(loaded_variant).lower() == delete_variant.strip().lower()
-    )
+    # answers to it, and a build can be loaded under either spelling, so the guard has to compare
+    # them SYMMETRICALLY. Literal comparison let a bare request unlink a build loaded under its
+    # qualified key, and the one-directional check let the advertised qualified row unlink a build
+    # loaded through a legacy bare pin.
+    return variant_spellings_may_name_one_build(loaded_variant, delete_variant)
 
 
 _LOAD_STATE_UNVERIFIABLE_DETAIL = (
