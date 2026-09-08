@@ -53,8 +53,7 @@ check() {
 
 echo "Layouts Unsloth created at the managed root, which must stay removable:"
 check "partial install: the root marker alone" own managed ".unsloth-studio-owned"
-# install.sh guarantees a regular file there, so a link planted in somebody's workspace is not
-# proof: -f follows it, and the custom-root loop deletes what it accepts.
+# install.sh guarantees a regular file there, and -f follows a link planted in its place.
 _linkmark="$_TMP_ROOT/linked_root_marker"
 mkdir -p "$_linkmark"
 : > "$_TMP_ROOT/linked_root_marker_target"
@@ -70,9 +69,8 @@ if _is_studio_root "$_linkmark"; then
 else
     echo "  PASS: and at a custom root too"; PASS=$((PASS+1))
 fi
-# Every marker the installers write is a plain file, so the same rule holds for all of them and
-# for the directory each one sits in. bin/unsloth is the exception, and it IS a symlink: that one
-# is validated by where it points instead.
+# Every marker the installers write is a plain file, so the rule holds for all of them and for
+# the directory each sits in. bin/unsloth is the exception: it IS a symlink, validated by target.
 : > "$_TMP_ROOT/linked_marker_target"
 for _lm in "unsloth_studio/.unsloth-studio-owned" ".venv/.unsloth-studio-owned" "share/studio.conf"; do
     _lmroot="$_TMP_ROOT/lm_$(printf '%s' "$_lm" | tr -c 'a-zA-Z0-9' '_')"
@@ -85,7 +83,7 @@ for _lm in "unsloth_studio/.unsloth-studio-owned" ".venv/.unsloth-studio-owned" 
         echo "  PASS: a symlinked $_lm is refused"; PASS=$((PASS+1))
     fi
 done
-# ... and a real marker inside a LINKED venv directory, which is the same trick one level up.
+# ... and a real marker inside a LINKED venv directory, the same trick one level up.
 _lmdir="$_TMP_ROOT/lm_linked_dir"
 mkdir -p "$_lmdir" "$_TMP_ROOT/lm_real_venv"
 : > "$_TMP_ROOT/lm_real_venv/.unsloth-studio-owned"
@@ -138,8 +136,7 @@ check "a leftover-named directory holding the user's own files" foreign managed 
 # bin/unsloth is only pip's console script when it is inside a venv; on its own it is a file.
 check "a console script with no venv around it" foreign managed ".venv/bin/unsloth"
 check "the same under a directory named unsloth_studio" foreign managed "unsloth_studio/bin/unsloth"
-# install.sh preserves any rollback outside <stamp>.<pid>[.<n>] as user data, so neither may the
-# uninstaller read one as ownership: "unsloth_studio.rollback.notes" is somebody's directory.
+# install.sh keeps any rollback outside <stamp>.<pid>[.<n>] as user data; do not be looser.
 check "a rollback-named venv outside the installer's format" foreign managed \
     "unsloth_studio.rollback.user-data/pyvenv.cfg"
 check "an invalid-venv name outside the installer's format" foreign managed \
@@ -151,8 +148,7 @@ check "a rollback name with a short stamp" foreign managed \
 # Only the rollback name has a collision counter; .venv.invalid is written once per run.
 check "an invalid-venv name with a rollback-style suffix" foreign managed \
     ".venv.invalid.20260908120000.4242.2/pyvenv.cfg"
-# install.sh refuses to prune a rollback symlink and only ever renames a directory into place,
-# so a link with the right name points at a venv it did not put there.
+# install.sh only ever renames a directory into place, so a link points at a venv it did not put.
 _linked="$_TMP_ROOT/linked_leftover"
 mkdir -p "$_linked" "$_TMP_ROOT/somebodys_venv"
 : > "$_TMP_ROOT/somebodys_venv/pyvenv.cfg"
@@ -163,13 +159,11 @@ if _is_studio_root "$_linked" managed; then
 else
     echo "  PASS: a symlinked leftover is refused"; PASS=$((PASS+1))
 fi
-# ... and the shapes the installers really write, including install.sh's date fallback.
 check "partial install: rollback with a numeric suffix" own managed \
     "unsloth_studio.rollback.20260908120000.4242.2/pyvenv.cfg"
 check "partial install: install.sh's 'time' date fallback" own managed \
     ".venv.invalid.time.4242/pyvenv.cfg"
-# install.sh claims the root before it creates the uv cache, so the cache is not a sentinel:
-# a hand-made ~/.unsloth/studio/cache/uv must not authorize deleting the rest of the root.
+# install.sh claims the root before it creates the uv cache, so the cache is not a sentinel.
 check "a uv cache with no root marker" foreign managed "cache/uv/" "notes.txt"
 check "the same at a custom root" foreign custom "cache/uv/"
 
@@ -194,11 +188,10 @@ else
     echo "  FAIL: a path containing spaces was refused"; FAIL=$((FAIL+1))
 fi
 
-# The other half of the same question: install.sh decides when to WRITE the marker this gate
-# reads. In env mode $STUDIO_HOME is a user-chosen workspace, so claiming one the installer is
-# about to refuse would hand somebody's project to the uninstaller.
-# A removal that took the sentinels and then failed on a locked child must leave the root
-# identifiable, or the retry the failure asks for is refused.
+# The other half of the question: install.sh decides when to WRITE the marker this gate reads,
+# and claiming a workspace the installer is about to refuse hands it to the uninstaller.
+# A removal that took the sentinels and then failed must leave the root identifiable, or the
+# retry it asks for is refused.
 echo
 echo "After a partial removal:"
 _fn=$(sed -n '/^_restore_owner_marker() {/,/^}/p' "$UNINSTALL_SH")
@@ -226,8 +219,7 @@ fi
 
 echo
 echo "Who the installer is allowed to claim:"
-# _claim_studio_root calls _claim_sentinel, so both come across or every claim silently takes
-# the wrong branch on a command-not-found and the block below asserts nothing.
+# _claim_studio_root calls _claim_sentinel, so both come across or every claim below is vacuous.
 _fn=""
 for _cname in _claim_sentinel _claim_studio_root; do
     _cfn=$(sed -n "/^$_cname() {/,/^}/p" "$INSTALL_SH")
@@ -266,11 +258,9 @@ else
     # The case: the venv-step guard refuses this root, so the claim must not run ahead of it.
     claim_check "somebody's workspace" left env "pyproject.toml" "src/main.py"
     claim_check "somebody's workspace with a venv of their own" left env "unsloth_studio/pyvenv.cfg"
-    # A file called bin/unsloth is any file called bin/unsloth. The uninstaller reads it only as
-    # a symlink into the venv, and this list authorizes a delete, so it is not on it.
+    # Any file of that name. The uninstaller reads it only as a symlink into the venv.
     claim_check "a workspace holding a plain bin/unsloth" left env "bin/unsloth" "notes.txt"
-    # A LINKED share or unsloth_studio holding a genuine marker: -L answers for the named file
-    # only, so without the container check the whole workspace around it reads as ours.
+    # A LINKED share or unsloth_studio holding a genuine marker: -L answers for the file only.
     for _cl in "share/studio.conf" "unsloth_studio/.unsloth-studio-owned"; do
         _cldir=$(dirname "$_cl")
         STUDIO_HOME="$_TMP_ROOT/claim_linked_$(printf '%s' "$_cl" | tr -c 'a-zA-Z0-9' '_')"
@@ -290,8 +280,7 @@ else
         fi
     done
 
-    # A link named like our marker: -f follows it, which would skip the emptiness test and get
-    # the link replaced by a real marker on somebody's workspace.
+    # A link named like our marker: -f follows it, skipping the emptiness test.
     STUDIO_HOME="$_TMP_ROOT/claim_linked_marker"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -307,8 +296,7 @@ else
         echo "  FAIL: a linked marker was replaced with a real one"; FAIL=$((FAIL+1))
     fi
 
-    # sh -f: the globs are the whole emptiness test, so without expansion every workspace would
-    # read as empty. Driven with globbing off, which is what `sh -f install.sh` gives.
+    # The globs ARE the emptiness test, so `sh -f install.sh` would read every workspace as empty.
     STUDIO_HOME="$_TMP_ROOT/claim_noglob"
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
     _STUDIO_HOME_REDIRECT="env"
@@ -326,8 +314,7 @@ else
                 *) echo "  PASS: and the caller's globbing setting is restored"; PASS=$((PASS+1)) ;;
     esac
 
-    # Writable and searchable but not readable: the globs cannot enumerate it, so an occupied
-    # workspace would read as empty and be claimed.
+    # Writable and searchable but not readable: the globs cannot enumerate it.
     STUDIO_HOME="$_TMP_ROOT/claim_unreadable"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -357,8 +344,7 @@ else
         echo "  FAIL: a second claim rewrote a valid marker"; FAIL=$((FAIL+1))
     fi
 
-    # A root we cannot write, holding a link to a target we can: rm fails, and writing anyway
-    # would truncate the target. No marker is the correct outcome, not a truncated file.
+    # A root we cannot write holding a link to a target we can: rm fails, and writing truncates.
     STUDIO_HOME="$_TMP_ROOT/claim_ro_root"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -396,21 +382,18 @@ else
     fi
 fi
 
-# The claim's other consequence: a first install that dies after creating unsloth_studio leaves
-# an occupied venv with no in-venv marker, and the retry guard would refuse to replace it unless
-# it reads the root marker the same run wrote. Structural, because the guard is a condition in
-# the middle of the install and running one here is not practical.
+# A first install that dies after creating unsloth_studio leaves an occupied venv with no
+# in-venv marker, so the retry guard has to read the root marker the same run wrote. Structural:
+# the guard is a condition in the middle of the install.
 _guard=$(sed -n '/why: matching guard to the .venv branch below/,/Move it aside or choose an empty/p' "$INSTALL_SH")
-# ... and reads it the same way the claim writes it, or a link gets a foreign workspace past the
-# guard the claim's own refusal exists to back.
+# ... the same way the claim writes it, or a link gets a foreign workspace past the guard.
 _guard_pat2="_claim_sentinel \"[\$]STUDIO_HOME/[.]unsloth-studio-owned\""
 if printf '%s' "$_guard" | grep -q "$_guard_pat2"; then
     echo "  PASS: and through _claim_sentinel, not -f"; PASS=$((PASS+1))
 else
     echo "  FAIL: the retry guard reads the root marker with -f, which follows a link"; FAIL=$((FAIL+1))
 fi
-# Built, not written literally, so the dollar stays a character rather than reading as an
-# expansion here: the guard's SOURCE text is what is being searched.
+# Bracketed so the dollar stays a character: the guard's SOURCE text is what is searched.
 _guard_pat="[\$]STUDIO_HOME/[.]unsloth-studio-owned"
 if [ -z "$_guard" ]; then
     echo "  FAIL: could not find install.sh's env-mode replacement guard"; FAIL=$((FAIL+1))

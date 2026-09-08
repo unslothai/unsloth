@@ -1256,14 +1256,11 @@ public static class UnslothStudioFinalPathV2
         } catch { return $Cache }
     }
 
-    # Claim the root before anything of ours goes into it. Everything else lands inside it --
-    # the uv cache, the venv, the venv's own marker -- so an install that dies in between used
-    # to leave a directory the uninstaller could only identify by guessing from leftovers, and
-    # every guess is a chance to delete somebody else's files. Never fatal: an unwritable root
-    # fails the install on its own.
-    # A sentinel this list may trust: a regular file, never a link. Test-Path follows a link,
-    # and one planted in somebody's workspace would otherwise short-circuit the emptiness test
-    # and earn that workspace a marker the uninstaller deletes on.
+    # Claim the root before anything of ours goes into it: the uv cache, the venv and the venv's
+    # own marker all land inside it, so an install that dies in between used to leave a directory
+    # the uninstaller could only identify by guessing at leftovers. Never fatal.
+    # A sentinel this list may trust: a regular file, never a link. Test-Path follows one, and a
+    # planted link would otherwise short-circuit the emptiness test below.
     function Test-StudioPlainFile {
         param([string]$Path, [string]$Container)
         try {
@@ -1280,26 +1277,20 @@ public static class UnslothStudioFinalPathV2
         } catch { return $false }
     }
 
-    # Claim only what this run is allowed to take over: in env mode $StudioHome is a user-chosen
-    # workspace, so an empty one, or one already carrying an unambiguous Unsloth marker, and
-    # nothing else. Claiming ahead of the guard at the venv step and aborting there would leave
-    # our marker on somebody's project, and the uninstaller deletes a marked root recursively.
+    # Only a root this run may take over: in env mode $StudioHome is a user-chosen workspace, so
+    # an empty one, or one already carrying an unambiguous marker, and nothing else, or a run
+    # that aborts at the venv-step guard leaves somebody's project marked. Shorter than that
+    # guard's list on purpose: it only refuses to overwrite, this authorizes a delete.
     #
-    # Shorter than that guard's list on purpose. It refuses to overwrite and can afford a weak
-    # signal; this one authorizes a delete, so bin\unsloth.exe, which is any file of that name,
-    # is not on it. A root that has one needs no marker: the uninstaller already accepts it.
-    #
-    # The emptiness test is inline rather than Test-DirectoryHasEntries, which is defined further
-    # down the file than the first call to this: a CommandNotFoundException would land in the
-    # catch below and silently skip the claim. An unreadable root counts as occupied, so the
-    # failure direction is "do not claim".
+    # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
+    # function's first caller: the name error would land in the catch and skip the claim in
+    # silence. An unreadable root counts as occupied, so failure means "do not claim".
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
             $marker = Join-Path $Root ".unsloth-studio-owned"
-            # Already ours and already the right shape: leave it. This runs twice per install,
-            # and a run killed between the delete and the write would lose the only proof this
-            # root is ours, which is exactly the interrupted install it exists for.
+            # Already ours and the right shape: leave it. This runs twice per install, and a run
+            # killed between the delete and the write would lose the only proof this root is ours.
             if (Test-StudioPlainFile -Path $marker) { return }
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
@@ -1320,10 +1311,9 @@ public static class UnslothStudioFinalPathV2
                 # .NET API: New-Item -Path treats brackets as wildcards.
                 [System.IO.Directory]::CreateDirectory($Root) | Out-Null
             }
-            # Delete first, then confirm it. WriteAllText follows a file link and truncates its
-            # TARGET, which on a user-chosen root is somebody's file, and the delete can fail on
-            # a root we cannot write while that target stays perfectly writable. No marker is
-            # fine; the venv writes its own later.
+            # Delete first, then confirm it: WriteAllText follows a file link and truncates its
+            # TARGET, and the delete can fail on a root we cannot write while that target stays
+            # writable. No marker is fine; the venv writes its own later.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $marker) { return }
             [System.IO.File]::WriteAllText($marker, "")
@@ -1398,8 +1388,7 @@ public static class UnslothStudioFinalPathV2
             [string]$UvExecutable = ""
         )
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
-        # Ahead of the custom-cache return below, or a preset UV_CACHE_DIR skips the claim and
-        # an interruption after this leaves exactly the unidentifiable partial root it is for.
+        # Ahead of the custom-cache return below, or a preset UV_CACHE_DIR skips the claim.
         Write-StudioRootOwnerMarker -Root $StudioRoot
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
@@ -4504,8 +4493,7 @@ exit 0
         if (
             $StudioRedirectMode -eq 'env' -and
             # Test-StudioPlainFile, not Test-Path: the claim refuses to write a marker through a
-            # link, so reading one through a link here would let a foreign workspace past the
-            # very guard that decision exists to back. The older sentinels keep Test-Path.
+            # link, so reading one through a link here would undo that decision.
             -not (Test-StudioPlainFile -Path (Join-Path $StudioHome ".unsloth-studio-owned")) -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and

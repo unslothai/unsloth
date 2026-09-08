@@ -246,9 +246,8 @@ $_roots_from_conf"
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
 #   db-kept        the default root was REFUSED and still holds studio.db. Its own flag, not
-#                  remove-failed: nothing failed, the gate declined a directory that does not
-#                  look like ours, and telling the reader to delete it by hand is the opposite
-#                  of what this gate is for.
+#                  remove-failed: nothing failed, so "remove those paths by hand" is the wrong
+#                  thing to say about it.
 # studio.db holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()),
 # not the provider API keys: providers_db.py keeps those in the browser's localStorage only.
 # It sits under the install root, so an env-mode install keeps it in a custom root a bare run
@@ -299,8 +298,7 @@ trap _cleanup_markers EXIT
 # Verifying rather than chasing the link is deliberate: following a symlink out of the
 # expected location to `rm -rf` its target is what the deny lists exist to prevent.
 # A removal that got part way can take the sentinels and then fail on a locked child, leaving a
-# root the next run's gate would refuse and strand. Put the marker back so a retry recognises
-# what the last one started.
+# root the next run's gate would refuse. Put the marker back so a retry recognises it.
 _restore_owner_marker() {
     [ -d "$1" ] || return 0
     if [ -e "$1/.unsloth-studio-owned" ] || [ -L "$1/.unsloth-studio-owned" ]; then return 0; fi
@@ -370,14 +368,11 @@ _xdg_dir() {
 # env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
 # directory is NOT enough -- require the install-time owner marker so a user
 # directory that happens to contain a folder named "unsloth_studio" is safe.
-# Is $1 a Python venv? Every signal the gate reads out of a venv directory -- pip's console
-# script, the moved-aside copies -- is evidence only if the directory really is one. A bare file
-# at that path is somebody else's, and the managed root is deleted recursively.
-# A sentinel this gate may trust: a regular file, never a link, and never inside a linked
-# directory. -f follows a link, and the installers write every one of these as a plain file, so
-# a link at that path was planted by something else and this gate authorizes a recursive delete.
-# bin/unsloth is deliberately not on this list: that one IS a symlink, and it is validated by
-# where it points instead.
+# Is $1 a Python venv? What the gate reads out of one is evidence only if the directory really
+# is one; a bare file at that path is somebody else's.
+# A sentinel this gate may trust: a regular file, never a link, never inside a linked directory.
+# -f follows a link, the installers write these as plain files, and this gate authorizes a
+# recursive delete. bin/unsloth is not on the list; that one IS a symlink, validated by target.
 _is_owner_marker() {  # marker path, optional containing dir
     [ -f "$1" ] || return 1
     [ -L "$1" ] && return 1
@@ -393,11 +388,9 @@ _is_venv_dir() {
     return 1
 }
 
-# Does $1 carry the exact name an installer gives a moved-aside venv, <prefix>.<stamp>.<pid>[.<n>]
-# with a 14-digit stamp or install.sh's "time" fallback? install.sh treats every other spelling as
-# the user's own data (_studio_venv_rollback_must_be_preserved), so the uninstaller must not be
-# looser about it: "unsloth_studio.rollback.notes" is somebody's directory, and the managed root
-# is deleted recursively.
+# The exact name an installer gives a moved-aside venv: <prefix>.<stamp>.<pid>[.<n>], with a
+# 14-digit stamp or install.sh's "time" date(1) fallback. install.sh keeps every other spelling
+# as the user's data (_studio_venv_rollback_must_be_preserved); do not be looser.
 _is_installer_leftover_name() {
     _l=${1##*/}
     # Only the rollback name carries a collision counter (install.sh:823); .venv.invalid is
@@ -431,10 +424,9 @@ _is_studio_root() {
     # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
     _managed="${2:-}"
     [ -n "$_r" ] || return 1
-    # install.sh writes the first the moment it creates the root, before the uv cache and long
-    # before the venv, so a partial install identifies itself rather than being guessed at from
-    # leftovers. The last is the legacy venv name; only install.sh writes that marker, so it is
-    # proof at any root.
+    # install.sh writes the first when it creates the root, before the uv cache and long before
+    # the venv, so a partial install identifies itself instead of being guessed at. The last is
+    # the legacy venv name, which only install.sh writes.
     _is_owner_marker "$_r/.unsloth-studio-owned" && return 0
     _is_owner_marker "$_r/share/studio.conf" && return 0
     _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" "$_r/unsloth_studio" && return 0
@@ -445,19 +437,18 @@ _is_studio_root() {
     fi
     # All a pre-marker install has left is bin/unsloth inside the venv, pip's console script,
     # which ANY venv with the wheel has: proof only at the managed root, which install.sh:2987
-    # also makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME
-    # deletes the project it points at.
+    # also makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes
+    # the project it points at.
     [ "$_managed" = managed ] || return 1
     for _v in unsloth_studio .venv; do
         _is_venv_dir "$_r/$_v" || continue
         [ -f "$_r/$_v/bin/unsloth" ] && return 0
     done
     # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
-    # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
-    # somebody else's. Only install.sh produces either name, and only ever by renaming a venv.
+    # the marker (install.sh:3190) leaves only these, and only install.sh makes either name,
+    # always by renaming a venv.
     for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
-        # Never a link. install.sh refuses to prune a rollback symlink and only ever creates
-        # these by renaming a directory, so a link here points somewhere it did not put.
+        # Never a link: install.sh refuses to prune a rollback symlink either.
         [ -L "$_p" ] && continue
         _is_installer_leftover_name "$_p" || continue
         _is_venv_dir "$_p" && return 0
@@ -689,9 +680,8 @@ _unsloth_uninstall_main() {
     # ~/.unsloth via the empty-dir prune below.
     if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
         echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
-        # A refused CUSTOM root is somebody else's by definition, so skipping it leaves none of
-        # our data behind. This is our own default path, where a damaged install can sit, so a
-        # studio.db here is chat history the summary must not report as never found.
+        # A refused CUSTOM root is somebody else's by definition. This is our own default path,
+        # where a damaged install can sit, so a studio.db here is chat history.
         if [ -f "$HOME/.unsloth/studio/studio.db" ]; then
             _set_marker "$_DB_KEPT_FLAG"
         fi
@@ -992,8 +982,8 @@ _unsloth_uninstall_main() {
         echo "      gone. A browser session is not affected: its tokens live in the same"
         echo "      localStorage as the API keys below."
         if _marker_set "$_DB_KEPT_FLAG"; then
-            # Named, and with no advice to delete it: the gate kept this directory precisely
-            # because it does not look like ours, so "remove it by hand" would undo the point.
+            # Named, and with no advice to delete it: the gate kept it precisely because it
+            # does not look like ours.
             echo "      $HOME/.unsloth/studio carries no Unsloth install marker, so it was left"
             echo "      alone. The studio.db inside it is still there; look at that directory"
             echo "      yourself before deciding what to do with it."

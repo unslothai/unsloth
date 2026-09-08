@@ -42,54 +42,48 @@ if (-not $fn) {
 
 # The stop-scan call site has to actually pass the targets, or the helper is dead code.
 $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
-# $ownedRoots, not $knownRoots: following a link turns one path into generic subdirectories of
-# wherever it points, and the stop scan runs before the ownership gates, so an unowned root would
-# have processes killed under its target and only then be refused.
+# $ownedRoots, not $knownRoots: the stop scan runs before the ownership gates, so an unowned root
+# would have processes killed under its target and only then be refused.
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$ownedRoots\)\)')
 Check "and that list is filtered by the ownership gate" `
     ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?_IsStudioRoot \$defaultStudioHome -ManagedDefaultRoot.*?foreach \(\$r in \$customRoots\) \{\s*\r?\n\s*if \(\(_IsStudioRoot \$r\) -and -not \(_IsUnsafeRoot \$r\)\)')
-# The removal loop refuses on EITHER gate, so a real install on the deny list must not have
-# processes killed for a tree that is then left standing.
+# The removal loop refuses on EITHER gate, so a deny-listed install must not be swept either.
 Check "and by the deny list, which the removal loop also refuses on" `
     ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?-not \(_IsUnsafeRoot \$defaultStudioHome\)')
-# The plain roots too, and for the same reason: _RootFromConf only started resolving a root from
-# studio.conf when Split-Path stopped throwing, and a stale conf can name a directory another
-# application has taken over. $knownRoots stays whole for _StopByPortFile, which only verifies.
+# The plain roots too: _RootFromConf only started resolving a root from studio.conf when
+# Split-Path stopped throwing, and a stale conf can name a directory somebody else now uses.
 Check "the stop scan is given the gated roots, not every known one" `
     ($ps1Text -match '(?m)^\s*\$stopRoots = @\(\$ownedRoots\) \+')
 # _StopStudioProcesses selects victims from what it is given and also runs before the gates.
 Check "and so is the process sweep" `
     ($ps1Text -match '(?m)^\s*_StopStudioProcesses -KnownRoots \$ownedRoots\s*$')
-# ... and an EXPLICIT empty list has to mean "nothing qualifies". PowerShell reads @() as false,
-# so `if ($KnownRoots)` turned a run with nothing to delete into an unscoped machine-wide sweep.
+# ... and an EXPLICIT empty list has to mean "nothing qualifies": @() is false in PowerShell, so
+# `if ($KnownRoots)` swept the whole machine on a run with nothing to delete.
 Check "an explicitly empty root list still scopes the sweep" `
     ($ps1Text -match [regex]::Escape("`$scoped = `$PSBoundParameters.ContainsKey('KnownRoots')"))
 Check "and the sweep branches on that, not on the array's truthiness" `
     ($ps1Text -match '(?m)^\s*if \(\$scoped\) \{\s*$')
-# The port-file stopper kills too: _PidUnderKnownRoot only asks whether the listener's exe sits
-# under one of these, and it deletes the port file, which writes inside the root.
+# The port-file stopper kills too, and deletes the port file, which writes inside the root.
 Check "the port-file stopper is gated as well" `
     (-not ($ps1Text -match '_StopByPortFile -PortFile [^\r\n]*-KnownRoots \$knownRoots'))
 # ... which means the gated list has to exist before the stop step, not after it.
 Check "and that list is built before the stop step" `
     ([regex]::Match($ps1Text, '(?m)^\s*\$ownedRoots = @\(\)').Index -lt
      [regex]::Match($ps1Text, '(?m)^\s*_StopStudioProcesses -KnownRoots').Index)
-# A removal that got part way must leave the root identifiable, or the retry it asks for is
-# refused by the gate this PR adds.
+# A removal that got part way must leave the root identifiable, or the retry it asks for fails.
 Check "a partial removal puts the ownership marker back" `
     ($ps1Text -match '(?m)^\s*_RemovePath \$Path\s*\r?\n\s*_RestoreOwnerMarker \$Path\s*$')
-# The legacy <parent>\stable-diffusion.cpp sibling is derived from the same corrected
-# Split-Path, and the scan that receives it also runs before the gates.
+# The legacy <parent>\stable-diffusion.cpp sibling comes from the same corrected Split-Path.
 Check "the legacy sd.cpp stop root is gated the same way" `
     ($ps1Text -match '(?s)\$customSdCppToStop = @\(\)\s*\r?\n\s*foreach \(\$r in \$customRoots\) \{\s*\r?\n\s*if \(-not \(_IsStudioRoot \$r\)\) \{ continue \}')
 
 # Both kinds: the helper reads only .Target; a symlink needs elevation, a junction never does.
-# $IsWindows exists only on PowerShell 6+.
+# $IsWindows exists only on PowerShell 6+, so 5.1 falls through to $true.
 $onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
 
 # New-Item -ItemType Junction does NOT throw on Linux pwsh; it makes a plain dir with no .Target,
-# so the kinds are chosen by platform, not by catching a failure.
+# so the kinds are chosen by platform rather than by catching a failure.
 $kinds = if ($onWindows) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
 
 $ran = 0

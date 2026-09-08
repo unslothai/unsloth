@@ -15,15 +15,12 @@ function Uninstall-UnslothStudio {
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
     # The default root was REFUSED and still holds studio.db. Its own flag, not RemoveFailed:
-    # nothing failed, the gate declined a directory that does not look like ours, and telling
-    # the reader to delete it by hand is the opposite of what this gate is for.
+    # nothing failed, so "remove those paths by hand" is the wrong thing to say about it.
     $script:StudioDbKept = $false
-    # ONE waiting budget for the run, not per path. What _RemovePath waits out is wall clock and
-    # shared -- the seconds torch inductor holds handles after the server stops -- so whatever the
-    # first blocked path waits, the next no longer has to. Without this, a root that can NEVER be
-    # deleted costs the full escalation at each of the 18 call sites. The error cannot be
-    # classified out instead: Windows reports a delete-pending file, and antivirus a transient
-    # failure, as access denied, and the provider mislabels either type both ways.
+    # ONE budget for the run: what _RemovePath waits out is wall clock and shared, so whatever
+    # the first blocked path waits, the next does not. Without it an undeletable root costs the
+    # full escalation at each of the 18 call sites. Classifying the error instead does not work:
+    # a delete-pending file and an antivirus hold both report access denied.
     $script:RemoveWaitBudgetMs = 20000
 
     function _Usage {
@@ -72,15 +69,12 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        # Escalating: torch inductor holds DATA handles under TORCHINDUCTOR_CACHE_DIR for
-        # seconds, and _StopProcessesLockingRoots cannot attribute those to a process.
+        # Escalating: torch inductor holds unattributable DATA handles under
+        # TORCHINDUCTOR_CACHE_DIR for seconds after the server stops.
         $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
-        # Every path gets 2100ms of waiting for itself, which is exactly the flat 700ms x3 this
-        # replaced, so no path is ever retried less than it used to be -- a lock that only this
-        # one hits, an antivirus opening this file, is unaffected by what an earlier path spent.
-        # Only the escalation BEYOND that draws on the run's budget, because what the escalation
-        # waits out is wall clock and shared. $false means both are spent, so stop rather than
-        # retry with no pause in between.
+        # 2100ms per path is free, exactly the flat 700ms x3 this replaced, so no path is retried
+        # less than before: a lock only this path hits is not the shared wait. $false means both
+        # are spent, so stop rather than retry with no pause in between.
         $freeLeft = 2100
         function _Wait {
             param([int]$Ms, [ref]$FreeLeft)
@@ -146,8 +140,7 @@ Environment:
     # Verifying rather than chasing the link is deliberate: following a reparse point out of
     # the expected location to delete its target is what the deny list exists to stop.
     # A removal that got part way can take the sentinels and then fail on a locked child, leaving
-    # a root the next run's gate would refuse and strand. Put the marker back so a retry
-    # recognises what the last one started.
+    # a root the next run's gate would refuse. Put the marker back so a retry recognises it.
     function _RestoreOwnerMarker {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -445,11 +438,10 @@ Environment:
     # install whose .exe was removed by that policy's quarantine still owns its root.
     # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
     # on Windows, so every sentinel above postdates the bin\ shim dir.
-    # A sentinel this gate may trust: a regular file, never a reparse point, and never inside a
-    # linked directory. Test-Path follows a link, and the installers write every one of these as
-    # an ordinary file, so a link at that path was planted by something else and this gate
-    # authorizes a recursive delete. bin\unsloth.cmd is deliberately not on this list: that one
-    # is content-checked instead, and bin\unsloth.exe is a hardlink by design.
+    # A sentinel this gate may trust: a regular file, never a reparse point, never inside a linked
+    # directory. Test-Path follows a link, the installers write these as ordinary files, and this
+    # gate authorizes a recursive delete. bin\unsloth.cmd is not on the list; it is
+    # content-checked instead.
     function _IsOwnerMarker {
         param([string]$Path, [string]$Container)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -464,10 +456,8 @@ Environment:
         } catch { return $false }
     }
 
-    # Is $Path a Python venv? Every signal the gate reads out of a venv directory -- pip's
-    # console script, the package behind it, the moved-aside copies -- is evidence only if the
-    # directory really is one. A bare name at that path is somebody else's, and the managed root
-    # is deleted recursively.
+    # Is $Path a Python venv? What the gate reads out of one is evidence only if the directory
+    # really is one; a bare name at that path is somebody else's.
     function _IsVenvDir {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -478,15 +468,12 @@ Environment:
         return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
     }
 
-    # Does $Name carry the exact shape an installer gives a moved-aside venv? install.ps1 treats
-    # every other spelling as the user's own data (Test-StudioVenvRollbackMustBePreserved), so the
-    # uninstaller must not be looser about it, and the managed root is deleted recursively.
+    # The exact shape an installer gives a moved-aside venv. install.ps1 keeps every other
+    # spelling as the user's data (Test-StudioVenvRollbackMustBePreserved); do not be looser.
     function _IsInstallerLeftoverName {
         param([string]$Name)
-        # Two patterns, not one with a shared optional suffix: only the rollback name carries a
-        # collision counter (install.ps1:4171), and .venv.invalid is written once per run. No
-        # "time" alternative either: that is install.sh's fallback for a failed date(1), and
-        # install.ps1 always formats yyyyMMddHHmmss.
+        # Two patterns: only the rollback name carries a collision counter (install.ps1:4171).
+        # No "time" alternative; that is install.sh's date(1) fallback and has no Windows twin.
         if ($Name -match '^unsloth_studio\.rollback\.\d{14}\.\d+(\.\d+)?$') { return $true }
         return ($Name -match '^\.venv\.invalid\.\d{14}\.\d+$')
     }
@@ -494,9 +481,8 @@ Environment:
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        # install.ps1 writes the first the moment it creates the root, before the uv cache and
-        # long before the venv, so a partial install identifies itself rather than being guessed
-        # at. The last is the legacy venv name, which only the installers write.
+        # install.ps1 writes the first when it creates the root, before the uv cache and long
+        # before the venv, so a partial install identifies itself instead of being guessed at.
         if (_IsOwnerMarker (Join-Path $Path ".unsloth-studio-owned")) { return $true }
         if (_IsOwnerMarker (Join-Path $Path "share\studio.conf")) { return $true }
         if (_IsOwnerMarker (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") (Join-Path $Path "unsloth_studio")) { return $true }
@@ -505,26 +491,23 @@ Environment:
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
         # Below here is INSIDE a venv, where pip puts it for any install of the wheel: it names
         # the wheel, not the owner. Proof only at the managed root, which install.ps1:4453 also
-        # makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes
-        # the project it points at.
+        # makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes it.
         if (-not $ManagedDefaultRoot) { return $false }
         foreach ($venv in @("unsloth_studio", ".venv")) {
             if (-not (_IsVenvDir (Join-Path $Path $venv))) { continue }
             if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
             # Antivirus takes that .exe out of a venv that still runs; install.ps1:6412 repairs
-            # through it, and a pre-marker root has nothing else left.
+            # through it, so a pre-marker root has nothing else left.
             foreach ($pkg in @("unsloth_cli", "unsloth")) {
                 if (Test-Path -LiteralPath (Join-Path $Path "$venv\Lib\site-packages\$pkg") -PathType Container) { return $true }
             }
         }
         # An install that died between moving the old venv aside (install.ps1:4487, :4165) and
-        # writing the marker (install.ps1:4524) leaves the root with neither, so it would be
-        # refused as somebody else's. Only install.ps1 produces either name, and only ever by
-        # renaming a venv.
+        # writing the marker (install.ps1:4524) leaves only these, and only install.ps1 makes
+        # either name, always by renaming a venv.
         foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
             foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
-                # Never a reparse point. install.ps1 refuses to prune a linked rollback and only
-                # ever creates these by renaming a directory, so a link points somewhere else.
+                # Never a reparse point: install.ps1 refuses to prune a linked rollback either.
                 if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
                 if (-not (_IsInstallerLeftoverName $dir.Name)) { continue }
                 if (_IsVenvDir $dir.FullName) { return $true }
@@ -705,9 +688,8 @@ Environment:
     # Anchoring on the venv path avoids matching unrelated python.exe / studio.exe.
     function _StopStudioProcesses {
         param([string[]]$KnownRoots)
-        # An EXPLICIT empty list means "no root qualifies", not "do not scope". PowerShell reads
-        # @() as false, so a plain `if ($KnownRoots)` turned a run with nothing to delete into an
-        # unscoped sweep that kills every matching process on the machine.
+        # An EXPLICIT empty list means "no root qualifies", not "do not scope". @() is false in
+        # PowerShell, so `if ($KnownRoots)` swept the whole machine on a run with nothing to delete.
         $scoped = $PSBoundParameters.ContainsKey('KnownRoots')
         try {
             $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -872,13 +854,10 @@ Environment:
     $knownRoots = @()
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
-    # The roots this run would actually delete. Everything that STOPS a process is given this
-    # list rather than $knownRoots, because all of it runs before the gates below: a stale
-    # studio.conf can name a directory another application has taken over, and _RootFromConf
-    # only started resolving one when Split-Path stopped throwing. _PidUnderKnownRoot only asks
-    # whether the listener's exe sits under one of these, so an unowned entry is a licence to
-    # kill there too, and it already answers false for an empty list.
-    # _IsUnsafeRoot as well as _IsStudioRoot, because the removal loop refuses on either.
+    # The roots this run would actually delete. Everything that stops, deletes or edits on behalf
+    # of a root takes THIS list, never $knownRoots: all of it runs before the gates below, and a
+    # stale studio.conf can name a directory another application has taken over. _IsUnsafeRoot as
+    # well as _IsStudioRoot, because the removal loop refuses on either.
     $ownedRoots = @()
     if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
         -not (_IsUnsafeRoot $defaultStudioHome)) {
@@ -893,8 +872,7 @@ Environment:
     if ($defaultDataDir) {
         _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $ownedRoots
     }
-    # $ownedRoots, not $customRoots: _StopByPortFile deletes the port file on its way out, and
-    # writing inside a root this run has refused is the thing the gate exists to stop.
+    # $ownedRoots, not $customRoots: _StopByPortFile deletes the port file on its way out.
     foreach ($r in $ownedRoots) {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $ownedRoots
     }
@@ -970,10 +948,7 @@ Environment:
     # the $knownRoots prefix match below already covers. Older builds put it BESIDE the root at
     # <parent>\stable-diffusion.cpp, outside $knownRoots. We delete those marker-owned dirs below,
     # so add them to the handle scan too, gated on the same owner marker.
-    # Only roots this run would actually delete. _StopProcessesLockingRoots force-stops every
-    # process running from under what it is given, and it runs BEFORE the ownership gates below,
-    # so a stale UNSLOTH_STUDIO_HOME whose parent holds ANOTHER install's marked sd.cpp would
-    # have its diffusion job killed and then be refused, removing nothing.
+    # Gated too: a stale root's PARENT can hold another install's marked sd.cpp.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         if (-not (_IsStudioRoot $r)) { continue }
@@ -986,10 +961,8 @@ Environment:
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
     $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
-    # Reparse expansion is gated on ownership too, and for the same reason: following a link
-    # turns one path into generic subdirectories of wherever it points -- node, bin,
-    # unsloth_studio -- and on a stale root that is a relative symlink, that is somebody's
-    # training run. The plain roots are NOT gated; that scan predates this and is left alone.
+    # The reparse expansion turns one path into generic subdirectories of wherever it points
+    # (node, bin, unsloth_studio), so it is gated for the same reason.
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
 
     # ── Remove custom-root install trees ──
@@ -1029,9 +1002,8 @@ Environment:
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
         -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
-        # A refused CUSTOM root is somebody else's by definition, so skipping it leaves none of
-        # our data behind. This is our own default path, where a damaged install can sit, so a
-        # studio.db here is chat history the summary must not report as never found.
+        # A refused CUSTOM root is somebody else's by definition. This is our own default path,
+        # where a damaged install can sit, so a studio.db here is chat history.
         if (Test-Path -LiteralPath (Join-Path $defaultStudioHome "studio.db") -PathType Leaf) {
             $script:StudioDbKept = $true
         }
@@ -1153,9 +1125,8 @@ Environment:
                     # Only remove PATH entries that live inside an Unsloth root we
                     # actually own (default or env-mode). A literal substring
                     # match on `unsloth_studio` would clobber unrelated user
-                    # virtualenvs that happen to share the name. $ownedRoots, which
-                    # is what "actually own" means: a root this run refused keeps
-                    # its PATH entry, because it also keeps its files.
+                    # virtualenvs that happen to share the name. A root this run
+                    # refused keeps its PATH entry, because it keeps its files.
                     foreach ($e in $entries) {
                         if ([string]::IsNullOrWhiteSpace($e)) { continue }
                         $expanded = [Environment]::ExpandEnvironmentVariables($e).TrimEnd('\','/')
@@ -1214,8 +1185,8 @@ Environment:
         Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
         Write-Host "      localStorage as the API keys below."
         if ($script:StudioDbKept) {
-            # Named, and with no advice to delete it: the gate kept this directory precisely
-            # because it does not look like ours, so "remove it by hand" would undo the point.
+            # Named, and with no advice to delete it: the gate kept it precisely because it
+            # does not look like ours.
             Write-Host "      $defaultStudioHome carries no Unsloth install marker, so it was"
             Write-Host "      left alone. The studio.db inside it is still there; look at that"
             Write-Host "      directory yourself before deciding what to do with it."

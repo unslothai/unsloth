@@ -63,8 +63,7 @@ try {
         (_IsStudioRoot (Make "root-marker" @(".unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "the root marker proves a custom root too" `
         (_IsStudioRoot (Make "custom-root-marker" @(".unsloth-studio-owned")))
-    # install.ps1 guarantees a regular file there, so a link planted in somebody's workspace is
-    # not proof, and the custom-root loop deletes what it accepts.
+    # install.ps1 guarantees a regular file there, and Test-Path follows a link in its place.
     $markLink = Make "linked-root-marker" @("keepme.txt")
     $markTarget = Join-Path $tmp "linked-root-marker-target.txt"
     Set-Content -LiteralPath $markTarget -Value "x"
@@ -75,8 +74,7 @@ try {
     if ($mk) {
         Check "a linked root marker is refused" (-not (_IsStudioRoot $markLink -ManagedDefaultRoot))
         Check "and at a custom root too" (-not (_IsStudioRoot $markLink))
-        # Every marker the installers write is a plain file, so the rule holds for all of them
-        # and for the directory each one sits in.
+        # Every marker the installers write is a plain file; same for its directory.
         foreach ($rel in @("unsloth_studio\.unsloth-studio-owned", ".venv\.unsloth-studio-owned", "share\studio.conf")) {
             $r = Make ("lm-" + ($rel -replace '[^A-Za-z0-9]', '_')) @("keepme.txt")
             New-Item -ItemType Directory -Path (Join-Path $r ([System.IO.Path]::GetDirectoryName($rel))) -Force | Out-Null
@@ -126,8 +124,7 @@ try {
         (_IsStudioRoot (Make "partial-invalid" @(".venv.invalid.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
     Check "partial install: rollback with a numeric suffix" `
         (_IsStudioRoot (Make "partial-suffix" @("unsloth_studio.rollback.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot)
-    # install.ps1 claims the root before it creates the uv cache, so the cache is not a sentinel:
-    # a hand-made cache\uv must not authorize deleting the rest of the root.
+    # install.ps1 claims the root before the uv cache, so the cache is not a sentinel.
     $uvOnly = Make "uvcache-only" @("notes.md")
     New-Item -ItemType Directory -Path (Join-Path $uvOnly "cache\uv") -Force | Out-Null
     Check "a uv cache with no root marker is refused" (-not (_IsStudioRoot $uvOnly -ManagedDefaultRoot))
@@ -168,8 +165,7 @@ try {
         (-not (_IsStudioRoot (Make "loose-exe" @(".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot))
     Check "a site-packages tree with no interpreter is refused" `
         (-not (_IsStudioRoot (Make "loose-pkg" @("unsloth_studio\Lib\site-packages\unsloth\__init__.py")) -ManagedDefaultRoot))
-    # install.ps1 preserves any rollback outside <stamp>.<pid>[.<n>] as user data, so neither may
-    # the uninstaller read one as ownership.
+    # install.ps1 keeps any rollback outside <stamp>.<pid>[.<n>] as user data.
     Check "a rollback-named venv outside the installer's format is refused" `
         (-not (_IsStudioRoot (Make "leftover-freeform" @("unsloth_studio.rollback.user-data\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "an invalid-venv name outside the installer's format is refused" `
@@ -179,8 +175,7 @@ try {
         (-not (_IsStudioRoot (Make "leftover-suffixed-invalid" @(".venv.invalid.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "a rollback name with a non-numeric pid is refused" `
         (-not (_IsStudioRoot (Make "leftover-badpid" @("unsloth_studio.rollback.20260908120000.mine\pyvenv.cfg")) -ManagedDefaultRoot))
-    # install.sh has a "time" fallback for a failed date(1); install.ps1 always formats
-    # yyyyMMddHHmmss, so accepting it here would only widen the gate.
+    # "time" is install.sh's date(1) fallback; install.ps1 always formats yyyyMMddHHmmss.
     Check "install.sh's time fallback is not a Windows name" `
         (-not (_IsStudioRoot (Make "leftover-time" @(".venv.invalid.time.4242\pyvenv.cfg")) -ManagedDefaultRoot))
     # A reparse point with the right name points at a venv the installer did not put there.
@@ -205,17 +200,15 @@ try {
     Check "a missing path is refused" (-not (_IsStudioRoot (Join-Path $tmp "does-not-exist") -ManagedDefaultRoot))
     Check "an empty path is refused" (-not (_IsStudioRoot "" -ManagedDefaultRoot))
 
-    # The other half of the same question: install.ps1 decides when to WRITE the marker this gate
-    # reads. In env mode $StudioHome is a user-chosen workspace, so claiming one the installer is
-    # about to refuse would hand somebody's project to the uninstaller.
+    # The other half of the question: install.ps1 decides when to WRITE the marker this gate
+    # reads, and claiming a workspace it is about to refuse hands it to the uninstaller.
     $installPs1 = [System.IO.Path]::Combine($repoRoot, "install.ps1")
     $ie = $null; $it = $null
     $iast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$it, [ref]$ie)
     $ifns = $iast.FindAll({
             param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
         }, $true)
-    # Write-StudioRootOwnerMarker calls Test-StudioPlainFile, so both come across or every claim
-    # silently takes the catch on a command-not-found and the block below asserts nothing.
+    # Write-StudioRootOwnerMarker calls Test-StudioPlainFile, or every claim below is vacuous.
     foreach ($name in @("Test-StudioPlainFile", "Write-StudioRootOwnerMarker")) {
         $fn = $ifns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
         if (-not $fn) {
@@ -247,7 +240,7 @@ try {
     # A file called bin\unsloth.exe is any file of that name, and this list authorizes a delete.
     ClaimCheck "a workspace holding a plain bin\unsloth.exe" $false "env" @("bin\unsloth.exe", "notes.txt")
     # A LINKED share or unsloth_studio holding a genuine marker: the attribute answers for the
-    # named file only, so without the container check the workspace around it reads as ours.
+    # named file only.
     foreach ($pair in @(@("share", "studio.conf"), @("unsloth_studio", ".unsloth-studio-owned"))) {
         $wroot = Join-Path $tmp ("claim-linked-" + $pair[0])
         $wreal = Join-Path $tmp ("claim-linked-" + $pair[0] + "-real")
@@ -297,8 +290,7 @@ try {
     Write-StudioRootOwnerMarker -Root $twice
     Check "a second claim leaves a valid marker alone" `
         ((Get-Content -LiteralPath (Join-Path $twice ".unsloth-studio-owned") -Raw) -eq "first")
-    # Test-DirectoryHasEntries is defined further down install.ps1 than the first call site, so
-    # the emptiness test has to be inline or the claim silently never happens.
+    # Test-DirectoryHasEntries is defined below the first call site, so the test must be inline.
     Check "the claim does not depend on Test-DirectoryHasEntries" `
         (-not ((($ifns | Where-Object { $_.Name -eq "Write-StudioRootOwnerMarker" } | Select-Object -First 1).Extent.Text) -match "Test-DirectoryHasEntries"))
 
@@ -325,8 +317,7 @@ try {
     Check "install.ps1 has an env-mode replacement guard" ($guard.Length -gt 0)
     Check "and it reads the root marker" `
         ($guard -match [regex]::Escape('Join-Path $StudioHome ".unsloth-studio-owned"'))
-    # ... the same way the claim writes it, or a link gets a foreign workspace past the guard
-    # the claim's own refusal exists to back.
+    # ... the same way the claim writes it, or a link gets a foreign workspace past the guard.
     Check "and through Test-StudioPlainFile, not Test-Path" `
         ($guard -match [regex]::Escape('Test-StudioPlainFile -Path (Join-Path $StudioHome ".unsloth-studio-owned")'))
 } finally {
