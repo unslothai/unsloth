@@ -421,7 +421,14 @@ def test_audio_vlm_matching_eval_split_leaves_the_column_alone(
     assert audio_trainer._audio_vlm_audio_col == "audio"
 
 
-def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
+def _drive_whisper_branch(
+    audio_trainer,
+    tmp_path,
+    monkeypatch,
+    *,
+    eval_rows,
+    eval_steps = 0.25,
+):
     """Drive the real Whisper _train_worker branch; only train() is stubbed, so the asserted
     args and eval dataset are genuine transformers objects."""
     transformers = pytest.importorskip("transformers")
@@ -463,7 +470,7 @@ def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
     audio_trainer._train_worker(
         [{"input_features": [0.0], "labels": [1]}] * 4,
         eval_dataset = eval_rows,
-        eval_steps = 0.25,
+        eval_steps = eval_steps,
         batch_size = 2,
         gradient_accumulation_steps = 1,
         max_steps = 8,
@@ -505,6 +512,74 @@ def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp
     assert trainer is not None
     assert not trainer.eval_dataset
     assert trainer.args.eval_strategy == "no"
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), True, 0, -1])
+def test_whisper_trainer_branch_refuses_an_unusable_cadence(
+    audio_trainer, tmp_path, monkeypatch, bad
+):
+    """inf raised inside Seq2SeqTrainingArguments, NaN and 0 never ran, True ran every step."""
+    trainer = _drive_whisper_branch(
+        audio_trainer,
+        tmp_path,
+        monkeypatch,
+        eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2,
+        eval_steps = bad,
+    )
+
+    assert trainer is not None, f"eval_steps={bad!r} took the Whisper branch down"
+    assert trainer.args.eval_strategy == "no"
+
+
+def test_whisper_trainer_branch_normalises_a_numeric_string_cadence(
+    audio_trainer, tmp_path, monkeypatch
+):
+    """A numeric string is usable, but TrainingArguments compares eval_steps against an int."""
+    trainer = _drive_whisper_branch(
+        audio_trainer,
+        tmp_path,
+        monkeypatch,
+        eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2,
+        eval_steps = "0.1",
+    )
+
+    assert trainer is not None
+    assert trainer.args.eval_strategy == "steps"
+    assert trainer.args.eval_steps == 0.1
+
+
+def test_whisper_carve_out_is_skipped_when_the_cadence_is_unusable(audio_trainer, monkeypatch):
+    """The 6% carve-out keys off eval_split, not the cadence, so it used to feature-extract rows
+    for an evaluation the trainer branch then refuses."""
+    seen = {}
+
+    def fake(
+        dataset,
+        eval_split = None,
+        custom_format_mapping = None,
+        eval_dataset = None,
+    ):
+        seen["eval_split"] = eval_split
+        return ([{"input_features": [0.0], "labels": [1]}], None)
+
+    datasets = pytest.importorskip("datasets")
+    audio_trainer._audio_type = "whisper"
+    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake, raising = True)
+    monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True, raising = False)
+    monkeypatch.setattr(
+        tmod,
+        "load_dataset",
+        lambda *a, **k: datasets.Dataset.from_dict({"audio": ["a"] * 4, "text": ["x"] * 4}),
+        raising = False,
+    )
+
+    audio_trainer.load_and_format_dataset(
+        "some/dataset", eval_split = "validation", eval_steps = float("inf")
+    )
+    assert seen["eval_split"] is None
+
+    audio_trainer.load_and_format_dataset("some/dataset", eval_split = "validation", eval_steps = 0.25)
+    assert seen["eval_split"] == "validation"
 
 
 def test_whisper_eval_split_whose_rows_are_all_skipped_warns(audio_trainer):

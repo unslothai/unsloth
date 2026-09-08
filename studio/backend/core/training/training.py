@@ -36,6 +36,7 @@ from utils.native_path_leases import (
     run_without_native_path_secret,
 )
 from utils.paths import is_local_path, outputs_root
+from utils.training_runs import drop_non_finite
 from utils.utils import canonical_model_repo_id
 
 logger = get_logger(__name__)
@@ -304,7 +305,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "prefix": s3_config.get("prefix"),
             "use_iam_role": bool(s3_config.get("use_iam_role")),
         }
-    return db_config
+    return drop_non_finite(db_config)
 
 
 _MODEL_SNAPSHOT_METADATA = ("config.json", "adapter_config.json")

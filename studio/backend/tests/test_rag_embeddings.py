@@ -22,8 +22,15 @@ from core.rag import config, embeddings
 # RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores it.
 # prctl is Linux-only, so the call is guarded and does nothing elsewhere.
 _CRASHING_UNLESS_CPU_SCRIPT = (
-    "import ctypes, sys\n"
+    "import ctypes, os, sys\n"
     "if sys.argv[1] != 'cpu':\n"
+    # ctypes installs a structured exception handler on Windows, so the null read below
+    # comes back as an ordinary OSError and the child exits like any reporting child,
+    # which the probe reads as a working device. abort() is the real shape there: it is
+    # what a ROCm library calls when it dies, and it leaves the CRT exit status 3 the
+    # probe already recognises.
+    "    if sys.platform == 'win32':\n"
+    "        os.abort()\n"
     "    try:\n"
     "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
     "    except Exception:\n"
