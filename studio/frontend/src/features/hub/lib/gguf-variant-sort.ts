@@ -95,10 +95,13 @@ export function sortLocalGgufVariants(
     defaultVariant?: string | null;
   },
 ): GgufVariantDetail[] {
+  const defaultVariant = options.defaultVariant?.trim();
   return [...variants].sort((a, b) => {
-    const aDefault = ggufVariantsMatch(a.quant, options.defaultVariant);
-    const bDefault = ggufVariantsMatch(b.quant, options.defaultVariant);
-    if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    if (defaultVariant) {
+      const aDefault = ggufVariantsMatch(a.quant, defaultVariant);
+      const bDefault = ggufVariantsMatch(b.quant, defaultVariant);
+      if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    }
     return compareGgufVariantFitAndSize(a, b, options);
   });
 }
@@ -119,8 +122,7 @@ export function resolveLocalGgufVariant<T extends { quant: string }>(
     options.activeVariant,
     options.defaultVariant,
   ]) {
-    // An absent candidate and an unparsed quant both normalize to "", so matching on one
-    // would load the quant-less file whenever nothing is selected, resident, or default.
+    // Blank candidates must not match a blank variant key.
     if (!candidate?.trim()) {
       continue;
     }

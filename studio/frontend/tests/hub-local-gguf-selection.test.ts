@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { resolveLocalGgufVariant } = await import(
+const { resolveLocalGgufVariant, sortLocalGgufVariants } = await import(
   "../src/features/hub/lib/gguf-variant-sort.ts"
 );
 
@@ -48,13 +48,11 @@ test("selection falls back through default, first variant, and empty state", () 
   assert.equal(resolveLocalGgufVariant(null, {}), null);
 });
 
-test("an absent selection never resolves to a quant-less artifact", () => {
-  // An absent candidate and an unparsed quant both normalize to "". The fallback is the
-  // first variant, not whichever one happens to lack a quant.
-  const withUnparsed = [{ quant: "Q4_K_M" }, { quant: "" }];
-  assert.equal(resolveLocalGgufVariant(withUnparsed, {})?.quant, "Q4_K_M");
+test("blank preferences preserve the first-variant fallback", () => {
+  const withBlankQuant = [{ quant: "Q4_K_M" }, { quant: "" }];
+  assert.equal(resolveLocalGgufVariant(withBlankQuant, {})?.quant, "Q4_K_M");
   assert.equal(
-    resolveLocalGgufVariant(withUnparsed, {
+    resolveLocalGgufVariant(withBlankQuant, {
       selectedVariant: null,
       activeVariant: null,
       defaultVariant: null,
@@ -62,17 +60,86 @@ test("an absent selection never resolves to a quant-less artifact", () => {
     "Q4_K_M",
   );
   assert.equal(
-    resolveLocalGgufVariant(withUnparsed, {
+    resolveLocalGgufVariant(withBlankQuant, {
       selectedVariant: "   ",
       activeVariant: "",
     })?.quant,
     "Q4_K_M",
   );
-  // A real selection still wins.
   assert.equal(
     resolveLocalGgufVariant([{ quant: "" }, { quant: "Q8_0" }], {
       selectedVariant: "Q8_0",
     })?.quant,
     "Q8_0",
   );
+});
+
+const localVariants = [
+  { quant: "", filename: "blank-key.gguf", size_bytes: 100 * 1024 ** 3 },
+  { quant: "Q4_K_M", filename: "model-Q4_K_M.gguf", size_bytes: 4 * 1024 ** 3 },
+  { quant: "Q8_0", filename: "model-Q8_0.gguf", size_bytes: 8 * 1024 ** 3 },
+];
+
+test("sorting and selection ignore blank defaults", () => {
+  for (const defaultVariant of [undefined, null, "", " \t\n", "missing"]) {
+    const sorted = sortLocalGgufVariants(localVariants, {
+      defaultVariant,
+      gpuGb: 24,
+    });
+    assert.deepEqual(sorted, [
+      localVariants[2],
+      localVariants[1],
+      localVariants[0],
+    ]);
+    assert.equal(
+      resolveLocalGgufVariant(sorted, { defaultVariant }),
+      localVariants[2],
+    );
+  }
+  assert.deepEqual(
+    localVariants.map((variant) => variant.quant),
+    ["", "Q4_K_M", "Q8_0"],
+  );
+});
+
+test("blank selections preserve resident and default preferences after sorting", () => {
+  const defaultVariant = " q4_k_m ";
+  const sorted = sortLocalGgufVariants(localVariants, {
+    defaultVariant,
+    gpuGb: 24,
+  });
+  assert.equal(sorted[0], localVariants[1]);
+  for (const selectedVariant of [undefined, null, "", " \t\n", "missing"]) {
+    assert.equal(
+      resolveLocalGgufVariant(sorted, {
+        selectedVariant,
+        activeVariant: " q8_0 ",
+        defaultVariant,
+      }),
+      localVariants[2],
+    );
+    assert.equal(
+      resolveLocalGgufVariant(sorted, {
+        selectedVariant,
+        activeVariant: " ",
+        defaultVariant,
+      }),
+      localVariants[1],
+    );
+  }
+});
+
+test("a blank-quant variant remains eligible for the ranked fallback", () => {
+  const blank = {
+    quant: "",
+    filename: "blank-key.gguf",
+    size_bytes: 4 * 1024 ** 3,
+  };
+  const oversized = {
+    quant: "Q8_0",
+    filename: "model-Q8_0.gguf",
+    size_bytes: 100 * 1024 ** 3,
+  };
+  const sorted = sortLocalGgufVariants([oversized, blank], { gpuGb: 24 });
+  assert.equal(resolveLocalGgufVariant(sorted, {}), blank);
 });
