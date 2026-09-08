@@ -2332,7 +2332,6 @@ def test_a_torch_install_is_unaffected_by_the_backend_request():
     assert "/dev/kfd" in out
 
 
-
 def test_a_no_torch_rocm_bundle_is_still_told_its_kfd_node_is_missing():
     """The mirror of the closed-node scoping, on the branch that reports an ABSENT node.
     It was gated on SKIP_TORCH=false, so a --no-torch run whose GGUF bundle is ROCm -- which
@@ -2410,9 +2409,7 @@ def test_a_uuid_selector_is_still_only_unresolved(monkeypatch, linux):
     assert "cannot resolve" in reason
 
 
-def test_an_untagged_cuda_wheel_that_will_not_import_is_still_another_vendors(
-    monkeypatch, linux
-):
+def test_an_untagged_cuda_wheel_that_will_not_import_is_still_another_vendors(monkeypatch, linux):
     """_torch_reports_a_hip_runtime answers an import failure from torch/version.py on disk;
     its mirror returned False there instead, so the untagged-CUDA clearing was inert on the
     one path it exists for. A stale recorded ROCm flavor then spoke for a CUDA wheel, and the
