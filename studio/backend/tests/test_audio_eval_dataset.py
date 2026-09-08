@@ -365,6 +365,6 @@ def test_the_generic_sft_path_uses_the_same_cadence_gate(
         assert captured.get("eval_strategy") == "steps", f"eval_steps={eval_steps} was not enabled"
     else:
         assert captured, "the config was never built, so this asserts nothing"
-        assert "eval_strategy" not in captured, (
-            f"eval_steps={eval_steps} reached TrainingArguments as a cadence"
-        )
+        assert (
+            "eval_strategy" not in captured
+        ), f"eval_steps={eval_steps} reached TrainingArguments as a cadence"
