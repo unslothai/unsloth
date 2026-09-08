@@ -1329,10 +1329,17 @@ class ControllerPreemptionPolicy:
                 return False
             time.sleep(0.1)
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event),
-                self._loop,
-            )
+            try:
+                coro = lease.resume_async(
+                    want,
+                    timeout_s = timeout,
+                    cancel_event = cancel_event,
+                    progress = self._controller.progress_signature,
+                )
+            except TypeError:
+                # An older lease without the stall-aware wait.
+                coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             # A backstop for a loop that never runs the coroutine at all; resume_async is
             # already bounded by timeout_s.
             got = bool(future.result(timeout = timeout + 5.0))

@@ -48,7 +48,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
 } from "./view-models";
 export {
   epochMillisecondsToSeconds,

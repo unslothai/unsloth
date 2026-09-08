@@ -106,12 +106,18 @@ class _LoadRecorder:
         current_subject = None,
         *,
         current_request_counted = False,
+        cache_environment = None,
+        anonymous_hf_access = False,
+        speech_codec_path = None,
     ):
         # Mirror the production load boundary before recording any replacement.
         await inference_route._wait_for_model_switch_idle(
             current_request_counted = current_request_counted
         )
         self.calls.append(request)
+        self.cache_environment = cache_environment
+        self.anonymous_hf_access = anonymous_hf_access
+        self.speech_codec_path = speech_codec_path
         if self.fail:
             from fastapi import HTTPException
             raise HTTPException(status_code = 503, detail = "load failed")
@@ -122,6 +128,10 @@ class _LoadRecorder:
         # Mirror _load_model_impl: a load advertises its own id until the
         # auto-switch caller overwrites it with the repo id.
         self.backend._openai_advertised_id = None
+        self.backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
+        self.backend._openai_gguf_companion_state = resolver.local_gguf_companion_state(
+            tuple(request._gguf_companion_roots)
+        )
         from core.inference import llama_keepwarm as kw
 
         kw.note_model_loaded(self.backend)
@@ -140,6 +150,7 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
 
 
 async def _noop_reject(*_args, **_kwargs):
@@ -369,7 +380,7 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
     # The third call is the refusal wording asking what the RESIDENT model is; like the second it
     # passes allow_scan = False, which is why the rescan count below is still one.
     assert calls == [
-        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"include_companion_scope": True}),
         ("unsloth/B-GGUF", {"allow_scan": False}),
         ("unsloth/A-GGUF:Q4_K_M", {"allow_scan": False}),
     ]
@@ -408,7 +419,7 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
 
     _run_hook("unsloth/B-GGUF")
 
-    assert calls == [("unsloth/B-GGUF", {})]
+    assert calls == [("unsloth/B-GGUF", {"include_companion_scope": True})]
     assert scans == [1]
     assert len(rec.calls) == 1
 
@@ -597,8 +608,176 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     repo = tmp_path / "models--org--repo"
     (repo / "snapshots" / "abc" / "BF16").mkdir(parents = True)
     (repo / "snapshots" / "abc" / "BF16" / "model-BF16.gguf").write_text("x")
-    e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo)))
+    e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo), source = "hf_cache"))
     assert e2 is not None and e2.variants
+
+
+def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
+    # No quant token in the name, so the picker and every saved setting key this variant by
+    # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).
+    from types import SimpleNamespace
+
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    repo = tmp_path / "models--org--KAT-GGUF"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "KAT-Coder-V2.5-Dev-APEX-dynamic-v2.gguf").write_text("x")
+
+    entry = resolver._local_gguf_entry("org/KAT-GGUF", SimpleNamespace(path = str(repo)))
+    assert entry is not None
+    assert entry.variants == ("KAT-Coder-V2.5-Dev-APEX-dynamic-v2",)
+    assert "org/KAT-GGUF:KAT-Coder-V2.5-Dev-APEX-dynamic-v2" in override_lookup_candidates(
+        entry.load_path, entry.loader_id, entry.variants[0]
+    )
+
+
+def test_local_gguf_entry_skips_a_quant_whose_blob_is_gone(tmp_path):
+    # An evicted blob leaves a dangling link, and advertising it offers a quant no load can
+    # open. The twins repo is the other direction: one quant, two checkpoints, dead one first.
+    from types import SimpleNamespace
+
+    evicted = tmp_path / "models--org--evicted" / "snapshots" / "abc"
+    evicted.mkdir(parents = True)
+    (evicted / "m-Q8_0.gguf").write_text("x")
+    twins = tmp_path / "models--org--twins" / "snapshots" / "abc"
+    twins.mkdir(parents = True)
+    (twins / "z-BF16.gguf").write_text("x")
+    try:
+        (evicted / "m-Q4_K_M.gguf").symlink_to(tmp_path / "evicted-blob")
+        (twins / "a-BF16.gguf").symlink_to(tmp_path / "evicted-blob")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    entry = resolver._local_gguf_entry(
+        "org/evicted", SimpleNamespace(path = str(evicted.parent.parent))
+    )
+    assert entry is not None and entry.variants == ("Q8_0",)
+    assert resolver._resolve_from_index("org/evicted", {"org/evicted": entry})[1] == "Q8_0"
+
+    twin_entry = resolver._local_gguf_entry(
+        "org/twins", SimpleNamespace(path = str(twins.parent.parent))
+    )
+    assert twin_entry is not None and twin_entry.variants == ("BF16",)
+
+
+def _one_gguf_repo(tmp_path, name, filenames):
+    """An HF-cache repo dir holding *filenames*, and the entry the index builds for it."""
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / f"models--org--{name}" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    for index, filename in enumerate(filenames):
+        (snapshot / filename).write_bytes(b"\0" * (4096 + index * 100))
+    return resolver._local_gguf_entry(
+        f"org/{name}", SimpleNamespace(path = str(snapshot.parent.parent))
+    )
+
+
+def test_a_quant_id_v1_models_used_to_publish_still_resolves(tmp_path):
+    # /v1/models published the loader's spelling (first token, BF16) where the shared lister
+    # takes the K-quant, and a quant-looking label is refused rather than read as a repo tag,
+    # so the swap alone would 404 a client pinned to "<repo>:BF16".
+    entry = _one_gguf_repo(tmp_path, "float-then-k", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+    assert entry.aliases == (("bf16", "Q4_K_M"),)
+
+    index = {"org/float-then-k": entry}
+    for requested in ("org/float-then-k:BF16", "org/float-then-k:bf16"):
+        resolved = resolver._resolve_from_index(requested, index)
+        assert resolved is not None, requested
+        # the CURRENT label, so the override lookup reads the key the UI wrote
+        assert resolved[1] == "Q4_K_M"
+    # a quant genuinely not on disk still misses
+    assert resolver._resolve_from_index("org/float-then-k:Q8_0", index) is None
+
+
+def test_a_legacy_quant_id_never_shadows_a_quant_that_is_really_there(tmp_path):
+    # b-BF16.gguf IS the BF16 file; a-BF16-Q4_K_M.gguf merely used to be called that, so the
+    # real one keeps the name and no alias is offered.
+    entry = _one_gguf_repo(tmp_path, "collide", ["a-BF16-Q4_K_M.gguf", "b-BF16.gguf"])
+    assert entry is not None
+    assert set(entry.variants) == {"Q4_K_M", "BF16"}
+    assert entry.aliases == ()
+
+    index = {"org/collide": entry}
+    assert resolver._resolve_from_index("org/collide:BF16", index)[1] == "BF16"
+    assert resolver._resolve_from_index("org/collide:Q4_K_M", index)[1] == "Q4_K_M"
+
+
+def test_an_ambiguous_legacy_quant_id_resolves_to_nothing(tmp_path):
+    # two files, one old label: it names neither, as the override key folding already does.
+    entry = _one_gguf_repo(tmp_path, "ambiguous", ["x-BF16-Q4_K_M.gguf", "y-BF16-Q6_K.gguf"])
+    assert entry is not None
+    assert set(entry.variants) == {"Q4_K_M", "Q6_K"}
+    assert entry.aliases == ()
+    assert resolver._resolve_from_index("org/ambiguous:BF16", {"org/ambiguous": entry}) is None
+
+
+def test_a_quantless_pin_keeps_its_own_weights_instead_of_quietly_getting_the_quant(tmp_path):
+    # This repo published "8B" for the unquantized file and ":8b" loaded it. "8B" does not look
+    # like a quant, so the swap does not 404 that pin: it falls through to the Ollama-tag branch
+    # and quietly serves the Q4_K_M instead. The quiet failure is why quantless labels alias too.
+    entry = _one_gguf_repo(
+        tmp_path, "quantless-pin", ["Meta-Llama-3-8B.gguf", "Meta-Llama-3-8B-Q4_K_M.gguf"]
+    )
+    assert entry is not None
+    assert entry.aliases == (("8b", "Meta-Llama-3-8B"),)
+    resolved = resolver._resolve_from_index("org/quantless-pin:8b", {"org/quantless-pin": entry})
+    assert resolved is not None and resolved[1] == "Meta-Llama-3-8B"
+    # the bare id never reaches an alias, so preferred_quant still decides it
+    bare = resolver._resolve_from_index("org/quantless-pin", {"org/quantless-pin": entry})
+    assert bare[1] == entry.variants[0] == "Q4_K_M"
+
+
+def test_a_bundle_repos_mirror_is_not_emptied_by_the_h3_filter(tmp_path):
+    # A cache dir name only ever extends a repo id by more of that id, so these contain the
+    # bundle marker while being ordinary chat repos. Matched as a substring, the denoiser filter
+    # left them with no quants, which withholds the entry and 404s a downloaded model.
+    from types import SimpleNamespace
+    for name in ("MiniMax-H3-GGUF-mirror", "minimax-h3-gguf-i1", "MiniMax-H3-GGUF-BF16"):
+        snapshot = tmp_path / f"models--unsloth--{name}" / "snapshots" / "abc"
+        snapshot.mkdir(parents = True)
+        (snapshot / "m-Q4_K_M.gguf").write_bytes(b"\0" * 4096)
+        (snapshot / "m-Q8_0.gguf").write_bytes(b"\0" * 8192)
+        entry = resolver._local_gguf_entry(
+            f"unsloth/{name}", SimpleNamespace(path = str(snapshot.parent.parent))
+        )
+        assert entry is not None, f"{name} disappeared from the index"
+        assert set(entry.variants) == {"Q4_K_M", "Q8_0"}, name
+
+
+def test_a_broken_alias_helper_costs_the_aliases_and_not_the_model(tmp_path, monkeypatch):
+    # _local_gguf_entry answers None on any raise, so an escaping shim would drop the repo.
+    monkeypatch.setattr(
+        resolver,
+        "_legacy_variant_aliases",
+        lambda variants: (_ for _ in ()).throw(RuntimeError("renamed private helper")),
+    )
+    entry = _one_gguf_repo(tmp_path, "shim-broke", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is None, "a raising helper must not be what deletes the entry"
+
+    # And it swallows its own failure: it reaches into two private names in another module.
+    monkeypatch.undo()
+    from utils.models import model_config
+
+    def renamed_away(*_args, **_kwargs):
+        raise AttributeError("_qualified_variant_name")
+
+    monkeypatch.setattr(model_config, "_qualified_variant_name", renamed_away)
+    entry = _one_gguf_repo(tmp_path, "shim-renamed", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is not None and entry.variants == ("Q4_K_M",)
+    assert entry.aliases == ()
+
+
+def test_a_repo_the_two_listers_agree_on_carries_no_aliases(tmp_path):
+    # The overwhelmingly common case: every alias is a cost, so a repo that needs none
+    # carries none, and an id naming no local quant keeps missing.
+    entry = _one_gguf_repo(tmp_path, "ordinary", ["m-Q4_K_M.gguf", "m-Q8_0.gguf"])
+    assert entry is not None
+    assert entry.aliases == ()
+    assert resolver._resolve_from_index("org/ordinary:BF16", {"org/ordinary": entry}) is None
 
 
 def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
@@ -1095,6 +1274,7 @@ def _mock_override_store(monkeypatch):
         entry_value,
         *,
         fill_absent_fields = False,
+        coupled_fields = (),
     ):
         current = dict(store.get(key) or {})
         if fill_absent_fields:
@@ -1103,7 +1283,11 @@ def _mock_override_store(monkeypatch):
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
-                current[entry_key] = {**entry_value, **stored}
+                incoming = entry_value
+                for group in coupled_fields:
+                    if any(field in stored for field in group):
+                        incoming = {k: v for k, v in incoming.items() if k not in group}
+                current[entry_key] = {**incoming, **stored}
             else:
                 current[entry_key] = entry_value
         elif entry_value:
@@ -1847,12 +2031,796 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
 
-    entry = resolver._local_gguf_entry("org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo)))
+    entry = resolver._local_gguf_entry(
+        "org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache")
+    )
     assert entry is not None
     assert entry.loader_id == "org/Repo"  # advertised id unchanged
     assert "snapshots" in entry.load_path  # loads from the concrete snapshot dir
     assert entry.load_path != "org/Repo"  # never the bare repo id
     assert entry.variants  # quant detected on disk
+
+
+def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
+    """A companion fetched at a newer revision must not hide older complete weights."""
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--unsloth--Qwen3.8-Flash-Next-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    quant_dir = old / "UD-Q4_K_XL"
+    quant_dir.mkdir(parents = True)
+    for shard in range(1, 5):
+        (quant_dir / f"Qwen3.8-Flash-Next-UD-Q4_K_XL-{shard:05d}-of-00004.gguf").write_bytes(
+            b"GGUF stub"
+        )
+
+    newer = repo / "snapshots" / "companion-revision" / "MTP"
+    newer.mkdir(parents = True)
+    (newer / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer.parent, (2_000, 2_000))
+
+    # The generic cache resolver correctly picks the latest revision; GGUF
+    # discovery needs the stronger rule because this revision has no weights.
+    assert Path(resolver._resolve_load_dir(repo)) == newer.parent.resolve()
+    info = SimpleNamespace(id = "unsloth/Qwen3.8-Flash-Next-GGUF", path = str(repo), source = "hf_cache")
+    entry = resolver._local_gguf_entry(
+        "unsloth/Qwen3.8-Flash-Next-GGUF",
+        info,
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    assert entry.variants == ("UD-Q4_K_XL",)
+    assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
+
+
+@pytest.mark.parametrize("repo_level", [True, False])
+@pytest.mark.parametrize(
+    "filename, legacy, canonical",
+    [
+        ("DeepSeek-R1-BF16-Q4_K_M.gguf", "BF16", "Q4_K_M"),
+        ("Meta-Llama-3-8B.gguf", "8B", "Meta-Llama-3-8B"),
+    ],
+)
+def test_snapshot_selection_preserves_legacy_alias_companion_scope(
+    tmp_path, repo_level, filename, legacy, canonical
+):
+    import os
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--alias-scope"
+    old = repo / "snapshots" / "weights"
+    newer = repo / "snapshots" / "companions"
+    old.mkdir(parents = True)
+    newer.mkdir()
+    (old / filename).write_bytes(b"GGUF weights")
+    (newer / "mmproj-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    info = SimpleNamespace(
+        path = str(repo if repo_level else old),
+        source = "hf_cache" if repo_level else "local",
+    )
+    entry = resolver._local_gguf_entry("org/alias-scope", info, exact_snapshot = not repo_level)
+    assert entry is not None
+    assert entry.load_path == str(old)
+    assert entry.variants == (canonical,)
+    index = {"org/alias-scope": entry}
+    for label in (legacy, canonical):
+        assert resolver._resolve_from_index(
+            f"org/alias-scope:{label}", index, include_companion_scope = True
+        ) == (str(old), canonical, "org/alias-scope", repo_level)
+    assert resolver.local_gguf_companion_roots(
+        entry.load_path, repo_level = entry.repo_level_companions
+    ) == ((str(old), str(newer)) if repo_level else ())
+    assert (
+        resolver._local_gguf_entry(
+            "org/alias-scope", SimpleNamespace(path = str(newer)), exact_snapshot = True
+        )
+        is None
+    )
+
+
+def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeypatch):
+    """Selected weights stay pinned while request and load probes see companions."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from utils.models import model_config as model_config_module
+    from utils.models.drafters import dflash as dflash_module
+
+    ModelConfig = model_config_module.ModelConfig
+    detect_mmproj_file = model_config_module.detect_mmproj_file
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    mmproj = newer / "mmproj-vision-model-F16.gguf"
+    mmproj.write_bytes(b"GGUF companion")
+    mtp = newer / "mtp-vision-model-Q4_0.gguf"
+    mtp.write_bytes(b"GGUF drafter")
+    dspark = newer / "dspark-vision-model-Q8_0.gguf"
+    dspark.write_bytes(b"GGUF drafter")
+    dflash = newer / "dflash-kquant.gguf"
+    dflash.write_bytes(b"GGUF drafter")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    entry = resolver._local_gguf_entry(
+        "org/Vision-GGUF",
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo), source = "hf_cache"),
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    assert resolver.local_gguf_companion_roots(entry.load_path) == ()
+    assert resolver._resolve_from_index(
+        "Vision-GGUF",
+        {"vision-gguf": entry},
+        include_companion_scope = True,
+    ) == (entry.load_path, entry.variants[0], "org/Vision-GGUF", True)
+    roots = resolver.local_gguf_companion_roots(entry.load_path, repo_level = True)
+    assert tuple(map(Path, roots)) == (old, newer)
+    assert detect_mmproj_file(str(old / "vision-model-Q4_K_M.gguf"), search_root = str(newer)) is None
+    monkeypatch.setattr(
+        dflash_module,
+        "read_gguf_architecture",
+        lambda path: "dflash" if Path(path).name == dflash.name else None,
+    )
+    assert inference_route._target_accepts_request_input(
+        entry.load_path,
+        True,
+        True,
+        False,
+        entry.variants[0],
+        True,
+        False,
+        roots,
+    )
+    config = ModelConfig.from_identifier(
+        entry.load_path,
+        gguf_variant = entry.variants[0],
+        gguf_companion_roots = roots,
+    )
+    assert config is not None
+    assert config.gguf_mmproj_file == str(mmproj.resolve())
+    assert config.gguf_mtp_file == str(mtp.resolve())
+    assert config.gguf_dspark_file == str(dspark.resolve())
+    assert config.gguf_dflash_file == str(dflash.resolve())
+
+
+def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from utils.models import model_config as model_config_module
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    unreadable = repo / "snapshots" / "unreadable-revision"
+    unreadable.mkdir(parents = True)
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    os.utime(unreadable, (3_000, 3_000))
+
+    entry = resolver._local_gguf_entry(
+        "org/Vision-GGUF",
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo), source = "hf_cache"),
+    )
+    assert entry is not None
+    roots = resolver.local_gguf_companion_roots(entry.load_path, repo_level = True)
+    assert tuple(map(Path, roots)) == (old, unreadable, newer)
+
+    original_iter = model_config_module._iter_gguf_files
+
+    def _raise_for_unreadable(directory, recursive = False):
+        if Path(directory).resolve() == unreadable.resolve():
+            raise PermissionError("simulated unreadable snapshot")
+        return original_iter(directory, recursive)
+
+    monkeypatch.setattr(model_config_module, "_iter_gguf_files", _raise_for_unreadable)
+    assert model_config_module.is_vision_model(
+        entry.load_path,
+        gguf_variant = entry.variants[0],
+        gguf_companion_roots = roots,
+    )
+
+
+def test_image_preflight_uses_the_projector_selected_for_load(tmp_path, monkeypatch):
+    from utils.models import model_config as config_module
+
+    selected = tmp_path / "selected"
+    sibling = tmp_path / "sibling"
+    selected.mkdir()
+    sibling.mkdir()
+    (selected / "model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    audio = selected / "mmproj-model-F16.gguf"
+    image = sibling / "mmproj-model-F16.gguf"
+    audio.write_bytes(b"GGUF audio")
+    image.write_bytes(b"GGUF image")
+    roots = (str(selected), str(sibling))
+    monkeypatch.setattr(
+        config_module, "mmproj_accepts_image", lambda path: str(path) == str(image.resolve())
+    )
+    config = config_module.ModelConfig.from_identifier(
+        str(selected), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
+    )
+    assert config.gguf_mmproj_file == str(audio.resolve())
+    assert not config_module.is_vision_model(
+        str(selected),
+        gguf_variant = "Q4_K_M",
+        gguf_companion_roots = roots,
+        require_image = True,
+    )
+
+
+def test_companion_roots_skip_only_the_unreadable_sibling(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / "weights-revision"
+    readable = repo / "snapshots" / "companion-revision"
+    unreadable = repo / "snapshots" / "unreadable-revision"
+    for path in (selected, readable, unreadable):
+        path.mkdir(parents = True)
+
+    original_is_dir = Path.is_dir
+
+    def _is_dir(path):
+        if path == unreadable:
+            raise PermissionError("simulated unreadable snapshot")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", _is_dir)
+
+    assert tuple(
+        map(Path, resolver.local_gguf_companion_roots(str(selected), repo_level = True))
+    ) == (selected, readable)
+
+
+def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch):
+    from pathlib import Path
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    readable = repo / "snapshots" / "weights-revision"
+    unreadable = repo / "snapshots" / "unreadable-revision"
+    readable.mkdir(parents = True)
+    unreadable.mkdir()
+    (readable / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+
+    original_is_dir = Path.is_dir
+
+    def _is_dir(path):
+        if path == unreadable:
+            raise PermissionError("simulated unreadable snapshot")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", _is_dir)
+
+    selected = select_gguf_cache_snapshot_for_repo_dir(repo)
+    assert selected is not None
+    assert selected[3] == readable
+
+
+def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
+    """A selected snapshot still walks intermediate parents before sibling revisions."""
+    from utils.models.model_config import detect_mmproj_file
+
+    snapshot = tmp_path / "models--org--Vision-GGUF" / "snapshots" / "weights-revision"
+    checkpoint = snapshot / "checkpoint"
+    quant = checkpoint / "Q4_K_M"
+    quant.mkdir(parents = True)
+    weights = quant / "vision-model-Q4_K_M.gguf"
+    weights.write_bytes(b"GGUF weights")
+    mmproj = checkpoint / "mmproj-vision-model-F16.gguf"
+    mmproj.write_bytes(b"GGUF companion")
+
+    assert detect_mmproj_file(
+        str(weights),
+        search_root = str(snapshot),
+        allow_disjoint_search_root = True,
+    ) == str(mmproj.resolve())
+
+
+def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/Vision-GGUF",
+            object(),
+            "tester",
+            require_vision = True,
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+    assert "_gguf_companion_roots" not in recorder.calls[0].model_dump()
+    assert (
+        LoadRequest(
+            model_path = str(old),
+            _gguf_companion_roots = (str(tmp_path / "untrusted"),),
+        )._gguf_companion_roots
+        == ()
+    )
+
+
+def test_auto_switch_display_alias_keeps_repo_level_companion_scope(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF", True),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "Vision-GGUF",
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+
+
+@pytest.mark.parametrize("advertised", [False, True])
+def test_repo_level_request_reloads_resident_snapshot_without_companion_roots(
+    tmp_path, monkeypatch, advertised
+):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend(str(old), "Q4_K_M")
+    if advertised:
+        backend._openai_advertised_id = "org/Vision-GGUF"
+        backend._openai_gguf_companion_roots = (str(old),)
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF", True),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/Vision-GGUF",
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+    assert tuple(map(Path, backend._openai_gguf_companion_roots)) == (old, newer)
+
+
+@pytest.mark.parametrize("precreated", [False, True])
+def test_resident_repo_reloads_when_companion_finishes_in_existing_snapshot(
+    tmp_path, monkeypatch, precreated
+):
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / "weights"
+    companion = repo / "snapshots" / "companion"
+    selected.mkdir(parents = True)
+    companion.mkdir()
+    if precreated:
+        (companion / "mmproj-vision-model-F16.gguf").write_bytes(b"")
+    (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(selected), "Q4_K_M", "org/Vision-GGUF", True),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    async def run():
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 1
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 1
+        (companion / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 2
+
+    asyncio.run(run())
+
+
+def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            old.name,
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]._gguf_companion_roots == ()
+    assert resolver.local_gguf_companion_roots(str(old), repo_level = False) == ()
+    assert tuple(map(Path, resolver.local_gguf_companion_roots(str(old), repo_level = True))) == (
+        old,
+        newer,
+    )
+
+
+def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core.inference import llama_keepwarm as kw
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    backend = _FakeBackend(None)
+    recorder = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = recorder)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        (str(old), "Q4_K_M", "org/Vision-GGUF", (str(old), str(newer))),
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL,
+            object(),
+            "tester",
+            require_vision = True,
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+
+
+def test_loaded_identity_stashes_only_roots_used_by_the_load():
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("cache/snapshots/weights-revision", "Q4_K_M")
+    backend._openai_advertised_id = "org/Vision-GGUF"
+    backend._openai_gguf_companion_roots = ("weights-revision", "companion-revision")
+
+    assert kw._loaded_identity(backend) == (
+        "cache/snapshots/weights-revision",
+        "Q4_K_M",
+        "org/Vision-GGUF",
+        ("weights-revision", "companion-revision"),
+    )
+    backend._openai_gguf_companion_roots = ()
+    assert kw._loaded_identity(backend) == (
+        "cache/snapshots/weights-revision",
+        "Q4_K_M",
+        "org/Vision-GGUF",
+    )
+
+
+def test_idle_stash_reload_of_manual_snapshot_does_not_add_sibling_roots(tmp_path, monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend(None)
+    recorder = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = recorder)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL,
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]._gguf_companion_roots == ()
+
+
+def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch):
+    import time
+
+    old = tmp_path / "models--org--Vision-GGUF" / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_companion_scan(_load_path, *, repo_level = False):
+        assert repo_level is True
+        entered.set()
+        release.wait(1.0)
+        return ()
+
+    monkeypatch.setattr(resolver, "local_gguf_companion_roots", _slow_companion_scan)
+
+    async def _drive():
+        started = time.monotonic()
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision-GGUF",
+                object(),
+                "tester",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2.0)
+        loop_was_responsive = time.monotonic() - started < 0.5
+        release.set()
+        await task
+        assert loop_was_responsive
+
+    asyncio.run(_drive())
+    assert len(recorder.calls) == 1
+
+
+def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
+    """Inactive cache rows point at a snapshot but still select complete weights."""
+    import os
+    from pathlib import Path
+    import routes.models as models_route
+
+    repo = tmp_path / "models--org--Repo"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    newer = repo / "snapshots" / "companion-revision" / "MTP"
+    newer.mkdir(parents = True)
+    (newer / "mtp-model-Q8_0.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer.parent, (2_000, 2_000))
+
+    [info] = models_route._scan_hf_cache(
+        tmp_path,
+        active_cache = False,
+        classify_format = False,
+    )
+    assert Path(info.path) == newer.parent.resolve()
+
+    entry = resolver._local_gguf_entry("org/Repo", info)
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
+    """A cache row must load from its exact repo directory, not a case-folded peer."""
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    scanned_repo = tmp_path / "models--Org--Repo"
+    scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
+    scanned_snapshot.mkdir(parents = True)
+    (scanned_snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    other_repo = tmp_path / "models--org--repo"
+    other_snapshot = other_repo / "snapshots" / "other-revision"
+    other_snapshot.mkdir(parents = True)
+    (other_snapshot / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
+    os.utime(scanned_snapshot, (1_000, 1_000))
+    os.utime(other_snapshot, (2_000, 2_000))
+
+    entry = resolver._local_gguf_entry(
+        "Org/Repo",
+        SimpleNamespace(id = "Org/Repo", path = str(scanned_repo), source = "hf_cache"),
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == scanned_snapshot
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
+    """Only complete quants from the selected snapshot may be advertised as loadable."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+    (snapshot / "model-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
+    )
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
+    """A repo with no complete quant keeps the pre-existing fallback listing."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
+    )
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_selected_snapshot_preserves_local_variant_labels(tmp_path):
+    """Selected snapshots use picker identities and still accept legacy API pins."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-small.gguf").write_bytes(b"small")
+    (snapshot / "model-large.gguf").write_bytes(b"larger")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
+    )
+
+    assert entry is not None
+    assert set(entry.variants) == {"model-small", "model-large"}
+    for legacy in ("small", "large"):
+        assert resolver._resolve_from_index(
+            f"org/Repo:{legacy}", {"org/repo": entry}, include_companion_scope = True
+        ) == (str(snapshot), f"model-{legacy}", "org/Repo", True)
+
+
+def test_model_dir_with_snapshots_subdir_keeps_root_gguf(tmp_path):
+    """A regular model dir is not an HF cache just because snapshots/ exists."""
+    from types import SimpleNamespace
+
+    nested = tmp_path / "snapshots" / "revision"
+    nested.mkdir(parents = True)
+    (nested / "mmproj-model-F16.gguf").write_bytes(b"GGUF companion")
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "custom/model",
+        SimpleNamespace(id = "custom/model", path = str(tmp_path), source = "models_dir"),
+    )
+
+    assert entry is not None
+    assert entry.load_path == str(tmp_path)
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entries_do_not_rescan_the_cache_root(monkeypatch, tmp_path):
+    """Each scanned row already owns an exact repo directory under the cache root."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    infos = []
+    for index in range(3):
+        repo = tmp_path / f"models--org--Repo-{index}"
+        snapshot = repo / "snapshots" / "revision"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+        infos.append(SimpleNamespace(id = f"org/Repo-{index}", path = str(repo), source = "hf_cache"))
+
+    original_iterdir = Path.iterdir
+    root_scans = 0
+
+    def counting_iterdir(path):
+        nonlocal root_scans
+        if path == tmp_path:
+            root_scans += 1
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    assert all(resolver._local_gguf_entry(info.id, info) is not None for info in infos)
+    assert root_scans == 0
 
 
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
@@ -1867,6 +2835,8 @@ def _revision_pair(root, complete: bool):
     (old / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
     name = "model-Q4_K_M.gguf" if complete else "model-Q4_K_M-00001-of-00003.gguf"
     (new / name).write_bytes(b"GGUF stub")
+    os.utime(old, (1_000, 1_000))
+    os.utime(new, (2_000, 2_000))
     return old, new
 
 
@@ -2539,11 +3509,67 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     resolver._scan = (0.0, {})
 
     # The advertised id is the alias, never the absolute path.
-    advertised = sorted({entry.loader_id for entry in resolver._index().values()})
+    index = resolver._index()
+    advertised = sorted({entry.loader_id for entry in index.values()})
     assert advertised == ["org/Repo-GGUF"]
+    assert gguf.name.lower() not in index
     # But the model is still resolvable by its on-disk path (an indexed alias).
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf(str(gguf)) is not None
+
+
+def test_inactive_cache_revision_aliases_keep_exact_companion_scope(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as models_route
+    from storage import studio_db
+    from utils import hf_cache_settings
+    import utils.paths as paths
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / "weights-revision"
+    selected.mkdir(parents = True)
+    (selected / "model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (selected / "model-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF partial")
+    companion = repo / "snapshots" / "companion-revision" / "MTP"
+    companion.mkdir(parents = True)
+    (companion / "mtp-model-Q8_0.gguf").write_bytes(b"GGUF companion")
+    os.utime(selected, (1_000, 1_000))
+    os.utime(companion.parent, (2_000, 2_000))
+
+    info = SimpleNamespace(
+        id = str(selected),
+        path = str(selected),
+        model_id = "org/Vision-GGUF",
+        display_name = "Vision-GGUF",
+        source = "hf_cache",
+    )
+    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+
+    index = resolver._build_index()
+
+    repo_entry = index["org/vision-gguf"]
+    display_entry = index["vision-gguf"]
+    path_entry = index[str(selected).lower()]
+    revision_entry = index[selected.name.lower()]
+    assert repo_entry.repo_level_companions is True
+    assert display_entry.repo_level_companions is True
+    assert path_entry.repo_level_companions is False
+    assert revision_entry.repo_level_companions is False
+    assert path_entry.variants == ("Q4_K_M",)
+    assert revision_entry.variants == ("Q4_K_M",)
+    assert {
+        entry.load_path for entry in (repo_entry, display_entry, path_entry, revision_entry)
+    } == {str(selected)}
 
 
 def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
@@ -5056,39 +6082,35 @@ def test_a_count_never_spawns_mcp_servers():
     assert "get_enabled_mcp_tools" not in called
 
 
-def test_audio_generate_is_reload_only(monkeypatch):
-    # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
-    # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
-    # can't tell an audio projector from a vision one), so resolving the client model
-    # could evict the working audio model for a target that then fails the audio
-    # check. Only the idle-stash restore runs: the hook gets the reload-only sentinel.
-    from models.inference import ChatCompletionRequest
-
+def _capture_audio_switch(monkeypatch):
     class _Reached(Exception):
         pass
 
     captured = {}
 
-    async def _capture(
-        model,
-        request,
-        subject,
-        *,
-        require_vision = False,
-        claim_resident = True,
-    ):
+    async def _capture(model, request, subject, **kwargs):
         captured["model"] = model
-        captured["claim_resident"] = claim_resident
+        captured.update(kwargs)
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    return _Reached, captured
+
+
+@pytest.mark.parametrize("model", [None, "", "org/B-GGUF"])
+def test_audio_generate_model_selection(monkeypatch, model):
+    from models.inference import ChatCompletionRequest
+
+    reached, captured = _capture_audio_switch(monkeypatch)
     payload = ChatCompletionRequest(
-        model = "org/B-GGUF", messages = [{"role": "user", "content": "say hi"}]
+        messages = [{"role": "user", "content": "say hi"}],
+        **({"model": model} if model is not None else {}),
     )
-    with pytest.raises(_Reached):
+    with pytest.raises(reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
-    assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+    assert captured["model"] == (model or inference_route._RELOAD_ONLY_MODEL)
     assert captured["claim_resident"] is False
+    assert captured["require_speech"] is True
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
@@ -5220,7 +6242,7 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         backend._openai_advertised_id = None
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda m: (m, "Q8_0", m))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda m, **_kw: (m, "Q8_0", m))
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
@@ -6222,6 +7244,30 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
     assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
+def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
+    # Absent means physical, so writing it back would churn every row for no information.
+    physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})
+    assert physical == {"gpu_ids": [0]}
+    assert settings.normalize_model_override({"gpu_ids": [0]}) == {"gpu_ids": [0]}
+    vulkan = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "vulkan"})
+    assert vulkan == {"gpu_ids": [0], "gpu_index_kind": "vulkan"}
+    assert settings.normalize_model_override({"gpu_index_kind": "vulkan"}) == {}
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({}, "physical"),
+        ({"gpu_ids": [0]}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": "vulkan"}, "vulkan"),
+        ({"gpu_ids": [0], "gpu_index_kind": "metal"}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": None}, "physical"),
+    ],
+)
+def test_stored_gpu_index_kind_reads_absent_as_physical(override, expected):
+    assert settings.stored_gpu_index_kind(override) == expected
+
+
 def test_normalize_model_override_rejects_oversized_chat_template():
     small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
     assert small["chat_template_override"] == "{{ bos }}"
@@ -6752,6 +7798,25 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
 
 
+def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
+    # Two browsers against one server: the stored pin is physical and this backfill offers
+    # Vulkan ordinals, so the qualifier cannot arrive without its ids.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
+
+    resp = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        gpu_ids = [2],
+        gpu_index_kind = "vulkan",
+        max_seq_length = 32768,
+        fill_absent_fields = True,
+    )
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["gpu_ids"] == [0, 1]
+    assert "gpu_index_kind" not in entry
+    assert settings.stored_gpu_index_kind(entry) == "physical"
+    assert entry["max_seq_length"] == 32768
+
+
 def test_the_one_time_fill_retires_nothing(override_store):
     # fill_absent_fields only adds what is missing; the migration mirroring both spellings
     # of one row must not have its own first write deleted by its second.
@@ -6799,7 +7864,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
 
-    async def _unusable(ids):
+    async def _unusable(ids, index_kind = "physical"):
         return False
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
@@ -6823,7 +7888,7 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -6854,9 +7919,9 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
     )
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7], "vulkan")) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1], "vulkan")) is False
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
@@ -6865,7 +7930,56 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+
+
+def _pin_resolves_on_a_host_with_device_0(monkeypatch):
+    """Make device 0 exist, so the index-kind check is the only thing under test.
+
+    Without this the whole helper falls to its `except: return False` on a CPU-only
+    runner, which is how the mismatch cases below would pass for the wrong reason and
+    how the matching case failed on CI while passing on a GPU box.
+    """
+    import utils.hardware as hardware_pkg
+    from utils.hardware import DeviceType
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(hardware_pkg, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(
+        hardware_mod, "resolve_requested_gpu_ids", lambda ids, is_vulkan = False: list(ids)
+    )
+
+
+def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
+    # What the availability checks cannot see: ordinal 0 and physical device 0 both exist,
+    # so a pin carried across a backend change passes every presence test.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    for installed_is_vulkan, stored_kind in (
+        (True, "physical"),
+        (False, "vulkan"),
+    ):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: installed_is_vulkan)
+        )
+        assert (
+            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind)) is False
+        ), (installed_is_vulkan, stored_kind)
+
+
+def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
 
 def test_default_save_preserves_flags_instead_of_removing(override_store):
@@ -7074,7 +8188,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7113,7 +8227,7 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7779,6 +8893,41 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     db.upsert_app_setting_map_entry(key, "a", {"v": 9})
     db.upsert_app_setting_map_entry(key, "b", None)
     assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
+    tmp_path, monkeypatch
+):
+    """A pin and the index space it is written in are one value.
+
+    The server holds physical ids with no qualifier, which is what every writer
+    before the field meant; this browser's backfill offers Vulkan ordinals. Field
+    by field the ids would stay and the qualifier would land, and the row would
+    then name devices in a space it was never written in.
+    """
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_coupled"
+    coupled = (("gpu_ids", "gpu_index_kind"),)
+    db.upsert_app_setting_map_entry(key, "m", {"gpu_ids": [0, 1]})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "m",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan", "max_seq_length": 4096},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    ) == {"m": {"gpu_ids": [0, 1], "max_seq_length": 4096}}
+    db.upsert_app_setting_map_entry(key, "n", {"max_seq_length": 2048})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "n",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan"},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    )["n"] == {"max_seq_length": 2048, "gpu_ids": [2], "gpu_index_kind": "vulkan"}
 
 
 def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
@@ -8763,6 +9912,74 @@ def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     (path / "tokenizer.json").write_text("{}")
     (path / "tokenizer_config.json").write_text("{}")
     return path
+
+
+def _complete_minimax_pipeline(root):
+    pipeline = root / "MiniMax-Music3"
+    pipeline.mkdir()
+    component_specs = {
+        "condition_encoder": ("diffusers", "MiniMaxMusic3ConditionEncoder"),
+        "language_model": ("transformers", "Qwen3ForCausalLM"),
+        "rvq_depth_decoder": ("diffusers", "MiniMaxMusic3RVQDepthDecoder"),
+        "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler"),
+        "tokenizer": ("transformers", "Qwen2Tokenizer"),
+        "transformer": ("diffusers", "MiniMaxMusic3Transformer1DModel"),
+        "vocoder": ("diffusers", "MiniMaxMusic3Vocoder"),
+    }
+    index = {
+        "_class_name": "MiniMaxMusic3ModularPipeline",
+        "_blocks_class_name": "MiniMaxMusic3Blocks",
+        **{
+            component: [*component_specs[component], {"subfolder": component}]
+            for component in component_specs
+        },
+    }
+    (pipeline / "modular_model_index.json").write_text(json.dumps(index))
+    for component in component_specs:
+        directory = pipeline / component
+        directory.mkdir()
+        if component == "scheduler":
+            (directory / "scheduler_config.json").write_text(
+                json.dumps({"_class_name": "Scheduler"})
+            )
+        elif component == "tokenizer":
+            (directory / "tokenizer_config.json").write_text(
+                json.dumps({"tokenizer_class": "PreTrainedTokenizerFast"})
+            )
+            (directory / "tokenizer.json").write_text(
+                json.dumps({"model": {"type": "BPE", "vocab": {}, "merges": []}})
+            )
+        else:
+            (directory / "config.json").write_text(json.dumps({"_class_name": "Component"}))
+            stem = "model" if component == "language_model" else "diffusion_pytorch_model"
+            (directory / f"{stem}.safetensors").write_bytes(_safetensors_bytes())
+    return pipeline
+
+
+@pytest.mark.parametrize(
+    "repo", ["unsloth/Spark-TTS-0.5B", "SparkAudio/Spark-TTS-0.5B", "org/custom-voice"]
+)
+def test_a_downloaded_spark_repository_resolves_to_its_llm_checkpoint(tmp_path, repo):
+    snapshot = tmp_path / "models--unsloth--Spark-TTS-0.5B" / "snapshots" / "revision"
+    llm = snapshot / "LLM"
+    llm.mkdir(parents = True)
+    (llm / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2"})
+    )
+    (llm / "model.safetensors").write_bytes(_safetensors_bytes())
+    tokens = {
+        str(i): {"content": f"<|bicodec_{name}_0|>"}
+        for i, name in enumerate(("semantic", "global"))
+    }
+    (llm / "tokenizer_config.json").write_text(json.dumps({"added_tokens_decoder": tokens}))
+    info = types.SimpleNamespace(id = repo, model_id = repo, path = str(snapshot), partial = False)
+    entry = resolver._local_weights_entry(repo, info)
+    assert entry is not None
+    assert entry.load_path == str(llm)
+    assert entry.is_gguf is False
+    assert inference_route._target_speech_audio_type(entry.load_path, False) == "bicodec"
+    (llm / "tokenizer_config.json").write_text("{}")
+    assert resolver._local_weights_entry("org/text", info) is None
 
 
 def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
@@ -10153,3 +11370,183 @@ def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
     assert [(is_gguf, quants, resident) for _i, is_gguf, quants, resident in rows] == [
         (False, (), True)
     ]
+
+
+def _speech_case(
+    monkeypatch,
+    audio_type = "snac",
+    gguf = True,
+):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    target = ("/local/B.gguf", "Q8_0", "org/B-GGUF") if gguf else ("/local/B", None, "org/B-GGUF")
+    _wire(monkeypatch, enabled = True, resolves_to = target, backend = backend, recorder = recorder)
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: audio_type)
+    return backend, recorder
+
+
+@pytest.mark.parametrize(
+    "audio_type,context,text,instructions,status",
+    [
+        (None, 8192, "hi", "", 400),
+        ("snac", 8192, "hi", "", None),
+        ("snac", 512, "x" * 1000, "", 400),
+        ("snac", None, "hi", "", None),
+        ("higgs_tts2", 512, "hi", "x" * 1000, 400),
+        ("minimax_music3", None, "hi", "", 400),
+        ("minimax_music3", None, "hi", "a warm ballad", None),
+    ],
+)
+def test_speech_switch_admission(monkeypatch, audio_type, context, text, instructions, status):
+    backend, recorder = _speech_case(monkeypatch, audio_type, audio_type in (None, "snac"))
+    monkeypatch.setattr(inference_route, "_target_effective_context_length", lambda *_a: context)
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF",
+        object(),
+        "tester",
+        require_speech = True,
+        speech_budget = {"text": text, "instructions": instructions},
+    )
+    if status:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == status
+        assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+    else:
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+
+
+@pytest.mark.parametrize("audio_type", ["snac", "bicodec", "dac", "higgs_tts2"])
+@pytest.mark.parametrize("token", [None, "caller-token"])
+def test_speech_switch_preserves_staged_assets_and_identity(monkeypatch, audio_type, token):
+    from starlette.requests import Request
+
+    _, recorder = _speech_case(monkeypatch, audio_type, audio_type != "higgs_tts2")
+    staged = inference_route._SpeechCodecPreflightResult(
+        {"HF_HUB_CACHE": "/captured/hub"}, "/captured/codec"
+    )
+    seen = []
+    monkeypatch.setattr(
+        inference_route, "_preflight_speech_codec_for_switch", lambda *a: seen.append(a) or staged
+    )
+    headers = [(b"x-unsloth-hf-token", token.encode())] if token else []
+    request = Request({"type": "http", "path": "/v1/audio/speech", "headers": headers})
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", request, "tester", require_speech = True
+        )
+    )
+    assert seen[0][-1] == token
+    assert recorder.cache_environment == staged.cache_environment
+    assert recorder.speech_codec_path == staged.codec_path
+    assert recorder.anonymous_hf_access is (token is None)
+    assert recorder.calls[0].hf_token == token
+
+
+@pytest.mark.parametrize("condition", ["complete", "missing", "unsafe"])
+@pytest.mark.parametrize("token", [None, "caller-token"])
+def test_higgs_companion_preflight_before_eviction(tmp_path, monkeypatch, condition, token):
+    import huggingface_hub
+    from core.inference import native_audio
+    from utils import hf_cache_settings, security, utils
+    from starlette.requests import Request
+
+    preflight = inference_route._preflight_speech_codec_for_switch
+    backend, recorder = _speech_case(monkeypatch, "higgs_tts2", False)
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", preflight)
+    codec = tmp_path / "codec"
+    codec.mkdir()
+    (codec / "config.json").write_text(json.dumps({"model_type": "higgs_audio_v2_tokenizer"}))
+    if condition != "missing":
+        (codec / "model.safetensors").write_bytes(_safetensors_bytes())
+    cache = hf_cache_settings.HuggingFaceCachePaths(
+        tmp_path, tmp_path / "hub", tmp_path / "xet", "studio"
+    )
+    seen = []
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(
+        native_audio, "native_audio_security_targets", lambda p, *_a: [p, "org/codec"]
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda repo, **kw: seen.append(kw) or str(codec)
+    )
+    monkeypatch.setattr(
+        security,
+        "evaluate_file_security",
+        lambda *_a, **_k: types.SimpleNamespace(blocked = condition == "unsafe", reason = "unsafe"),
+    )
+    headers = [(b"x-unsloth-hf-token", token.encode())] if token else []
+    request = Request({"type": "http", "path": "/v1/audio/speech", "headers": headers})
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF", request, "tester", require_speech = True
+    )
+    if condition == "complete":
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == 503
+        assert recorder.calls == [] and backend.is_loaded
+    assert seen == [
+        {"token": token or False, "cache_dir": str(cache.hub_cache), "local_files_only": True}
+    ]
+
+
+def test_speech_budget_rechecks_changing_load_override(monkeypatch):
+    backend, recorder = _speech_case(monkeypatch)
+    reads = []
+
+    def override(*_a):
+        value = 8192 if not reads else 512
+        reads.append(value)
+        return "org/B-GGUF:Q8_0", {"max_seq_length": value}
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", override)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF",
+                object(),
+                "tester",
+                require_speech = True,
+                speech_budget = {"text": "x" * 1000},
+            )
+        )
+    assert reads == [8192, 512] and error.value.status_code == 400
+    assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+
+
+@pytest.mark.parametrize("fault", [None, "weights", "metadata", "remote-code"])
+def test_minimax_pipeline_completeness(tmp_path, monkeypatch, fault):
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    if fault == "weights":
+        (pipeline / "vocoder" / "diffusion_pytorch_model.safetensors").unlink()
+    elif fault == "metadata":
+        (pipeline / "tokenizer" / "tokenizer.json").write_text("not-json")
+    elif fault == "remote-code":
+        (pipeline / "language_model" / "config.json").write_text(
+            json.dumps({"auto_map": {"AutoModel": "modeling.Custom"}})
+        )
+    info = types.SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) == ((False, ()) if fault is None else None)
+
+
+@pytest.mark.parametrize(
+    "audio_type,allowed",
+    [
+        ("moss_tts_local", False),
+        ("moss_tts_nano", False),
+        ("higgs_tts3", False),
+        ("higgs_tts2", True),
+    ],
+)
+def test_speech_probe_refuses_remote_code(monkeypatch, audio_type, allowed):
+    from utils.models import model_config
+    monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_kw: audio_type)
+    assert inference_route._target_speech_audio_type("/local/model", False) == (
+        audio_type if allowed else None
+    )

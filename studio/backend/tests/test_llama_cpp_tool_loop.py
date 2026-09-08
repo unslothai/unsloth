@@ -7040,9 +7040,7 @@ def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
         [first_turn, [_sse({"content": "Done."}), _done()]],
         payloads,
     )
-    monkeypatch.setattr(
-        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True
-    )
+    monkeypatch.setattr("core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True)
 
     def fake_count_chat_tokens(messages, *_args, **_kwargs):
         return len(json.dumps(messages, default = str)) // 2
@@ -7079,6 +7077,8 @@ def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
     )
 
     assert executed and executed[0] == "", "the oversized call was refused instead of run"
-    assert "call_big" in compacted, "the first call's promise was dropped by the second's preparation"
+    assert (
+        "call_big" in compacted
+    ), "the first call's promise was dropped by the second's preparation"
     sent = json.dumps(payloads[-1]["messages"], default = str)
     assert _BIG_BODY not in sent

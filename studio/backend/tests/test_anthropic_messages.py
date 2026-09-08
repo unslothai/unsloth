@@ -2608,6 +2608,213 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured["seed"] == 3407
 
+    def test_client_tool_catalog_without_passthrough_is_rejected(self, monkeypatch):
+        # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        payload = _basic_payload(tools = [{"name": "lookup", "input_schema": {"type": "object"}}])
+
+        with pytest.raises(HTTPException) as excinfo:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.detail["error"]["type"] == "invalid_request_error"
+        assert "does not advertise tools" in excinfo.value.detail["error"]["message"]
+        assert backend.calls == []
+
+    def test_replayed_tool_history_without_passthrough_still_answers(self, monkeypatch):
+        # fold_tool_results_into_user already handles this template, so a history-only turn
+        # still answers. Verified on a real gemma-3-270m-it GGUF.
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+                },
+            ]
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [(path, kwargs)] = backend.calls
+        assert path == "plain"
+        # The tool_result was folded into a user turn rather than sent as role="tool".
+        assert not any(m.get("role") == "tool" for m in kwargs["messages"])
+        assert any(
+            m.get("role") == "user" and "tool_response" in (m.get("content") or "")
+            for m in kwargs["messages"]
+        )
+
+    def test_disabled_tool_choice_still_answers_without_passthrough(self, monkeypatch):
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        payload = _basic_payload(
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+            tool_choice = {"type": "none"},
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [(path, _kwargs)] = backend.calls
+        assert path == "plain"
+
+    def test_a_plain_turn_survives_a_backend_whose_supports_tools_raises(self, monkeypatch):
+        # Reading the passthrough flag on a turn that sent no tools would 500 the half-ready
+        # backend test_folding_gate_prefers_passthrough_even_when_supports_tools_raises covers.
+        from routes.inference import anthropic_count_tokens
+
+        import routes.inference as inf_mod
+
+        class _Raising:
+            is_loaded = True
+            is_vision = False
+            model_identifier = "half-ready"
+            context_length = 4096
+
+            @property
+            def supports_tools(self):
+                raise RuntimeError("not ready")
+
+            def count_chat_tokens(self, *args, **kwargs):
+                return 2
+
+            def generate_chat_completion(self, **kwargs):
+                yield "ok"
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                yield {"type": "content", "text": "ok"}
+
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _Raising())
+
+        assert (
+            _drive(
+                anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t")
+            ).status_code
+            == 200
+        )
+        assert (
+            _drive(
+                anthropic_count_tokens(
+                    _basic_payload(), request = self._Request(), current_subject = "t"
+                )
+            ).status_code
+            == 200
+        )
+
+    def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
+        # The template renders no schemas, so the count matched with and without them
+        # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        payload = _basic_payload(tools = [{"name": "lookup", "input_schema": {"type": "object"}}])
+
+        with pytest.raises(HTTPException) as excinfo:
+            _drive(anthropic_count_tokens(payload, request = self._Request(), current_subject = "t"))
+
+        assert excinfo.value.status_code == 400
+        assert "does not advertise tools" in excinfo.value.detail["error"]["message"]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {},
+            {
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "none"},
+            },
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+                    },
+                ]
+            },
+        ],
+        ids = ["no_tools", "tool_choice_none", "replayed_history"],
+    )
+    def test_count_tokens_still_counts_what_messages_still_answers(self, monkeypatch, fields):
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+
+        response = _drive(
+            anthropic_count_tokens(
+                _basic_payload(**fields), request = self._Request(), current_subject = "t"
+            )
+        )
+
+        assert response.status_code == 200
+
+    def _v1_client(self, monkeypatch, backend):
+        """Mount the real router with the production error handlers installed.
+
+        Every other test here reads ``HTTPException.detail``, the dict BEFORE
+        install_api_error_handlers shapes it; an SDK parses the response body, and the two
+        agree only while the handler passes a fully-formed envelope through untouched.
+        """
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inf_mod
+        from auth.authentication import get_current_subject
+        from utils.api_errors import install_api_error_handlers
+
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+
+        app = FastAPI()
+        app.include_router(inf_mod.router, prefix = "/v1")
+        install_api_error_handlers(app)
+        app.dependency_overrides[get_current_subject] = lambda: "t"
+        return TestClient(app)
+
+    @pytest.mark.parametrize("path", ["/v1/messages", "/v1/messages/count_tokens"])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_the_rejection_reaches_the_client_as_an_anthropic_error(
+        self, monkeypatch, path, stream
+    ):
+        # A `detail` wrapper would make the SDKs raise on the missing `error` key instead of
+        # surfacing the reason. Streaming too: the gate precedes the generator, so the caller
+        # must get JSON, not a 200 SSE stream carrying the error in a frame.
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        client = self._v1_client(monkeypatch, backend)
+
+        resp = client.post(
+            path,
+            json = {
+                "model": "test-model",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "stream": stream,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/json")
+        body = resp.json()
+        assert "detail" not in body
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "does not advertise tools" in body["error"]["message"]
+        assert backend.calls == []
+
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2668,14 +2875,18 @@ class TestAnthropicMessagesToolRouting:
 
         _mock_backend(
             monkeypatch,
-            supports_tool_passthrough = False,
             generate_chat_completion = _gen_plain,
             generate_chat_completion_with_tools = _gen_tools,
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         fields = (
-            {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+            {
+                "enable_tools": True,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            }
+            if with_tools
+            else {}
         )
 
         response = _drive(

@@ -624,7 +624,8 @@ export function ChatSettingsPanel({
   const [seedDraft, setSeedDraft] = useState<string | null>(null);
   // What blur would commit, available before it runs. Clicking Save blurs the box during
   // mousedown, but React has not re-rendered by the time onClick fires, so a handler reading
-  // `params` still sees the seed from before the entry. NumericValueInput bridges the same gap.
+  // `params` still sees the seed from before the entry. NumericValueInput bridges the same gap
+  // with its imperative commit().
   const committedSeed = useMemo<number | null>(() => {
     if (seedDraft === null) return params.seed ?? null;
     // Measured after the padding: a zero-padded seed is short enough to keep, and truncating

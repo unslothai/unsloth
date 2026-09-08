@@ -126,7 +126,12 @@ def _post(monkeypatch, backend, *, stream, reraise = True):
     body = {"messages": [{"role": "user", "content": "write me an essay"}], "stream": stream}
     if backend.supports_tools:
         body["enable_tools"] = True
-    return _client(monkeypatch, backend, reraise = reraise).post("/chat/completions", json = body)
+    return _client(monkeypatch, backend, reraise = reraise).post(
+        "/chat/completions",
+        json = body,
+        # The Studio UI's opt-in: local tool execution with confirmation is refused without it.
+        headers = {"X-Unsloth-Events": "1"},
+    )
 
 
 class TestEveryLocalChatSurfaceArms:
@@ -306,6 +311,8 @@ def _scope(app, body: bytes) -> dict:
             (b"host", b"testserver"),
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
+            # The Studio UI's opt-in: tools with confirmation are refused without it.
+            (b"x-unsloth-events", b"1"),
         ],
         "client": ("127.0.0.1", 12345),
         "server": ("testserver", 80),

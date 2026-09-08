@@ -289,7 +289,7 @@ class LoggingMiddleware:
         if window_ms <= 0:
             return False
         # The liveness group shares one bucket, so a burst logs once rather than once per path; only the
-        # query-less form joins it.
+        # query-less form joins it, so a parameterized call still gets its own status and latency line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:

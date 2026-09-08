@@ -76,7 +76,11 @@ def _background_request(app: Any, run_id: str, cancel_event: threading.Event) ->
         "path": "/api/inference/chat-runs/producer",
         "raw_path": b"/api/inference/chat-runs/producer",
         "query_string": b"",
-        "headers": [(b"x-unsloth-generation-run", run_id.encode("ascii", "ignore"))],
+        "headers": [
+            (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
+            # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
+            (b"x-unsloth-events", b"1"),
+        ],
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
@@ -450,6 +454,21 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
+def _server_park_excused_recently() -> bool:
+    """Whether the resident llama-server's read wrapper has lately excused a silent stream as
+    parked from `/metrics`. Only a swap build predating the stream notices parks in silence;
+    one with them sends `: preempt-keepalive`, which the run loop renews on directly."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        probe = getattr(get_llama_cpp_backend(), "server_park_grace_recent", None)
+        if probe is None:
+            return False
+        return bool(probe(_renew_interval_seconds() * 2.0))
+    except Exception:
+        return False
+
+
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -731,18 +750,27 @@ class ChatGenerationSupervisor:
                         - (time.monotonic() - last_flush),
                     )
                     if pending
-                    else None
+                    # Bounded even with nothing to flush: a silent park on a swap build without
+                    # the stream notices sends no bytes, and the lease can only be renewed from
+                    # here (see _server_park_excused_recently).
+                    else _renew_interval_seconds()
                 )
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
                 if not ready:
-                    await asyncio.to_thread(
-                        db.append_events,
-                        run_id,
-                        worker_token,
-                        pending,
-                    )
-                    pending = []
-                    last_flush = time.monotonic()
+                    if pending:
+                        await asyncio.to_thread(
+                            db.append_events,
+                            run_id,
+                            worker_token,
+                            pending,
+                        )
+                        pending = []
+                        last_flush = time.monotonic()
+                    elif await asyncio.to_thread(_server_park_excused_recently):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
                     continue
                 try:
                     raw = next_raw_task.result()

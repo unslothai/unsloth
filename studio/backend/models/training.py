@@ -5,6 +5,7 @@
 Pydantic schemas for Training API
 """
 
+import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -205,6 +206,24 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("eval_steps", mode = "before")
+    @classmethod
+    def _normalize_eval_steps(cls, value: Any) -> Any:
+        # float is not strict, so `"eval_steps": true` would arrive as 1.0, a cadence of every step.
+        if isinstance(value, bool):
+            raise ValueError("eval_steps must be a number, not a boolean")
+        # `1e309` is a plain JSON number that coerces to inf, which every gate reads as disabled.
+        # Store it as that, so config_json never gets an `Infinity` literal Starlette then 500s on.
+        try:
+            if not math.isfinite(float(value)):
+                return 0.0
+        except OverflowError:
+            # float() refuses a JSON int too large to represent: same unusable cadence as inf.
+            return 0.0
+        except (TypeError, ValueError):
+            pass
+        return value
 
     # pydantic runs all mode="after" validators in definition order and _check_steps_or_epochs is lower
     # in this class, so keep these checks order-independent.
@@ -1113,8 +1132,9 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # save_steps is refused, not ignored, for a checkpointless family, so offering the control means
-    # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint
+    # every" control: save_steps is refused, not ignored, for a checkpointless family, so offering the
+    # control means offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
