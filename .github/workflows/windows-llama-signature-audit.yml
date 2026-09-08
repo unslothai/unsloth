@@ -317,7 +317,12 @@ jobs:
 
       - name: Positive control -- an unsigned binary must raise 3076
         id: control
-        shell: pwsh
+        # Windows PowerShell, not pwsh. PowerShell 7 dropped assembly emission
+        # from Add-Type: it fails with "Both the assembly types
+        # 'ConsoleApplication' and 'WindowsApplication' are not currently
+        # supported", so there was no control binary to test with. 5.1 still
+        # compiles one, and ships inbox on this image.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
           # Without this the whole job is unfalsifiable: "no 3076 events" reads
@@ -331,13 +336,22 @@ jobs:
           Add-Type -TypeDefinition $src -OutputAssembly $exe -OutputType ConsoleApplication
           if (-not (Test-Path $exe)) { throw 'could not build the unsigned control binary' }
           & $exe 2>&1 | Write-Host
-          Start-Sleep -Seconds 5
 
+          # Polled rather than slept once. Code integrity writes 3076 asynchronously,
+          # so a fixed wait that is slightly too short reports "the policy is not
+          # evaluating loads" for a policy that is working, which is the one
+          # conclusion this step must never reach by accident.
           $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
-          $events = @(Get-WinEvent -FilterHashtable @{
-            LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
-          } -ErrorAction SilentlyContinue)
-          $fired = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+          $events = @()
+          $fired = @()
+          foreach ($attempt in 1..10) {
+            Start-Sleep -Seconds 3
+            $events = @(Get-WinEvent -FilterHashtable @{
+              LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+            } -ErrorAction SilentlyContinue)
+            $fired = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+            if ($fired.Count -gt 0) { break }
+          }
           Write-Host "3076 events since policy apply: $($events.Count); naming the control: $($fired.Count)"
           if ($fired.Count -eq 0) {
             Write-Host '::error::the unsigned positive control raised no 3076 event, so this policy is not evaluating loads here; the bundle result below would be meaningless'
