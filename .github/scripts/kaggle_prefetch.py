@@ -3,52 +3,23 @@
 
 """The model prefetch that both Kaggle kernels paste into a generated cell.
 
-A Kaggle GPU session is 2xT4 and the kernel keeps both busy training, but
-downloading a model is CPU and network work that holds a card idle for its
-whole duration. This module is the body of a lane that does that downloading
-EARLY, beside the training legs, so the leg that needs the model finds it
-already on disk.
+A Kaggle GPU session is 2xT4 and the kernel keeps both busy training, but downloading a model is CPU and network work that holds a card idle for its whole duration, so this module is the body of a lane that downloads EARLY, beside the training legs, so the leg that needs the model finds it on disk.
 
-Why a module and not a copy in each builder: `kaggle_t4_ci` prefetches the leg
-models into the Kaggle image's default cache, and `kaggle_studio_ci` prefetches
-Studio's two models into Studio's own private ``HF_HOME``. Same retry policy,
-same reporting, two different cache roots. One copy that takes the root as an
-argument is the only version of that which stays in agreement with itself.
+A module and not a copy in each builder because `kaggle_t4_ci` prefetches the leg models into the Kaggle image's default cache while `kaggle_studio_ci` prefetches Studio's two models into Studio's own private ``HF_HOME``: same retry policy, same reporting, two cache roots, and one copy taking the root as an argument is the only version that stays in agreement with itself.
 
-Load it BY PATH (``importlib.util.spec_from_file_location``), never with a
-plain ``import``. Both script directories already ship a ``build_kernel.py``
-and a ``report.py``, the test suite puts both on ``sys.path``, and a plain
-import therefore resolves to whichever reached ``sys.modules`` first -- which
-is decided by test order rather than by intent. That collision has been paid
-for here once already: one ``sys.path.insert`` added for a single test took
-nine unrelated tests down with it.
+Load it BY PATH (``importlib.util.spec_from_file_location``), never with a plain ``import``. Both script directories already ship a ``build_kernel.py`` and a ``report.py``, the test suite puts both on ``sys.path``, and a plain import therefore resolves to whichever reached ``sys.modules`` first, decided by test order rather than intent; that collision has already cost nine unrelated tests over one ``sys.path.insert`` added for a single test.
 
-WHAT THIS IS NOT: it is not a correctness mechanism. Every caller must treat a
-failed prefetch as a no-op, because the payload that wants the model downloads
-it for itself exactly as it did before this existed. A prefetch that fails the
-kernel would be a new way to go red for something that is not under test.
+WHAT THIS IS NOT: a correctness mechanism. Every caller must treat a failed prefetch as a no-op, because the payload that wants the model downloads it for itself exactly as before. A prefetch that failed the kernel would be a new way to go red for something that is not under test.
 """
 
 from __future__ import annotations
 
-# The sentinel the driver and the reporters grep for. One record per repo, on
-# its own line, so `kernel.log` ALONE measures the download -- which is the
-# number the whole schedule is built around and the one thing no artifact has
-# ever separated from weight-load time.
+# The sentinel the driver and the reporters grep for. One record per repo, on its own line, so `kernel.log` ALONE measures the download, the number the whole schedule is built around and the one thing no artifact has ever separated from weight-load time.
 PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
 
 
 def _normalise(repos):
-    """``["a", ("b", ["*.gguf"])]`` -> ``[("a", None), ("b", ["*.gguf"])]``.
-
-    A bare string means the WHOLE repo, which is right for a small model whose
-    every file gets loaded and wrong for anything with variants. Run
-    32667451396 fetched 69.1 GB of ``Qwen3.5-2B-GGUF`` -- every quant in the
-    repo -- so that Studio could load one UD-Q4_K_XL file, and 55.1 GB of a
-    checkpoint that was never opened at all. On a 4-core Kaggle box that is not
-    just wasted bandwidth: it is CPU stolen from the payloads the prefetch
-    exists to speed up, and it pushed the Studio install from 258s to 673.5s.
-    """
+    """``["a", ("b", ["*.gguf"])]`` -> ``[("a", None), ("b", ["*.gguf"])]``. A bare string means the WHOLE repo, which is right for a small model whose every file gets loaded and wrong for anything with variants: run 32667451396 fetched 69.1 GB of ``Qwen3.5-2B-GGUF``, every quant in the repo, so that Studio could load one UD-Q4_K_XL file, plus 55.1 GB of a checkpoint never opened. On a 4-core Kaggle box that is CPU stolen from the payloads the prefetch exists to speed up, and it pushed the Studio install from 258s to 673.5s."""
     out = []
     for entry in repos:
         if isinstance(entry, str):
@@ -66,23 +37,8 @@ def prefetch_cell(
     attempt_timeout: int = 900,
     total_timeout: int = 1800,
 ) -> str:
-    """Source for a cell (or a driver thread) that warms ``repos``, in order.
-
-    ``repos`` is ordered and the order is load bearing: the caller puts the
-    repo with the longest lead time first, because a prefetch only pays for
-    the work it finishes BEFORE the payload that wants it starts.
-
-    ``hf_home`` of None means "do not touch HF_HOME", which is what the leg
-    prefetch needs -- the legs read the Kaggle image's default cache and the
-    entire point is to land in the cache they read. Setting it to a private
-    directory there would produce a perfectly healthy prefetch that no payload
-    can see, a full 12 GB of work thrown away, and a green run.
-    """
-    # repr(), NOT json.dumps(). This text is Python, and `json.dumps(None)` is
-    # `null`, which parses fine and dies with a NameError the first time the
-    # cell RUNS -- on a Kaggle session, minutes in, having already paid for the
-    # box. `test_the_generated_prefetch_cell_runs` exists because compiling the
-    # cell did not catch exactly that.
+    """Source for a cell (or a driver thread) that warms ``repos``, in order. ``repos`` is ordered and the order is load bearing: the caller puts the repo with the longest lead time first, because a prefetch only pays for the work it finishes BEFORE the payload that wants it starts. ``hf_home`` of None means "do not touch HF_HOME", which is what the leg prefetch needs, since the legs read the Kaggle image's default cache and the entire point is to land in the cache they read; setting it to a private directory there would produce a perfectly healthy prefetch that no payload can see, 12 GB of work thrown away, and a green run."""
+    # repr(), NOT json.dumps(): this text is Python, and `json.dumps(None)` is `null`, which parses fine and dies with a NameError the first time the cell RUNS, on a Kaggle session, minutes in, having already paid for the box. `test_the_generated_prefetch_cell_runs` exists because compiling the cell did not catch exactly that.
     return f'''
 import json, os, threading, time
 

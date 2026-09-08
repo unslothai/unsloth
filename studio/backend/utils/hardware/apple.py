@@ -40,7 +40,6 @@ _CF_STRING_ENCODING_UTF8 = 0x08000100
 _ENERGY_UNIT_DIVISORS = {"mJ": 1e3, "uJ": 1e6, "nJ": 1e9}
 
 
-# ========== Pure helpers ==========
 
 
 def _fourcc(key: str) -> int:
@@ -73,7 +72,6 @@ def _is_gpu_energy_channel(name: str) -> bool:
     return name.endswith("GPU Energy") and "SRAM" not in name
 
 
-# ========== AppleSMC structs (layout must match the kernel exactly) ==========
 
 
 class _SMCKeyDataVers(ctypes.Structure):
@@ -118,7 +116,6 @@ class _SMCKeyData(ctypes.Structure):
     ]
 
 
-# ========== Library loaders ==========
 
 
 def _load_iokit() -> ctypes.CDLL:
@@ -216,7 +213,6 @@ def _from_cfstr(cf: ctypes.CDLL, ref: Optional[int]) -> str:
     return buf.value.decode("utf-8", errors = "replace").strip()
 
 
-# ========== SMC connection (GPU temperature) ==========
 
 
 class _SMCConnection:
@@ -327,7 +323,6 @@ class _SMCConnection:
         return _average_valid_temps(value for value in readings if value is not None)
 
 
-# ========== IOReport subscription (GPU power) ==========
 
 
 class _IOReportEnergy:
@@ -391,7 +386,6 @@ class _IOReportEnergy:
         return round(total, 1)
 
 
-# ========== Public API (module singletons, failure-latched) ==========
 
 _smc: Optional[_SMCConnection] = None
 _smc_failed = False

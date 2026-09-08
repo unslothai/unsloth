@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
 # Download a single file from a Hugging Face repo with a stall-retry
 # watchdog. Used by the Unsloth CI workflows so a hung hf-xet transfer
 # kills + retries instead of silently consuming the job's timeout.
-#
 # Usage: hf-download-with-retry.sh REPO FILE LOCAL_DIR
-#
 # Why this exists
-# ---------------
 # huggingface_hub 1.15+ deprecated `hf_transfer` and routes every
 # transfer through the `hf-xet` binary package. In CI we observed
 # `hf download` on a 3 GB GGUF (gemma-4-E2B-it-UD-Q4_K_XL) progress
@@ -25,7 +21,6 @@
 # start a fresh attempt. Retries are unbounded -- the enclosing
 # GitHub Actions step's (or, absent one, job's) `timeout-minutes` is
 # the real bound, so give every step that calls this script one.
-#
 # See https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
 # for the HF_XET_* documentation, and npm/cli#7308's pattern (silent
 # CI hang with no error) for prior art on this class of failure.

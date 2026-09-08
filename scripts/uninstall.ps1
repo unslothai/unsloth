@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
 # Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
-#
 # Usage: run -Help. The web one-liner is in that help text and is not repeated here, since
 # AMSI scans this file in full before any of it runs and nothing reads the header.
 
@@ -169,7 +167,6 @@ Environment:
             # enumerates the TARGET, and the target's ordinary children do not
             # carry the ReparsePoint attribute, so the recursive delete below
             # would take somebody else's tree by way of a redirected temp dir.
-            #
             # How far up to look differs by spelling. For the profile this
             # uninstall is FOR, the temp directory and the "Unsloth Studio"
             # directory above it are the two this script created and the two
@@ -362,7 +359,6 @@ Environment:
     # name alone is not enough -- `unsloth.cmd` is a plausible wrapper for anyone who
     # ships an unsloth-based tool, and pointing UNSLOTH_STUDIO_HOME at such a project
     # must not hand its whole tree to _RemovePath.
-    #
     # The trampoline is the marker: install.ps1 bakes that exact expression into the
     # shim, no other file has a reason to carry it, and it survives every layout the
     # shim has (relative %~dp0 or an absolute cross-volume path, unsloth_studio or the
@@ -593,7 +589,6 @@ Environment:
 
     # The Unsloth-managed subtrees underneath the reparse-point TARGET of each Unsloth home, for the
     # stop scan only.
-    #
     # A junction or directory symlink Unsloth home runs its native binaries out of the PHYSICAL
     # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
     # and launching sd-server there, while _CustomStudioRoots only normalizes the string --
@@ -601,14 +596,12 @@ Environment:
     # reparse point untouched. The prefix scan below reads Win32_Process.ExecutablePath, the real
     # image path, so without the target the running server never matches and survives an uninstall
     # that took its tree.
-    #
     # The SUBTREES, never the bare target. The delete unlinks only the reparse point and leaves the
     # target standing, so anything there that is not ours is neither locking nor being removed --
     # a home relocated onto a directory that holds other software must not have those force-stopped.
     # Homes only, for the same reason: the component dirs ($defaultNode, $defaultLlamaCpp, ...) can
     # themselves be links onto a shared runtime, and resolving those would put every process out of
     # it in scope.
-    #
     # Stop scan only, deliberately. _RemoveRootRecordingDb and the deletes still refuse to chase a
     # link out of the expected location -- following one to delete its target is exactly what the
     # deny list exists to prevent. Ending our own process under the target is not destructive.

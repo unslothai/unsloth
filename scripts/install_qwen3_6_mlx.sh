@@ -3,21 +3,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -euo pipefail
 
-# ============================================================
 # Qwen3.6 MLX — One-command setup + inference
-#
 # Supply-chain hardening:
 #   - The uv installer is verified against a hardcoded SHA-256 before
 #     execution. Rotate the digest only after verifying the new payload.
-# ============================================================
-#
 # Usage:
 #   bash install_qwen3_6_mlx.sh [--venv-dir DIR]
-#
 # This script:
 #   1. Creates a Python virtual environment
 #   2. Installs uv, mlx-vlm, transformers, torch, torchvision
-# ============================================================
 
 # ── Output style (inspired by unsloth/install.sh) ─────────────
 RULE=""
@@ -115,6 +109,7 @@ fi
 #   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
 # and updating the constant below. We fetch into a temp file, verify
 # the digest, and only then execute. Mismatch aborts.
+# ── Install uv ───────────────────────────────────────────────
 _UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
 
 if ! command -v uv >/dev/null 2>&1; then

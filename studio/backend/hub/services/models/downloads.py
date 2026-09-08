@@ -47,8 +47,7 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     )
 
 
-# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a scoped job
-# never collides with a real variant or the full snapshot.
+# A scope rides the variant slot as "@name"; no GGUF quant label starts with "@", so a scoped job never collides with a real variant or the full snapshot.
 _SCOPE_PREFIX = "@"
 
 
@@ -60,8 +59,7 @@ def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
 def scoped_file_blob_hashes(
     repo_id: str, files: Sequence[str], hf_token: Optional[str]
 ) -> frozenset[str]:
-    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer
-    protection cover its own files and nothing else in the repo."""
+    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
     from huggingface_hub import HfApi
 
     wanted = set(files)
@@ -88,12 +86,7 @@ def _job_status(
 
 
 def _diffusion_load_in_flight(repo_id: str) -> bool:
-    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion
-    base repo) for a load. Both stage through the same HF cache as the download worker, so a
-    download started now would put two writers on the same blobs -- the exact race the
-    llama.cpp guard below prevents for chat. ``loading_repo_ids`` is the same signal the
-    delete-cached guard uses. Best-effort: an unavailable backend reports not-in-flight so a
-    probe failure never blocks a legitimate download."""
+    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion base repo) for a load. Both stage through the same HF cache as the download worker, so starting a download now would put two writers on the same blobs, the race the llama.cpp guard below prevents for chat. Best-effort: an unavailable backend reports not-in-flight, so a probe failure never blocks a legitimate download."""
     key = download_registry.normalize_repo_key(repo_id)
     getters = []
     try:
@@ -119,9 +112,7 @@ def _diffusion_load_in_flight(repo_id: str) -> bool:
 
 
 def _load_in_flight(repo_id: str) -> bool:
-    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that
-    downloads on the load path: the Images and Video backends stage their snapshots the same
-    way, so both are consulted."""
+    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that downloads on the load path: the Images and Video backends stage their snapshots the same way, so both are consulted."""
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
         if hf_gguf_load_in_flight(repo_id):
@@ -179,11 +170,7 @@ async def download_model_response(
     *,
     allow_ambient_token: bool = True,
 ):
-    """Start a background download for a HuggingFace model.
-
-    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
-    no token, for repos named over the API rather than chosen here.
-    """
+    """Start a background download for a HuggingFace model. ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for repos named over the API rather than chosen here."""
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -217,8 +204,7 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other request waits behind it.
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS makes that outlast its 3s budget while every other request waits behind it.
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
@@ -304,9 +290,7 @@ async def download_model_response(
                     "this one."
                 ),
             )
-        # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this
-        # key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined
-        # nothing.
+        # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined nothing.
         adoptable = _registry.adoptable(key)
         return {
             "job_key": key,
@@ -314,11 +298,9 @@ async def download_model_response(
             "accepted": adoptable,
             "attached": adoptable,
             "generation": generation,
-            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-            # the one it asked for.
+            # An adopted job keeps the transport it started on, so report it rather than let the caller assume the one it asked for.
             "transport": _registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-            # partial.
+            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
             "cancel_transport": _registry.job_cancel_transport(key),
         }
     download_manifest.clear_cancel_marker(
@@ -327,8 +309,7 @@ async def download_model_response(
         variant,
         hub_cache = cache_paths.hub_cache,
     )
-    # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must
-    # not purge these during cache preparation.
+    # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must not purge these during cache preparation.
     protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
 
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
@@ -362,8 +343,7 @@ async def download_model_response(
         "accepted": True,
         "attached": False,
         "generation": generation,
-        # The transport that was actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is
-        # unavailable, and a client that assumed its request stood would offer the wrong stop control.
+        # The transport actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is unavailable, and a client that assumed its request stood would offer the wrong stop control.
         "transport": transport,
     }
 
@@ -456,8 +436,7 @@ def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str
             repo_id,
             variant,
         )
-    # A partial counts toward "resumable" only while a writer that reopens it is installed, since the
-    # next download start sweeps whatever cannot be reopened.
+    # A partial counts toward "resumable" only while a writer that reopens it is installed, since the next download start sweeps whatever cannot be reopened.
     resumable_hashes = download_registry.incomplete_blob_hashes(
         "model",
         repo_id,
@@ -481,14 +460,7 @@ async def get_model_transport_status_response(
     gguf_variant: str = "",
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Return last transport used for this repo + whether any partial blobs
-    exist + whether that partial supports byte-level resume.
-
-    ``resumable`` is True only when an HTTP partial exists. XET partials
-    are reported via ``has_partial`` but always have ``resumable=False``
-    because ``hf_xet`` rewrites the destination from scratch on every
-    call (network resume happens transparently via its chunk cache).
-    """
+    """Last transport used for this repo, whether any partial blobs exist, and whether that partial supports byte-level resume. ``resumable`` is True only for an HTTP partial: XET partials report ``has_partial`` but never resume, because ``hf_xet`` rewrites the destination from scratch every call (network resume happens transparently via its chunk cache)."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
@@ -526,42 +498,27 @@ def _variant_manifest_decision(
 ) -> "tuple[str, Optional[download_manifest.Manifest]]":
     """The variant's manifest from whichever cache dir on disk holds it, and why.
 
-    The verdict is ``"found"``, ``"absent"`` (no cache on disk has one) or ``"refused"`` (one
-    exists but applying it across the scanned caches would be wrong). Callers have to tell those
-    last two apart: a refusal is a decision that NO manifest may speak here, so re-reading one by
-    another route walks straight back into the answer this function just rejected.
+    The verdict is "found", "absent" (no cache on disk has one) or "refused" (one exists but applying it across the scanned caches would be wrong). Callers must tell those last two apart: a refusal decides that NO manifest may speak here, so re-reading one by another route walks back into the answer just rejected.
 
-    snapshot_progress reads manifests per scanned cache entry (``entry.parent``)
-    while this resolver only ever asked the active cache, so the two could
-    disagree about whether a manifest exists at all. When it lost, the expected
-    file set came back empty and the hash filter then dropped every blob in the
-    shared ``blobs/`` dir -- a finished variant reporting 0 bytes against the
-    caller's catalog-hinted total. Active cache first, so the common case is one
-    lookup; every candidate found has to agree before one is returned.
+    snapshot_progress reads manifests per scanned cache entry (entry.parent) while this resolver only ever asked the active cache, so the two could disagree about whether a manifest exists at all. When it lost, the expected file set came back empty and the hash filter dropped every blob in the shared blobs/ dir, a finished variant reporting 0 bytes. Active cache first so the common case is one lookup; every candidate found must agree before one is returned.
     """
-    # The active cache's manifest is a candidate like any other, NOT an early return: its repo dir can
-    # be gone while its scoped state holds an old manifest, and applying those hashes to a remembered
-    # cache that has the complete variant filters out every blob of it.
+    # The active cache's manifest is a candidate like any other, NOT an early return: its repo dir can be gone while its scoped state holds an old manifest, and applying those hashes to a remembered cache holding the complete variant filters out every blob of it.
     found: list[download_manifest.Manifest] = []
-    # active_root is the root the job records, which is the one snapshot_progress scans and not
-    # necessarily the configured default.
+    # active_root is the root the job records, which is the one snapshot_progress scans and not necessarily the configured default.
     active_manifest = download_manifest.read_manifest(
         "model", repo_id, variant, hub_cache = active_root
     )
     if active_manifest is not None:
         found.append(active_manifest)
-    # The active cache was just probed by the call above and a state-dir miss is not free, so skip the
-    # entry that repeats it; in the common case preferred_repo_cache_dirs returns only that entry.
+    # The active cache was just probed above and a state-dir miss is not free, so skip the entry that repeats it; usually preferred_repo_cache_dirs returns only that entry.
     active = download_manifest._canonical_hub_cache(active_root)
-    # The SAME cache dirs snapshot_progress will scan: a remembered cache's manifest for the same
-    # variant would have its hashes applied to the active root's blobs, leaving the card at 0 B.
+    # The SAME cache dirs snapshot_progress will scan: a remembered cache's manifest for the same variant would have its hashes applied to the active root's blobs, leaving the card at 0 B.
     for entry in preferred_repo_cache_dirs(
         "model", repo_id, force_active = force_active, active_root = active_root
     ):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
             if active_manifest is None:
-                # Anything returned for a cache with no manifest of its own would be another cache's answer applied
-                # to its blobs.
+                # Anything returned for a cache with no manifest of its own would be another cache's answer applied to its blobs.
                 return ("refused", None)
             continue
         manifest = download_manifest.read_manifest(
@@ -571,18 +528,13 @@ def _variant_manifest_decision(
             hub_cache = entry.parent,
         )
         if manifest is None:
-            # A scanned cache that contributed NOTHING may hold the complete snapshot, since a manifest can be
-            # deleted or never written, and another cache's hashes would filter out every blob AND disable the
-            # name-based fallback.
+            # A scanned cache that contributed NOTHING may hold the complete snapshot, since a manifest can be deleted or never written, and another cache's hashes would filter out every blob AND disable the name-based fallback.
             return ("refused", None)
         found.append(manifest)
     if not found:
         return ("absent", None)
-    # One answer, or several that agree: safe to apply to every scanned entry, which is what
-    # snapshot_progress does with this hash set.
-    # Several that DISAGREE must be refused: snapshot_progress picks its reading by bytes across all
-    # preferred cache dirs while the hashes come from one lookup, so the first cache's older revision
-    # filters out every blob of a later complete one. None degrades to the name-based fallback.
+    # One answer, or several that agree, is safe to apply to every scanned entry, which is what snapshot_progress does with this hash set.
+    # Several that DISAGREE must be refused: snapshot_progress picks its reading by bytes across all preferred cache dirs while the hashes come from one lookup, so the first cache's older revision filters out every blob of a later complete one. None degrades to the name-based fallback.
     first = _manifest_hashes(found[0])
     if any(_manifest_hashes(m) != first for m in found[1:]):
         return ("refused", None)
@@ -644,9 +596,7 @@ async def get_gguf_download_progress_response(
                 frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
             )
         if verdict == "refused":
-            # A refusal is not a miss: the blob-hash helper reads the DEFAULT cache's manifest with none of
-            # this scoping, so falling through reinstates the hashes just rejected. An empty set degrades to
-            # the per-entry name-based fallback.
+            # A refusal is not a miss: the blob-hash helper reads the DEFAULT cache's manifest with none of this scoping, so falling through reinstates the hashes just rejected. An empty set degrades to the per-entry name-based fallback.
             return (expected_total, frozenset())
         return (
             expected_total,
@@ -661,15 +611,7 @@ async def get_gguf_download_progress_response(
     def _expected_files_resolver(
         resolved_repo_id: str, token: Optional[str]
     ) -> Sequence[download_manifest.ExpectedFile]:
-        """What HF says this variant should contain, paths and declared sizes.
-
-        The only thing that lets a finished variant whose manifest is missing
-        settle terminal instead of staying partial forever, so it has to be the
-        metadata's own file list: a byte tally taken from the shared blobs/ dir
-        cannot tell this quant's bytes from a sibling's. The requirement lookup
-        is cached, and snapshot_progress only calls this once a reading has
-        otherwise passed for complete.
-        """
+        """What HF says this variant should contain, paths and declared sizes. The only thing that lets a finished variant whose manifest is missing settle terminal instead of staying partial forever, so it has to be the metadata's own file list: a byte tally from the shared blobs/ dir cannot tell this quant's bytes from a sibling's. The requirement lookup is cached, and snapshot_progress calls this only once a reading has otherwise passed for complete."""
         if progress_variant is None:
             return ()
         requirement = gguf_variants.gguf_variant_requirements(
@@ -680,10 +622,8 @@ async def get_gguf_download_progress_response(
         return requirement.expected_files if requirement is not None else ()
 
     def _variant_file_matcher(path: str, *, companions: bool = True) -> bool:
-        # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every
-        # variant, so they belong to whichever one is being polled.
-        # companions=False asks the narrower question, whether this path proves the quant ITSELF is here:
-        # shared companions belong to every quant, so counting them reported bytes for a deleted file.
+        # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every variant, so they belong to whichever one is being polled.
+        # companions=False asks the narrower question, whether this path proves the quant ITSELF is here: shared companions belong to every quant, so counting them reported bytes for a deleted file.
         if progress_variant is None:
             return False
         if gguf_plan.is_main_gguf_variant_path(path, progress_variant):
@@ -709,15 +649,7 @@ async def get_download_progress_response(
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Return download progress for any HuggingFace model repo.
-
-    Checks the local HF cache for completed blobs and in-progress
-    (.incomplete) downloads. Uses the caller-supplied expected total
-    when available; otherwise queries HF metadata and caches it.
-    Also returns ``cache_path``: the realpath of the snapshot directory
-    (or the cache repo root if no snapshot exists yet) so the UI can
-    show users where the weights actually live on disk.
-    """
+    """Download progress for any HuggingFace model repo, from completed blobs and in-progress (.incomplete) files in the local HF cache. Uses the caller-supplied expected total when available, else queries and caches HF metadata. ``cache_path`` is the realpath of the snapshot dir (or the cache repo root before one exists) so the UI can show where the weights live."""
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,

@@ -19,10 +19,7 @@ logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
-    """Return parent of sys.prefix as STUDIO_HOME when running from an
-    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
-    or bin shim) so a dev venv named unsloth_studio isn't misidentified.
-    """
+    """Parent of sys.prefix as STUDIO_HOME when running from an installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf or bin shim) so a dev venv named unsloth_studio is not misidentified."""
     try:
         prefix = Path(sys.prefix).resolve()
     except (OSError, ValueError):
@@ -43,12 +40,7 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def studio_root() -> Path:
-    """Unsloth install root.
-
-    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
-    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
-    both are set (specific signal beats generic alias).
-    """
+    """Unsloth install root: UNSLOTH_STUDIO_HOME, then the STUDIO_HOME alias, then sys.prefix inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins over the generic alias."""
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
@@ -151,18 +143,12 @@ def _documents_from_registry_value(value: object, expandable: bool) -> Path | No
     """The Documents path a Windows shell-folder registry value names."""
     if not isinstance(value, str) or not value.strip():
         return None
-    # REG_EXPAND_SZ stores it unexpanded, e.g. %USERPROFILE%\Documents. ntpath
-    # rather than os.path: %VAR% is Windows syntax, which posixpath leaves as-is.
+    # REG_EXPAND_SZ stores it unexpanded, e.g. %USERPROFILE%\Documents; ntpath rather than os.path, since posixpath leaves Windows %VAR% syntax as-is.
     return Path(ntpath.expandvars(value) if expandable else value)
 
 
 def _windows_documents_dir() -> Path | None:
-    """Windows' own Documents folder, wherever the user moved it.
-
-    OneDrive's Known Folder Move repoints Documents at the synced copy and
-    leaves ~/Documents behind, so that guess writes to the wrong place or to a
-    folder that is not there at all.
-    """
+    """Windows' own Documents folder, wherever the user moved it. OneDrive's Known Folder Move repoints Documents at the synced copy and leaves ~/Documents behind, so guessing writes to the wrong place or to a folder that is not there."""
     if os.name != "nt":
         return None
     try:
@@ -234,30 +220,17 @@ def legacy_hf_cache_dir() -> Path:
 
 
 def hf_default_cache_dir() -> Path:
-    """Platform default HuggingFace hub cache (ignoring env overrides).
-
-    Where HF caches when no ``HF_HUB_CACHE`` / ``HF_HOME`` is set. Scanned
-    so models downloaded *before* installing Unsloth Studio are discovered.
-    """
+    """Platform default HuggingFace hub cache, ignoring HF_HUB_CACHE / HF_HOME, so models downloaded before Unsloth Studio was installed are still discovered."""
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
 def _host_path(path: str | Path) -> Path:
-    """Expand a configured path into one this process can stat.
-
-    A drive-letter path from another tool's config means nothing to a WSL process
-    until it is mapped under the automount root.
-    """
+    """Expand a configured path into one this process can stat: a drive-letter path from another tool's config means nothing to a WSL process until mapped under the automount root."""
     return Path(host_normalize_path(str(path))).expanduser()
 
 
 def _existing_dirs(candidates: Iterable[str | Path], *, resolve: bool) -> list[Path]:
-    """Host-translate *candidates*, drop non-directories, dedupe by real path.
-
-    *resolve* picks the return shape: ``well_known_model_dirs`` feeds a containment
-    check and needs real paths, while the per-tool lists feed model ids and must keep
-    the spelling the user configured.
-    """
+    """Host-translate candidates, drop non-directories, dedupe by real path. resolve picks the return shape: well_known_model_dirs feeds a containment check and needs real paths, while the per-tool lists feed model ids and must keep the spelling the user configured."""
     out: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -276,11 +249,7 @@ def _existing_dirs(candidates: Iterable[str | Path], *, resolve: bool) -> list[P
 
 
 def _lmstudio_downloads_folder() -> str:
-    """Custom models folder from LM Studio's settings.json, or "" if unset.
-
-    utf-8-sig: LM Studio may write this file with a BOM, which a plain utf-8 read turns
-    into a JSONDecodeError that used to be swallowed, dropping the folder (#9748).
-    """
+    """Custom models folder from LM Studio's settings.json, or "" if unset. utf-8-sig because LM Studio may write a BOM, which a plain utf-8 read turns into a swallowed JSONDecodeError that dropped the folder (#9748)."""
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if not settings_path.is_file():
         return ""
@@ -303,18 +272,13 @@ def lmstudio_model_dirs() -> list[Path]:
         candidates.append(downloads)
 
     candidates.append(Path.home() / ".lmstudio" / "models")
-    # Legacy cache location.
     candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
     return _existing_dirs(candidates, resolve = False)
 
 
 def ollama_model_dirs() -> list[Path]:
-    """Return Ollama model directories that exist on disk.
-
-    User-level plus the common system-wide install paths
-    (https://github.com/ollama/ollama/issues/733).
-    """
+    """Ollama model directories that exist on disk: user-level plus the common system-wide install paths (https://github.com/ollama/ollama/issues/733)."""
     candidates: list[str | Path] = []
     ollama_env = os.environ.get("OLLAMA_MODELS")
     if ollama_env:
@@ -326,21 +290,13 @@ def ollama_model_dirs() -> list[Path]:
 
 
 def well_known_model_dirs() -> list[Path]:
-    """Return directories commonly used by other local LLM tools.
-
-    Backs the folder browser's quick-pick chips. Returns only paths that
-    exist on disk, so the UI never shows dead chips. Order reflects rough
-    likelihood of models being there -- LM Studio and Ollama first, then
-    generic fallbacks.
-    """
+    """Directories commonly used by other local LLM tools, backing the folder browser's quick-pick chips. Only paths that exist on disk, so the UI never shows a dead chip, ordered by rough likelihood."""
     candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
     candidates.extend(ollama_model_dirs())
 
-    # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
-    # Generic "my models" spots users drop things into.
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
@@ -348,12 +304,7 @@ def well_known_model_dirs() -> list[Path]:
 
 
 def _setup_cache_env() -> None:
-    """Set cache env vars for HuggingFace, uv, and vLLM.
-
-    Explicit Hugging Face environment variables take precedence over Unsloth's
-    stored location. Unsloth seeds import-time variables once, while each later
-    worker receives its own captured cache location.
-    """
+    """Set cache env vars for HuggingFace, uv and vLLM. Explicit Hugging Face environment variables take precedence over Unsloth's stored location; import-time variables are seeded once while each later worker receives its own captured cache location."""
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
 
@@ -361,15 +312,12 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
-        # unsloth_zoo defaults this to a bare relative name.
-        # It resolves against the CWD and the Windows launcher runs Unsloth with WorkingDirectory=%USERPROFILE%, so the
-        # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
-        # time and puts it on sys.path.
+        # unsloth_zoo defaults this to a bare relative name, which resolves against the CWD, and the Windows launcher runs Unsloth with WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
+        # Must be set before unsloth_zoo.compiler is imported: it reads the value at import time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
-        # sys.path and sends the compiler to the system temp directory instead.
+        # Blank counts as unset: an inherited KEY= would pin the cache to "", putting an empty entry on sys.path and sending the compiler to the system temp directory.
         if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup
@@ -380,9 +328,7 @@ def _setup_cache_env() -> None:
                 except FileExistsError:
                     created = False
                 if key == "UNSLOTH_COMPILE_LOCATION" and created:
-                    # Marks the directory as ours, so the cleanup can delete
-                    # from it without inferring that from its contents. Only when
-                    # this call made it: the marker is what licenses an rmtree.
+                    # Marks the directory as ours so cleanup can delete from it without inferring that from its contents; only when this call created it, since the marker is what licenses an rmtree.
                     from utils.cache_cleanup import CACHE_MARKER
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
@@ -390,12 +336,7 @@ def _setup_cache_env() -> None:
 
 
 def setup_cache_env() -> None:
-    """Seed the cache env vars without creating every studio directory.
-
-    For `uvicorn main:app`, which bypasses run.py and so never reaches
-    ensure_studio_directories, but still has to pin UNSLOTH_COMPILE_LOCATION
-    before unsloth_zoo.compiler is imported.
-    """
+    """Seed the cache env vars without creating every studio directory, for `uvicorn main:app`, which bypasses run.py and so never reaches ensure_studio_directories but still has to pin UNSLOTH_COMPILE_LOCATION before unsloth_zoo.compiler is imported."""
     _setup_cache_env()
 
 
@@ -426,11 +367,7 @@ def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = (
 
 
 def _has_parent_segment(raw: str, path: Path) -> bool:
-    """Return true when a user path contains a parent-directory segment.
-
-    On POSIX, ``Path("E:\\foo\\..\\bar")`` treats backslashes as normal
-    characters, so check both the host parser and Windows-style parsing.
-    """
+    """True when a user path contains a parent-directory segment. On POSIX, Path with backslashes treats them as ordinary characters, so check both the host parser and Windows-style parsing."""
     if ".." in path.parts:
         return True
     if ".." in PureWindowsPath(raw).parts:
@@ -466,11 +403,7 @@ def resolve_under_root(
     root: Path,
     strip_prefixes: tuple[str, ...] = (),
 ) -> Path:
-    """Resolve ``path_value`` and assert the result is under ``root``.
-
-    Absolutes are accepted only if already contained (so pre-resolved
-    internal paths re-enter idempotently); schemas reject absolutes upstream.
-    """
+    """Resolve path_value and assert the result is under root. Absolutes are accepted only if already contained, so pre-resolved internal paths re-enter idempotently; schemas reject absolutes upstream."""
     if not path_value or not str(path_value).strip():
         return root
 
@@ -493,9 +426,7 @@ def resolve_under_root(
 
 
 def default_run_dir_name(model_name: str) -> str:
-    # Repo ids keep their namespace while local paths collapse to their final component, so an absolute source cannot
-    # escape outputs_root; length-capped to the filesystem name limit.
-    # Repo ids keep their namespace (org/model -> org_model).
+    # Repo ids keep their namespace (org/model -> org_model) while local paths collapse to their final component, so an absolute source cannot escape outputs_root; length-capped to the filesystem name limit.
     raw = str(model_name or "").strip()
     is_path = (
         "\\" in raw
@@ -517,11 +448,7 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
-    """Resolve an export directory — contained under exports_root().
-
-    Used by scan/read endpoints. Use :func:`resolve_export_write_dir`
-    for the export write path where absolute paths are accepted.
-    """
+    """Resolve an export directory contained under exports_root(), for scan and read endpoints. resolve_export_write_dir is the write path, which accepts absolutes."""
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -530,13 +457,7 @@ def resolve_export_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_write_dir(path_value: str | None = None) -> Path:
-    """Resolve an export save directory — accepts absolute paths.
-
-    Unlike :func:`resolve_export_dir`, this function passes absolute
-    paths through as-is so users can target a different drive when
-    their Unsloth install lives on a constrained system volume
-    (see :gh-issue:`6082`). Used only by the export write path.
-    """
+    """Resolve an export save directory. Unlike resolve_export_dir, absolute paths pass through as-is so users can target another drive when their Unsloth install lives on a constrained system volume (see :gh-issue:`6082`). Export write path only."""
     if not path_value or not str(path_value).strip():
         return exports_root()
     raw = str(path_value).strip()
@@ -563,8 +484,7 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
 
 
 def dataset_files_in_dir(directory: Path) -> list[Path]:
-    """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
-    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the directory's own files. Raises ``ValueError`` when it holds no supported format."""
     parquet_dir = directory / "parquet-files"
     if not parquet_dir.exists():
         parquet_dir = directory

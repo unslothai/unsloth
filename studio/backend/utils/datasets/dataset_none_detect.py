@@ -25,7 +25,6 @@ from datasets import Dataset
 
 # Conversation column probing (shared by detection + scanning)
 # Candidate column names for conversational datasets, checked in priority order.
-# ---------------------------------------------------------------------------
 
 CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 
@@ -128,7 +127,6 @@ def _probe_conversation(dataset: Dataset, candidates = None):
 
 
 # None-detection helpers
-# ---------------------------------------------------------------------------
 
 
 def is_none_or_empty(value) -> bool:
@@ -186,7 +184,6 @@ def _classify_empty(value) -> str:
 
 
 # Alpaca detection
-# ---------------------------------------------------------------------------
 
 
 def find_none_alpaca(dataset: Dataset) -> dict:
@@ -224,7 +221,6 @@ def find_none_alpaca(dataset: Dataset) -> dict:
 
 
 # ChatML / conversational detection
-# ---------------------------------------------------------------------------
 
 
 def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
@@ -370,7 +366,6 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
 
 
 # Convenience wrappers per format (all delegate to the same scan logic)
-# ---------------------------------------------------------------------------
 
 
 def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
@@ -409,7 +404,6 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
 # chatml with a 'developer' role).
 # Each entry is name, match(dataset, conv_info) -> bool, scan (find_none_* function); to add one write
 # find_none_<name>() or reuse find_none_chatml, and detect_format(), --format and scan_dataset() pick it up.
-# ---------------------------------------------------------------------------
 
 FORMAT_REGISTRY = [
     {
@@ -560,7 +554,6 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
 
 
 # Report printing
-# ---------------------------------------------------------------------------
 
 
 def _print_summary_header(stats: dict, fmt: str) -> bool:
@@ -758,7 +751,6 @@ def show_row(
 
 
 # CLI entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse

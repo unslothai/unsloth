@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted policy and launch policy for Settings > LAN access.
-
-The listener itself lives in ``lan_access``; this decides whether the current
-launch may own one, whether the user is allowed to turn it on, and remembers the
-answer across restarts.
-"""
+"""Persisted policy and launch policy for Settings > LAN access. The listener itself lives in ``lan_access``; this decides whether the current launch may own one, whether the user is allowed to turn it on, and remembers the answer across restarts."""
 
 from __future__ import annotations
 
@@ -118,12 +113,7 @@ def _addresses_match(host: str, port: int, candidates) -> bool:
 
 
 def request_on_lan_access(request) -> bool:
-    """Classify a request from ASGI socket state, never client-controlled headers.
-
-    Both the accepting endpoint and peer must be private and non-loopback. The
-    accepting endpoint must also match either the exact live settings listener or
-    the launch-managed bind and port published at startup.
-    """
+    """Classify a request from ASGI socket state, never client-controlled headers. Both the accepting endpoint and peer must be private and non-loopback, and the accepting endpoint must also match either the exact live settings listener or the launch-managed bind and port published at startup."""
     from lan_access import lan_listener_status
 
     scope = getattr(request, "scope", {})
@@ -280,8 +270,7 @@ def configure_lan_access(
     resolved_loopback = bool(app_state.lan_access_launch_addresses) and all(
         _normalized_ip(address).is_loopback for address in app_state.lan_access_launch_addresses
     )
-    # An unresolved hostname is launch-managed but never trusted for keyless LAN admission:
-    # request_on_lan_access requires its resolved address set.
+    # An unresolved hostname is launch-managed but never trusted for keyless LAN admission: request_on_lan_access requires its resolved address set.
     app_state.lan_access_launch_managed = (
         app_state.lan_access_wildcard_bind or not resolved_loopback
     )
@@ -293,12 +282,7 @@ def configure_lan_access(
 
 
 def _launch_urls(app_state) -> list[str]:
-    """Where a launch-managed bind answers on this network.
-
-    A wildcard launch cannot rely only on ``server_url``: run.py gives that
-    direct base one LAN-reachable address, while Settings must show every
-    currently reachable address in each family the launch serves.
-    """
+    """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
 
@@ -349,15 +333,9 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 def _has_keyless_lan_url(urls: list[str]) -> bool:
     """Whether any of these URLs is one a keyless caller can actually reach.
 
-    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a
-    `Host` that names anything, so a hostname bind yields a URL that resolves to a private
-    address and is still refused. Reporting it eligible is what made the LAN panel advertise
-    `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
+    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a `Host` that names anything, so a hostname bind yields a URL that resolves to a private address and is still refused. Reporting it eligible is what made the LAN panel advertise `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
 
-    Admission decides, through the shared
-    `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what
-    let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission
-    refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
+    Admission decides, through the shared `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
     """
     import ipaddress
     from urllib.parse import urlparse
@@ -372,8 +350,7 @@ def _has_keyless_lan_url(urls: list[str]) -> bool:
         if not parsed.hostname:
             continue
         try:
-            # urlparse already strips the IPv6 brackets and lowercases; parse the
-            # remaining literal without normalising it
+            # urlparse already strips the IPv6 brackets and lowercases; parse the remaining literal without normalising it.
             address = ipaddress.ip_address(parsed.hostname)
         except ValueError:
             continue
@@ -489,8 +466,7 @@ def stop_lan_access(app) -> dict:
     status = lan_access_status(app)
     if status["managed_by"] == "launch":
         raise RuntimeError("launch_managed")
-    # a stop that could not confirm the port is closed leaves the host reachable,
-    # and lan_access keeps the trust flag with the listener state it describes
+    # a stop that could not confirm the port is closed leaves the host reachable, and lan_access keeps the trust flag with the listener state it describes.
     if stop_lan_listener():
         clear_lan_listener_error()
     return lan_access_status(app)
