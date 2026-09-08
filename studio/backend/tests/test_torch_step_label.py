@@ -145,8 +145,6 @@ def test_every_suffix_keeps_the_same_backend(monkeypatch, platform_name, hardwar
     assert mod._torch_step_label(suffix) == f"torch {suffix} ({expected})"
 
 
-
-
 @pytest.mark.parametrize("known_backend", ["cuda", "rocm", "cpu", "xpu", "gfx1151-custom"])
 @pytest.mark.parametrize("platform_name", sorted(_PLATFORMS))
 def test_an_explicit_backend_wins_over_every_probe(monkeypatch, known_backend, platform_name):
@@ -180,8 +178,6 @@ def test_an_explicit_backend_consults_no_detector(monkeypatch):
     assert mod._torch_step_label("check") == "torch check (cuda)"
 
 
-
-
 def test_nvidia_still_takes_priority(monkeypatch):
     mod, _calls = _prepare(monkeypatch, platform_name = "windows", hardware_name = "nvidia")
     monkeypatch.setattr(mod, "_torch_hip_version_on_disk", lambda: "6.4.43483")
@@ -209,8 +205,6 @@ def test_a_windows_rocm_torch_is_recognised_by_version_string_alone(monkeypatch)
 def test_a_host_with_neither_is_still_cpu(monkeypatch):
     mod, _calls = _prepare(monkeypatch, platform_name = "windows", hardware_name = "cpu")
     assert mod._torch_step_label("check") == "torch check (cpu)"
-
-
 
 
 @pytest.mark.parametrize("platform_name", sorted(_PLATFORMS))
@@ -411,8 +405,6 @@ def test_the_hip_reader_starts_no_subprocess(monkeypatch, tmp_path):
     )
     _fake_torch_on_path(monkeypatch, tmp_path, _VERSION_PY_ROCM)
     assert mod._torch_hip_version_on_disk() == "6.4.43483-a1b2c3d"
-
-
 
 
 def test_the_label_on_this_real_host(monkeypatch):

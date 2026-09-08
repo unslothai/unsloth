@@ -178,7 +178,6 @@ def marker_dir(tmp_path):
     return _write
 
 
-
 _PS_HARNESS = """
 param([string]$InstallDir, [string]$StrictMode)
 
@@ -232,7 +231,6 @@ def _run_ps1_printer(install_dir, strict_mode):
     return proc
 
 
-
 _SH_HARNESS = """
 set -u
 _FUNC_FILE="$1"
@@ -282,8 +280,6 @@ def _run_sh_printer(install_dir, tmp_path):
     return proc
 
 
-
-
 @requires_pwsh
 @pytest.mark.parametrize("strict_mode", STRICT_MODES)
 @pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids = _IDS)
@@ -330,8 +326,6 @@ def test_ps1_printer_never_evaluates_the_marker(marker_dir, payload):
     assert proc.stdout == _BASE_LINE
 
 
-
-
 @requires_bash
 @pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids = _IDS)
 def test_sh_printer(marker_dir, tmp_path, case_id, raw, expected):
@@ -351,8 +345,6 @@ def test_sh_printer_never_evaluates_the_marker(marker_dir, tmp_path, payload):
     assert proc.returncode == 0, proc.stderr
     assert "pwned" not in proc.stdout
     assert proc.stdout.rstrip("\n") == _BASE_LINE
-
-
 
 
 @requires_pwsh
@@ -606,8 +598,6 @@ def test_every_historical_marker_shape_agrees(marker_dir, tmp_path, shape_id):
     ps1 = _run_ps1_printer(install_dir, "Latest")
     sh = _run_sh_printer(install_dir, tmp_path)
     assert ps1.stdout == sh.stdout.rstrip("\n"), shape_id
-
-
 
 
 def test_the_ps1_guard_checks_property_existence():
