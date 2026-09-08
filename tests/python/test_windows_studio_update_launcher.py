@@ -928,6 +928,40 @@ def test_a_recovered_launcher_still_reports_what_setup_published(
     assert "The previous launcher was restored." in err
 
 
+def test_a_published_launcher_keeps_its_own_verdict_when_recovery_also_fails(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """The reason speaks for absence only, never over a launcher setup wrote.
+
+    With every candidate broken too, the reason is about the copy put back, not
+    about the update -- so reporting it here would trade the update's own
+    failure for the previous launcher's, which is the same discarded-verdict
+    mistake in the other direction.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    published = b"MZ-published"
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(published)
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name != "unsloth.exe":
+            return types.SimpleNamespace(returncode = 9)
+        if target.read_bytes() == published:
+            return types.SimpleNamespace(returncode = 7)
+        return types.SimpleNamespace(returncode = 8)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 7 for --version" in err
+    assert "returned 8 for --version" not in err
+
+
 def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
     monkeypatch, studio, tmp_path
 ):

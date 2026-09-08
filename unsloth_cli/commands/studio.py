@@ -5133,18 +5133,16 @@ class _WindowsLauncherUpdateTransaction:
             # launcher setup DID write and that cannot run is still a failure,
             # even though the previous one goes back.
             if published or not restored:
-                # Report what recovery actually decided on, not the condition
-                # that sent it looking. Once the launcher is gone `error` is
-                # _LAUNCHER_ABSENT for every cause, and absence is the one thing
-                # _recovered_cli_health_error has already excused -- so naming it
-                # here described the update by the symptom this class exists to
-                # forgive, and #9804 could not be diagnosed from its own log.
-                # `error` still answers when recovery SUCCEEDED and the launcher
-                # setup published is itself the broken one, which is the case the
-                # `published` arm above is for. _recover_missing_launcher already
-                # reports its cause this way.
+                # Absence is the one sampled error that says nothing: once the
+                # launcher is gone `error` reads _LAUNCHER_ABSENT whatever the
+                # cause, so only the verdict recovery acted on can name it, and
+                # #9804 could not be diagnosed from its own log. Any other
+                # `error` IS the failure of the launcher setup published, while
+                # the reason by then describes the copy put back in its place --
+                # so it must not displace it.
+                cause = reason if error is self._LAUNCHER_ABSENT else None
                 typer.echo(
-                    f"Error: Unsloth Studio update failed because {reason or error}.",
+                    f"Error: Unsloth Studio update failed because {cause or error}.",
                     err = True,
                 )
                 if restored:
