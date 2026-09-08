@@ -2125,6 +2125,20 @@ def _forced_rocm_route_is_viable() -> bool:
         return False
     if _miscomputing_arch_host():
         return False
+    # The card the runtime will hand torch, not any sibling on the bus. Asking "does some
+    # AMD arch here have a route" answers yes on a mixed host whose mask selects the
+    # unsupported one, and _ensure_cuda_torch then stands down for a card the ROCm wheels
+    # have no kernels for -- leaving neither AMD nor NVIDIA usable. _runtime_gfx_target
+    # composes both mask layers and returns the whole machine beside the target, which is
+    # the shape _gfx_route_on_host needs for the gfx906 mixed-host rule.
+    _target, _, _, _host_codes = _runtime_gfx_target(_infer_linux_amd_gfx_arch())
+    if _target is not None:
+        return _gfx_route_on_host(_target, _host_codes or [_target])
+    # No target resolved. A mask exposing no GPU is a deliberate selection, so there is
+    # nothing to swap to; anything else is a detection miss, where the inventory is still
+    # the best evidence available and is what this asked before.
+    if _visible_masks_select_no_gpu():
+        return False
     _archs = _physical_amd_gfx_archs()
     return any(_gfx_route_on_host(_gfx, _archs) for _gfx in _archs)
 
@@ -4596,14 +4610,18 @@ def _ensure_rocm_torch() -> None:
         # run asked for ROCm outright. The AMD-presence test below still has to pass:
         # the request relaxes which vendor wins, not whether there is a card to serve.
         #
-        # An explicit CUDA pin outranks the request, as _rocm_torch_explicitly_requested's
-        # own docstring promises: a pin names the exact wheels, the request only names a
-        # preference. _rocm_pin is the ROCm pin, so a CUDA pin leaves it None and this is
-        # the only place that check can happen -- otherwise _ensure_cuda_torch installs the
-        # pinned build and this function immediately replaces it.
+        # An explicit pin of another known family outranks the request, as
+        # _rocm_torch_explicitly_requested's own docstring promises: a pin names the exact
+        # wheels, the request only names a preference. _rocm_pin is the ROCm pin, so any
+        # other family leaves it None and this is the only place that check can happen --
+        # otherwise a CUDA pin is installed by _ensure_cuda_torch and replaced here, and a
+        # /cpu pin has the multi-GB ROCm stack installed here and then undone by
+        # _ensure_cpu_torch, on every update. An unknown-family pin is deliberately not
+        # named: the install applied it verbatim, so nothing here can judge it.
         if _has_usable_nvidia_gpu() and (
             not _rocm_torch_explicitly_requested()
             or _explicit_cuda_torch_index_url() is not None
+            or _explicit_cpu_torch_index_url() is not None
         ):
             return
         # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
@@ -4614,11 +4632,14 @@ def _ensure_rocm_torch() -> None:
         # thing between a DECLARED arch and AMD wheels installed over a working CUDA stack:
         # _infer_linux_amd_gfx_arch() takes UNSLOTH_ROCM_GFX_ARCH before it looks at any
         # hardware, so a stale one satisfies the line above on a host with no AMD card.
-        # Scoped to that pairing, so an ordinary install is judged exactly as before.
+        # The bar is a viable ROUTE rather than mere presence, the same one _ensure_cuda_torch
+        # stands down on: a present gfx1010 that no index can serve would otherwise have the
+        # generic fallback below install ROCm wheels over the working CUDA stack. Scoped to
+        # that pairing, so an ordinary install is judged exactly as before.
         if (
             _rocm_torch_explicitly_requested()
             and _has_usable_nvidia_gpu()
-            and not _amd_hardware_is_corroborated()
+            and not _forced_rocm_route_is_viable()
         ):
             return
 
