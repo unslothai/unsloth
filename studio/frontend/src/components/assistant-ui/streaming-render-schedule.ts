@@ -68,73 +68,37 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-// Tracks Marked's `def` rule, whose label is `[^\]]+`: any run up to the
-// closing bracket, line endings included. Missing a definition is a false
-// NEGATIVE, the one direction that costs correctness -- it is not held in the
-// live tail, so it can be committed into an independently parsed block while a
-// twin is still live, and Marked, which emits no token for a label it has
-// already seen, lexes the two apart. A false positive only costs retention.
+// Tracks Marked's `def` rule, whose label is `[^\]]+`: any run to the closing
+// bracket, line endings included, no length cap. A miss is a false NEGATIVE and
+// that is the only direction that costs correctness -- a definition not held in
+// the live tail is committed into an independently parsed block, and Marked
+// emits no token for a label it has already seen, so it lexes apart from its
+// still-live twin. A false positive only costs retention, so err that way.
 //
-// Hence no `\n` in the class: Marked normalises a label's whitespace, so
-// `[foo\nbar]` registers as `foo bar`, and a label that soft-wraps has to be
-// held like any other.
+// Hence `\n` in the class (Marked normalises label whitespace, so `[foo\nbar]`
+// registers as `foo bar`), `\\[\s\S]` over `\\.` (`.` stops at a line ending, so
+// a label whose line ends in a backslash was rejected), and `u` (without it
+// `{1,999}` counts UTF-16 code units, making the real bound 499 emoji).
 //
-// The length bound stays, even though Marked has none. Every `[` is a start
-// position and each scans until it can decide, so a bound of B costs O(n*B)
-// while no bound costs O(n^2). Measured on one long line dense with `[` that
-// never reaches `]:`, the worst case for the scan:
-//
-//   line     200      999   unbounded
-//    10k    0.73ms   2.82ms    17.07ms
-//    50k    3.01ms  14.56ms   360.44ms
-//   100k    6.51ms  27.72ms  1257.36ms
-//
-// 999 stays linear, unbounded does not, and 999 is CommonMark's label limit, so
-// the whole valid range is covered. A label past it is outside the spec and
-// stays mis-lexed, which is the trade against that quadratic scan.
-//
-// `u` is what makes "the whole valid range" true. Without it the quantifier
-// counts UTF-16 code units, so an astral character costs two and the real bound
-// is 499 emoji, not 999 -- and Marked, which has no bound at all, registers
-// them. It is free: on the worst-case scan above it is inside the run-to-run
-// noise (100k: 104.83ms without, 103.29ms with).
-//
-// Two consumers pay for admitting `\n`, and they are bounded differently.
-// `updateLinkDefinitionParity` reads one block of a live tail capped at
-// STALLED_TAIL_CHARACTERS and returns early on a fence, so measured per chunk
-// the difference there is 0%. `hasGlobalLinkReference` reads the WHOLE reply on
-// every render, but only after LINK_REFERENCE_RE has already matched, and `\n`
-// in the class is exactly what a start position used to stop at. At 50k with a
-// reference present: 0.045ms over short lines and 0.026ms over citations, both
-// unchanged, against 2.45ms -> 11.95ms on one 50k line dense with `[`. That
-// last shape is the price, and it is the same shape the bound above exists for.
-// `\\[\s\S]`, not `\\.`: `.` stops at a line ending even here, so a label whose
-// line ends in a backslash was rejected outright. Marked registers it
-// (`[foo\` + newline + `bar]: /url` -> `foo\ bar`), and a definition the probe
-// misses is the false negative direction that costs correctness.
+// The bound stays although Marked has none: every `[` is a start position that
+// scans until it can decide, so bound B costs O(n*B) and no bound costs O(n^2).
+// 999 is CommonMark's limit, so the whole valid range is covered and only a
+// label outside the spec stays mis-lexed. Admitting `\n` is what makes
+// `hasGlobalLinkReference` expensive, since it reads the whole reply rather than
+// a tail capped at STALLED_TAIL_CHARACTERS; unslothai/unsloth#10529.
 const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
-// The same probe plus the destination, for the remount key. Derived from
-// LINK_DEFINITION_RE, not written out again, so the key can never see fewer
-// definitions than the parity does: matching per line missed a label that spans
-// lines, and the key collapsed to a constant that no resolved definition moved.
-// The suffix is everything Marked stores about a definition after the label,
-// because that is what has to move the key: `\]: *(?:\n[ \t]*)?` before the
-// destination, then an optional title that may sit on the line after it. Text
-// that is not a destination gets read in too and costs a remount; missing one
-// leaves a rendered reference literal, so this is the direction to be wrong in.
-// Only `\n` appears here because `markdownRenderKey` normalises first, the same
-// way the cache does -- spelling every line break out three ways is how the key
-// drifts from the parser again.
+// The same probe plus everything Marked stores after the label, since that is
+// what has to move the remount key: the destination after an optional line
+// break, then an optional title that may sit on the line below it. Derived from
+// LINK_DEFINITION_RE so the key can never see fewer definitions than the parity
+// does -- matching per line missed a label spanning lines and the key collapsed
+// to a constant. Breaks are plain `\n` because the callers normalise first.
 //
-// A title that wraps is the documented residual. Marked keeps the continuation
-// (`[foo]: /url\n  "first\nsecond"` stores `first\nsecond`) and this stops at
-// the opening line, so the key does not move on the closing quote and the link
-// keeps the title it had until the message settles. Following the title further
-// means modelling its grammar -- three delimiter pairs, either opening line,
-// escapes -- and the only construct that avoids that is capturing to the end of
-// the definition's paragraph, which churns the key on every character of any
-// prose that follows a definition and remounts the tree once a frame. A stale
-// tooltip is the cheaper of the two.
+// A wrapped title is the documented residual: this stops at the title's opening
+// line, so the link keeps its old title until the message settles. Following it
+// means modelling the title grammar, and the one construct that avoids that,
+// capturing to the end of the definition's paragraph, remounts the tree once a
+// frame on any prose that follows a definition.
 const LINK_DEFINITION_KEY_RE = new RegExp(
   `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
   `g${LINK_DEFINITION_RE.flags}`,
@@ -149,13 +113,10 @@ function hasGlobalLinkReference(markdown: string): boolean {
   return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
 }
 
-// Normalising here and not at each caller is what keeps the three of them
-// agreeing: `IncrementalMarkdownCache.update` passes text it already normalised,
-// the other two pass `processedText` with whatever line ending the reply used,
-// and a `\r` counts against `{1,999}` while an `\n` in its place does not. So a
-// label that is 999 characters after normalisation, which Marked registers, was
-// 1000 raw and missed. `normalizeLineEndings` short-circuits on the replies that
-// have no `\r`, which is nearly all of them.
+// Normalising here rather than at each caller keeps the three of them agreeing:
+// one already normalises, two pass `processedText`, and a `\r` counts against
+// `{1,999}` where an `\n` does not, so a label of 999 characters was 1000 raw
+// and missed. `normalizeLineEndings` short-circuits when there is no `\r`.
 export function markdownRenderScope(markdown: string): "blocks" | "document" {
   return hasGlobalLinkReference(normalizeLineEndings(markdown))
     ? "document"

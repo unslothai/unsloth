@@ -100,23 +100,18 @@ const MARKDOWN_CASES = [
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
-  // A label longer than the old 200-character bound. Marked registers every
-  // label up to CommonMark's 999, so one past 200 has to be held in the live
-  // tail like any other; committing it away lexes it apart from its twin.
+  // Marked registers every label up to CommonMark's 999, so one past 200 has to
+  // be held like any other; committing it away lexes it apart from its twin.
   `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
   `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
-  // Marked's label class admits a line ending and normalises the label's
-  // whitespace, so `[foo\nbar]` registers as `foo bar`. A label that soft-wraps
-  // has to be held like any other.
+  // Marked normalises label whitespace, so `[foo\nbar]` registers as `foo bar`.
   `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
   `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
-  // 520 characters, but 1040 UTF-16 code units, so the bound only holds it if it
-  // counts code points. Streaming it a character at a time also cuts surrogate
-  // pairs in half, which the repair and the probe both have to survive.
+  // 520 characters but 1040 UTF-16 code units, so the bound only holds it if it
+  // counts code points. Streaming it also cuts surrogate pairs in half.
   `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
-  // A backslash immediately before the label's line ending. Marked registers
-  // this as `foo\ bar`, so the escape has to admit a line ending like the class
-  // does; `.` never would.
+  // Marked registers this as `foo\ bar`, so the escape has to admit a line
+  // ending; `.` never would.
   `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
@@ -203,12 +198,9 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
-// Everything Marked stores about a definition has to move the render key as it
-// arrives, or the reference that was rendered before it keeps the stale link.
-// The labels sweep the shapes this probe used to miss, the separators sweep both
-// places Marked accepts a destination, and each is run with every line ending
-// `normalizeLineEndings` accepts, because the key is built from text the cache
-// has not normalised.
+// Everything Marked stores about a definition has to move the key as it arrives,
+// or the reference rendered before it keeps the stale link. Run over every line
+// ending, because the key is built from text the cache has not normalised.
 test("a definition that spans lines still moves the render key", () => {
   const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
@@ -239,9 +231,8 @@ test("a definition that spans lines still moves the render key", () => {
   }
 });
 
-// The scope decides which text the cache commits, so it cannot depend on which
-// line ending the reply used. A label of 999 characters after normalisation is
-// 1000 raw with CRLF, and Marked registers it either way.
+// The scope decides what the cache commits, so it cannot depend on the reply's
+// line ending. This label is 999 characters normalised and 1000 raw with CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
   const label = `foo${" ".repeat(995)}`;
   const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
