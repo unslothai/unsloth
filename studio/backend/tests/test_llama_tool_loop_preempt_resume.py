@@ -130,9 +130,22 @@ class TestARoundPauses:
         assert policy.checkpoints[0].has_resume_point()
         assert policy.checkpoints[0].resumes == 1
 
-    def test_the_signal_is_cleared_so_the_resume_can_run(self, monkeypatch):
+    def test_the_signal_is_cleared_before_on_resumed_makes_this_chat_selectable_again(
+        self, monkeypatch
+    ):
         signal = preemption.PreemptSignal()
-        _run(_two_part(monkeypatch, signal).backend, signal = signal, policy = _RecordingPolicy())
+        seen: list[bool] = []
+
+        class _Policy(_RecordingPolicy):
+            def on_resumed(self):
+                # `on_resumed` is what puts this participant back among the candidates. A
+                # signal still set here aborts the resumed attempt on its first read, and
+                # clearing after it races a sweep that could have chosen it again.
+                seen.append(signal.is_set())
+                super().on_resumed()
+
+        _run(_two_part(monkeypatch, signal).backend, signal = signal, policy = _Policy())
+        assert seen == [False], "the clear ran after the participant became selectable again"
         assert not signal.is_set()
         assert not signal.pending
 
@@ -397,9 +410,22 @@ def _final_pass(monkeypatch, streams, *, signal, policy, pause_attempts = (1,), 
     return recorder, events
 
 
+class _WatchingPolicy(_RecordingPolicy):
+    """Records whether the signal was still set when it was made selectable again."""
+
+    def __init__(self, signal, *, resume = True):
+        super().__init__(resume = resume)
+        self._signal = signal
+        self.cleared_before_resume: list[bool] = []
+
+    def on_resumed(self):
+        self.cleared_before_resume.append(self._signal.is_set())
+        super().on_resumed()
+
+
 def _paused_final_run(monkeypatch, *, resume = True):
     signal = preemption.PreemptSignal()
-    policy = _RecordingPolicy(resume = resume)
+    policy = _WatchingPolicy(signal, resume = resume)
     recorder, events = _final_pass(
         monkeypatch,
         [
@@ -426,6 +452,10 @@ class TestTheFinalPassPausesAndResumes:
         assert policy.events == ["preempted", "awaited", "resumed"]
         assert policy.checkpoints[0].visible_text == "The current kernel"
         assert not signal.is_set() and not signal.pending
+        assert policy.cleared_before_resume == [False], (
+            "the final pass cleared its signal after `on_resumed` had already made this "
+            "participant selectable again"
+        )
 
     def test_the_request_is_reopened_with_the_partial_and_the_answer_holds_it_once(
         self, monkeypatch
