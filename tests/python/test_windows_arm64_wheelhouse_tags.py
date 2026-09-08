@@ -27,6 +27,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
+# Constants of the running interpreter, restated in nearly every test below.
+MAJOR, MINOR = sys.version_info[:2]
+TAG = f"cp{MAJOR}{MINOR}"
+
 
 @pytest.fixture(scope = "module")
 def ips():
@@ -55,31 +59,27 @@ def _wheel(
 
 class TestWheelMatchesInterpreter:
     def test_own_tag_matches(self, ips):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        assert ips._wheel_matches_interpreter(_wheel("tiktoken", tag, tag))
+        assert ips._wheel_matches_interpreter(_wheel("tiktoken", TAG, TAG))
 
     @pytest.mark.parametrize("offset", [-2, -1, 1, 2])
     def test_other_minors_do_not_match(self, ips, offset):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor + offset}"
-        assert not ips._wheel_matches_interpreter(_wheel("tiktoken", tag, tag))
+        TAG = f"cp{MAJOR}{MINOR + offset}"
+        assert not ips._wheel_matches_interpreter(_wheel("tiktoken", TAG, TAG))
 
     def test_pure_python_any_matches(self, ips):
         assert ips._wheel_matches_interpreter("six-1.17.0-py2.py3-none-any.whl")
 
     def test_abi3_is_forward_compatible(self, ips):
-        major, minor = sys.version_info[:2]
         free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-        matched = ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}2", "abi3"))
+        matched = ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3"))
         # The stable ABI is not implemented on free-threaded builds.
         assert matched is not free_threaded
-        assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}{minor + 1}", "abi3"))
+        assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}{MINOR + 1}", "abi3"))
 
     @pytest.mark.parametrize("gil_disabled", [0, 1])
     def test_an_exact_minor_abi3_wheel_follows_the_build(self, ips, monkeypatch, gil_disabled):
         """
-        The exact-minor branch used to accept "abi3" outright, shadowing the guarded
+        The exact-MINOR branch used to accept "abi3" outright, shadowing the guarded
         branch below it, so cp313-abi3 was installable on 3.13t. Free-threaded builds do
         not implement the stable ABI (CPython #111506, PEP 703) -- and uv excludes abi3
         wheels there for the same reason -- so accepting one marked a blocker available,
@@ -88,29 +88,26 @@ class TestWheelMatchesInterpreter:
         Simulated in both directions rather than read off this interpreter, which is
         whichever build happens to be running the suite.
         """
-        major, minor = sys.version_info[:2]
         real = ips.sysconfig.get_config_var
         monkeypatch.setattr(
             ips.sysconfig,
             "get_config_var",
             lambda name: gil_disabled if name == "Py_GIL_DISABLED" else real(name),
         )
-        exact = f"cp{major}{minor}"
+        exact = f"cp{MAJOR}{MINOR}"
         abi3_wheel = _wheel("cffi", exact, "abi3")
         assert ips._wheel_matches_interpreter(abi3_wheel) is (not gil_disabled)
-        # The tag a free-threaded build CAN install, and the one a GIL build cannot.
+        # The TAG a free-threaded build CAN install, and the one a GIL build cannot.
         ft_wheel = _wheel("cffi", exact, f"{exact}t")
         assert ips._wheel_matches_interpreter(ft_wheel) is bool(gil_disabled)
         # And the forward-compatible spelling stays gated the same way.
-        assert ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}2", "abi3")) is (
+        assert ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3")) is (
             not gil_disabled
         )
 
     def test_foreign_platform_does_not_match(self, ips):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         assert not ips._wheel_matches_interpreter(
-            _wheel("brotli", tag, tag, plat = "some_other_platform")
+            _wheel("brotli", TAG, TAG, plat = "some_other_platform")
         )
 
     def test_unparseable_name_is_not_installable(self, ips):
@@ -119,8 +116,7 @@ class TestWheelMatchesInterpreter:
 
 class TestWheelhouseSkipList:
     def test_a_foreign_tagged_wheel_does_not_clear_the_skip(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        other = f"cp{major}{minor + 1}"
+        other = f"cp{MAJOR}{MINOR + 1}"
         (tmp_path / _wheel("tiktoken", other, other)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
@@ -130,9 +126,7 @@ class TestWheelhouseSkipList:
         ips._find_links_wheel_names.cache_clear()
 
     def test_a_matching_wheel_clears_the_skip(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (tmp_path / _wheel("tiktoken", tag, tag)).write_bytes(b"")
+        (tmp_path / _wheel("tiktoken", TAG, TAG)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
         ips._find_links_wheel_names.cache_clear()
@@ -156,9 +150,7 @@ class TestBlockerMap:
         assert "numba" in blockers
 
     def test_one_hosted_blocker_is_not_enough(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (tmp_path / _wheel("llvmlite", tag, tag)).write_bytes(b"")
+        (tmp_path / _wheel("llvmlite", TAG, TAG)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
         ips._find_links_wheel_names.cache_clear()
@@ -225,15 +217,13 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
         assert "tensorboard" in skips
 
     def test_hosting_both_lifts_it(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         skips = self._skips(
             ips,
             tmp_path,
             monkeypatch,
             ("tensorboard", "py3", "none", "any"),
             # At tensorboard's own floor: it requires grpcio>=1.74.0.
-            ("grpcio", tag, tag, _this_platform(), "1.74.0"),
+            ("grpcio", TAG, TAG, _this_platform(), "1.74.0"),
         )
         assert "tensorboard" not in skips
 
@@ -243,39 +233,33 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
         Hosting 1.60.0 used to lift the skip on the name alone; the extras pass then failed
         on tensorboard's own metadata instead of leaving one optional feature disabled.
         """
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         skips = self._skips(
             ips,
             tmp_path,
             monkeypatch,
             ("tensorboard", "py3", "none", "any"),
-            ("grpcio", tag, tag, _this_platform(), "1.60.0"),
+            ("grpcio", TAG, TAG, _this_platform(), "1.60.0"),
         )
         assert "tensorboard" in skips
 
     def test_librosa_needs_numba_as_well_as_llvmlite(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         skips = self._skips(
             ips,
             tmp_path,
             monkeypatch,
             ("librosa", "py3", "none", "any"),
-            ("llvmlite", tag, tag, _this_platform()),
+            ("llvmlite", TAG, TAG, _this_platform()),
         )
         assert "librosa" in skips
 
     def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(
         self, ips, tmp_path, monkeypatch
     ):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         skips = self._skips(
             ips,
             tmp_path,
             monkeypatch,
-            ("tiktoken", tag, tag, _this_platform()),
+            ("tiktoken", TAG, TAG, _this_platform()),
         )
         assert "tiktoken" not in skips
 
@@ -284,10 +268,8 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
     """cp313-cp313t is built for the free-threaded build; uv rejects it on cp313."""
 
     def test_python_side_rejects_a_free_threaded_abi(self, ips):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-        matched = ips._wheel_matches_interpreter(_wheel("tiktoken", tag, f"{tag}t"))
+        matched = ips._wheel_matches_interpreter(_wheel("tiktoken", TAG, f"{TAG}t"))
         assert matched is free_threaded
 
     def test_install_ps1_checks_the_abi_not_just_the_python_tag(self):
@@ -299,7 +281,7 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t but is tagged cp313.
         assert (
             "$abiTags -contains $WoaWheelAbi" in first
-        ), "the exact-python-tag branch must also require a usable ABI"
+        ), "the exact-python-TAG branch must also require a usable ABI"
         assert (
             "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first
         ), "and abi3 is not installable on a free-threaded build"
@@ -340,9 +322,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         ],
     )
     def test_the_pin_decides(self, ips, wheelhouse, have, pin, still_skipped, why):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (wheelhouse / _wheel("tiktoken", tag, tag, version = have)).write_bytes(b"")
+        (wheelhouse / _wheel("tiktoken", TAG, TAG, version = have)).write_bytes(b"")
         req = self._req(wheelhouse.parent, f"{pin}\n")
         ips._find_links_wheel_names.cache_clear()
         try:
@@ -351,10 +331,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ips._find_links_wheel_names.cache_clear()
 
     def test_any_hosted_version_that_satisfies_is_enough(self, ips, wheelhouse):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         for version in ("0.12.0", "0.13.0"):
-            (wheelhouse / _wheel("tiktoken", tag, tag, version = version)).write_bytes(b"")
+            (wheelhouse / _wheel("tiktoken", TAG, TAG, version = version)).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tiktoken==0.13.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
@@ -369,9 +347,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         from the optional package's own metadata, which is what rejects a too-old blocker
         after the skip has been dropped.
         """
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (wheelhouse / _wheel("grpcio", tag, tag, version = "1.60.0")).write_bytes(b"")
+        (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.60.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
@@ -382,9 +358,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ips._find_links_wheel_names.cache_clear()
 
     def test_a_blocker_at_its_floor_lifts_the_skip(self, ips, wheelhouse):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (wheelhouse / _wheel("grpcio", tag, tag, version = "1.74.0")).write_bytes(b"")
+        (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.74.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
@@ -394,10 +368,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_a_blocker_with_no_floor_keeps_the_name_only_answer(self, ips, wheelhouse):
         """llvmlite has no entry: nothing states a floor for it, so a guess is not made."""
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         for dist, version in (("llvmlite", "0.1.0"), ("numba", "0.62.0")):
-            (wheelhouse / _wheel(dist, tag, tag, version = version)).write_bytes(b"")
+            (wheelhouse / _wheel(dist, TAG, TAG, version = version)).write_bytes(b"")
         req = self._req(wheelhouse.parent, "librosa==0.11.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
@@ -422,9 +394,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             assert ips._canonical_dist_name(blocker) == blocker, "keys are canonical"
 
     def test_no_requirements_file_keeps_the_old_answer(self, ips, wheelhouse):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (wheelhouse / _wheel("tiktoken", tag, tag, version = "0.12.0")).write_bytes(b"")
+        (wheelhouse / _wheel("tiktoken", TAG, TAG, version = "0.12.0")).write_bytes(b"")
         ips._find_links_wheel_names.cache_clear()
         try:
             assert "tiktoken" not in ips._windows_arm64_skip_packages()
@@ -501,11 +471,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         assert pins["mecab"] == ["==0.996.13"], "the inactive row must not overwrite it"
 
     def test_an_inactive_row_cannot_unskip(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         wheels = tmp_path / "wheels"
         wheels.mkdir()
-        (wheels / _wheel("mecab", tag, tag, version = "0.996.5")).write_bytes(b"")
+        (wheels / _wheel("mecab", TAG, TAG, version = "0.996.5")).write_bytes(b"")
         req = tmp_path / "extras.txt"
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
@@ -519,11 +487,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
             ips._find_links_wheel_names.cache_clear()
 
     def test_the_active_row_still_unskips(self, ips, tmp_path, monkeypatch):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         wheels = tmp_path / "wheels"
         wheels.mkdir()
-        (wheels / _wheel("mecab", tag, tag, version = "0.996.13")).write_bytes(b"")
+        (wheels / _wheel("mecab", TAG, TAG, version = "0.996.13")).write_bytes(b"")
         req = tmp_path / "extras.txt"
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
@@ -594,9 +560,9 @@ class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
 
     def test_a_prerelease_wheel_leaves_the_package_skipped(self, ips, tmp_path, monkeypatch):
         """End to end: the wheel is in the wheelhouse, and the skip survives anyway."""
-        tag = _this_platform()
+        TAG = _this_platform()
         py = f"cp{sys.version_info.major}{sys.version_info.minor}"
-        if "win_arm64" not in tag:
+        if "win_arm64" not in TAG:
             monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "tiktoken" in name)
         (tmp_path / f"tiktoken-0.13.0rc1-{py}-{py}-win_arm64.whl").write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
@@ -614,7 +580,7 @@ class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
 class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
     """The ARM64 CUDA-preservation shortcut distrusts the INFERRED expectation, not a pin.
 
-    A native win_arm64 venv holding cu134 has a family tag download.pytorch.org does not
+    A native win_arm64 venv holding cu134 has a family TAG download.pytorch.org does not
     publish, so the driver-derived expectation can only disagree and "repairing" it would
     resolve a cu130 with no wheel. But a user who asks for cu129 by URL or family has stated
     where they want to be, and exempting only a /cpu pin left them silently on the old build.
@@ -677,8 +643,8 @@ class TestOnlyTheResolversOwnLocationsCount:
 
     @staticmethod
     def _skip_with(ips, tmp_path, monkeypatch, uv_value, pip_value):
-        tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-        (tmp_path / _wheel("tiktoken", tag, tag, _this_platform(), "0.13.0")).write_bytes(b"")
+        TAG = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        (tmp_path / _wheel("tiktoken", TAG, TAG, _this_platform(), "0.13.0")).write_bytes(b"")
         for name, value in (("UV_FIND_LINKS", uv_value), ("PIP_FIND_LINKS", pip_value)):
             if value is None:
                 monkeypatch.delenv(name, raising = False)
@@ -778,22 +744,18 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_a_wheel_below_the_declared_floor_is_not_installed(self, ips, monkeypatch, tmp_path):
         """xformers>=0.0.22.post7 is what pyproject.toml asks for; 0.0.20 satisfies nobody."""
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
-        (tmp_path / _wheel("xformers", tag, tag, version = "0.0.20")).write_text("")
+        (tmp_path / _wheel("xformers", TAG, TAG, version = "0.0.20")).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         ips._find_links_wheel_versions.cache_clear()
         assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") is None
-        (tmp_path / _wheel("xformers", tag, tag, version = "0.0.31")).write_text("")
+        (tmp_path / _wheel("xformers", TAG, TAG, version = "0.0.31")).write_text("")
         ips._find_links_wheel_versions.cache_clear()
         assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.31"
 
     def test_the_newest_clearing_wheel_wins(self, ips, monkeypatch, tmp_path):
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
         # Both clear the floor: 0.0.100 is the newer release and the SMALLER of the two as text.
         for version in ("0.0.23", "0.0.100"):
-            (tmp_path / _wheel("xformers", tag, tag, version = version)).write_text("")
+            (tmp_path / _wheel("xformers", TAG, TAG, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         ips._find_links_wheel_versions.cache_clear()
         assert (
@@ -853,19 +815,17 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_the_hosted_check_reads_the_resolvers_own_wheels(self, ips, tmp_path, monkeypatch):
         """And only wheels THIS interpreter could install: the staging copies cp311
-        through cp314, and a wheel tagged for another minor is invisible to the resolver."""
-        major, minor = sys.version_info[:2]
-        tag = f"cp{major}{minor}"
+        through cp314, and a wheel tagged for another MINOR is invisible to the resolver."""
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         # The listing is memoized for the process, so each state needs its own read.
         ips._find_links_wheel_versions.cache_clear()
         assert not ips._wheelhouse_hosts("torchcodec")
         (
-            tmp_path / _wheel("torchcodec", f"cp{major}{minor + 1}", f"cp{major}{minor + 1}")
+            tmp_path / _wheel("torchcodec", f"cp{MAJOR}{MINOR + 1}", f"cp{MAJOR}{MINOR + 1}")
         ).write_text("")
         ips._find_links_wheel_versions.cache_clear()
         assert not ips._wheelhouse_hosts("torchcodec"), "a foreign-tagged wheel is not hosted"
-        (tmp_path / _wheel("torchcodec", tag, tag)).write_text("")
+        (tmp_path / _wheel("torchcodec", TAG, TAG)).write_text("")
         ips._find_links_wheel_versions.cache_clear()
         assert ips._wheelhouse_hosts("torchcodec")
 
@@ -873,7 +833,7 @@ class TestAHostedOptionalIsActuallyInstalled:
 class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
     """The skip list was decided from the local wheelhouse alone.
 
-    llvmlite and numba publish win_arm64 wheels, and cp314 is the only tag either publishes
+    llvmlite and numba publish win_arm64 wheels, and cp314 is the only TAG either publishes
     one for. So a native CPython 3.14 ARM64 host has librosa's whole chain resolvable from
     the public index, and the filter dropped librosa anyway.
     """
