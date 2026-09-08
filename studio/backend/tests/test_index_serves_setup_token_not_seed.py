@@ -375,3 +375,59 @@ def test_a_missing_host_header_is_refused():
         state = type("S", (), {"bind_host": "127.0.0.1"})()
 
     assert studio_main._host_is_safe_from_rebinding(_Req(), _A()) is False
+
+
+def test_colab_notebook_proxy_still_gets_the_setup_token(monkeypatch):
+    """The regression the rebinding guard introduced, and the merge base's rule.
+
+    Colab serves Studio through Google's single-user proxy: the server binds
+    0.0.0.0 and the browser sends the proxy's hostname in Host. That is neither a
+    loopback name, nor an IP literal, nor the configured bind, so the guard
+    refused it and a fresh notebook lost automatic first-boot setup entirely --
+    the operator would have to read .bootstrap_password out of the runtime by
+    hand. The merge base allowed this case explicitly; restoring it also restores
+    its single exception, the shareable Cloudflare link.
+    """
+
+    class _Req:
+        def __init__(self, host, headers = None):
+            self.headers = {"host": host, **(headers or {})}
+            self.url = type("U", (), {"scheme": "https", "netloc": host})()
+
+    class _A:
+        state = type("S", (), {"bind_host": "0.0.0.0"})()
+
+    app = _A()
+    proxy = _Req("abc123-colab.prod.colab.dev")
+
+    monkeypatch.setattr(studio_main, "_IS_COLAB", False)
+    assert studio_main._host_is_safe_from_rebinding(proxy, app) is False
+
+    monkeypatch.setattr(studio_main, "_IS_COLAB", True)
+    assert studio_main._host_is_safe_from_rebinding(proxy, app) is True
+    # A shareable Cloudflare link marks its visitors, and they are not the owner
+    # of the notebook. Withheld even on loopback, exactly as the merge base did.
+    tunnel = _Req("localhost:8000", {"cf-connecting-ip": "203.0.113.7"})
+    assert studio_main._host_is_safe_from_rebinding(tunnel, app) is False
+
+
+def test_the_index_mints_its_token_off_the_event_loop():
+    """Minting opens SQLite under BEGIN IMMEDIATE, so it must not run on the loop.
+
+    While setup is pending EVERY index GET mints a link token. A concurrent auth
+    writer holding the database lock makes that wait out the busy timeout, and on
+    the event loop the wait is charged to every other request in flight, not just
+    this one. /link-exchange is a plain `def` for the same reason.
+
+    Asserted on the source rather than by racing a lock: the property is "this
+    call is not awaited inline", which a timing test can only sample.
+    """
+    import inspect
+    import re
+
+    source = inspect.getsource(studio_main.setup_frontend)
+    for handler in ("serve_root", "serve_frontend"):
+        body = source.split(f"def {handler}(", 1)[1].split("\n    @app.get", 1)[0]
+        assert "_build_index_response" in body, handler
+        for call in re.findall(r"[^\n]*_build_index_response\([^\n]*", body):
+            assert "run_in_threadpool" in call, (handler, call.strip())

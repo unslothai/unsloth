@@ -292,6 +292,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 from datetime import datetime
 
@@ -2362,6 +2363,16 @@ def _host_is_safe_from_rebinding(request: Request, app: FastAPI) -> bool:
     identical bytes. This asks a different and answerable question: could this
     Host have been chosen by someone other than the operator.
     """
+    if _IS_COLAB:
+        # Colab serves Studio through Google's own single-user proxy: run_server
+        # binds 0.0.0.0 and the browser sends the PROXY's hostname in Host, so
+        # neither the loopback names nor the configured bind can ever match and a
+        # fresh notebook would be left hunting for .bootstrap_password inside the
+        # runtime. Rebinding is not the exposure there, because the listener is
+        # reachable only through that authenticated proxy. This restores what the
+        # merge base did, including its one exception: a shareable Cloudflare link
+        # marks its visitors with cf-connecting-ip, and those are not the owner.
+        return request.headers.get("cf-connecting-ip") is None
     host_header = request.headers.get("host")
     if not host_header:
         # HTTP/1.1 requires Host; something that omits it is not a browser
@@ -2675,7 +2686,12 @@ def setup_frontend(
     async def serve_root(request: Request):
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
-        return _build_index_response(request)
+        # Threadpool, not the loop. While setup is pending this reads index.html
+        # off disk AND mints a link token, which opens SQLite under BEGIN
+        # IMMEDIATE; if another auth writer holds the lock that waits out the
+        # busy timeout, and on the event loop it would stall every unrelated
+        # request with it. Same reason /link-exchange is a sync endpoint.
+        return await run_in_threadpool(_build_index_response, request)
 
     @app.get("/{full_path:path}")
     async def serve_frontend(request: Request, full_path: str):
@@ -2702,8 +2718,9 @@ def setup_frontend(
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
-        # Serve index.html as bytes - avoids Content-Length mismatch
-        return _build_index_response(request)
+        # Serve index.html as bytes - avoids Content-Length mismatch. Off the
+        # loop for the same reason as serve_root above.
+        return await run_in_threadpool(_build_index_response, request)
 
     # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
     # whether the engine paths still need their own GET denial.
