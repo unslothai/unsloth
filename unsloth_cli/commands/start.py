@@ -1003,68 +1003,93 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
-def _combined_reading(readings: list[dict]) -> dict:
-    if len(readings) == 1:
-        return readings[0]
-    combined = {
-        field: sum(max(0, int(reading.get(field) or 0)) for reading in readings)
-        for field in ("downloaded_bytes", "completed_bytes", "expected_bytes")
-    }
-    # Zero expected bytes means "total unknown", not "contributes nothing". Summing it
-    # would divide by one repo's total and report a finished adapter next to a base still
-    # transferring as 100%, so an unknown part makes the combined total unknown too and
-    # the display falls back to bytes.
-    if any(int(reading.get("expected_bytes") or 0) <= 0 for reading in readings):
-        combined["expected_bytes"] = 0
-    expected = combined["expected_bytes"]
-    combined["progress"] = min(1.0, combined["downloaded_bytes"] / expected) if expected else 0.0
-    return combined
+def _in_flight_bytes(reading: dict) -> int:
+    """Bytes in a repo's incomplete files: what the endpoint counts as a live transfer."""
+    downloaded = max(0, int(reading.get("downloaded_bytes") or 0))
+    completed = max(0, int(reading.get("completed_bytes") or 0))
+    return downloaded - completed
 
 
-_QUANT_MAPPER: Optional[dict] = None
+def _total_downloaded_bytes(readings: list[dict]) -> int:
+    return sum(max(0, int(reading.get("downloaded_bytes") or 0)) for reading in readings)
 
 
-def _unsloth_quant_mapper() -> dict:
-    """`unsloth.models.mapper.FLOAT_TO_INT_MAPPER`, read without importing unsloth.
+def _active_reading(readings: list[dict]) -> dict:
+    """The one repo whose transfer the progress line should follow.
 
-    The table is plain data with no imports of its own, so it loads straight from the
+    A model, its base, and the repos the loader may substitute for that base are separate
+    downloads, and the substitutes are alternatives, so no sum of them is a total anyone
+    is fetching: adding the totals of two candidate bases -- or of a base already sitting
+    complete in the cache -- renders a percentage against a denominator that does not
+    exist. Bytes are still summed for liveness, since any repo moving is progress, but the
+    line follows whichever repo has bytes in flight, and the model itself when none does.
+    """
+    active = max(readings, key = _in_flight_bytes)
+    return active if _in_flight_bytes(active) > 0 else readings[0]
+
+
+_QUANT_MAPPERS: Optional[list[dict]] = None
+
+
+def _unsloth_quant_mappers() -> list[dict]:
+    """The repo substitution tables in `unsloth.models.mapper`, read without importing unsloth.
+
+    That module is plain data with no imports of its own, so it loads straight from the
     package directory; importing `unsloth` would pull in torch to answer a dict lookup.
     """
-    global _QUANT_MAPPER
-    if _QUANT_MAPPER is None:
-        _QUANT_MAPPER = {}
+    global _QUANT_MAPPERS
+    if _QUANT_MAPPERS is None:
+        _QUANT_MAPPERS = []
         try:
             spec = importlib.util.find_spec("unsloth")
             locations = list(spec.submodule_search_locations) if spec else []
             path = Path(locations[0]) / "models" / "mapper.py" if locations else None
             if path is not None and path.is_file():
                 module_spec = importlib.util.spec_from_file_location(
-                    "unsloth_cli._quant_mapper", path
+                    "unsloth_cli._quant_mappers", path
                 )
                 module = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(module)
-                table = getattr(module, "FLOAT_TO_INT_MAPPER", None)
-                if isinstance(table, dict):
-                    _QUANT_MAPPER = table
+                _QUANT_MAPPERS = [
+                    value
+                    for name, value in vars(module).items()
+                    if not name.startswith("_") and isinstance(value, dict)
+                ]
         except Exception:
             # Nothing here is required; the recorded base alone is still worth polling.
             pass
-    return _QUANT_MAPPER
+    return _QUANT_MAPPERS
+
+
+def _flattened_repo_ids(value: object, found: set) -> None:
+    if isinstance(value, str):
+        found.add(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _flattened_repo_ids(item, found)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _flattened_repo_ids(item, found)
 
 
 def _base_model_candidates(base_model: str) -> list[str]:
-    """`base_model` plus the pre-quantized repo the loader substitutes for it.
+    """`base_model` plus every repo the loader may download in its place.
 
-    `get_model_name` rewrites a PEFT adapter's recorded base to an Unsloth 4-bit repo
-    before fetching it, which is the default for a QLoRA adapter, so the recorded name
-    on its own can name a repo that never moves while the real download runs unwatched.
-    Both are polled and summed: the one that is not being fetched reports zero bytes.
+    `get_model_name` rewrites a PEFT adapter's recorded base before fetching it, so the
+    recorded name on its own can name a repo that never moves while the real download runs
+    unwatched. Which substitution applies depends on the precision the worker settles on,
+    which the CLI cannot see: `_resolve_lora_4bit` turns 4-bit on for a QLoRA adapter and
+    off for a plain LoRA one. Rather than replicate that resolution and drift from it, take
+    every repo any table pairs with this base -- in practice the 16-bit and pre-quantized
+    Unsloth builds. Polling one repo too many is a measured zero; missing the right one
+    costs the user their server.
     """
-    candidates = [base_model]
-    mapped = _unsloth_quant_mapper().get(base_model)
-    if isinstance(mapped, str) and mapped and mapped not in candidates:
-        candidates.append(mapped)
-    return candidates
+    found: set = set()
+    for table in _unsloth_quant_mappers():
+        if base_model in table:
+            _flattened_repo_ids(table[base_model], found)
+    found.discard(base_model)
+    return [base_model] + sorted(repo for repo in found if _is_hub_model_id(repo))
 
 
 class _ModelDownloadProgress:
@@ -1131,7 +1156,10 @@ class _ModelDownloadProgress:
                 pass
 
     def _companion_repos(self) -> Optional[list[str]]:
-        if self._is_gguf():
+        # A resolved quant, not the name: `_is_gguf` is true for any repo with "gguf" in
+        # its id, and an adapter that happens to be named that way still has a base to
+        # watch. `_configure` only resolves a variant for a repo that really carries them.
+        if self._variant:
             return []
         try:
             info = _http_json(
@@ -1209,10 +1237,15 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            companions = (self._companion_reading(repo) for repo in self._companions or [])
-            reading = _combined_reading(
-                [reading, *(item for item in companions if item is not None)]
-            )
+            companions = [(repo, self._companion_reading(repo)) for repo in self._companions or []]
+            readings = [reading] + [item for _, item in companions if item is not None]
+            # Only one candidate base is ever fetched. Once one of them is moving the rest
+            # are known dead weight, so stop spending a request per poll on them.
+            moving = [
+                repo for repo, item in companions if item is not None and _in_flight_bytes(item) > 0
+            ]
+            if len(moving) == 1:
+                self._companions = moving
             # The liveness baseline only ever rises. A reading falls for reasons that are
             # not "bytes left the disk": an incomplete scan reporting a lower bound, a
             # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
@@ -1222,12 +1255,10 @@ class _ModelDownloadProgress:
             # flapping mount could do that forever. The cost is that a transfer which truly
             # restarts is not counted again until it passes its own high mark; that failure
             # is bounded and says so, where a false renewal is an unbounded wait.
-            self._downloaded_bytes = max(
-                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
-            )
+            self._downloaded_bytes = max(self._downloaded_bytes, _total_downloaded_bytes(readings))
             self._failures = 0
             self._retry_at = 0.0
-            self._display.update(reading)
+            self._display.update(_active_reading(readings))
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing

@@ -4112,7 +4112,9 @@ def test_model_download_progress_counts_the_quantized_base_the_loader_substitute
     monkeypatch, capsys
 ):
     monkeypatch.setattr(
-        start, "_QUANT_MAPPER", {"meta-llama/Llama-3.1-8B": "unsloth/Llama-3.1-8B-bnb-4bit"}
+        start,
+        "_QUANT_MAPPERS",
+        [{"meta-llama/Llama-3.1-8B": "unsloth/Llama-3.1-8B-bnb-4bit"}],
     )
     polled = []
 
@@ -4142,17 +4144,90 @@ def test_model_download_progress_counts_the_quantized_base_the_loader_substitute
     assert any("repo_id=unsloth%2FLlama-3.1-8B-bnb-4bit" in url for url in polled)
 
 
-def test_quant_mapper_loads_without_importing_unsloth():
+def test_model_download_progress_counts_a_sixteen_bit_substitute(monkeypatch):
+    # A plain (non-QLoRA) adapter makes the worker resolve load_in_4bit=False, and the
+    # loader then swaps the base for its 16-bit Unsloth build instead of a 4-bit one.
+    monkeypatch.setattr(
+        start,
+        "_QUANT_MAPPERS",
+        [
+            {"Qwen/Qwen3-32B": "unsloth/Qwen3-32B-unsloth-bnb-4bit"},
+            {"Qwen/Qwen3-32B": "unsloth/Qwen3-32B"},
+        ],
+    )
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "Qwen/Qwen3-32B"}
+        if url.endswith("repo_id=unsloth%2FQwen3-32B"):
+            return {"downloaded_bytes": 6 * 1024**3, "expected_bytes": 60 * 1024**3}
+        return {"downloaded_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 6 * 1024**3
+
+
+def test_base_model_candidates_cover_every_table_the_loader_consults():
+    candidates = start._base_model_candidates("meta-llama/Llama-3.1-8B-Instruct")
+
+    assert candidates[0] == "meta-llama/Llama-3.1-8B-Instruct"
+    # Both precisions, because the CLI cannot see which one the worker settles on.
+    assert "unsloth/Llama-3.1-8B-Instruct" in candidates
+    assert "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit" in candidates
+    assert len(candidates) == len(set(candidates))
+
+
+def test_quant_mappers_load_without_importing_unsloth():
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(start, "_QUANT_MAPPER", None)
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", None)
     try:
-        table = start._unsloth_quant_mapper()
+        tables = start._unsloth_quant_mappers()
     finally:
         monkeypatch.undo()
 
-    assert isinstance(table, dict) and table
-    assert all(isinstance(key, str) for key in table)
+    assert tables and all(isinstance(table, dict) for table in tables)
     assert "torch" not in sys.modules
+
+
+def test_model_download_progress_watches_a_gguf_named_adapters_base(monkeypatch):
+    # "gguf" in the repo id does not make a repo a GGUF quant; the adapter still has a base.
+    polled = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "gguf-variants" in url:
+            return {"default_variant": "", "variants": []}
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        polled.append(url)
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 5 * 1024**3, "expected_bytes": 8 * 1024**3}
+        return {"downloaded_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model-gguf-lora", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 5 * 1024**3
+    assert any("repo_id=owner%2Fbase" in url for url in polled)
 
 
 def test_model_download_progress_reasks_after_an_inconclusive_adapter_answer(monkeypatch):
@@ -4258,16 +4333,104 @@ def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, cap
     assert "3.0 GiB" in out
 
 
-def test_combined_reading_keeps_a_known_total_when_every_part_is_known():
-    combined = start._combined_reading(
-        [
-            {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 2048},
-            {"downloaded_bytes": 1024, "completed_bytes": 0, "expected_bytes": 2048},
-        ]
+def test_active_reading_follows_the_repo_with_bytes_in_flight():
+    model = {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 1024}
+    cached_base = {
+        "downloaded_bytes": 16 * 1024**3,
+        "completed_bytes": 16 * 1024**3,
+        "expected_bytes": 16 * 1024**3,
+    }
+    transferring = {
+        "downloaded_bytes": 2 * 1024**3,
+        "completed_bytes": 0,
+        "expected_bytes": 6 * 1024**3,
+    }
+
+    # A base already complete in the cache is not the transfer to render, even though it
+    # carries by far the most bytes.
+    assert start._active_reading([model, cached_base, transferring]) is transferring
+    # Nothing moving: fall back to the model's own reading rather than a stale companion.
+    assert start._active_reading([model, cached_base]) is model
+    # Liveness still counts every repo.
+    assert start._total_downloaded_bytes([model, cached_base, transferring]) == (
+        1024 + 16 * 1024**3 + 2 * 1024**3
     )
 
-    assert combined["expected_bytes"] == 4096
-    assert combined["progress"] == 0.5
+
+def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatch, capsys):
+    # The recorded base sits complete in the cache while the substitute downloads; summing
+    # the two totals would render a denominator nobody is fetching.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-unsloth-bnb-4bit"}])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {
+                "downloaded_bytes": 16 * 1024**3,
+                "completed_bytes": 16 * 1024**3,
+                "expected_bytes": 16 * 1024**3,
+            }
+        if url.endswith("repo_id=unsloth%2Fbase-unsloth-bnb-4bit"):
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 0,
+                "expected_bytes": 6 * 1024**3,
+            }
+        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    out = capsys.readouterr().out
+    assert "2.0 GiB / 6.0 GiB" in out
+    assert "22.0 GiB" not in out
+    assert progress.downloaded_bytes == 18 * 1024**3
+
+
+def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch):
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-unsloth-bnb-4bit"}])
+    polled = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        polled.append(url)
+        if url.endswith("repo_id=unsloth%2Fbase-unsloth-bnb-4bit"):
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 0,
+                "expected_bytes": 6 * 1024**3,
+            }
+        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    first = len([url for url in polled if "repo_id=owner%2Fbase" in url])
+    progress.poll()
+    second = len([url for url in polled if "repo_id=owner%2Fbase" in url])
+
+    assert first == 1
+    assert second == 1
+    assert progress.downloaded_bytes == 2 * 1024**3
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
