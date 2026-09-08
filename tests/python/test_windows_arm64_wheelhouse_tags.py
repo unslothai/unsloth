@@ -26,6 +26,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
+
+# Read once: the source-level tests below want these whole files and none of them mutate
+# what they read.
+INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
+STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
+EXTRAS_SRC = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
+    encoding = "utf-8"
+)
 
 # Constants of the running interpreter, restated in nearly every test below.
 MAJOR, MINOR = sys.version_info[:2]
@@ -34,13 +43,25 @@ TAG = f"cp{MAJOR}{MINOR}"
 
 @pytest.fixture(scope = "module")
 def ips():
-    spec = importlib.util.spec_from_file_location(
-        "_ips_wheelhouse_tags",
-        REPO_ROOT / "studio" / "install_python_stack.py",
-    )
+    spec = importlib.util.spec_from_file_location("_ips_wheelhouse_tags", STACK_PY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse = True)
+def _fresh_find_links(ips):
+    """Empty the find-links listing before and after every test in this file.
+
+    It is memoized for the process and `ips` is module scoped, so a listing read under one
+    test's UV_FIND_LINKS would otherwise be the answer the next test got. Both names share
+    one cache: install_python_stack.py assigns _find_links_wheel_names.cache_clear from
+    _find_links_wheel_versions. Tests that change the wheelhouse mid-test still clear it
+    themselves, which this cannot do for them.
+    """
+    ips._find_links_wheel_versions.cache_clear()
+    yield
+    ips._find_links_wheel_versions.cache_clear()
 
 
 def _this_platform() -> str:
@@ -120,18 +141,14 @@ class TestWheelhouseSkipList:
         (tmp_path / _wheel("tiktoken", other, other)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
         assert "tiktoken" not in ips._find_links_wheel_names()
         assert "tiktoken" in ips._windows_arm64_skip_packages()
-        ips._find_links_wheel_names.cache_clear()
 
     def test_a_matching_wheel_clears_the_skip(self, ips, tmp_path, monkeypatch):
         (tmp_path / _wheel("tiktoken", TAG, TAG)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
         assert "tiktoken" not in ips._windows_arm64_skip_packages()
-        ips._find_links_wheel_names.cache_clear()
 
 
 class TestBlockerMap:
@@ -153,35 +170,32 @@ class TestBlockerMap:
         (tmp_path / _wheel("llvmlite", TAG, TAG)).write_bytes(b"")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
         skipped = ips._windows_arm64_skip_packages()
         assert "librosa" in skipped, "librosa still needs numba"
         assert "openai-whisper" in skipped, "whisper still needs numba and tiktoken"
-        ips._find_links_wheel_names.cache_clear()
 
 
 class TestInstallPs1Mirror:
     """install.ps1 builds the same availability set for its requirement overrides."""
 
     def test_wheel_names_are_filtered_by_interpreter_tag(self):
-        source = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = source[source.index("$WoaWheelNames = @{}") :]
+        block = INSTALL_SRC[INSTALL_SRC.index("$WoaWheelNames = @{}") :]
         block = block[: block.index("$WoaDropCandidates")]
         assert "$WoaWheelTag" in block, "the distribution name alone is not proof of availability"
         assert re.search(r"if \(\$parts\.Count -lt 5\) \{ continue \}", block)
         assert "abi3" in block and "^py3" in block
 
     def test_uv_override_is_space_safe(self):
-        source = INSTALL_PS1.read_text(encoding = "utf-8")
         # uv reads UV_OVERRIDE as a space-separated list, so EVERY entry needs the 8.3 helper.
-        assert re.search(r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source)
-        assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in source
-        assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', source)
-        assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", source, flags = re.M)
+        assert re.search(
+            r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", INSTALL_SRC
+        )
+        assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in INSTALL_SRC
+        assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', INSTALL_SRC)
+        assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", INSTALL_SRC, flags = re.M)
 
     def test_the_selected_torch_index_is_redacted(self):
-        source = INSTALL_PS1.read_text(encoding = "utf-8")
-        for line in source.splitlines():
+        for line in INSTALL_SRC.splitlines():
             if "torch index:" in line:
                 assert "Remove-IndexUrlCredentials" in line, line.strip()
 
@@ -189,79 +203,52 @@ class TestInstallPs1Mirror:
 class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
     """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel."""
 
-    def _wheelhouse(self, tmp_path, *specs):
-        # A spec may carry its own version: a blocker with a floor is only usable at or above it.
-        for spec in specs:
-            name, py, abi, plat = spec[:4]
-            version = spec[4] if len(spec) > 4 else "1.0.0"
-            (tmp_path / f"{name}-{version}-{py}-{abi}-{plat}.whl").write_bytes(b"")
-        return tmp_path
+    @pytest.fixture
+    def skips(self, ips, tmp_path, monkeypatch):
+        """The skip list, given a wheelhouse holding exactly the wheels named."""
 
-    def _skips(self, ips, tmp_path, monkeypatch, *specs):
-        self._wheelhouse(tmp_path, *specs)
-        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
-        try:
+        def build(*specs):
+            for spec in specs:
+                # A spec may carry its own version: a blocker with a floor is only usable
+                # at or above it.
+                name, py, abi, plat = spec[:4]
+                version = spec[4] if len(spec) > 4 else "1.0.0"
+                (tmp_path / f"{name}-{version}-{py}-{abi}-{plat}.whl").write_bytes(b"")
+            monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+            monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
             return ips._windows_arm64_skip_packages()
-        finally:
-            ips._find_links_wheel_names.cache_clear()
 
-    def test_hosting_tensorboard_without_grpcio_keeps_the_skip(self, ips, tmp_path, monkeypatch):
-        skips = self._skips(
-            ips,
-            tmp_path,
-            monkeypatch,
-            ("tensorboard", "py3", "none", "any"),
-        )
-        assert "tensorboard" in skips
+        return build
 
-    def test_hosting_both_lifts_it(self, ips, tmp_path, monkeypatch):
-        skips = self._skips(
-            ips,
-            tmp_path,
-            monkeypatch,
+    def test_hosting_tensorboard_without_grpcio_keeps_the_skip(self, skips):
+        assert "tensorboard" in skips(("tensorboard", "py3", "none", "any"))
+
+    def test_hosting_both_lifts_it(self, skips):
+        # grpcio at tensorboard's own floor: it requires grpcio>=1.74.0.
+        assert "tensorboard" not in skips(
             ("tensorboard", "py3", "none", "any"),
-            # At tensorboard's own floor: it requires grpcio>=1.74.0.
             ("grpcio", TAG, TAG, _this_platform(), "1.74.0"),
         )
-        assert "tensorboard" not in skips
 
-    def test_a_blocker_below_the_floor_keeps_the_skip(self, ips, tmp_path, monkeypatch):
+    def test_a_blocker_below_the_floor_keeps_the_skip(self, skips):
         """tensorboard 2.21.0 requires grpcio>=1.74.0, and nothing else can serve it here.
 
         Hosting 1.60.0 used to lift the skip on the name alone; the extras pass then failed
         on tensorboard's own metadata instead of leaving one optional feature disabled.
         """
-        skips = self._skips(
-            ips,
-            tmp_path,
-            monkeypatch,
+        assert "tensorboard" in skips(
             ("tensorboard", "py3", "none", "any"),
             ("grpcio", TAG, TAG, _this_platform(), "1.60.0"),
         )
-        assert "tensorboard" in skips
 
-    def test_librosa_needs_numba_as_well_as_llvmlite(self, ips, tmp_path, monkeypatch):
-        skips = self._skips(
-            ips,
-            tmp_path,
-            monkeypatch,
+    def test_librosa_needs_numba_as_well_as_llvmlite(self, skips):
+        assert "librosa" in skips(
             ("librosa", "py3", "none", "any"),
             ("llvmlite", TAG, TAG, _this_platform()),
         )
-        assert "librosa" in skips
 
-    def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(
-        self, ips, tmp_path, monkeypatch
-    ):
-        skips = self._skips(
-            ips,
-            tmp_path,
-            monkeypatch,
-            ("tiktoken", TAG, TAG, _this_platform()),
-        )
-        assert "tiktoken" not in skips
+    def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(self, skips):
+        assert "tiktoken" not in skips(("tiktoken", TAG, TAG, _this_platform()))
 
 
 class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
@@ -273,8 +260,7 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         assert matched is free_threaded
 
     def test_install_ps1_checks_the_abi_not_just_the_python_tag(self):
-        source = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = source[source.index("$WoaWheelNames = @{}") :]
+        block = INSTALL_SRC[INSTALL_SRC.index("$WoaWheelNames = @{}") :]
         block = block[: block.index("$WoaDropCandidates")]
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
@@ -324,21 +310,13 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
     def test_the_pin_decides(self, ips, wheelhouse, have, pin, still_skipped, why):
         (wheelhouse / _wheel("tiktoken", TAG, TAG, version = have)).write_bytes(b"")
         req = self._req(wheelhouse.parent, f"{pin}\n")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert ("tiktoken" in ips._windows_arm64_skip_packages(req)) is still_skipped, why
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert ("tiktoken" in ips._windows_arm64_skip_packages(req)) is still_skipped, why
 
     def test_any_hosted_version_that_satisfies_is_enough(self, ips, wheelhouse):
         for version in ("0.12.0", "0.13.0"):
             (wheelhouse / _wheel("tiktoken", TAG, TAG, version = version)).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tiktoken==0.13.0\n")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "tiktoken" not in ips._windows_arm64_skip_packages(req)
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "tiktoken" not in ips._windows_arm64_skip_packages(req)
 
     def test_a_blocker_with_no_line_of_its_own_is_checked_against_its_floor(self, ips, wheelhouse):
         """grpcio arrives transitively, so extras.txt has no grpcio line to satisfy.
@@ -349,33 +327,21 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         """
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.60.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "tensorboard" in ips._windows_arm64_skip_packages(
-                req
-            ), "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "tensorboard" in ips._windows_arm64_skip_packages(
+            req
+        ), "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
 
     def test_a_blocker_at_its_floor_lifts_the_skip(self, ips, wheelhouse):
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.74.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "tensorboard" not in ips._windows_arm64_skip_packages(req)
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "tensorboard" not in ips._windows_arm64_skip_packages(req)
 
     def test_a_blocker_with_no_floor_keeps_the_name_only_answer(self, ips, wheelhouse):
         """llvmlite has no entry: nothing states a floor for it, so a guess is not made."""
         for dist, version in (("llvmlite", "0.1.0"), ("numba", "0.62.0")):
             (wheelhouse / _wheel(dist, TAG, TAG, version = version)).write_bytes(b"")
         req = self._req(wheelhouse.parent, "librosa==0.11.0\n")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "librosa" not in ips._windows_arm64_skip_packages(req)
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "librosa" not in ips._windows_arm64_skip_packages(req)
 
     def test_the_floors_name_the_pins_they_were_read_from(self, ips):
         """A bump to extras.txt has to be a prompt to re-read the metadata.
@@ -383,11 +349,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         The floors come from the optional packages' own requirements, which only that
         version states. Recording the provenance turns a silent drift into a failure here.
         """
-        extras = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
-            encoding = "utf-8"
-        )
         for blocker, (specifier, package, version) in ips.WINDOWS_ARM64_BLOCKER_FLOORS.items():
-            assert re.search(rf"(?m)^{re.escape(package)}=={re.escape(version)}\b", extras), (
+            assert re.search(rf"(?m)^{re.escape(package)}=={re.escape(version)}\b", EXTRAS_SRC), (
                 f"{blocker}'s floor {specifier} was read from {package}=={version}, which "
                 f"extras.txt no longer pins -- re-read that release's metadata"
             )
@@ -395,11 +358,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_no_requirements_file_keeps_the_old_answer(self, ips, wheelhouse):
         (wheelhouse / _wheel("tiktoken", TAG, TAG, version = "0.12.0")).write_bytes(b"")
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "tiktoken" not in ips._windows_arm64_skip_packages()
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "tiktoken" not in ips._windows_arm64_skip_packages()
 
     @pytest.mark.parametrize(
         "version, specifier, expected",
@@ -458,10 +417,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         return f"MeCab==0.996.13; {cls.ACTIVE}\n" f"MeCab==0.996.5; {cls.INACTIVE}\n"
 
     def test_the_shipped_file_really_has_the_duplicate(self):
-        text = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
-            encoding = "utf-8",
-        )
-        rows = [line for line in text.splitlines() if line.lower().startswith("mecab")]
+        rows = [line for line in EXTRAS_SRC.splitlines() if line.lower().startswith("mecab")]
         assert len(rows) == 2, "the case this fix exists for"
 
     def test_only_the_active_row_is_kept(self, ips, tmp_path):
@@ -478,13 +434,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "mecab" in ips._windows_arm64_skip_packages(
-                req
-            ), "the hosted 0.996.5 satisfies only the row that does not apply here"
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "mecab" in ips._windows_arm64_skip_packages(
+            req
+        ), "the hosted 0.996.5 satisfies only the row that does not apply here"
 
     def test_the_active_row_still_unskips(self, ips, tmp_path, monkeypatch):
         wheels = tmp_path / "wheels"
@@ -494,11 +446,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        ips._find_links_wheel_names.cache_clear()
-        try:
-            assert "mecab" not in ips._windows_arm64_skip_packages(req)
-        finally:
-            ips._find_links_wheel_names.cache_clear()
+        assert "mecab" not in ips._windows_arm64_skip_packages(req)
 
     def test_markers_are_evaluated_with_packaging(self, ips):
         assert ips._marker_is_active("") is True
@@ -566,11 +514,9 @@ class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
             monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "tiktoken" in name)
         (tmp_path / f"tiktoken-0.13.0rc1-{py}-{py}-win_arm64.whl").write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         req = tmp_path / "extras.txt"
         req.write_text("tiktoken==0.13.0\n", encoding = "utf-8")
         skipped = ips._windows_arm64_skip_packages(req = req)
-        ips._find_links_wheel_versions.cache_clear()
         assert "tiktoken" in skipped, (
             "an rc wheel satisfied an exact pin, so tiktoken was unskipped and the "
             "resolve fell to the sdist"
@@ -626,8 +572,9 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
 
     def test_the_two_installers_agree(self):
         """setup.ps1 exempts every pin; the Python half must not narrow that to /cpu."""
-        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-        assert "if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:" in source
+        assert (
+            "if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:" in STACK_SRC
+        )
         setup = (REPO_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
         assert "-not $_pinnedIdx) {" in setup, "setup.ps1's own preservation guard moved"
 
@@ -652,11 +599,7 @@ class TestOnlyTheResolversOwnLocationsCount:
                 monkeypatch.setenv(name, value)
         req = tmp_path / "extras.txt"
         req.write_text("tiktoken==0.13.0\n", encoding = "utf-8")
-        ips._find_links_wheel_versions.cache_clear()
-        try:
-            return ips._windows_arm64_skip_packages(req = req)
-        finally:
-            ips._find_links_wheel_versions.cache_clear()
+        return ips._windows_arm64_skip_packages(req = req)
 
     def test_a_pip_only_location_does_not_unskip(self, ips, tmp_path, monkeypatch):
         skips = self._skip_with(ips, tmp_path, monkeypatch, None, str(tmp_path))
@@ -671,9 +614,8 @@ class TestOnlyTheResolversOwnLocationsCount:
 
     def test_install_ps1_sets_both_so_the_managed_wheelhouse_is_unaffected(self):
         """The narrowing must not cost the path it was written for."""
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "UV_FIND_LINKS" in text and "PIP_FIND_LINKS" in text
-        assert '"UV_FIND_LINKS" = ","' in text, "and each keeps its own separator"
+        assert "UV_FIND_LINKS" in INSTALL_SRC and "PIP_FIND_LINKS" in INSTALL_SRC
+        assert '"UV_FIND_LINKS" = ","' in INSTALL_SRC, "and each keeps its own separator"
 
 
 class TestAHostedOptionalIsActuallyInstalled:
@@ -746,7 +688,6 @@ class TestAHostedOptionalIsActuallyInstalled:
         """xformers>=0.0.22.post7 is what pyproject.toml asks for; 0.0.20 satisfies nobody."""
         (tmp_path / _wheel("xformers", TAG, TAG, version = "0.0.20")).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") is None
         (tmp_path / _wheel("xformers", TAG, TAG, version = "0.0.31")).write_text("")
         ips._find_links_wheel_versions.cache_clear()
@@ -757,7 +698,6 @@ class TestAHostedOptionalIsActuallyInstalled:
         for version in ("0.0.23", "0.0.100"):
             (tmp_path / _wheel("xformers", TAG, TAG, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         assert (
             ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100"
         ), "sorted as text 0.0.23 would win"
@@ -803,14 +743,12 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_the_step_runs_in_the_install(self, ips):
         """A helper nothing calls re-enables nothing."""
-        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-        assert "    _install_wheelhouse_optionals()" in source
+        assert "    _install_wheelhouse_optionals()" in STACK_SRC
 
     def test_a_hosted_torchcodec_keeps_its_requirement(self, ips):
         """The one line that asks for torchcodec was filtered out before the resolver."""
-        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-        guard = source.index("and PLATFORM_LACKS_TORCHCODEC_WHEEL")
-        block = source[guard : source.index("_filter_requirements", guard)]
+        guard = STACK_SRC.index("and PLATFORM_LACKS_TORCHCODEC_WHEEL")
+        block = STACK_SRC[guard : STACK_SRC.index("_filter_requirements", guard)]
         assert 'not _wheelhouse_hosts("torchcodec")' in block
 
     def test_the_hosted_check_reads_the_resolvers_own_wheels(self, ips, tmp_path, monkeypatch):
@@ -864,7 +802,6 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
 
     def test_a_matching_interpreter_unblocks_librosa(self, ips, tmp_path, monkeypatch):
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
         assert "librosa" not in ips._windows_arm64_skip_packages()
@@ -876,7 +813,6 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
     def test_openai_whisper_still_needs_tiktoken(self, ips, tmp_path, monkeypatch):
         """Its third blocker publishes no win_arm64 wheel, so unblocking two is not enough."""
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
         assert "openai-whisper" in ips._windows_arm64_skip_packages()
@@ -885,7 +821,6 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         """The early return read "nothing hosted" as "skip everything", which threw the
         public-index answer away before it was asked for."""
         monkeypatch.delenv("UV_FIND_LINKS", raising = False)
-        ips._find_links_wheel_versions.cache_clear()
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
         assert "librosa" not in ips._windows_arm64_skip_packages()
@@ -942,7 +877,6 @@ class TestThePublicIndexClaimNeedsTheIndex:
 
     def test_librosa_goes_back_to_the_skip_list_offline(self, ips, monkeypatch, tmp_path):
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        ips._find_links_wheel_versions.cache_clear()
         assert "librosa" not in ips._windows_arm64_skip_packages()
         monkeypatch.setenv("UV_OFFLINE", "1")
         ips._find_links_wheel_versions.cache_clear()
