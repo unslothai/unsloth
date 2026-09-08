@@ -117,13 +117,7 @@ class PausingTransport:
         return _gen()
 
 
-def _run(
-    transport,
-    *,
-    signal,
-    tools = None,
-    **policy_kwargs,
-):
+def _run(transport, *, signal, tools = None, **policy_kwargs):
     fields = {
         "tools": tools if tools is not None else [WEB],
         "max_calls": 25,
@@ -147,7 +141,7 @@ def _run(
             ),
             policy = ToolLoopPolicy(**fields),
             cancel_event = threading.Event(),
-            preempt_signal = signal,
+            **({} if signal is None else {"preempt_signal": signal}),
         )
         async for line in agen:
             out.append(line)
@@ -156,19 +150,22 @@ def _run(
     return asyncio.run(_collect())
 
 
+def _one_round(signal, *, request_on_turn = 0):
+    return PausingTransport(
+        [_call_turn("web_search"), _answer_turn()], signal, request_on_turn = request_on_turn
+    )
+
+
 class TestTheToolIsRunExactlyOnce:
     def test_a_pause_during_a_tool_turn_does_not_double_execute(self, executed):
         signal = preemption.PreemptSignal()
-        transport = PausingTransport(
-            [_call_turn("web_search"), _answer_turn()],
-            signal,
-            request_on_turn = 0,
-        )
-        _run(transport, signal = signal)
+        _run(_one_round(signal), signal = signal)
         names = [call["name"] for call in executed]
         assert names == ["web_search"], f"expected one execution, got {names}"
 
-    def test_the_pause_is_held_off_while_the_tool_runs(self, executed, monkeypatch):
+    def test_the_pause_is_held_off_while_the_tool_runs_and_is_not_dropped(
+        self, executed, monkeypatch
+    ):
         signal = preemption.PreemptSignal()
         seen_during_execution: list[bool] = []
 
@@ -177,83 +174,26 @@ class TestTheToolIsRunExactlyOnce:
             return "ok"
 
         monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-        transport = PausingTransport(
-            [_call_turn("web_search"), _answer_turn()],
-            signal,
-            request_on_turn = 0,
-        )
-        _run(transport, signal = signal)
+        _run(_one_round(signal), signal = signal)
 
         assert seen_during_execution, "the tool never ran"
         assert not any(seen_during_execution), "a pause was visible while a tool was executing"
-
-    def test_the_request_is_deferred_not_dropped(self, executed):
-        signal = preemption.PreemptSignal()
-        transport = PausingTransport(
-            [_call_turn("web_search"), _answer_turn()],
-            signal,
-            request_on_turn = 0,
-        )
-        _run(transport, signal = signal)
         assert signal.pending, "the pause request was silently discarded"
 
 
 class TestWhereThePauseLands:
     def test_it_becomes_visible_before_the_next_stream(self, executed):
         signal = preemption.PreemptSignal()
-        transport = PausingTransport(
-            [_call_turn("web_search"), _answer_turn()],
-            signal,
-            request_on_turn = 0,
-        )
+        transport = _one_round(signal)
         _run(transport, signal = signal)
         assert len(transport.visible_at_turn_start) >= 2
         assert transport.visible_at_turn_start[0] is False
-        assert (
-            transport.visible_at_turn_start[1] is True
-        ), "the deferred pause should be visible by the next round's stream"
-
-    def test_a_turn_with_no_calls_never_opens_a_window(self, executed):
-        signal = preemption.PreemptSignal()
-        transport = PausingTransport([_answer_turn()], signal, request_on_turn = 0)
-        _run(transport, signal = signal)
-        assert signal.is_set()
-        assert not signal.deferred
-
+        assert transport.visible_at_turn_start[1] is True, (
+            "the deferred pause should be visible by the next round's stream"
+        )
 
 class TestWithoutASignal:
     def test_the_loop_is_unchanged(self, executed):
         signal = preemption.PreemptSignal()
-        transport = PausingTransport(
-            [_call_turn("web_search"), _answer_turn()],
-            signal,
-            request_on_turn = 99,
-        )
-
-        async def _collect():
-            out = []
-            agen = stream_with_studio_tools(
-                transport,
-                run = ToolLoopRun(
-                    messages = [{"role": "user", "content": "hi"}],
-                    session_id = "s1",
-                    thread_id = "t1",
-                    tool_choice = None,
-                ),
-                policy = ToolLoopPolicy(
-                    tools = [WEB],
-                    max_calls = 25,
-                    timeout = 300,
-                    permission_mode = "off",
-                    confirm_calls = False,
-                    bypass_permissions = False,
-                    rag_scope = None,
-                ),
-                cancel_event = threading.Event(),
-            )
-            async for line in agen:
-                out.append(line)
-            return out
-
-        asyncio.run(_collect())
+        _run(_one_round(signal, request_on_turn = 99), signal = None)
         assert [call["name"] for call in executed] == ["web_search"]

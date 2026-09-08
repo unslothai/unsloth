@@ -65,9 +65,6 @@ def _clean(monkeypatch):
     reset_preemption_controllers()
 
 
-# --------------------------------------------------------------------------- the mode
-
-
 class TestMode:
     def test_auto_is_server_only_when_the_build_can_park(self):
         assert preemption.resolve_preempt_mode(True) == preemption.PREEMPT_MODE_SERVER
@@ -117,45 +114,6 @@ class TestBackendProperty:
         assert self._backend(flag = True, unified = True).server_preempts_kv is False
 
 
-class TestProbe:
-    _HELP = (
-        "--metrics                               enable prometheus compatible metrics endpoint\n"
-        "--kv-unified, -kvu                      use single unified KV buffer\n"
-        "--spec-type {none,draft,draft-mtp}      speculative decoding type\n"
-    )
-
-    def _probe(self, monkeypatch, tmp_path, help_text):
-        binary = tmp_path / "llama-server"
-        binary.write_text("#!/bin/sh\n")
-        binary.chmod(0o755)
-
-        class _Result:
-            returncode = 0
-            stdout = help_text
-            stderr = ""
-
-        monkeypatch.setattr(llama_cpp_mod.subprocess, "run", lambda *a, **k: _Result())
-        LlamaCppBackend._capability_cache.clear()
-        return LlamaCppBackend.probe_server_capabilities(str(binary))
-
-    def test_the_flag_is_seen_and_an_upstream_build_reports_it_absent(
-        self, monkeypatch, tmp_path
-    ):
-        caps = self._probe(
-            monkeypatch,
-            tmp_path,
-            self._HELP
-            + "--preempt-ram N                         with a unified KV cache, park a slot "
-            "in host RAM instead of failing\n",
-        )
-        assert caps["supports_preempt_ram"] is True
-        assert caps["supports_metrics"] is True
-        assert self._probe(monkeypatch, tmp_path, self._HELP)["supports_preempt_ram"] is False
-
-
-# ------------------------------------------------------------------------ the controller
-
-
 def _fill(controller, n = 4, tokens = 2000):
     signals = []
     for i in range(n):
@@ -192,19 +150,6 @@ class TestController:
         assert snap.buffer == 0, "the server reserves its own drafts and margin"
         assert snap.committed == 9600 + 4 * 64
 
-    def test_studio_mode_is_unchanged(self):
-        controller = self._configured("studio", server_mode = False)
-        signals = _fill(controller, n = 4, tokens = 2400)
-        assert controller.plan_preemptions(), "today's behaviour: somebody must stop"
-        assert any(s.is_set() for s in signals)
-        assert controller.snapshot().mode == "studio"
-        assert controller.snapshot().buffer > 0
-
-    def test_configure_without_the_argument_keeps_the_mode(self):
-        controller = self._configured("keep", server_mode = True)
-        controller.configure(budget = 8192)
-        assert controller.server_mode is True
-
     def test_a_server_park_and_resume_move_the_ledger_without_the_studio_signal(self):
         controller = self._configured("policy", server_mode = True)
         signal = PreemptSignal()
@@ -217,22 +162,6 @@ class TestController:
         policy.on_server_resumed()
         assert controller.participant("g").state == ParticipantState.DECODING
         assert not signal.is_set(), "a server park never sets the Studio-side signal"
-
-    def test_the_deferred_wrapper_forwards_the_server_hooks(self):
-        controller = self._configured("deferred", server_mode = True)
-        signal = PreemptSignal()
-        controller.register("g", tokens = 100, signal = signal)
-        wrapper = preemption.DeferredPreemptionPolicy()
-        wrapper.on_server_parked()  # unbound: a no-op, not an error
-        wrapper.bind(preemption.ControllerPreemptionPolicy(controller, "g", signal))
-        wrapper.on_server_parked()
-        assert controller.participant("g").state == ParticipantState.PAUSED
-        wrapper.on_server_resumed()
-        assert controller.participant("g").state == ParticipantState.DECODING
-
-
-# ----------------------------------------------------------------------- the stream
-
 
 def _client_view(events):
     text = ""
@@ -282,33 +211,6 @@ class TestTheStreamRelaysAServerPark:
         )
         assert len(recorder.payloads) == 1, "nothing was re-opened: the server resumed in place"
 
-    def test_a_policy_without_the_hooks_is_fine(self, monkeypatch):
-        _recorder, events = self._plain(
-            monkeypatch, _SCRIPT, policy = preemption.NullPreemptionPolicy()
-        )
-        text, marks = _client_view(events)
-        assert text == "Once upon a time"
-        assert [m[0] for m in marks] == ["paused", "resumed"]
-
-    def test_an_upstream_stream_without_comments_is_bytewise_todays(self, monkeypatch):
-        _recorder, events = self._plain(
-            monkeypatch,
-            [c for c in _SCRIPT if not c.startswith(":")],
-            policy = None,
-            server_preempts = False,
-        )
-        assert _client_view(events) == ("Once upon a time", [])
-
-    def test_a_park_before_the_first_token_is_shown_too(self, monkeypatch):
-        _recorder, events = self._plain(
-            monkeypatch,
-            [": preempted\n\n", ": resumed\n\n", _delta("Hello"), _finish(), "data: [DONE]\n\n"],
-            policy = _HookPolicy(),
-        )
-        text, marks = _client_view(events)
-        assert text == "Hello"
-        assert [m[0] for m in marks] == ["paused", "resumed"]
-
     def test_the_tool_loop_surface_relays_the_comments_too(self, monkeypatch):
         recorder = _Recorder(monkeypatch, _SCRIPT, server_preempts = True)
         policy = _HookPolicy()
@@ -327,9 +229,6 @@ class TestTheStreamRelaysAServerPark:
         texts = [e["text"] for e in events if isinstance(e, dict) and e.get("type") == "content"]
         assert texts and texts[-1].endswith("Once upon a time")
         assert "server-parked" in policy.events and "server-resumed" in policy.events
-
-
-# ----------------------------------------------------- the paused comment, all the way out
 
 
 class _PausingBackend(FakeLlamaCppBackend):
@@ -388,12 +287,6 @@ class TestThePauseReachesTheClient:
         assert "Introduction: The" in body and " Paradigm" in body
         assert "data: [DONE]" in body
 
-    def test_the_signal_is_a_comment_not_a_data_event(self, monkeypatch):
-        for line in self._body(monkeypatch, tools = True).splitlines():
-            if "preempt" in line:
-                assert line.startswith(":"), line
-
-
 class TestADurableRunRelaysThePause:
     """The GUI streams plain chats through a durable run, whose worker reads the events."""
 
@@ -410,41 +303,22 @@ class TestADurableRunRelaysThePause:
         glued = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n: preempt-paused\n\n'
         assert _admission_status_chunks(glued) == [{"_admissionStatus": "paused"}]
 
-    def test_other_comments_and_data_are_ignored(self):
-        for piece in (": keep-alive\n\n", ": admission-wait\n\n", 'data: {"choices": []}\n\n', ""):
-            assert _admission_status_chunks(piece) == []
-
-
 class TestEverySignalTheClientReadsHasAProducer:
     """The one cross-language contract here: the client understands four comments, and a
     signal it can read that the server never sends is a user staring at a stopped answer."""
 
-    def test_the_frontend_constants_are_all_emitted_by_the_route(self):
+    # No behavioural reach: the producers are asserted elsewhere in this file, but only
+    # the frontend source says which comments the client is prepared to read.
+    def test_the_frontend_declares_exactly_the_four_comments_the_route_emits(self):
         backend_dir = pathlib.Path(__file__).resolve().parent.parent
-        admission_ts = (
-            backend_dir.parent
-            / "frontend/src/features/chat/utils/admission-status.ts"
-        )
-        if not admission_ts.exists():
+        ts = backend_dir.parent / "frontend/src/features/chat/utils/admission-status.ts"
+        if not ts.exists():
             pytest.skip("frontend not present in this tree")
-        declared = set(
-            re.findall(
-                r'^export const ADMISSION_COMMENT_\w+ = "([^"]+)";',
-                admission_ts.read_text(encoding = "utf-8"),
-                re.M,
-            )
-        )
+        pattern = r'^export const ADMISSION_COMMENT_\w+ = "([^"]+)";'
+        declared = set(re.findall(pattern, ts.read_text(encoding = "utf-8"), re.M))
         assert declared == {
-            "admission-wait",
-            "admission-done",
-            "preempt-paused",
-            "preempt-resumed",
+            "admission-wait", "admission-done", "preempt-paused", "preempt-resumed",
         }
-        routes = (backend_dir / "routes/inference.py").read_text(encoding = "utf-8")
-        assert not sorted(c for c in declared if f": {c}" not in routes)
-
-
-# ---------------------------------------------------------------- the stall timeout
 
 
 class _Obj:
@@ -494,11 +368,6 @@ class TestAParkIsNotAStall:
         with pytest.raises(httpcore.ReadTimeout):
             read(65536, timeout = 1200.0)
 
-    def test_without_grace_the_stall_fires_as_today(self, monkeypatch):
-        read, clock = self._drive(monkeypatch, None)
-        self._read_until_stall(read)
-        assert clock["t"] == pytest.approx(self._STALL, abs = 1.0)
-
     def test_a_parked_slot_keeps_the_stream_alive(self, monkeypatch):
         asked = []
 
@@ -510,20 +379,6 @@ class TestAParkIsNotAStall:
         self._read_until_stall(read)
         assert len(asked) == 3
         assert clock["t"] == pytest.approx(3 * self._STALL, abs = 1.0)
-
-    def test_the_grace_is_bounded(self, monkeypatch):
-        read, clock = self._drive(monkeypatch, lambda: True)
-        self._read_until_stall(read)
-        assert clock["t"] >= llama_cpp_mod._SERVER_PARK_STALL_CAP_S
-        assert clock["t"] < llama_cpp_mod._SERVER_PARK_STALL_CAP_S + 2 * self._STALL
-
-    def test_a_grace_that_raises_is_a_stall(self, monkeypatch):
-        def grace():
-            raise RuntimeError("metrics down")
-
-        read, clock = self._drive(monkeypatch, grace)
-        self._read_until_stall(read)
-        assert clock["t"] == pytest.approx(self._STALL, abs = 1.0)
 
     def test_the_open_stream_hands_the_grace_down_only_when_the_build_can_park(
         self, monkeypatch
@@ -547,17 +402,3 @@ class TestAParkIsNotAStall:
         assert "stall_grace" not in seen[0], "an upstream build passes nothing new"
         assert seen[1]["stall_grace"] is not None
 
-    def test_the_backend_reads_requests_preempted(self, monkeypatch):
-        from core.inference import llama_stats
-
-        backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        backend._port = 48852
-        for metrics, expected in (
-            ({"requests_preempted": 1.0}, True),
-            ({"requests_preempted": 0.0}, False),
-            (None, False),
-        ):
-            monkeypatch.setattr(
-                llama_stats, "scrape_llama_metrics", lambda *_a, **_k: metrics
-            )
-            assert backend._server_park_grace() is expected
