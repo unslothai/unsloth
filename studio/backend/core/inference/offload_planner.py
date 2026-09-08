@@ -1356,6 +1356,9 @@ def max_context_for(
         + (0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq))
         + (0 if spill_lm_head else layout.lm_head_bytes)
         + (0 if spill_all_ffn else layout.spillable_bytes)
+        # Shared and dense FFN inside a MoE block sit in resident_bytes and are a
+        # rung of their own, so "every FFN spilled" has to release them too.
+        - (sum(b.dense_ffn_bytes for b in layout.blocks) if spill_all_ffn else 0)
     )
     per_token = layout.kv_bytes_per_token_f16 * _kv_elem_bytes(kv_quantised) // 2
     if per_token <= 0:
@@ -1519,7 +1522,11 @@ def plan_placement(
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(
-            layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
+            layout,
+            n_ctx,
+            kv_bytes_floor = kv_bytes_floor,
+            kv_on_host = opts.kv_on_host,
+            n_seq = max(1, opts.n_parallel),
         )
         > budget
     ):
@@ -2452,11 +2459,19 @@ def _cost_gate(
         # the measured vetoes above still apply.
         return None, 0.0, 0.0
 
+    # The prompt was priced per slot at the caller's slot count. Without a
+    # unified cache each remaining slot's window grows as rung 1 lowers the count,
+    # so the plan is scored at the window it will actually serve; under
+    # --kv-unified the window was the whole context already.
+    n_prompt = max(1, opts.workload_prompt_tokens)
+    caller_slots = max(1, opts.n_parallel)
+    if not opts.kv_unified and n_slots < caller_slots:
+        n_prompt = min(max(1, n_ctx // n_slots), n_prompt * caller_slots // n_slots)
     scored = rank(
         [plan, fallback],
         opts.host,
         n_generated = opts.workload_generated_tokens,
-        n_prompt = opts.workload_prompt_tokens,
+        n_prompt = n_prompt,
         n_ubatch = opts.n_ubatch,
     )
     plan_ms = _score_of(plan, scored)
@@ -2614,9 +2629,11 @@ def _finish(
         # -nkvo moved the cache and the recurrent state out of VRAM, not out of
         # existence: they are host RAM now, and the mmap decision below has to see
         # them or it answers against a footprint short by the whole cache.
-        host_bytes += (
-            cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
-            + layout.recurrent_bytes
+        # One recurrent state per slot, the same count the floor was measured at.
+        host_bytes += cache_bytes(
+            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+        ) + layout.recurrent_bytes * max(
+            1, knobs.n_parallel if knobs is not None else opts.n_parallel
         )
     vram_bytes = (
         all_resident_bytes(

@@ -2259,3 +2259,99 @@ def test_the_context_bound_assumes_the_rungs_above_the_first_spill():
     assert plan.changed and not plan.insufficient, plan.reason
     assert plan.mmproj_to_host
     assert opts.min_ctx <= plan.n_ctx < 131072, plan.n_ctx
+
+
+def test_a_host_held_recurrent_state_is_charged_once_per_slot():
+    """-nkvo puts the recurrent state in host RAM, one copy per slot; the plan's
+    host bytes carried one copy, so the load-mode rule and the prompt-cache
+    clamp were short by the other slots' state."""
+    import dataclasses
+
+    layout = dataclasses.replace(q4_layout(), recurrent_bytes = GIB)
+
+    def at(slots):
+        return plan_placement(
+            layout,
+            [16 * GIB],
+            64 * GIB,
+            8192,
+            opts = PlanOptions(kv_on_host = True, n_parallel = slots, min_parallel = slots),
+        )
+
+    one, four = at(1), at(4)
+    assert one.ot_patterns == four.ot_patterns
+    assert four.host_bytes - one.host_bytes == 3 * GIB
+
+
+def test_prefer_resident_tests_the_footprint_the_slots_really_serve():
+    """The guard priced one copy of the recurrent state while the launch serves
+    one per slot, so a load whose single copy fit skipped the resident search
+    and spilled weights where a shorter context would have kept everything on
+    the card."""
+    import dataclasses
+
+    ctx = 32768
+    layout = dataclasses.replace(
+        q4_layout(), recurrent_bytes = GIB, kv_bytes_per_token_f16 = 4 * GIB / ctx
+    )
+    o = PlanOptions(
+        context_policy = ContextPolicy.PREFER_RESIDENT,
+        n_parallel = 4,
+        min_parallel = 4,
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+    )
+    single = all_resident_bytes(layout, ctx, n_seq = 1)
+    card = single + GIB + 512 * MIB
+    assert all_resident_bytes(layout, ctx, n_seq = 4) > card - GIB
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, opts = o)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert not plan.ot_patterns, plan.ot_patterns
+    assert 0 < plan.n_ctx < ctx, plan.n_ctx
+    assert all_resident_bytes(layout, plan.n_ctx, n_seq = 4) <= card - GIB
+
+
+def test_the_context_bound_releases_the_dense_ffn_rung_too():
+    """Shared and dense FFN inside a MoE block are a rung of their own and sit in
+    resident_bytes, so a bound that released only the expert bytes sat below the
+    context the ladder could reach once that rung fired."""
+    with_shared = graded_moe_with_shared(0.2)
+    without = graded_moe_with_shared(0.0)
+    # 11 GiB: the attention and the vocabulary fit under the reserve, the 8 GiB
+    # of shared FFN do not, so the bound is decided by whether they are released.
+    bound = max_context_for(with_shared, [11 * GIB], spill_all_ffn = True)
+    assert bound > 0
+    assert bound == max_context_for(without, [11 * GIB], spill_all_ffn = True)
+
+
+def graded_moe_with_shared(shexp_gib: float) -> ModelLayout:
+    d, u, g = int(0.16 * GIB), int(0.16 * GIB), int(0.15 * GIB)
+    attn, shexp = int(0.025 * GIB), int(shexp_gib * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = attn + shexp,
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            dense_ffn_bytes = shexp,
+            attn_bytes = attn,
+        )
+        for i in range(40)
+    )
+    return ModelLayout(
+        arch = "qwen3moe",
+        n_layers = 40,
+        n_attention_layers = 40,
+        blocks = blocks,
+        lm_head_bytes = int(0.5 * GIB),
+        token_embd_bytes = int(0.5 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 0.62 * GIB / 32768,
+        n_ctx_train = 32768,
+        is_moe = True,
+        n_expert = 128,
+        n_expert_used = 8,
+        complete = True,
+    )

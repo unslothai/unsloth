@@ -989,12 +989,12 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
 
     plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
     assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
-    assert (
-        plan.host_bytes == layout.token_embd_bytes + mmproj
-    ), "a CPU-pinned projector is host RAM this plan has to pay for"
-    assert (
-        not plan.load_mode_none
-    ), "the host cannot hold the projector, so mmap has to stay and page it"
+    assert plan.host_bytes == layout.token_embd_bytes + mmproj, (
+        "a CPU-pinned projector is host RAM this plan has to pay for"
+    )
+    assert not plan.load_mode_none, (
+        "the host cannot hold the projector, so mmap has to stay and page it"
+    )
     assert "--load-mode" not in plan_to_args(plan)
 
     # With the room for it, nothing changes but the answer.
@@ -1081,3 +1081,91 @@ def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
         kv_layer_weights = weights,
     )
     assert split.n_parallel == 0, split
+
+
+def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
+    """A KDA hybrid without full_attention_interval says which rows carry no
+    cache with a 0 in the per-layer list. Summed away, the layout reported every
+    layer as attention and no recurrent rows, and the multi-device check then
+    spread the measured cache uniformly over rows that hold none of it."""
+    from core.inference import offload_layout as OL
+
+    def reader(heads):
+        fields = {
+            "general.architecture": "kda",
+            "kda.block_count": 6,
+            "kda.attention.head_count_kv": heads,
+            "kda.attention.head_count": 8,
+            "kda.embedding_length": 256,
+            "kda.attention.key_length": 32,
+            "kda.attention.value_length": 32,
+        }
+
+        class _F:
+            def __init__(self, v):
+                self.v = v
+
+            def contents(self):
+                return self.v
+
+        class _T:
+            def __init__(self, i):
+                self.name = f"blk.{i}.attn_q.weight"
+                self.n_bytes = 1024
+
+        class _R:
+            tensors = tuple(_T(i) for i in range(6))
+
+            def __init__(self):
+                self.fields = {k: _F(v) for k, v in fields.items()}
+
+        return _R()
+
+    layout = OL._layout_from_reader(reader([4, 0, 4, 0, 4, 4]))
+    assert layout.n_layers == 6
+    assert layout.n_attention_layers == 4
+    assert layout.kv_bytes_per_token_f16 == 16 * (32 + 32) * 2
+    plain = OL._layout_from_reader(reader([4, 4, 4, 4, 4, 4]))
+    assert plain.n_attention_layers == 6
+    assert plain.kv_bytes_per_token_f16 == 24 * (32 + 32) * 2
+
+
+def test_the_gate_prices_the_prompt_at_the_window_the_reduced_slots_serve(monkeypatch):
+    """Rung 1 gives each remaining slot a larger private window, so the prompt the
+    gate scores grows with it; under a unified cache it was the whole window
+    already and does not move."""
+    from core.inference import offload_planner as planner
+
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    short = (floor // 2 + layout.recurrent_bytes) + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short
+    seen = []
+    real = planner.rank
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("n_prompt"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "rank", spy)
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        require_cost_win = True,
+        workload_prompt_tokens = 1024,
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert plan.n_parallel == 1, plan.reason
+    assert seen and seen[-1] == 2048, seen
+    seen.clear()
+    plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, kv_unified = True)
+    )
+    assert seen and seen[-1] == 1024, seen

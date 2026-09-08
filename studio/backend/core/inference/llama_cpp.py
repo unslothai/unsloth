@@ -11241,6 +11241,11 @@ class LlamaCppBackend:
             + max(0, mtp_bytes)
             # Resident, but only ever in host RAM; charged to the RAM term alone below.
             + max(0, host_only_bytes)
+            # The prompt cache, likewise: the predicate below subtracts every
+            # host-only term from this footprint before crediting VRAM, so a term
+            # charged there and not here is subtracted from bytes that were never
+            # added and the RAM requirement comes out short by the whole cache.
+            + max(0, prompt_cache_bytes)
             + max(0, compute_buffer_flat)
             + max(0, compute_buffer_ctx)
             # A layer split puts a fixed CUDA context and scratch on EVERY device, and

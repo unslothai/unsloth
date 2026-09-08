@@ -380,6 +380,21 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
+    # A per-layer list with zeros names the rows that carry NO attention cache
+    # (a KDA / linear-attention hybrid without full_attention_interval). Summing
+    # them away would report every layer as attention and let a multi-device
+    # check spread the cache uniformly over rows that hold none of it; keep the
+    # count honest so the uneven-cache abstain sees the hybrid.
+    if isinstance(n_kv_head, (list, tuple)) and fai <= 0 and n_layers > 0:
+        _heads = [int(h) for h in n_kv_head]
+        if _heads:
+            _padded = [_heads[i] if i < len(_heads) else _heads[-1] for i in range(n_layers)]
+            _attention_rows = sum(1 for h in _padded if h > 0)
+            if 0 < _attention_rows < n_layers:
+                n_attention = _attention_rows
+                n_recurrent = n_layers - n_attention
+                n_kv_head = [h for h in _padded if h > 0]
+
     kv_heads_total = _kv_heads_total(n_kv_head, int(n_attention))
     if not kv_heads_total:
         return ModelLayout()
