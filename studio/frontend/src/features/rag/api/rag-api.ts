@@ -47,12 +47,13 @@ export function isRagClientError(error: unknown): boolean {
 
 async function ragRequest<T>(
   path: string,
-  init?: { method?: string; body?: object },
+  init?: { method?: string; body?: object; signal?: AbortSignal },
 ): Promise<T> {
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: init?.method,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
+    signal: init?.signal,
   });
   if (response.status === 204) {
     noteRagResponse(204, null);
@@ -720,8 +721,8 @@ export async function deleteDocument(
   return result;
 }
 
-export function getJob(jobId: string): Promise<IndexJob> {
-  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
+export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
+  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
 
 /** Longest gap between frames before a stream is treated as buffered by a proxy. */

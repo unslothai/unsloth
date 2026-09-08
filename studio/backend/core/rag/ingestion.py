@@ -48,8 +48,15 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         return
     try:
         target = os.path.realpath(stored_path)
-        if keep_path is not None and target == os.path.realpath(keep_path):
-            return
+        if keep_path is not None:
+            if target == os.path.realpath(keep_path):
+                return
+            # Case aliases can name the same file on macOS and Windows.
+            try:
+                if os.path.samefile(target, keep_path):
+                    return
+            except OSError:
+                pass
         from utils.paths import rag_uploads_root
 
         uploads = os.path.realpath(str(rag_uploads_root()))

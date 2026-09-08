@@ -38,6 +38,10 @@ export interface TrackedDocument extends RagDocument {
  * within one period of appearing. */
 const FOLDER_RECONCILE_INTERVAL_MS = 30_000;
 
+// Leave HTTP/1.1 connections available for uploads and status requests.
+const MAX_JOB_STREAMS = 4;
+let activeJobStreams = 0;
+
 /** A browser File, or a desktop drop addressed by its native path token. */
 export type RagUploadItem =
   | { kind: "file"; file: File }
@@ -121,6 +125,18 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  const uploadGenerationRef = useRef(0);
+  const activeUploadsRef = useRef(new Set<object>());
+  useEffect(
+    () => () => {
+      uploadGenerationRef.current += 1;
+      activeUploadsRef.current.clear();
+      uploadInFlightRef.current = false;
+      for (const controller of trackedJobs.current.values()) controller.abort();
+      trackedJobs.current.clear();
+    },
+    [],
+  );
   // Refreshes fire from several places at once (a mutation invalidates before
   // and after, the poll ticks, the scope changes) and can complete out of order,
   // so only the newest publishes: an earlier one landing last would restore the
@@ -156,12 +172,20 @@ export function useRagDocuments(
       if (trackedJobs.current.has(jobId)) return;
       const controller = new AbortController();
       trackedJobs.current.set(jobId, controller);
+      const generation = uploadGenerationRef.current;
+      const stale = () =>
+        controller.signal.aborted || generation !== uploadGenerationRef.current;
+      const forget = () => {
+        if (trackedJobs.current.get(jobId) === controller)
+          trackedJobs.current.delete(jobId);
+      };
 
       const finish = (
         status: TerminalJobStatus,
         error?: string | null,
         numChunks?: number | null,
       ) => {
+        if (stale()) return forget();
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
@@ -182,46 +206,54 @@ export function useRagDocuments(
             ...(numChunks != null ? { numChunks } : {}),
           });
         }
-        trackedJobs.current.delete(jobId);
+        forget();
       };
 
       (async () => {
-        try {
-          for await (const ev of streamJobEvents(jobId, controller.signal)) {
-            if (ev.type === "progress") {
-              patchDoc(documentId, {
-                status: "running",
-                progress: ev.progress ?? null,
-                stage: ev.stage ?? null,
-              });
-            } else if (ev.type === "complete") {
-              finish("completed", null, ev.num_chunks);
-              return;
-            } else if (ev.type === "error") {
-              finish(
-                ev.stage === "cancelled" ? "cancelled" : "failed",
-                ev.error ?? "Indexing failed",
-              );
+        if (activeJobStreams < MAX_JOB_STREAMS) {
+          activeJobStreams += 1;
+          try {
+            for await (const ev of streamJobEvents(jobId, controller.signal)) {
+              if (stale()) return forget();
+              if (ev.type === "progress") {
+                patchDoc(documentId, {
+                  status: "running",
+                  progress: ev.progress ?? null,
+                  stage: ev.stage ?? null,
+                });
+              } else if (ev.type === "complete") {
+                finish("completed", null, ev.num_chunks);
+                return;
+              } else if (ev.type === "error") {
+                finish(
+                  ev.stage === "cancelled" ? "cancelled" : "failed",
+                  ev.error ?? "Indexing failed",
+                );
+                return;
+              }
+            }
+            // Stream ended with no terminal frame: reconcile.
+            if (stale()) return forget();
+            const job = await getJob(jobId, controller.signal);
+            const terminal = terminalJobStatus(job.status);
+            if (terminal) {
+              finish(terminal, job.error, job.numChunks);
               return;
             }
-          }
-          // Stream ended with no terminal frame: reconcile.
-          const job = await getJob(jobId);
-          const terminal = terminalJobStatus(job.status);
-          if (terminal) {
-            finish(terminal, job.error, job.numChunks);
-            return;
-          }
-        } catch {
-          if (controller.signal.aborted) {
-            trackedJobs.current.delete(jobId);
-            return;
+          } catch {
+            if (stale()) {
+              forget();
+              return;
+            }
+          } finally {
+            activeJobStreams -= 1;
           }
         }
         // Poll until the persisted job reaches a terminal state.
         try {
-          while (!controller.signal.aborted) {
-            const job = await getJob(jobId);
+          while (!stale()) {
+            const job = await getJob(jobId, controller.signal);
+            if (stale()) return forget();
             const terminal = terminalJobStatus(job.status);
             if (terminal) {
               return finish(
@@ -240,7 +272,9 @@ export function useRagDocuments(
             await new Promise((r) => setTimeout(r, 1500));
           }
         } catch {
-          trackedJobs.current.delete(jobId);
+          // A list refresh can restart tracking after a request fails.
+        } finally {
+          forget();
         }
       })();
     },
@@ -348,6 +382,10 @@ export function useRagDocuments(
       // null scope starts no replacement request to outrank it, so without this
       // its response would repopulate the list that is about to be cleared.
       refreshSeq.current += 1;
+      uploadGenerationRef.current += 1;
+      activeUploadsRef.current.clear();
+      uploadInFlightRef.current = false;
+      setUploading(false);
       // Scope changes intentionally clear the old scope before fetching the new
       // one. Keep this synchronous so React StrictMode's setup/cleanup replay
       // cannot cancel the only refresh after prevScopeKeyRef has advanced.
@@ -456,18 +494,18 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectScopeId]);
 
-  // POST one file, then swap its optimistic chip (`tempId`) to the real id; drop
-  // the chip if the backend deduped. `seenIds` holds ids present/added this batch.
+  // Replace pending chips, deduplicating concurrent upload responses.
   const uploadOne = useCallback(
     async (
       item: RagUploadItem,
-      seenIds: Set<string>,
       activeScope: RagDocumentScope,
       tempId: string,
+      generation: number,
     ) => {
       const name = itemName(item);
       try {
         const { ocr, caption } = await resolveVisionOverrides();
+        if (generation !== uploadGenerationRef.current) return;
         // Leases are short-lived, so mint one per upload rather than at drop time.
         const file =
           item.kind === "file"
@@ -477,6 +515,7 @@ export function useRagDocuments(
                   await consumeNativePathToken(item.token, "attach")
                 ).nativePathLease,
               };
+        if (generation !== uploadGenerationRef.current) return;
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(
@@ -498,28 +537,25 @@ export function useRagDocuments(
                   ocr,
                   caption,
                 );
+        if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
-        if (seenIds.has(result.documentId)) {
-          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          // A duplicate may still be indexing.
-          trackJob(result.jobId, result.documentId, result.filename || name);
-          return;
-        }
-        seenIds.add(result.documentId);
         setDocuments((rows) =>
-          rows.map((row) =>
-            row.id === tempId
-              ? {
-                  ...row,
-                  id: result.documentId,
-                  filename: result.filename || row.filename,
-                  status: "running",
-                }
-              : row,
-          ),
+          rows.some((row) => row.id === result.documentId)
+            ? rows.filter((row) => row.id !== tempId)
+            : rows.map((row) =>
+                row.id === tempId
+                  ? {
+                      ...row,
+                      id: result.documentId,
+                      filename: result.filename || row.filename,
+                      status: "running",
+                    }
+                  : row,
+              ),
         );
         trackJob(result.jobId, result.documentId, result.filename || name);
       } catch (err) {
+        if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         // Drop the chip rather than show "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
@@ -540,6 +576,9 @@ export function useRagDocuments(
         | Promise<RagDocumentScope | null>
         | (() => Promise<RagDocumentScope | null>),
     ) => {
+      const generation = uploadGenerationRef.current;
+      const uploadToken = {};
+      activeUploadsRef.current.add(uploadToken);
       // Flip the in-flight guard synchronously, before awaiting a thread id that
       // may still be materializing, so the scope-change effect reads it and leaves
       // job tracking and optimistic chips alone.
@@ -601,6 +640,7 @@ export function useRagDocuments(
             throw new Error("Could not start a chat to attach them to.");
           }
         } catch (err) {
+          if (generation !== uploadGenerationRef.current) return;
           // Materialization failed: drop the chips so they don't hang "pending".
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
@@ -610,17 +650,16 @@ export function useRagDocuments(
           return;
         }
 
-        const seenIds = new Set(
-          documentsRef.current
-            .filter((d) => !d.id.startsWith("pending_"))
-            .map((d) => d.id),
-        );
         for (const { tempId, item } of fresh) {
-          await uploadOne(item, seenIds, activeScope, tempId);
+          if (generation !== uploadGenerationRef.current) return;
+          await uploadOne(item, activeScope, tempId, generation);
         }
       } finally {
-        setUploading(false);
-        uploadInFlightRef.current = false;
+        activeUploadsRef.current.delete(uploadToken);
+        if (generation === uploadGenerationRef.current) {
+          uploadInFlightRef.current = activeUploadsRef.current.size > 0;
+          setUploading(uploadInFlightRef.current);
+        }
         if (uploadingProjectId) {
           noteProjectWork(uploadingProjectId, -1);
         }
