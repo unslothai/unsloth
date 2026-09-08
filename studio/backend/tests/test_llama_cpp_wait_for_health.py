@@ -1217,8 +1217,7 @@ class TestARefusedSpawnClosesItsLog:
 
         with mock.patch.object(builtins, "open", tracking_open):
             assert (
-                b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
-                is False
+                b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is False
             )
 
         assert opened, "the method never opened an attempt log; this proves nothing"
@@ -1276,10 +1275,7 @@ def test_the_pid_is_recorded_before_the_spawn_lock_is_released():
 
     with mock.patch.object(subprocess, "Popen", lambda *a, **k: _Proc()):
         with mock.patch.object(threading, "Thread", lambda **k: mock.Mock()):
-            assert (
-                b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
-                is True
-            )
+            assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is True
 
     assert order.index("record") < order.index("unlock"), (
         f"the pid is recorded after the lock is released ({order}), so a teardown "
