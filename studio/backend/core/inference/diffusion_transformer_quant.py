@@ -32,6 +32,11 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
+
+# Runs in the spawned smoke-probe child too, which imports this module and nothing of the backend:
+# torchao gets patched before the probe builds its throwaway int8 Linear. Also stdlib-only at import.
+install_torchao_int_mm_patch()
 
 TQ_INT8 = "int8"
 TQ_FP8 = "fp8"

@@ -106,6 +106,7 @@ from .diffusion_memory import (
     snapshot_device_memory,
     unified_memory_shortfall_message,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_MAX,
@@ -193,6 +194,9 @@ logger = get_logger(__name__)
 # diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
+# Same reason it sits here: torchao must be patched before anything imports it. The patch is a meta path
+# finder, so a torchao imported later (the prequant path never calls quantize_) is covered too.
+install_torchao_int_mm_patch()
 
 
 # "gguf" and "single_file" take companions from the base repo; "pipeline" is a full diffusers repo.

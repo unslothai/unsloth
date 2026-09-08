@@ -37,6 +37,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
     trainable_family_names,
 )
+from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata
 
@@ -44,6 +45,8 @@ from utils.paths.path_utils import drop_appledouble_metadata
 # does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
+# Same child, same reason: the int8 base-weight quantisation the DiT trainer does goes through torchao.
+install_torchao_int_mm_patch()
 
 # Default LoRA target modules: the attention projections common to the SDXL U-Net and the DiTs (the
 # diffusers/kohya convention). A family may override this.

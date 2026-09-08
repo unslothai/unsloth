@@ -82,6 +82,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -169,6 +170,11 @@ from utils.hardware import clear_gpu_cache
 from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
+
+# Every `import diffusers` below is lazy, so this runs first: torchao must be patched before anything
+# imports it. The image backend installs the Windows-ROCm stubs and this module imports it, but the
+# int8 patch is asked for here too so the video path never depends on that import order.
+install_torchao_int_mm_patch()
 
 # Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT),
 # pipeline (full diffusers repo)

@@ -233,6 +233,7 @@ from .import_fixes import (
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
     fix_torchao_nf4tensor_move,
+    fix_torchao_safe_int_mm_repr_probe,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -276,6 +277,9 @@ fix_vllm_lora_tokenizer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the old path. Lazy alias, so
 # it costs nothing unless asked for.
 fix_torchao_nf4tensor_move()
+# Best before anything in this process imports torchao, but the finder it installs makes a later
+# import safe too, which is what the diffusion prequant path relies on.
+fix_torchao_safe_int_mm_repr_probe()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
@@ -318,6 +322,7 @@ del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
 del fix_torchao_nf4tensor_move
+del fix_torchao_safe_int_mm_repr_probe
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
