@@ -270,9 +270,7 @@ def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkey
 
 
 @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "custom"))
-def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(
-    monkeypatch, provider_type
-):
+def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(monkeypatch, provider_type):
     """The exemption is Ollama's alone.
 
     llama.cpp, vLLM and a generic OpenAI-compatible server have no Modelfile SYSTEM to lose,
