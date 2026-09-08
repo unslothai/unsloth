@@ -251,13 +251,9 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
-    # Read as well as run: test_the_bail_restores_the_caller_environment drives the
-    # bail and watches the environment afterwards, which is the structural claim. This
-    # keeps the cheap textual check beside it so a reader sees the shape at a glance.
-    # The invariant is that no path out of the setup call can skip the restore, and
-    # the bail this used to sit after now lives INSIDE the try whose finally does the
-    # restoring, which is a stronger arrangement than the ordering this once asserted.
-    # So the check is the arrangement itself: save, then the bail, then the restore.
+    # Cheap companion to test_the_bail_restores_the_caller_environment, which drives the
+    # bail: no path out of the setup call may skip the restore, and the bail now lives
+    # inside the restoring try, so assert the arrangement save < bail < restore.
     saved = src.index("$previousRocmGfxHandoff = $env:")
     bail = src.index("--with-llama-cpp-dir path does not exist")
     restored = src.index(f"$env:{HANDOFF} = $previousRocmGfxHandoff")
@@ -546,9 +542,8 @@ def _run_handoff_lifecycle(
 ) -> dict:
     call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
     block = _handoff_lifecycle_block()
-    # Loudly, because a silent miss here does not fail this harness: the probe below
-    # would simply never run and every assertion would read "<never ran>" with
-    # nothing saying why. The shipped call is what this block exists to wrap.
+    # Loudly: a silent miss leaves the probe unrun and every assertion reading
+    # "<never ran>" with nothing saying why.
     assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
     body = block.replace(
         call,
@@ -568,10 +563,8 @@ def _run_handoff_lifecycle(
                 "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
-                # The block reads the installer's own inputs and calls its torch-tag
-                # helper. Undefined, they throw under ErrorActionPreference Stop, the
-                # catch below swallows it, and the probe never runs -- which is how
-                # this read as a handoff bug when the block simply grew a dependency.
+                # Installer inputs the block reads. Undefined, they throw under
+                # ErrorActionPreference Stop, the catch swallows it, and the probe never runs.
                 "$PackageName = 'unsloth'; $SkipTorch = $false; $TauriMode = $false",
                 "$StudioLocalInstall = $false; $RepoRoot = $null",
                 "$StudioRedirectMode = 'none'; $StudioHome = $null",
@@ -582,8 +575,7 @@ def _run_handoff_lifecycle(
                 )
                 + "; $VenvPython = 'stub-python'; $VenvDir = 'stub-venv'",
                 "$TorchIndexUrl = $null; $ROCmIndexUrl = $null",
-                # Every installer function the block reaches, stubbed. Kept in step
-                # with it by the assertion below, which lists what the block calls.
+                # Every installer function the block reaches, stubbed.
                 "function Get-ExpectedTorchFlavorTag { param($TorchIndexUrl, $ROCmIndexUrl) 'cu128' }",
                 "function Get-InstalledTorchVersionRaw { param($Python) '' }",
                 "function ConvertTo-TorchNumericRelease { param($Raw) $null }",
@@ -592,15 +584,12 @@ def _run_handoff_lifecycle(
                 "function Exit-InstallFailure { param($Message) 1 }",
                 "$script:SeenByChild = '<never ran>'",
                 "$script:BlockError = $null",
-                # The line after the setup call reads this, and the block now returns
-                # early when it is null, which took the report with it.
+                # Read right after the setup call; null makes the block return early.
                 "$script:ManagedUnslothCliExit = 0",
                 "$script:PrevTorchPin = $null",
                 "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
-                # In a function, so the block's own `return` leaves the block rather
-                # than the script: that return is the --with-llama-cpp-dir bail, and
-                # watching what the environment looks like AFTER it is the only way to
-                # show the restoring finally really encloses it.
+                # In a function so the block's own return -- the --with-llama-cpp-dir bail --
+                # leaves the block, not the script, letting us read the environment after it.
                 "function Invoke-HandoffBlock {",
                 "try {",
                 body,
@@ -613,8 +602,8 @@ def _run_handoff_lifecycle(
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
-                # Two the block sets at the top of its try, before the bail below it.
-                # Whether THOSE are gone afterwards is what says the finally ran.
+                # Set at the top of the block's try, above the bail: gone afterwards
+                # is what says the finally ran.
                 "  package_name = $(if (Test-Path Env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { $null })",
                 "  skip_base = $(if (Test-Path Env:SKIP_STUDIO_BASE) { $env:SKIP_STUDIO_BASE } else { $null })",
                 "} | ConvertTo-Json -Compress",
@@ -633,17 +622,14 @@ def _run_handoff_lifecycle(
         env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
-    # The last JSON object on stdout, not the whole stream: a stub above may emit its
-    # own return value into the pipeline, and the report is always written last.
+    # Last JSON object only: a stub may emit its return value into the pipeline first.
     reports = [line for line in proc.stdout.splitlines() if line.startswith("{")]
     assert reports, f"the handoff block printed no report:\n{proc.stdout}\n{proc.stderr}"
     out = json.loads(reports[-1])
-    # The block is allowed to throw only where the test asked it to. Anything else is
-    # a missing stub or a real error, and reporting it beats "<never ran>".
+    # The block may throw only where the test asked; anything else is a missing stub.
     if fails:
-        # The injected throw, not merely some throw: a helper failing before the
-        # setup call would leave the shipped finally to restore the environment and
-        # every assertion here would pass without the failure path ever running.
+        # The injected throw specifically: an earlier helper failure would still restore
+        # the environment and pass every assertion without the failure path running.
         assert "setup exploded" in (
             out.get("block_error") or ""
         ), f"the block failed before the injected throw: {out.get('block_error')}"
@@ -682,9 +668,8 @@ def test_the_bail_restores_the_caller_environment(tmp_path):
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
     assert out["after_set"] is True
-    # The ones that prove the finally ran rather than that nothing happened: the block
-    # sets both at the top of its try, above the bail, and only the finally takes them
-    # back off. A bail that escaped the try would leave them set in the caller.
+    # Set above the bail and removed only by the finally, so still set in the caller
+    # would mean the bail escaped the try.
     assert out["package_name"] is None, "STUDIO_PACKAGE_NAME leaked past the bail"
     assert out["skip_base"] is None, "SKIP_STUDIO_BASE leaked past the bail"
 
