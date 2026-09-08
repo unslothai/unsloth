@@ -66,20 +66,35 @@ assert run("bootstrap", [sys.executable, "-m", "venv", root / "bootstrap"])
 bootstrap = python_in(root / "bootstrap")
 assert run("install-uv", [bootstrap, "-m", "pip", "install", "uv==0.11.0"])
 # actions/setup-python ships macOS builds without --enable-loadable-sqlite-extensions, so
-# sqlite-vec cannot load and every RAG test errors. Download an interpreter that has one:
-# `uv venv --managed-python` alone still resolved to the runner's framework build.
+# sqlite-vec cannot load and every RAG test errors. Download an interpreter that has one.
+# Read the path off the managed list rather than asking uv to resolve "3.12": both
+# `uv venv --managed-python` and `uv python find --managed-python` answered with the
+# runner's own framework build, while every path this list reports is one uv installed.
 if hasattr(sqlite3.connect(":memory:"), "enable_load_extension"):
     interpreter = sys.executable
 else:
     assert run("python-install", [bootstrap, "-m", "uv", "python", "install", "3.12"])
-    interpreter = subprocess.run(
-        [str(bootstrap), "-m", "uv", "python", "find", "--managed-python", "3.12"],
+    listed = subprocess.run(
+        [
+            str(bootstrap),
+            "-m",
+            "uv",
+            "python",
+            "list",
+            "--only-installed",
+            "--managed-python",
+            "--output-format",
+            "json",
+        ],
         cwd = repo,
         env = env,
         capture_output = True,
         text = True,
         check = True,
-    ).stdout.strip()
+    ).stdout
+    interpreter = next(
+        entry["path"] for entry in json.loads(listed) if entry["version"].startswith("3.12.")
+    )
 assert run(
     "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", interpreter, root / "venv"]
 )
