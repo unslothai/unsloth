@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
     _build_openai_passthrough_body,
     _openai_llama_admission_retry_max_tokens,
     _openai_llama_admission_wire_prompt_tokens,
@@ -578,8 +579,13 @@ class TestWhatTheWireActuallyCarries:
         wire = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend, conversation = translated
         )
-        assert raw == 1, "the base64 transport should have swamped the share"
-        assert wire > 1000, "the normalised part is priced as an image, not as prompt text"
+        assert (
+            raw == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        ), "the base64 transport should have swamped the share, leaving the flat allowance"
+        assert wire > raw, "the normalised part is priced as an image, not as prompt text"
+        assert wire == 32768 // 4 - _openai_llama_admission_wire_prompt_tokens(
+            translated, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
 
     def test_a_request_is_not_charged_a_catalogue_it_does_not_send(self):
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)

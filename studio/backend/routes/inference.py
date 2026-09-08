@@ -2248,6 +2248,39 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
 
 
+def _openai_llama_admission_wire_output_bound(
+    *,
+    share: int,
+    prompt_tokens: int,
+    window: int,
+    budget: Optional[int] = None,
+) -> int:
+    """Output tokens the wire may write, which is the allowance the ledger reserved.
+
+    Under its share this is ``share - prompt``, exactly as before. AT or ABOVE it the
+    fair-share floor is negative, and flooring the wire at one token truncated an answer
+    the ledger had already paid for: ``_openai_llama_admission_output_allowance`` keeps
+    the flat unstated allowance for such a prompt and the reservation charges
+    ``prompt + allowance``, so the queue admits fewer of them rather than a full capacity.
+    Sending 1 there made every default vision chat a one-token answer, since one image's
+    4224-token allowance is already past a 4096 share on a 16K cache with four slots.
+
+    Clamped to the WINDOW by the allowance itself and to the BUDGET here, so the wire can
+    never write past ``min(budget, prompt + allowance)`` -- what the ledger actually holds.
+    """
+    allowance = _openai_llama_admission_output_allowance(
+        None,
+        budget = budget or window,
+        prompt_tokens = prompt_tokens,
+        context_window = window,
+        share = share,
+    )
+    if budget:
+        allowance = min(allowance, max(0, budget - prompt_tokens))
+    # Never zero, which llama-server refuses.
+    return max(1, allowance)
+
+
 def _openai_llama_admission_enforced_max_tokens(
     payload,
     *,
@@ -2261,10 +2294,12 @@ def _openai_llama_admission_enforced_max_tokens(
     """The cap to SEND, so the reservation is enforced instead of merely recorded.
 
     An unstated "Max Tokens: Max" was charged a share but sent the whole window, so four
-    chats on one ``--kv-unified`` pool errored every slot at once. Bounded by the SHARE,
-    since clamping to the smaller charged estimate buys no safety. ``conversation`` prices
-    it from the messages actually sent, which a translating route must pass, else
-    ``system`` is charged twice. None leaves a stated cap or a disabled reservation alone.
+    chats on one ``--kv-unified`` pool errored every slot at once. Bounded by the
+    allowance the ledger charged: a share for a prompt under one, and the flat unstated
+    allowance above it, where the queue has already admitted fewer to pay for it.
+    ``conversation`` prices it from the messages actually sent, which a translating route
+    must pass, else ``system`` is charged twice. None leaves a stated cap or a disabled
+    reservation alone.
     """
     share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
     if share is None:
@@ -2291,8 +2326,12 @@ def _openai_llama_admission_enforced_max_tokens(
         )
     if prompt_tokens is None:
         return None
-    # Never zero, which llama-server refuses; such a request is charged over a share.
-    return max(1, share - prompt_tokens)
+    return _openai_llama_admission_wire_output_bound(
+        share = share,
+        prompt_tokens = prompt_tokens,
+        window = window or _openai_llama_admission_budget(llama_backend) or share,
+        budget = _openai_llama_admission_budget(llama_backend),
+    )
 
 
 def _openai_llama_admission_retry_max_tokens(
@@ -2316,7 +2355,13 @@ def _openai_llama_admission_retry_max_tokens(
         image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         injected_tools = injected_tools,
     )
-    bound = max(1, share - prompt_tokens)
+    budget = _openai_llama_admission_budget(llama_backend)
+    bound = _openai_llama_admission_wire_output_bound(
+        share = share,
+        prompt_tokens = prompt_tokens,
+        window = _openai_llama_admission_context_window(llama_backend) or budget or share,
+        budget = budget,
+    )
     current = _positive_int_or_none(retry_body.get("max_tokens"))
     return bound if current is None else min(current, bound)
 

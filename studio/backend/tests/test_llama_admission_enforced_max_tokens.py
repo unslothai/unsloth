@@ -106,11 +106,17 @@ class TestWhatIsLeftAlone:
 
 
 class TestTheEdges:
-    def test_a_prompt_past_its_share_still_gets_a_token(self):
-        """Zero is refused upstream, and such a request is charged over what it gets."""
+    def test_a_prompt_past_its_share_keeps_the_allowance_it_reserved(self):
+        """It does not fit a share either way, and the ledger already charged it
+        ``prompt + allowance``, so the queue admitted fewer of it rather than four."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
-        enforced = _enforced(_chat("word " * 4000, max_tokens = 16384), backend)
-        assert enforced == 1
+        payload = _chat("word " * 4000, max_tokens = 16384)
+        enforced = _enforced(payload, backend)
+        assert enforced == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        charged = _openai_llama_admission_tokens(
+            payload, budget = 16384, capacity = 4, context_window = 16384
+        )
+        assert _prompt_tokens(payload) + enforced == charged
 
     def test_the_bound_is_exactly_the_charge(self):
         """These two must not drift in EITHER direction; see the class below."""
@@ -233,3 +239,113 @@ class TestChargedAndPermittedCannotDrift:
             assert (
                 charged * slots <= budget
             ), f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
+
+
+class TestAnOverSharePromptIsPricedTheSameOnBothSides:
+    """The bug this class exists for: the ledger charged ``prompt + allowance`` for a
+    prompt at or above its share while the wire sent ``max_tokens=1``, so a lease big
+    enough for a full answer produced a one-token one. Default vision is the common case:
+    a single image's allowance is already past a 4096 share on a 16K unified cache.
+    """
+
+    def _priced(
+        self,
+        payload,
+        backend,
+        *,
+        budget,
+        capacity,
+        window,
+        conversation = None,
+    ):
+        """(charge, prompt + wire bound) for one request, as ledger and wire see it."""
+        from routes.inference import (
+            _openai_llama_admission_image_tokens,
+            _openai_llama_admission_prompt_tokens,
+            _openai_llama_admission_wire_prompt_tokens,
+        )
+
+        image_tokens = _openai_llama_admission_image_tokens(backend)
+        charge = _openai_llama_admission_tokens(
+            payload,
+            budget = budget,
+            capacity = capacity,
+            context_window = window,
+            image_tokens = image_tokens,
+            conversation = conversation,
+        )
+        bound = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = conversation
+        )
+        assert bound is not None
+        prompt = (
+            _openai_llama_admission_wire_prompt_tokens(conversation, image_tokens = image_tokens)
+            if conversation is not None
+            else _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
+        )
+        return charge, prompt + bound
+
+    def test_a_long_text_prompt_is_charged_exactly_what_it_may_write(self):
+        for total, slots in ((16384, 4), (32768, 4), (65536, 8), (262144, 4)):
+            backend = _backend(window = total, total = total, slots = slots)
+            share = total // slots
+            payload = _chat("word " * int(share * 0.9), max_tokens = total)
+            charge, permitted = self._priced(
+                payload, backend, budget = total, capacity = slots, window = total
+            )
+            assert _prompt_tokens(payload) > share, "not an over-share prompt"
+            assert permitted == charge, f"{total}/{slots}: charged {charge}, permits {permitted}"
+
+    def test_a_default_image_chat_is_not_truncated_after_one_token(self):
+        """4224 tokens of image allowance against a 4096 share on 16K with four slots."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            }
+        ]
+        payload = _Payload(messages = conversation, max_tokens = 16384)
+        charge, permitted = self._priced(
+            payload,
+            backend,
+            budget = 16384,
+            capacity = 4,
+            window = 16384,
+            conversation = conversation,
+        )
+        bound = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = conversation
+        )
+        assert (
+            bound == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        ), f"an image answer is capped at {bound} tokens"
+        assert permitted == charge
+
+    def test_a_full_queue_of_over_share_requests_still_fits_the_budget(self):
+        """Concurrency drops instead: what is admitted may occupy what it was charged."""
+        for total, slots in ((16384, 4), (32768, 4), (262144, 4), (8192, 2)):
+            backend = _backend(window = total, total = total, slots = slots)
+            share = total // slots
+            prompts = (1, share // 2, share, share + 1, int(share * 1.5), int(share * 2.5))
+            committed, occupancy, admitted = 0, 0, 0
+            for prompt in prompts:
+                payload = _chat("word " * max(1, prompt // 2), max_tokens = total)
+                charge, permitted = self._priced(
+                    payload, backend, budget = total, capacity = slots, window = total
+                )
+                assert (
+                    permitted <= charge
+                ), f"{total}/{slots} prompt~{prompt}: charged {charge}, permits {permitted}"
+                if admitted < slots and committed + charge <= total:
+                    committed += charge
+                    occupancy += permitted
+                    admitted += 1
+            assert admitted >= 1
+            assert occupancy <= total, (
+                f"{total}/{slots}: admitted {admitted} charged {committed} "
+                f"but may occupy {occupancy}"
+            )
