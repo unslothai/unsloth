@@ -938,3 +938,18 @@ def test_a_per_model_loader_mode_keeps_the_planner_off_the_launch(tmp_path, monk
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, load_mode = "none")
     assert seen["inputs"]["context_policy_fit_only"] is True
     assert seen["inputs"]["n_ctx"] == NATIVE_CTX
+
+
+def test_an_unbounded_prompt_cache_abstains_from_the_fits_own_none_and_reaches_the_planner(
+    tmp_path, monkeypatch
+):
+    """--cache-ram -1 was charged as the 8 GiB default in the fit's footprint, so a
+    fit proved --load-mode none for a cache that llama.cpp bounds by nothing."""
+    plan = Plan(reason = "declined")
+    caps = {"supports_load_mode": True}
+    cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, caps = caps)
+    assert _flag(cmd, "--load-mode") == "none", cmd
+    assert seen["inputs"]["cache_ram_unbounded"] is False
+    cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, caps = caps, cache_ram = -1)
+    assert "--load-mode" not in cmd, cmd
+    assert seen["inputs"]["cache_ram_unbounded"] is True

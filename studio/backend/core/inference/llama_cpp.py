@@ -98,6 +98,7 @@ from core.inference.llama_server_args import (
     resolve_effective_memory_state,
     scrub_denied_env,
     scrub_memory_env,
+    model_memory_owns_placement,
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
@@ -11171,6 +11172,7 @@ class LlamaCppBackend:
         mtp_unsized: bool = False,
         host_only_bytes: int = 0,
         prompt_cache_bytes: int = 0,
+        prompt_cache_unbounded: bool = False,
         compute_buffer_flat: int = 0,
         compute_buffer_ctx: int = 0,
         pipeline_overhead_bytes: int = 0,
@@ -11253,7 +11255,16 @@ class LlamaCppBackend:
         """
         from utils.hardware import is_apple_silicon
 
-        if not model_size or not kv_sized or mtp_unsized or is_apple_silicon():
+        # An unbounded prompt cache (--cache-ram -1) has no size to charge, so the
+        # footprint below is not a ceiling and a fit read off it proves nothing;
+        # llama.cpp's own auto keeps the load pageable when the cache grows.
+        if (
+            not model_size
+            or not kv_sized
+            or mtp_unsized
+            or prompt_cache_unbounded
+            or is_apple_silicon()
+        ):
             return None
         # Pass-through adapters are resident weights model_size (the base GGUF alone)
         # never carried. A TERM, not a placement override, so an unreadable one abstains.
@@ -21739,6 +21750,15 @@ class LlamaCppBackend:
                         if cache_ram is not None
                         else _extra_args_cache_ram(None, os.environ)
                     )
+                    # -1 is llama.cpp's "no limit": nothing charged for the prompt
+                    # cache is then a ceiling, so both RAM proofs below abstain.
+                    _cache_ram_unbounded = False
+                    try:
+                        _cache_ram_unbounded = (
+                            _cache_ram_in_force is not None and int(_cache_ram_in_force) < 0
+                        )
+                    except (TypeError, ValueError):
+                        _cache_ram_unbounded = False
                     # The clamp itself is derived below, once the host-only terms the
                     # fit spends (a CPU drafter, the checkpoint snapshots, a CPU-pinned
                     # projector) are priced, and written into the snapshot there.
@@ -21884,7 +21904,16 @@ class LlamaCppBackend:
                             )
                             // (1024 * 1024)
                         ),
+                        # The prompt cache the planner may clamp is not a ceiling
+                        # at all when the user set -1: its RAM proof abstains.
                         "cache_ram_user_set": _cache_ram_in_force is not None,
+                        "cache_ram_unbounded": _cache_ram_unbounded,
+                        # The draft's own decode graph, folded into soft_overhead
+                        # when a GPU draft reserves; rung 2 gives it back with the
+                        # draft, since the no-draft child never allocates it.
+                        "mtp_draft_compute_bytes": (
+                            int(self._MTP_DRAFT_COMPUTE_BYTES) if _mtp_reserves_gpu else 0
+                        ),
                         # The main cache type the child will run, so the planner
                         # prices a quantised cache as one rather than as an f16
                         # product with a smaller floor under it.
@@ -22238,6 +22267,7 @@ class LlamaCppBackend:
                             else _auto_cache_ram_mib,
                             server_caps,
                         ),
+                        prompt_cache_unbounded = _cache_ram_unbounded,
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a
@@ -27636,6 +27666,12 @@ class LlamaCppBackend:
         scrub_memory_env(_env_view)
         if memory_env_selects_load_mode(_env_view) or extra_args_select_load_mode(extra_args):
             return False
+        # The Model Memory toggles own the mode the same way: "Keep model in GPU
+        # memory" takes the load mode outright while weights sit in host RAM,
+        # which a spill guarantees, and "Don't reserve system RAM" drops "none"
+        # itself (apply_load_mode_policy). Either lands the plan under mmap.
+        if model_memory_owns_placement():
+            return False
 
         # Someone else owns the placement -- decline. Each of these re-places the
         # model out from under a plan made here: -ot / --cpu-moe (or its env twin)
@@ -27966,7 +28002,15 @@ class LlamaCppBackend:
             draft_bytes += layout.excluded_block_bytes
         extra_gpu_bytes -= int(inputs.get("mtp_reserve_bytes") or 0)
         draft_droppable = bool(inputs.get("draft_droppable")) and draft_bytes > 0
-        if not draft_droppable:
+        if draft_droppable:
+            # The draft's decode graph (_MTP_DRAFT_COMPUTE_BYTES) rode in
+            # soft_overhead, i.e. in the per-device term; a child launched without
+            # the draft never allocates it, so it moves into the term rung 2 may
+            # give back rather than staying as a phantom reserve on every card.
+            _draft_compute = int(inputs.get("mtp_draft_compute_bytes") or 0)
+            draft_bytes += _draft_compute
+            overhead_per_device -= _draft_compute
+        else:
             extra_gpu_bytes += draft_bytes
             draft_bytes = 0
         # Rung 0's term: the projector's file bytes ride in extra_gpu_bytes and its
@@ -28070,6 +28114,7 @@ class LlamaCppBackend:
                 # the cache is quantised and the planner prices it so; the f16
                 # product would otherwise override the smaller measured floor.
                 cache_quantised = _kv_bytes_per_elem(_planned_cache_type) < 2.0,
+                prompt_cache_unbounded = bool(inputs.get("cache_ram_unbounded")),
                 kv_quant_type = (
                     _planned_cache_type
                     if _kv_bytes_per_elem(_planned_cache_type) < 2.0

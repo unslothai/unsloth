@@ -2566,3 +2566,50 @@ def test_a_cache_already_quantised_at_launch_is_priced_as_one():
     assert not as_quantised.spills_anything and as_quantised.priced, as_quantised.reason
     # The type the launch already carries is not a change the plan makes.
     assert as_quantised.cache_type_k is None and as_quantised.cache_type_v is None
+
+
+def test_prefer_resident_prices_a_quantised_launch_cache_as_one():
+    """The PREFER_RESIDENT branch runs ahead of _kv_modes and priced the cache as
+    f16 over a q8 floor, shrinking a context that fit fully resident with the
+    cache type the child runs."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    n_ctx = 65536
+    q8_floor = cache_bytes(layout, n_ctx, kv_quantised = True)
+    budget = all_resident_bytes(layout, n_ctx, kv_quantised = True) + 1024 * MIB
+    assert all_resident_bytes(layout, n_ctx) > budget
+    flat = dict(
+        context_policy = ContextPolicy.PREFER_RESIDENT,
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+    )
+    shrunk = plan_placement(
+        layout, [budget], 64 * GIB, n_ctx, kv_bytes_floor = q8_floor, opts = PlanOptions(**flat)
+    )
+    assert shrunk.n_ctx < n_ctx and "shrank context" in shrunk.reason
+    kept = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        n_ctx,
+        kv_bytes_floor = q8_floor,
+        opts = PlanOptions(cache_quantised = True, kv_quant_type = "q8_0", **flat),
+    )
+    assert kept.n_ctx == n_ctx and not kept.spills_anything, kept.reason
+
+
+def test_an_unbounded_prompt_cache_keeps_the_plan_pageable():
+    """--cache-ram -1 bounds the prompt cache by nothing, so no figure charged for
+    it is a ceiling: the RAM proof behind --load-mode none abstains and the clamp
+    is never derived, whatever host RAM reads."""
+    layout = q4_layout()
+    bounded = plan_placement(layout, [12 * GIB], 256 * GIB, 32768)
+    assert bounded.spills_anything and bounded.load_mode_none
+    unbounded = plan_placement(
+        layout, [12 * GIB], 256 * GIB, 32768, opts = PlanOptions(prompt_cache_unbounded = True)
+    )
+    assert unbounded.spills_anything and not unbounded.load_mode_none
+    assert unbounded.cache_ram_mib == -1
+    # Not a refusal: the spill still fits RAM and stays pageable under mmap.
+    assert not unbounded.declined_by_gate

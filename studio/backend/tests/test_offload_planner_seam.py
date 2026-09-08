@@ -2901,3 +2901,53 @@ def test_a_loader_mode_the_user_picked_stands_the_planner_down(load_mode, env, e
     # "none" is what the plan assumes, and an unset field is the default.
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = "none")
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = None)
+
+
+def test_the_drafts_decode_graph_goes_with_the_draft_rung_2_may_drop(monkeypatch):
+    """_MTP_DRAFT_COMPUTE_BYTES rode in soft_overhead, the per-device term, and
+    stayed there after rung 2 dropped the draft; the no-draft child never
+    allocates it, so it moves into the droppable term."""
+    stub = _Stub()
+    stub._excluded_bytes = 0
+    common = dict(
+        free_mib = 14 * 1024,
+        extra_gpu = 3 * GIB,
+        mtp = True,
+        mtp_reserve_bytes = 1 * GIB,
+        draft_bytes = 3 * GIB // 2,
+        soft_overhead = 700 * MIB,
+        mtp_draft_compute_bytes = 224 * MIB,
+    )
+    droppable, _ = _captured_opts(monkeypatch, stub, draft_droppable = True, **common)
+    assert droppable.draft_bytes == 3 * GIB // 2 + 224 * MIB
+    kept, _ = _captured_opts(monkeypatch, stub, draft_droppable = False, **common)
+    assert kept.draft_bytes == 0
+    # The per-device term gives the graph up only when the draft may go.
+    assert kept.overhead_bytes_per_device == 700 * MIB
+    assert droppable.overhead_bytes_per_device == 700 * MIB - 224 * MIB
+
+
+def test_an_unbounded_prompt_cache_reaches_the_planner(monkeypatch):
+    opts, _ = _captured_opts(monkeypatch, _Stub(), cache_ram_unbounded = True)
+    assert opts.prompt_cache_unbounded is True
+    opts, _ = _captured_opts(monkeypatch, _Stub())
+    assert opts.prompt_cache_unbounded is False
+
+
+@pytest.mark.parametrize(
+    "keep_resident, no_ram_reserve", [(True, False), (False, True), (True, True)]
+)
+def test_a_model_memory_toggle_stands_the_planner_down(monkeypatch, keep_resident, no_ram_reserve):
+    """ "Keep model in GPU memory" owns the load mode while weights sit in host RAM,
+    which a spill guarantees, and "Don't reserve system RAM" drops "none"; either
+    lands a plan priced unmapped under mmap, so no plan is made."""
+    import utils.model_memory_settings as mm
+
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
+    env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    assert LlamaCppBackend._planner_may_run(None, env) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), extra_args = None, env = env) is None
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    assert LlamaCppBackend._planner_may_run(None, env) is True

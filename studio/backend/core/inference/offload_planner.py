@@ -408,6 +408,12 @@ class PlanOptions:
     # arithmetic: a model whose weights plus q8 cache are fully resident read as
     # several GiB over budget.
     cache_quantised: bool = False
+    # The user set ``--cache-ram -1``: llama-server keeps every prompt it can and
+    # bounds the cache by nothing, so no figure charged for it is a ceiling. The
+    # RAM proof that picks ``--load-mode none`` abstains (mmap keeps the spill
+    # pageable when the cache grows into it) and the clamp, which would rewrite
+    # the user's value, is never derived.
+    prompt_cache_unbounded: bool = False
     # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts
     # the WHOLE cache on the host: offload is one scalar and the buffer type falls
     # back to the CPU one for every layer (llama-kv-cache.cpp:210-219), same branch
@@ -1596,11 +1602,16 @@ def plan_placement(
 
     # PREFER_RESIDENT gets its say before the ladder: a smaller fully resident
     # context outruns a larger spilled one, when the caller allows it to move.
+    # This branch runs ahead of _kv_modes, so the cache the child already carries
+    # has to be priced here as it is there: an f16 product over a q8 floor shrank
+    # a context that fit fully resident with the cache type the child runs.
+    resident_quantised = opts.cache_quantised
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(
             layout,
             n_ctx,
+            kv_quantised = resident_quantised,
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = opts.kv_on_host,
             n_seq = max(1, opts.n_parallel),
@@ -1610,6 +1621,7 @@ def plan_placement(
         shrunk = max_context_for(
             layout,
             vram_bytes_per_device,
+            kv_quantised = resident_quantised,
             opts = opts,
             kv_bytes_floor = kv_bytes_floor,
             floor_ctx = n_ctx,
@@ -1633,6 +1645,7 @@ def plan_placement(
                 [],
                 False,
                 host_ram_bytes,
+                quantised = resident_quantised,
                 kv_bytes_floor = resident_floor if resident_floor is not None else 0,
                 knobs = resident_knobs,
                 requested_ctx = n_ctx,
@@ -2806,7 +2819,7 @@ def _finish(
 
     # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only
     # when host RAM holds the host side; otherwise mmap keeps an over-commit pageable.
-    if host_ram_bytes is None:
+    if host_ram_bytes is None or opts.prompt_cache_unbounded:
         load_mode_none = False
     else:
         load_mode_none = host_bytes <= max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
