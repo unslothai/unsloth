@@ -27762,6 +27762,17 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
     as well as, so it validates and is served from the URL on this path and on that one.
     """
     part_type = getattr(part, "type", None)
+    if part_type in ("input_text", "output_text") and not isinstance(
+        part, (ResponsesInputTextPart, ResponsesOutputTextPart)
+    ):
+        # A text part that lost its `text` field is a ResponsesUnknownContentPart wearing a
+        # known type name, so it passes a name-only allowlist and is then dropped by both the
+        # flatten and the parts loop. Say what is wrong with it, the way the tool-result path
+        # does, rather than "parts of type 'input_text' are not supported", which is untrue.
+        _raise_unsupported_openai_parameter(
+            "input",
+            f"Responses {part_type} message parts require a text field.",
+        )
     if part_type == "input_file":
         _raise_unsupported_openai_parameter(
             "input",

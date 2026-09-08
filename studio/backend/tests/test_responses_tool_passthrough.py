@@ -1152,6 +1152,49 @@ class TestResponsesMessagePartMatrix:
         assert part["type"] in str(exc.value.detail)
         assert role in str(exc.value.detail)
 
+    @pytest.mark.parametrize("role", ["system", "developer", "user", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_text"},
+            {"type": "input_text", "text": None},
+            {"type": "input_text", "text": 123},
+            {"type": "output_text"},
+        ],
+        ids = ["no_text", "null_text", "int_text", "output_no_text"],
+    )
+    def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
+        # It fails its typed variant and becomes a ResponsesUnknownContentPart wearing a known
+        # type name, so a name-only allowlist waves it through and both the flatten and the
+        # parts loop then drop it. "type 'input_text' is not supported" would also be untrue.
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require a text field" in str(exc.value.detail)
+        assert part["type"] in str(exc.value.detail)
+
+    def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
+        # The turn still had servable text, so before this the request succeeded and only the
+        # broken part went missing.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "keep"}, {"type": "input_text"}],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert "require a text field" in str(exc.value.detail)
+
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     def test_assistant_output_metadata_survives_the_flatten(self, part_type):
         # refusal and summary_text are the model's own output, which clients round-trip.
