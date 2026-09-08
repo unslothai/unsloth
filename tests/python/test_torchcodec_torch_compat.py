@@ -298,14 +298,18 @@ _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
 
 
 # What each download.pytorch.org index actually publishes, read off the live listings:
-# the torch 2.x minors it serves, and the inclusive range of torchcodec minors.
-# Note cu130 starts at codec 0.8, and no index carries 0.1 or 0.2 -- those are PyPI-only.
+# the torch 2.x minors it serves, and the torchcodec minors it carries. Explicit minors
+# rather than a range, because the inventory is not contiguous: cu129 skips 0.8, 0.9 and
+# 0.12-0.14 entirely. No index carries 0.1 or 0.2 -- those are PyPI-only.
 _INDEX_INVENTORY = {
-    "cpu": {"torch": range(5, 15), "codec": (3, 16)},
-    "cu118": {"torch": range(5, 8), "codec": (3, 5)},
-    "cu126": {"torch": range(6, 15), "codec": (3, 16)},
-    "cu128": {"torch": range(7, 12), "codec": (3, 11)},
-    "cu130": {"torch": range(9, 15), "codec": (8, 16)},
+    "cpu": {"torch": range(5, 15), "codec": {3, 4, *range(6, 17)}},
+    "cu118": {"torch": range(5, 8), "codec": {3, 4}},
+    "cu126": {"torch": range(6, 15), "codec": {3, 4, *range(6, 17)}},
+    "cu128": {"torch": range(7, 12), "codec": {3, 4, *range(6, 12)}},
+    "cu129": {"torch": range(8, 14), "codec": {6, 7, 10, 11, 15, 16}},
+    "cu130": {"torch": range(9, 15), "codec": set(range(8, 17))},
+    "cu132": {"torch": range(12, 15), "codec": set(range(12, 17))},
+    "xpu": {"torch": range(6, 15), "codec": {13, 14, 15, 16}},
 }
 
 
@@ -320,47 +324,94 @@ def test_torchcodec_index_follows_the_resident_torch_build():
     assert ips._torchcodec_index_url("2.14.0+cu130") == base + "cu130"
     assert ips._torchcodec_index_url("2.11.0+cpu") == base + "cpu"
 
+    # xpu began publishing torchcodec at 0.13, so it pins like any other accelerator. An
+    # xpu host left unpinned takes PyPI's CUDA build, which is the failure this prevents.
+    assert ips._torchcodec_index_url("2.14.0+xpu") == base + "xpu"
+
     # Untagged is PyPI's own torch, whose counterpart is PyPI's default torchcodec. Pinning
     # cpu here would be wrong: on Linux an untagged torch is a CUDA build.
     assert ips._torchcodec_index_url("2.11.0") is None
-    # No torchcodec is published under these, so unpinned beats an index that cannot serve.
+    # Every rocm leaf answers 404/403 for torchcodec, so a pin there cannot ever serve.
     assert ips._torchcodec_index_url("2.9.0+rocm6.4") is None
-    assert ips._torchcodec_index_url("2.10.0+xpu") is None
+    assert ips._torchcodec_index_url("2.11.0+rocm7.2") is None
     assert ips._torchcodec_index_url(None) is None
     assert ips._torchcodec_index_url("") is None
 
 
-def test_pinning_the_index_never_starves_a_reachable_torch():
-    """A pin that removed audio from a supported host would trade one bug for another.
-
-    Every torch build that pins must find its selected codec on that same index. This holds
-    because torch and torchcodec are cut together: cu128 stops at torch 2.11 and its
-    torchcodec stops at 0.11, the exact pair the matrix maps 2.11 to; cu130 starts at torch
-    2.9 and its torchcodec starts at 0.8, the pair for 2.9.
-
-    The one gap is deliberate and handled in the helper rather than here: no index carries
-    torchcodec 0.1 or 0.2, so torch 2.5 and 2.6 must not pin at all.
-    """
+def _starved_index_cells():
+    """Every (tag, torch minor) whose pinned index publishes nothing in the window."""
     from packaging.specifiers import SpecifierSet
 
     ips = _load_install_python_stack()
+    starved = []
     for tag, inv in _INDEX_INVENTORY.items():
-        low, high = inv["codec"]
         for minor in inv["torch"]:
             version = f"2.{minor}.0+{tag}"
             spec = ips._select_torchcodec_spec(version)
-            specifier = SpecifierSet(spec.split("torchcodec", 1)[1])
-            served = [f"0.{m}.0" for m in range(low, high + 1) if specifier.contains(f"0.{m}.0")]
             index = ips._torchcodec_index_url(version, spec)
             if index is None:
-                # Only the PyPI-only rows may decline to pin.
-                assert minor in (5, 6), f"torch 2.{minor}+{tag} unexpectedly refused to pin"
                 continue
-            assert index.endswith("/" + tag)
-            assert served, (
-                f"torch 2.{minor} pins the {tag} index and selects {spec}, but that index "
-                f"publishes only torchcodec 0.{low}-0.{high}"
-            )
+            assert index.endswith("/" + tag), index
+            specifier = SpecifierSet(spec.split("torchcodec", 1)[1])
+            if not any(specifier.contains(f"0.{m}.0") for m in inv["codec"]):
+                starved.append((tag, minor, spec))
+    return starved
+
+
+def test_pinning_the_index_starves_only_where_the_retry_covers_it():
+    """A pin that removed audio from a supported host would trade one bug for another.
+
+    Mostly the pin cannot starve, because torch and torchcodec are cut together: cu128 stops
+    at torch 2.11 and its torchcodec stops at 0.11, the exact pair the matrix maps 2.11 to.
+    But cu129 serves torch 2.8 to 2.13 while publishing no torchcodec 0.8 or 0.9, so torch
+    2.9 there selects a window that index has nothing in, and cu132 and xpu start above the
+    lines the older torch minors select.
+
+    The answer is not a table of index contents -- that is what goes stale, and cu132 did not
+    exist when this file was written -- so the installer retries unpinned, which is what such
+    a host got before any of this pinned anything. This test pins down which cells rely on
+    that retry, so a new one cannot appear unnoticed, and the test below proves the retry is
+    really there.
+    """
+    starved = {(tag, minor) for tag, minor, _ in _starved_index_cells()}
+    # One cell, and it is the one no floor could have predicted: cu129 publishes 0.6, 0.7,
+    # 0.10, 0.11, 0.15 and 0.16, so its gap is in the MIDDLE. The xpu rows below 0.13, which
+    # would otherwise be five more, are declined up front by _TORCHCODEC_INDEX_FLOORS.
+    assert starved == {("cu129", 9)}, sorted(starved)
+
+
+def test_the_installer_retries_without_the_index_when_the_pin_finds_nothing():
+    """The starved cells above are only survivable because the step falls back."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    assert "retrying from the default index" in step
+    # The retry must drop the pin and nothing else: --no-deps still matters, since a
+    # torchcodec that re-resolves torch would undo the repair two steps above.
+    retry = step.split("retrying from the default index", 1)[1]
+    assert '"--no-deps", "--no-cache-dir", _codec_spec' in retry
+    assert "--index-url" not in retry
+
+
+def test_an_index_that_joined_late_is_not_pinned_below_its_first_release():
+    """xpu serves torch from 2.6 but published no torchcodec before 0.13, so pinning it for
+    the older lines is a resolve that cannot succeed. A floor, unlike a list of what an index
+    holds, only says "nothing below X was ever published here", which upstream does not walk
+    back, so it stays true as releases are added."""
+    ips = _load_install_python_stack()
+    assert ips._TORCHCODEC_INDEX_FLOORS["xpu"] == (0, 13, 0)
+    for minor in (7, 8, 9, 10, 11):
+        version = f"2.{minor}.0+xpu"
+        spec = ips._select_torchcodec_spec(version)
+        assert ips._torchcodec_index_url(version, spec) is None, spec
+    # 2.12+ takes the open ABI-stable window, which reaches 0.13, so it pins.
+    for minor in (12, 13, 14):
+        version = f"2.{minor}.0+xpu"
+        spec = ips._select_torchcodec_spec(version)
+        assert ips._torchcodec_index_url(version, spec) == "https://download.pytorch.org/whl/xpu"
+    # The floor is per leaf, not global: cu126 still pins the same old lines it always did.
+    assert ips._torchcodec_index_url("2.9.0+cu126", ips._select_torchcodec_spec("2.9.0")) == (
+        "https://download.pytorch.org/whl/cu126"
+    )
 
 
 def test_the_two_pypi_only_rows_stay_unpinned():

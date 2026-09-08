@@ -51,10 +51,22 @@ def _load_module(monkeypatch):
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
+        # torch 2.11 (reachable via ROCm rocm7.2) -> 0.17.0, whose cpp is built for it.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
-        ("2.12.0", "torchao==0.17.0"),
+        ("2.11.1+cu126", "torchao==0.17.0"),
+        # torch 2.12 and forward -> 0.18.0. 0.18.0 dropped torch <2.11 and pinned its
+        # release CI to 2.13, and 0.17.0's own upstream table stops supporting the Python
+        # API at 2.11, so leaving this range on 0.17.0 ran it outside its declared window.
+        ("2.12.0", "torchao==0.18.0"),
+        ("2.12.1+cu130", "torchao==0.18.0"),
+        ("2.13.0+cu132", "torchao==0.18.0"),
+        ("2.14.0+cu130", "torchao==0.18.0"),
+        ("2.14.0+xpu", "torchao==0.18.0"),
+        ("2.99.0", "torchao==0.18.0"),
+        # The CUDA-13 branch belongs to 2.10 alone; it must not leak upward.
+        ("2.12.0+cu126", "torchao==0.18.0"),
+        ("2.12.0.dev20260801+cu132", "torchao==0.18.0"),
         # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
         ("2.9.0+cu128", "torchao==0.14.0"),
         ("2.9.1", "torchao==0.14.0"),
@@ -85,6 +97,124 @@ def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
     monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.17.0")
     assert mod._exact_distribution_spec_is_installed("torchao==0.17.0")
     assert not mod._exact_distribution_spec_is_installed("torchao==0.16.0")
+
+
+@pytest.mark.parametrize(
+    "torch_version, leaf",
+    [
+        ("2.12.0+cu126", "cu126"),
+        ("2.13.0+cu132", "cu132"),
+        ("2.14.0+cu130", "cu130"),
+        ("2.11.0+rocm7.2", "rocm7.2"),  # rocm DOES publish torchao, unlike torchcodec
+        ("2.9.0+rocm6.4", "rocm6.4"),
+        ("2.14.0+xpu", "xpu"),
+        ("2.12.0+cpu", "cpu"),
+        # Untagged torch is PyPI's own build and its counterpart is PyPI's own torchao.
+        ("2.14.0", None),
+        ("2.11.0", None),
+        (None, None),
+        ("", None),
+        ("garbage", None),
+    ],
+)
+def test_the_torchao_index_follows_the_resident_torch_build(monkeypatch, torch_version, leaf):
+    """torchao publishes a wheel per accelerator and PyPI's default is the CUDA-12 one, so
+    an unpinned install puts a CUDA-12 cpp beside a CUDA-13 or ROCm torch. That is the
+    `libcudart.so.12: cannot open shared object file` the 2.10 CUDA-13 row already dodges by
+    picking a build whose cpp gets skipped instead."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    got = mod._torch_accelerator_index_url(torch_version)
+    assert got == (f"https://download.pytorch.org/whl/{leaf}" if leaf else None)
+
+
+# What each accelerator leaf publishes for torchao, read off the live listings. Only the
+# leaves whose inventory does NOT cover every release this selector can ask for are listed:
+# everything absent from here serves its whole range.
+_TORCHAO_INDEX_GAPS = {
+    "cu118": ({m: f"0.{m}.0" for m in range(3, 12)}, range(5, 8)),
+    "cu129": ({12: "0.12.0", 13: "0.13.0", 14: "0.14.1", 15: "0.15.0", 16: "0.16.0",
+               17: "0.17.0"}, range(8, 14)),
+    "rocm7.0": ({16: "0.16.0"}, range(9, 11)),
+}
+
+
+def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
+    """A pin that could not be served would fail an install, because this step is fatal.
+
+    Four cells cannot be served, and none of them is predictable from a rule: cu118 stops at
+    torchao 0.11.0, rocm7.0 carries 0.16.0 alone, and cu129 has 0.14.1 where the 2.9 row asks
+    for 0.14.0 exactly -- a hole in the MIDDLE of its range, which no floor could describe.
+    All four resolve from the default index, which is where they came from before this step
+    pinned anything, so the retry makes them identical to today rather than broken. Recording
+    them here means a fifth cannot appear unnoticed.
+    """
+    mod = _load_module(monkeypatch)
+    starved = set()
+    for leaf, (published, torch_minors) in _TORCHAO_INDEX_GAPS.items():
+        for minor in torch_minors:
+            version = f"2.{minor}.0+{leaf}"
+            assert mod._torch_accelerator_index_url(version).endswith("/" + leaf)
+            wanted = mod._select_torchao_spec(version).split("==", 1)[1]
+            if wanted not in published.values():
+                starved.add((leaf, minor, wanted))
+    assert starved == {
+        # cu118 tops out at torchao 0.11.0, so every torch it serves wants more than it has.
+        ("cu118", 5, "0.14.0"),
+        ("cu118", 6, "0.14.0"),
+        ("cu118", 7, "0.14.0"),
+        # cu129 publishes 0.14.1, not 0.14.0, and stops at 0.17.0.
+        ("cu129", 8, "0.14.0"),
+        ("cu129", 9, "0.14.0"),
+        ("cu129", 12, "0.18.0"),
+        ("cu129", 13, "0.18.0"),
+        # rocm7.0 publishes 0.16.0 alone, which is what its torch 2.10 row already wants.
+        ("rocm7.0", 9, "0.14.0"),
+    }, sorted(starved)
+
+
+def test_the_torchao_step_pins_the_index_and_retries_without_it():
+    """cu129 serves torch to 2.13 but stops at torchao 0.17.0, and a leaf added upstream
+    after this ships can lag a release, so the pin must not be able to fail an install.
+    Unlike torchcodec the retry stays FATAL if it also fails: torchao is not optional."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    step = source.split("# 4. Install the torch-matched torchao override", 1)[1]
+    step = step.split("# 5. Triton kernels", 1)[0]
+    assert "_torchao_index = _torch_accelerator_index_url(_torch_ver)" in step
+    assert '"--index-url",\n            _torchao_index,' in step
+    assert "retrying from the default index" in step
+    # The unpinned attempt is pip_install, not pip_install_try: still fatal on failure.
+    retry = step.split("retrying from the default index", 1)[1]
+    assert 'pip_install("Installing dependency overrides", *_torchao_args, _torchao_spec)' in retry
+    assert "--index-url" not in retry
+    # And the printed line redacts, since a mirror URL can carry credentials.
+    assert "_strip_index_url_credentials(_torchao_index)" in step
+
+
+@pytest.mark.parametrize(
+    "installed, spec, torch_version, expected",
+    [
+        # No index pinned: only the release matters, and a local tag on what is installed
+        # must not force a reinstall on every single run.
+        ("0.18.0", "torchao==0.18.0", None, False),
+        ("0.18.0+cu130", "torchao==0.18.0", None, False),
+        ("0.17.0", "torchao==0.18.0", None, True),
+        (None, "torchao==0.18.0", None, True),
+        # Index pinned: the release can be right while the BUILD is wrong. pip counts an
+        # 0.18.0+cu126 wheel as satisfying ==0.18.0, fetches nothing, and leaves exactly the
+        # wrong-accelerator build the pin exists to replace.
+        ("0.18.0+cu130", "torchao==0.18.0", "2.14.0+cu130", False),
+        ("0.18.0+cu126", "torchao==0.18.0", "2.14.0+cu130", True),
+        ("0.18.0", "torchao==0.18.0", "2.14.0+cu130", True),
+        ("0.18.0+rocm7.2", "torchao==0.18.0", "2.11.0+rocm7.2", False),
+        ("0.17.0+cu130", "torchao==0.18.0", "2.14.0+cu130", True),
+    ],
+)
+def test_pin_needs_reinstall(monkeypatch, installed, spec, torch_version, expected):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
+    assert mod._pin_needs_reinstall(spec, torch_version) is expected
 
 
 def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
