@@ -70,7 +70,10 @@ export async function confirmStopRunningChatsIfNeeded(
   const aliasesByQueuedRun = new Map<string, string[]>();
   for (const threadId of promptQueueThreadIds) {
     const entry = promptQueuesByThreadId[threadId];
-    if (!entry) {
+    // A paused queue is not a running chat. Its entry outlives the composer Stop
+    // now that Stop pauses rather than deletes the run, so counting it here would
+    // put a chat the user has already stopped into the "still running" list.
+    if (!entry || entry.paused) {
       continue;
     }
     const aliases = aliasesByQueuedRun.get(entry.runId) ?? [];

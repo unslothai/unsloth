@@ -703,10 +703,23 @@ function pumpPromptQueues() {
       deletePromptQueueRun(run);
       continue;
     }
+    const dispatchGeneration = run.generation;
     promptQueueDispatchingRunIds.add(run.id);
     dispatchQueuedPrompt(run, item, run.generation)
       .catch(() => undefined)
       .finally(() => {
+        // The dispatching flag is keyed on the run, not on the attempt, so a
+        // dispatch that a pause superseded would release the flag a LIVE dispatch
+        // is holding. Pausing bumps the generation and clears the flag, so after
+        // Stop then Resume the old attempt's probe can settle while the new one is
+        // still in flight: it frees the flag, re-pumps, and the same prompt is
+        // appended twice. Only the attempt that still owns the generation releases.
+        if (
+          promptQueueRuns.get(run.id) === run &&
+          dispatchGeneration !== run.generation
+        ) {
+          return;
+        }
         promptQueueDispatchingRunIds.delete(run.id);
         syncPromptQueueUI();
         if (!promptQueueActiveRunIds.has(run.id)) {
@@ -1302,7 +1315,16 @@ function pausePromptQueueRun(threadIds?: string[]) {
       deletePromptQueueRun(run);
     } else {
       run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
-      const nextIndex = run.items.findIndex((item) => !item.dispatched);
+      // Scan from where the run actually was, not from the head of the list. A
+      // findIndex from 0 rewinds onto any undispatched item the run has already
+      // moved past, so Resume would send it AFTER prompts that already went out.
+      const resumeFrom = plan.retainedItemIndexes.findIndex(
+        (index) => index >= Math.max(run.index, 0),
+      );
+      const searchFrom = resumeFrom < 0 ? 0 : resumeFrom;
+      const nextIndex = run.items.findIndex(
+        (item, index) => index >= searchFrom && !item.dispatched,
+      );
       if (nextIndex < 0) {
         deletePromptQueueRun(run);
       } else {
@@ -1339,6 +1361,18 @@ function resumePromptQueueRun(threadIds?: string[]) {
       continue;
     }
     run.paused = false;
+    // prevStoreRunning is the one that matters. handlePromptQueueRunState writes it
+    // BEFORE its `if (run.paused) return`, so a rising edge seen while paused (the
+    // user stops the queue and then sends an ordinary message in the same chat, or a
+    // shared alias picks up another run) is left behind. Clearing paused without
+    // clearing this lets the following idle edge take the advancePromptQueue branch,
+    // which completes and SKIPS the first retained prompt without ever sending it --
+    // the same silent prompt loss this PR set out to fix, through the new path.
+    // The other two are defensive: pausePromptQueueRun already clears the idle wait,
+    // and an edit-armed retry timer self-clears.
+    run.waitingForTargetIdle = false;
+    run.prevStoreRunning = false;
+    clearPromptQueueRetryTimer(run);
     syncPromptQueueUI();
   }
   requestPromptQueuePumpIfReady();
