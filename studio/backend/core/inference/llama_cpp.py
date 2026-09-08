@@ -28989,6 +28989,11 @@ class LlamaCppBackend:
                     top_k = top_k,
                     min_p = min_p,
                     max_tokens = retry_max_tokens,
+                    # The lease is still live across the respawn, so the retry is bound by
+                    # the same reservation the first attempt was. Without it a retry that
+                    # refits for a new window rebuilds the cap from the whole context
+                    # length and generates outside its own admission.
+                    admission_output_allowance = admission_output_allowance,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
                     frequency_penalty = frequency_penalty,
@@ -29073,7 +29078,10 @@ class LlamaCppBackend:
         # admission can charge what this run occupies rather than its opening estimate.
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
-        on_conversation_grew: Optional[Callable[[list], None]] = None,
+        # An int back replaces `admission_output_allowance` for the rounds that follow, so
+        # the cap sent tracks the same conversation the charge was just taken on; None
+        # leaves the bound in force alone.
+        on_conversation_grew: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -29556,7 +29564,9 @@ class LlamaCppBackend:
             # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
                 try:
-                    on_conversation_grew(conversation)
+                    _recosted_allowance = on_conversation_grew(conversation)
+                    if _recosted_allowance is not None:
+                        admission_output_allowance = _recosted_allowance
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
@@ -29823,6 +29833,12 @@ class LlamaCppBackend:
                     return
                 if max_tokens is None:
                     payload["max_tokens"] = self._effective_context_length
+                    # The replacement server's window is not this run's admission. The
+                    # reservation outlived the respawn, so the bound does too.
+                    if admission_output_allowance is not None:
+                        payload["max_tokens"] = min(
+                            payload["max_tokens"], admission_output_allowance
+                        )
                 try:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
@@ -32137,6 +32153,11 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
+        # Before the preflight fit, which sizes the room it keeps for the reply from this:
+        # fitting against the window and then sending a share would evict history to make
+        # space no request was ever going to use.
+        if admission_output_allowance is not None:
+            _final_max_tokens = min(_final_max_tokens, admission_output_allowance)
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -32252,7 +32273,9 @@ class LlamaCppBackend:
         # `conversation`, and every path reaches this point with the list about to be sent.
         if on_conversation_grew is not None:
             try:
-                on_conversation_grew(conversation)
+                _final_recosted_allowance = on_conversation_grew(conversation)
+                if _final_recosted_allowance is not None:
+                    admission_output_allowance = _final_recosted_allowance
             except Exception:  # accounting must never break a run in progress
                 logger.debug("tool loop final recost failed", exc_info = True)
 
@@ -32321,6 +32344,11 @@ class LlamaCppBackend:
                 return
             if max_tokens is None:
                 stream_payload["max_tokens"] = self._effective_context_length
+                # Same as the per-round refit: a new window is not a new reservation.
+                if admission_output_allowance is not None:
+                    stream_payload["max_tokens"] = min(
+                        stream_payload["max_tokens"], admission_output_allowance
+                    )
             try:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
@@ -32518,6 +32546,16 @@ class LlamaCppBackend:
         # left on instead of taking the reasoning-only recovery.
         _attempt_started_at = ""
         while True:
+            # Here rather than at the build above: this is the last point every attempt
+            # passes through, so a continuation that rewrote the cap is bounded too. The
+            # final pass carries the whole run's history and is the largest request it
+            # makes, so it is the one that must not be sent on the whole window while the
+            # ledger holds a share. The respawn refit runs INSIDE the stream below and
+            # re-applies the bound itself.
+            if admission_output_allowance is not None:
+                stream_payload["max_tokens"] = min(
+                    stream_payload["max_tokens"], admission_output_allowance
+                )
             try:
                 with self._open_chat_stream_with_respawn_retry(
                     stream_payload,

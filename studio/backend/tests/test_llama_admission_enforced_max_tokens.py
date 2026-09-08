@@ -179,14 +179,11 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         import core.inference.llama_cpp as llama_cpp
         return Path(llama_cpp.__file__).read_text()
 
-    def test_both_payload_sites_apply_the_allowance(self):
-        source = self._source()
-        applied = source.count(
-            'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
-        )
-        assert (
-            applied == 2
-        ), f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
+    # That the bound reaches every payload the generators send is asserted in
+    # test_llama_admission_enforced_paths.py, against the payloads llama-server would
+    # have received. Counting the source for one spelling of the clamp read as complete
+    # while four other sites -- the synthesized final answer, both respawn refits and the
+    # post-respawn retry -- still rebuilt the cap from the whole window.
 
     def test_the_loop_budget_never_sees_it(self):
         """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound
