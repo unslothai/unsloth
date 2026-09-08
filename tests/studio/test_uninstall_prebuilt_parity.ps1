@@ -59,5 +59,12 @@ Check "uninstall.ps1 sweeps stale install locks" ($ps1Text -match '\.install\.lo
 Check "uninstall.ps1 prunes ~/.unsloth only when empty" `
     ($ps1Text -match 'Get-ChildItem -LiteralPath \$defaultUnslothHome')
 
+# Shared vs Studio-owned uv cache (#9651). Both scripts must read the
+# installer's uv-cache-dir marker and name `uv cache clean` only for a leftover.
+Check "uninstall.sh reads uv-cache-dir"  ($shText  -match 'uv-cache-dir')
+Check "uninstall.ps1 reads uv-cache-dir" ($ps1Text -match 'uv-cache-dir')
+Check "uninstall.sh names uv cache clean"  ($shText  -match 'uv cache clean')
+Check "uninstall.ps1 names uv cache clean" ($ps1Text -match 'uv cache clean')
+
 if ($failures -gt 0) { Write-Host ""; Write-Host "FAILED ($failures)" -ForegroundColor Red; exit 1 }
 Write-Host ""; Write-Host "All tests passed."; exit 0

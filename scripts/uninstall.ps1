@@ -29,6 +29,7 @@ PathBackup registry key. In a default-mode install it also removes the shared
 prebuilts that sit beside the install dir:
 %USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,.cache}. The Hugging Face
 cache is left in place, as is anything else you keep under %USERPROFILE%\.unsloth.
+A shared uv package cache (`uv cache dir`) is also left when install reused one.
 
 Options:
   -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
@@ -397,6 +398,36 @@ Environment:
         return $false
     }
 
+    # install.ps1 writes <root>\cache\uv-cache-dir (the cache that install used).
+    # A Studio-owned cache sits under that root and goes with the rm; a shared
+    # cache does not. Read the marker before any root is deleted.
+    function _RecordedUvCache {
+        param([string]$Root)
+        $marker = Join-Path $Root "cache\uv-cache-dir"
+        if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $null }
+        try {
+            $raw = [System.IO.File]::ReadAllText($marker)
+        } catch {
+            return $null
+        }
+        if ($raw.EndsWith("`n")) { $raw = $raw.Substring(0, $raw.Length - 1) }
+        if ($raw.EndsWith("`r")) { $raw = $raw.Substring(0, $raw.Length - 1) }
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        return $raw
+    }
+
+    function _UvCacheUnderRoot {
+        param([string]$Cache, [string]$Root)
+        if ([string]::IsNullOrWhiteSpace($Cache) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+        $normCache = $Cache.TrimEnd('\', '/')
+        $normRoot = $Root.TrimEnd('\', '/')
+        if ($normCache -eq $normRoot) { return $true }
+        $sep = [IO.Path]::DirectorySeparatorChar
+        if ($normCache.StartsWith($normRoot + $sep, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if ($normCache.StartsWith($normRoot + '/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        return $false
+    }
+
     # Hard deny list. Refuse to recursively delete drive roots, USERPROFILE
     # itself, parent of USERPROFILE, or system directories.
     function _IsUnsafeRoot {
@@ -733,6 +764,26 @@ Environment:
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
 
+    $uvSawMarker = $false
+    $uvLeftovers = @()
+    $uvRemovedRoots = @()
+    if ($defaultStudioHome) { $uvRemovedRoots += $defaultStudioHome }
+    foreach ($r in $customRoots) {
+        if (_IsUnsafeRoot $r) { continue }
+        if (-not (_IsStudioRoot $r)) { continue }
+        $uvRemovedRoots += $r
+    }
+    foreach ($r in $uvRemovedRoots) {
+        $rec = _RecordedUvCache $r
+        if ($null -eq $rec) { continue }
+        $uvSawMarker = $true
+        $under = $false
+        foreach ($root in $uvRemovedRoots) {
+            if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
+        }
+        if (-not $under -and $uvLeftovers -notcontains $rec) { $uvLeftovers += $rec }
+    }
+
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
     if ($defaultDataDir) {
@@ -1040,6 +1091,15 @@ Environment:
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
+    if ($uvLeftovers.Count -gt 0) {
+        foreach ($p in $uvLeftovers) {
+            Write-Host "Note: the uv package cache at $p was left in place (it may be shared with other tools)."
+            Write-Host "      Free it with 'uv cache clean', or 'uv cache clean torch' for the CUDA wheels."
+        }
+    } elseif (-not $uvSawMarker) {
+        Write-Host 'Note: if install reused a shared uv cache (`uv cache dir`), it was left in place.'
+        Write-Host "      Free it with 'uv cache clean'."
+    }
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
         Write-Host ""
         Write-Host "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
