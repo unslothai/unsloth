@@ -408,9 +408,9 @@ def test_audio_vlm_eval_split_with_a_different_audio_column_is_refused(
     )
 
     assert evaluation is None
-    assert audio_trainer._audio_vlm_audio_col == "audio", (
-        "the eval split redefined the column the train collator reads"
-    )
+    assert (
+        audio_trainer._audio_vlm_audio_col == "audio"
+    ), "the eval split redefined the column the train collator reads"
     assert any("same audio column name" in w for w in audio_trainer.training_progress.warnings)
 
 
@@ -473,7 +473,9 @@ def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
     audio_trainer.tokenizer = _FakeProcessor()
 
     monkeypatch.setattr(
-        tmod, "DataCollatorSpeechSeq2SeqWithPadding", lambda processor: (lambda f: f),
+        tmod,
+        "DataCollatorSpeechSeq2SeqWithPadding",
+        lambda processor: (lambda f: f),
         raising = False,
     )
 
@@ -503,9 +505,9 @@ def test_whisper_trainer_branch_wires_eval(audio_trainer, tmp_path, monkeypatch)
     assert trainer is not None, "the Whisper branch did not build a trainer"
     assert trainer.eval_dataset is eval_rows
     assert trainer.args.eval_strategy == "steps"
-    assert trainer.args.per_device_eval_batch_size == 2, (
-        "Whisper eval falls back to HF's default batch size of 8"
-    )
+    assert (
+        trainer.args.per_device_eval_batch_size == 2
+    ), "Whisper eval falls back to HF's default batch size of 8"
     assert trainer.args.per_device_train_batch_size == 2
     assert trainer.args.remove_unused_columns is False
 
