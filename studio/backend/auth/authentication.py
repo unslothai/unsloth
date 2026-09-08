@@ -436,8 +436,12 @@ def _decode_link_payload(payload_b64: str) -> Optional[dict]:
         return None
 
 
-def create_link_token(subject: str, *, expires_in: Optional[int] = None,
-                      require_pending_setup: bool = False) -> str:
+def create_link_token(
+    subject: str,
+    *,
+    expires_in: Optional[int] = None,
+    require_pending_setup: bool = False,
+) -> str:
     """Mint a one-time, short-TTL HMAC-signed link token bound to *subject*.
 
     The token is ``<payload_b64>.<sig_b64>`` where the payload carries the
@@ -468,8 +472,7 @@ def create_link_token(subject: str, *, expires_in: Optional[int] = None,
     ttl = LINK_TOKEN_EXPIRE_SECONDS if expires_in is None else max(1, int(expires_in))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds = ttl)
     expires_iso = expires_at.isoformat()
-    if not save_link_token(jti, subject, expires_iso,
-                           require_pending_setup = require_pending_setup):
+    if not save_link_token(jti, subject, expires_iso, require_pending_setup = require_pending_setup):
         raise RuntimeError(
             f"refusing to mint a setup link token for {subject!r}: the account is no "
             "longer awaiting its first password"

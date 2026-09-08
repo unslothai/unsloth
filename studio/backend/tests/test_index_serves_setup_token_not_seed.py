@@ -207,7 +207,12 @@ def test_a_cross_origin_request_is_not_same_origin():
     """
 
     class _Req:
-        def __init__(self, origin, netloc = "127.0.0.1:8990", scheme = "http"):
+        def __init__(
+            self,
+            origin,
+            netloc = "127.0.0.1:8990",
+            scheme = "http",
+        ):
             self.headers = {} if origin is None else {"origin": origin}
             self.url = type("U", (), {"scheme": scheme, "netloc": netloc})()
 
@@ -219,9 +224,9 @@ def test_a_cross_origin_request_is_not_same_origin():
     assert studio_main._is_same_origin_request(_Req(None)) is True
     assert studio_main._is_same_origin_request(_Req("http://127.0.0.1:8990")) is True
     # Default ports are stripped by browsers (RFC 6454) and case is insensitive.
-    assert studio_main._is_same_origin_request(
-        _Req("HTTP://127.0.0.1", netloc = "127.0.0.1:80")
-    ) is True
+    assert (
+        studio_main._is_same_origin_request(_Req("HTTP://127.0.0.1", netloc = "127.0.0.1:80")) is True
+    )
 
 
 def test_a_headless_public_launch_injects_nothing():

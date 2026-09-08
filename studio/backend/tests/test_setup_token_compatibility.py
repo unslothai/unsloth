@@ -587,11 +587,14 @@ def test_minting_never_outlives_a_concurrent_rotation(tmp_path, monkeypatch):
         def _mint():
             try:
                 start.wait(timeout = 10)
-                saved.append(st.save_link_token(
-                    f"jti-{round_no}", st.DEFAULT_ADMIN_USERNAME,
-                    "2099-01-01T00:00:00+00:00",
-                    require_pending_setup = True,
-                ))
+                saved.append(
+                    st.save_link_token(
+                        f"jti-{round_no}",
+                        st.DEFAULT_ADMIN_USERNAME,
+                        "2099-01-01T00:00:00+00:00",
+                        require_pending_setup = True,
+                    )
+                )
             except BaseException as exc:  # noqa: BLE001 - reported below
                 errors.append(exc)
 
@@ -632,9 +635,7 @@ def test_minting_never_outlives_a_concurrent_rotation(tmp_path, monkeypatch):
         # and the rotation then deleted it, which is what update_password is
         # supposed to do. A refusal that somehow left a row behind is not.
         if not saved[0]:
-            assert rows == 0, (
-                f"round {round_no}: save_link_token refused but left {rows} row(s)"
-            )
+            assert rows == 0, f"round {round_no}: save_link_token refused but left {rows} row(s)"
 
     assert recorded_after_rotation == 0, (
         f"{recorded_after_rotation}/{attempts} rounds left a link token behind after "

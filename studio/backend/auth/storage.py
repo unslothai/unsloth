@@ -968,8 +968,13 @@ LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
 MAX_OUTSTANDING_LINK_TOKENS_PER_USER = 32
 
 
-def save_link_token(jti: str, username: str, expires_at: str,
-                    *, require_pending_setup: bool = False) -> bool:
+def save_link_token(
+    jti: str,
+    username: str,
+    expires_at: str,
+    *,
+    require_pending_setup: bool = False,
+) -> bool:
     """Record a minted one-time link token so it can be consumed exactly once.
 
     Returns whether the row was recorded. A token whose row is absent cannot be
