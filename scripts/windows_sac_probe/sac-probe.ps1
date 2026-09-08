@@ -610,9 +610,23 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         $override = Get-StudioHomeOverride
         $installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir))) |
             Where-Object { $_ } | Select-Object -Unique
+        # The managed venv on its own, not left to the Studio home above. A home
+        # that already exists drops out of $absentBefore, and
+        # <home>\unsloth_studio was not a candidate at all, so the tree holding
+        # every native module Studio loads (673 PE files on a measured install)
+        # came out administrator-owned with nothing recorded for revert to
+        # repair. When every other candidate exists too, nothing is recorded at
+        # all, StudioInstalledByProbe stays false, and revert prints "nothing to
+        # repair: this run did not install Studio" over a venv the user can no
+        # longer read. install.ps1 creates a custom home itself (line 1207), so
+        # the reachable shapes are a home the operator made before setting
+        # UNSLOTH_STUDIO_HOME, one whose unsloth_studio was moved aside on the
+        # installer's own instruction, and a legacy ~\.unsloth\studio whose venv
+        # was removed.
         $candidates = @(
             $unslothHome,
             (Get-StudioHome),
+            (Join-Path (Get-StudioHome) 'unsloth_studio'),
             (Get-LlamaDir)
         ) + @($installRoots | ForEach-Object {
             (Join-Path $_ 'node')
@@ -1130,6 +1144,17 @@ function Invoke-Run {
     $runBaselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $runBaselinePath) {
         $runBaseline = Get-Content -LiteralPath $runBaselinePath -Raw | ConvertFrom-Json
+        # A label whose revert already completed. revert does not delete
+        # window-start.txt, so the window still open on disk is the one the
+        # reverted run measured: this stage would overwrite the scenario results
+        # and both inventories with a current runtime while collect kept
+        # exporting events from before the revert, and file them against the
+        # build measured now. The machine is no longer prepared either, so
+        # nothing here would be audited. prepare and revert both refuse a spent
+        # baseline; this is the third stage that has to.
+        if ($runBaseline.RevertCompletedAt) {
+            throw "label '$Label' was reverted at $($runBaseline.RevertCompletedAt), so its baseline is spent and the event window on disk belongs to the run that was undone. Running now would file events from that window against this run's inventory. Run prepare for this label again (or use a new -Label) first."
+        }
         if ($runBaseline.AuditPolicyApplied) {
             Write-Section 'Audit policy still active'
             $state = Get-SacState

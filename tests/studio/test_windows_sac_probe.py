@@ -1595,3 +1595,37 @@ def test_only_the_verified_loopback_listener_is_ever_stopped():
     assert stop.index("LocalAddress") < stop.index("if (-not $owners) {")
     # The endpoint the liveness check actually verified.
     assert "http://127.0.0.1:$port/api/liveness" in ps1
+
+
+def test_the_managed_venv_is_recorded_when_the_studio_home_already_exists():
+    """The elevated installer creates <home>\\unsloth_studio, but a Studio home
+    that already exists is not in $absentBefore and the venv was in no candidate
+    list at all. With the other candidates present too, nothing was recorded,
+    StudioInstalledByProbe stayed false, and revert printed 'nothing to repair'
+    and stamped a completed rollback over the 673-PE tree Studio cannot start
+    without."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    cands = init[init.index("$candidates = @(") : init.index("$absentBefore = @(")]
+    assert "(Join-Path (Get-StudioHome) 'unsloth_studio')" in cands
+    # And revert must accept it: it resolves under a root derived from the live
+    # environment, so the containment gate does not reject it as somebody else's.
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    roots = revert[revert.index("$allowedRoots = @(") : revert.index("$recorded = @()")]
+    assert "(Get-StudioHome)" in roots
+
+
+def test_run_refuses_a_label_whose_revert_already_completed():
+    """revert leaves window-start.txt behind, so the window still on disk is the
+    one the reverted run measured. A run after it would overwrite the scenario
+    results and both inventories with a current runtime while collect kept
+    exporting the pre-revert window, on a machine that is no longer prepared."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "if ($runBaseline.RevertCompletedAt) {" in run
+    # Before anything is re-verified, measured or overwritten.
+    guard = run.index("if ($runBaseline.RevertCompletedAt) {")
+    assert guard < run.index("if ($runBaseline.AuditPolicyApplied) {")
+    assert guard < run.index("Write-Section 'Venv signature inventory'")
+    # All three stages now refuse a spent baseline rather than two of them.
+    assert "if ($baseline.RevertCompletedAt) {" in ps1[ps1.index("function Invoke-Revert") :]
