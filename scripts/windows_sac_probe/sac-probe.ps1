@@ -348,7 +348,17 @@ function Resolve-VenvDir {
 function Test-StudioResponding([int] $port) {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/liveness" -TimeoutSec 5 -UseBasicParsing
-        return $r.StatusCode -eq 200
+        if ($r.StatusCode -ne 200) { return $false }
+        # Identity, not a bare status code. prepare force-stops whatever owns
+        # this port so the restart's loads land inside the window, and 8888 is
+        # a busy default (Jupyter among others); a server that answers 200 on
+        # an unknown path would have been killed as if it were Studio. The
+        # service field has been in this route since the route was added
+        # (studio/backend/main.py, "Speed up Studio desktop startup"), so no
+        # Studio that can answer here fails this check.
+        $body = $null
+        try { $body = $r.Content | ConvertFrom-Json } catch { return $false }
+        return ($body.service -eq 'Unsloth UI Backend')
     } catch {
         return $false
     }
@@ -548,7 +558,18 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
     # archives as is: the backend's stdout can carry the same tokens its log
     # files can.
     New-Item -ItemType Directory -Force -Path (Join-Path $dir 'raw-logs') | Out-Null
-    Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log') | Out-Null
+    $startLog = Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log'
+    # Not discarded. A Studio that never answered loaded none of the venv's
+    # native modules inside the window, so the stage that follows measures
+    # nothing and prepare used to print "prepare complete" over it. run only
+    # warns: its inventories are still worth collecting, and the scenario's own
+    # failure is already recorded for collect to grade.
+    if (-not (Start-Studio $python $Port $startLog)) {
+        if ($allowInstall) {
+            throw "Studio did not answer on port $Port within 5 minutes, so its startup loads cannot be observed in this window. See $startLog, fix the cause and run prepare again."
+        }
+        Write-Warning "Studio did not answer on port $Port; the scenario will have nothing to drive. See $startLog."
+    }
 }
 
 function Save-Baseline([string] $dir) {
@@ -752,6 +773,34 @@ function Invoke-Prepare {
         } catch {
             $mpFailed += "${name}: $_"
             Write-Warning "could not set Defender $name : $_"
+        }
+    }
+    # Read back, because a tamper-protected or policy-managed preference is
+    # IGNORED rather than refused: Set-MpPreference returns without error and
+    # the effective value never changes ("changes to tamper-protected settings
+    # are ignored", Microsoft, Protect security settings with tamper
+    # protection). Treating the absence of an exception as success let a cell
+    # be graded under a baseline the machine never adopted.
+    $applied = $null
+    try { $applied = Get-MpPreference } catch { }
+    if (-not $applied) {
+        $mpFailed += 'the Defender preferences could not be read back, so this cell cannot show that it carries the documented baseline'
+    } else {
+        foreach ($name in $wanted.Keys) {
+            $actual = $applied.$name
+            $expected = $wanted[$name]
+            $same =
+                if ($null -eq $actual) { $false }
+                elseif ($expected -is [bool]) { ([bool]$actual -eq $expected) }
+                elseif ($actual -is [Enum] -or $actual -is [string]) { ([string]$actual -eq [string]$expected) }
+                # A numeric read-back: the name-to-code map belongs to
+                # Defender, and inventing one here would report deviations
+                # that are not there. Left uncompared rather than guessed.
+                else { $true }
+            if (-not $same) {
+                $mpFailed += "${name}: set to $expected but reads back as $actual (tamper protection or policy?)"
+                Write-Warning "Defender $name reads back as $actual after being set to $expected"
+            }
         }
     }
     $mpErrorPath = Join-Path $dir 'defender-preference-errors.txt'
@@ -1202,6 +1251,38 @@ function Invoke-Collect {
         $a = @($g.Group | Where-Object { $_.Id -eq 3076 }).Count
         Write-Host ("  {0,-10} {1} x 3077, {2} x 3076, {3} event(s)" -f $g.Name, $b, $a, $g.Count)
     }
+    # Whether a model was actually loaded inside this window. Read here, ahead
+    # of the verdict and of the staging loop, because a scenario that stopped
+    # at login loaded no PE under the policy at all: the window is then a null
+    # result however well the positive control fired. This used to be worked
+    # out only after the archive had been written, so the zip carried no trace
+    # of it and its reader saw an empty event list and a clean warnings file.
+    $scenarioStatus = $null
+    $statusPath = Join-Path $dir 'scenario-status.json'
+    if (Test-Path -LiteralPath $statusPath) {
+        $scenarioStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+    }
+    $loadOk = $false
+    $failedSteps = @()
+    $resultsPath = Join-Path $dir 'scenario-results.json'
+    if (Test-Path -LiteralPath $resultsPath) {
+        $results = Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json
+        # A non-zero exit also covers a failed search, chat or unload after a
+        # load that worked; the load is what the events are about, so read that
+        # step rather than the aggregate.
+        $loadOk = [bool]$results.steps.load.ok
+        $failedSteps = @($results.steps.PSObject.Properties | Where-Object { -not $_.Value.ok } | ForEach-Object { $_.Name })
+    }
+    $scenarioProblem = $null
+    if (-not $scenarioStatus) {
+        $scenarioProblem = 'no scenario-status.json: the run stage did not complete for this label, so nothing is known to have loaded inside this window and an empty event list is a NULL result, not an allow'
+    } elseif ($scenarioStatus.Reason -eq 'skipped') {
+        $scenarioProblem = 'the Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only: it does not show whether anything was blocked at load time'
+    } elseif ($scenarioStatus.ExitCode -ne 0 -and -not $loadOk) {
+        $scenarioProblem = "the Studio scenario did NOT load a model (exit $($scenarioStatus.ExitCode): $($scenarioStatus.Reason); failed steps: $($failedSteps -join ', ')), so an empty event list here is a NULL result, not an allow"
+    }
+    if ($scenarioProblem) { $collectionProblems += $scenarioProblem }
+
     # An empty window is an allow only if the policy was shown to be evaluating
     # loads. prepare throws when its control did not fire, so the case left here
     # is the one where no control could be built (PowerShell 7); saying nothing
@@ -1218,6 +1299,10 @@ function Invoke-Collect {
         if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
             $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so a window with no 3076 or 3077 here is a NULL result, not an allow'
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
+        } elseif (-not $loadOk) {
+            # Recorded as a collection problem above; what must not happen here
+            # is the clean-allow line, which the control alone used to earn.
+            Write-Warning 'No Unsloth path raised a 3076 or 3077, but nothing was observed loading in this window (see collection-warnings.txt in the zip). Do NOT report this cell as "not blocked".'
         } elseif ($b.AuditPolicyApplied) {
             Write-Host 'no Unsloth path raised a 3076 or 3077, and the positive control confirmed the policy was evaluating loads'
         } elseif ($sacMode -ne 'enforcement') {
@@ -1376,35 +1461,16 @@ function Invoke-Collect {
     Write-Host ''
     Write-Host "evidence: $zip" -ForegroundColor Green
 
-    # An empty window is only a result if the scenario actually ran. Say which
-    # of the two this is, next to the number, rather than leaving "0 events" to
-    # be read as "nothing was blocked".
-    $statusPath = Join-Path $dir 'scenario-status.json'
-    if (Test-Path -LiteralPath $statusPath) {
-        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
-        if ($status.Reason -eq 'skipped') {
-            Write-Warning 'The Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only. It does not show whether anything was blocked at load time.'
-        } elseif ($status.ExitCode -ne 0) {
-            # A non-zero exit also covers a failed search, chat or unload
-            # after a load that worked; the load is what the events are
-            # about, so read that step rather than the aggregate.
-            $loadOk = $false
-            $failedSteps = @()
-            $resultsPath = Join-Path $dir 'scenario-results.json'
-            if (Test-Path -LiteralPath $resultsPath) {
-                $results = Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json
-                $loadOk = [bool]$results.steps.load.ok
-                $failedSteps = @($results.steps.PSObject.Properties | Where-Object { -not $_.Value.ok } | ForEach-Object { $_.Name })
-            }
-            if ($loadOk) {
-                Write-Warning "The model loaded, so the load-time events are valid; later scenario step(s) failed: $($failedSteps -join ', ') (exit $($status.ExitCode))."
-            } else {
-                Write-Warning "The Studio scenario did NOT load a model (exit $($status.ExitCode): $($status.Reason); failed steps: $($failedSteps -join ', '))."
-                Write-Warning 'An empty event list here is a NULL result, not a negative one. Do not report this cell as "not blocked".'
-            }
+    # An empty window is only a result if the scenario actually ran. Repeated
+    # here, after the archive line, so it is the last thing the operator reads;
+    # the same sentence is inside the zip as a collection warning.
+    if ($loadOk) {
+        if ($scenarioStatus -and $scenarioStatus.ExitCode -ne 0) {
+            Write-Warning "The model loaded, so the load-time events are valid; later scenario step(s) failed: $($failedSteps -join ', ') (exit $($scenarioStatus.ExitCode))."
         }
-    } else {
-        Write-Warning 'No scenario-status.json: the run stage did not complete for this label, so the event window may cover nothing.'
+    } elseif ($scenarioProblem) {
+        Write-Warning $scenarioProblem
+        Write-Warning 'Do not report this cell as "not blocked".'
     }
 
     Write-Host ''

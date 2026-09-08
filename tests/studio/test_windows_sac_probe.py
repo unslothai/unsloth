@@ -768,10 +768,8 @@ def test_prepare_restarts_a_running_studio_and_only_prepare_may():
 
 def test_redirected_studio_output_and_the_scenario_console_are_redacted_too():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert (
-        "Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log')"
-        in ps1
-    )
+    assert "$startLog = Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log'" in ps1
+    assert "Start-Studio $python $Port $startLog" in ps1
     assert "$log = Join-Path (Join-Path $dir 'raw-logs') 'studio-scenario.log'" in ps1
     assert "if ($rel -like 'rollback\\*' -or $rel -like 'raw-logs\\*') { continue }" in ps1
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
@@ -993,9 +991,10 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     # evtx export, staging, redaction failure, no-interpreter, an unverified
-    # empty window and one that no policy could have filled: every path that
-    # would let the archive be read as more than it is records itself.
-    assert collect.count("$collectionProblems += ") == 6
+    # empty window, one that no policy could have filled, and a scenario that
+    # loaded nothing: every path that would let the archive be read as more
+    # than it is records itself.
+    assert collect.count("$collectionProblems += ") == 7
     redact = collect[collect.index("$redactor = Join-Path") :]
     assert redact.index('$collectionProblems += "log redaction failed') < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
@@ -1208,3 +1207,67 @@ def test_a_window_with_no_audit_policy_is_a_null_result_unless_sac_enforces():
     # In the zip, not only on a console the reader never sees.
     assert "$collectionProblems +=" in guard
     assert "NULL result, not an allow" in guard
+
+
+def test_an_empty_window_with_no_observed_load_never_reads_as_an_allow():
+    """A scenario that stopped at login loaded no PE under the policy, so the
+    positive control alone must not earn the clean-allow line - and the caveat
+    used to be worked out after the zip was written, so the archive said
+    nothing about it."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$scenarioProblem = $null" in collect
+    assert "if ($scenarioProblem) { $collectionProblems += $scenarioProblem }" in collect
+    assert "} elseif (-not $loadOk) {" in collect
+    # Computed before the staging loop, or it cannot reach the archive.
+    assert collect.index(
+        "if ($scenarioProblem) { $collectionProblems += $scenarioProblem }"
+    ) < collect.index("$stage = Join-Path $WorkDir")
+    # ... and before the branch that would otherwise report an allow.
+    assert collect.index("$scenarioProblem = $null") < collect.index(
+        "$verdicts = $blocks + $audits"
+    )
+
+
+def test_a_studio_that_never_answered_fails_prepare():
+    """Start-Studio's result was discarded, so prepare printed 'prepare
+    complete' over a Studio that never started and whose venv modules
+    therefore never loaded inside the window."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    assert "if (-not (Start-Studio $python $Port $startLog)) {" in init
+    assert "| Out-Null\n}" not in init.split("Start-Studio $python $Port $startLog")[-1]
+    # prepare fails; run only warns, because its inventories are still evidence.
+    assert "if ($allowInstall) {" in init.split("Start-Studio $python $Port $startLog")[1]
+    assert 'throw "Studio did not answer on port $Port within 5 minutes' in init
+
+
+def test_only_studio_is_treated_as_studio_on_the_port():
+    """prepare force-stops whatever owns the port, and 8888 is a busy default,
+    so a status-only check could kill an unrelated server."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[ps1.index("function Test-StudioResponding") : ps1.index("function Get-EventDataMap")]
+    assert "$body.service -eq 'Unsloth UI Backend'" in fn
+    assert "return $r.StatusCode -eq 200" not in fn
+    # The field the check reads is the one Studio actually publishes.
+    liveness = (REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    route = liveness[liveness.index('@app.get("/api/liveness")') :][:1200]
+    assert '"service": "Unsloth UI Backend"' in route
+
+
+def test_the_defender_baseline_is_read_back_not_assumed():
+    """A tamper-protected or policy-managed preference is ignored rather than
+    refused: Set-MpPreference returns without error and the value never
+    changes, so the cell was graded under a baseline it never adopted."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
+    assert "$applied = Get-MpPreference" in prepare
+    assert "but reads back as $actual" in prepare
+    # Into the same file the throwing failures use, so one artifact carries
+    # every deviation, and before that file is written.
+    assert prepare.index("$applied = Get-MpPreference") < prepare.index(
+        "$mpErrorPath = Join-Path $dir 'defender-preference-errors.txt'"
+    )
+    assert '$mpFailed += "${name}: set to $expected but reads back as $actual' in prepare
