@@ -29,6 +29,7 @@ def _run_to_extras(
     no_torch,
     shared_base = False,
     mlx_error = None,
+    mlx_installable = True,
 ):
     monkeypatch.setenv("SKIP_STUDIO_BASE", "1" if skip_base else "0")
     for name in ("STUDIO_LOCAL_REPO", "STUDIO_PACKAGE_NAME", "UNSLOTH_CI_SOURCE_OVERLAY"):
@@ -55,6 +56,10 @@ def _run_to_extras(
         "_ensure_cpu_torch": None,
         "_ensure_xpu_triton": None,
         "run": None,
+        # The host running the tests is not the host being simulated: off macOS,
+        # _macos_release_major() reads no version and the floor below would skip
+        # every case. The floor has its own tests.
+        "_mlx_pins_are_installable": mlx_installable,
     }.items():
         monkeypatch.setattr(stack, name, Mock(return_value = value))
     monkeypatch.setattr(stack.install_manifest, "remove_manifest", Mock(return_value = True))
@@ -68,14 +73,20 @@ def _run_to_extras(
     monkeypatch.setattr(stack, "pip_install", install)
     progress = stack._progress
 
+    steps: list[str] = []
+
     def stop_before_extras(label):
         if label == "unsloth extras":
             raise _BeforeExtras
+        steps.append(label)
         progress(label)
 
     monkeypatch.setattr(stack, "_progress", stop_before_extras)
     with pytest.raises(_BeforeExtras):
         stack.install_python_stack()
+    # Labels reached before the stop, for the callers that assert on the step itself
+    # rather than on what it installed.
+    _run_to_extras.steps = steps
     return [call for call in install.call_args_list if call.args[0].startswith("Installing MLX")]
 
 
@@ -167,3 +178,87 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
         assert {arg for arg in call.args[1:] if not arg.startswith("-")} <= set(command)
         assert "--upgrade" in command
         assert "-c" in command
+
+
+@pytest.mark.parametrize(
+    "python_version, macos_major, installable",
+    [
+        ((3, 9, 6), 15, False),    # macOS ships 3.9; no release in the pinned set has a cp39 wheel
+        ((3, 10, 0), 15, True),
+        ((3, 12, 0), 13, False),   # Apple Silicon on Ventura: the pins are macosx_14_0 only
+        ((3, 12, 0), 14, True),    # the first macOS the pinned wheels are built for
+        ((3, 12, 0), 26, True),
+        # Unreadable version: skipping costs a launch, attempting costs the install.
+        ((3, 12, 0), None, False),
+        ((3, 9, 6), 13, False),
+    ],
+)
+def test_mlx_pin_floor_matches_the_published_wheels(
+    monkeypatch, python_version, macos_major, installable
+):
+    """The floors are the ones PyPI actually publishes, not a guess.
+
+    mlx / mlx-metal 0.32.1 ship macosx_14_0_arm64 wheels and no sdist, and the whole
+    pinned set starts at cp310. A host outside that has nothing to resolve to, and
+    pip_install exits on failure, so the step has to be skipped rather than tried.
+    """
+    monkeypatch.setattr(stack.sys, "version_info", python_version)
+    monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
+    assert stack._mlx_pins_are_installable() is installable
+
+
+def test_pin_floor_is_revisited_whenever_the_pins_move():
+    """A pin bumped without its floor silently starts failing installs.
+
+    The floor is a property of the versions being installed, not a constant: it was
+    read off the wheels these three publish. Tying the two together here is what
+    makes the next bump look at both.
+    """
+    assert _repair_specs() == {
+        "mlx": "==0.32.1",
+        "mlx-lm": "==0.31.3",
+        "mlx-vlm": ">=0.4.4,<0.7.0",
+    }
+    assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
+
+
+@pytest.mark.parametrize("skip_base", [True, False], ids = ["fresh", "update"])
+@pytest.mark.parametrize("shared_base", [False, True], ids = ["empty_base", "shared_base"])
+def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
+    monkeypatch, skip_base, shared_base
+):
+    """macOS 13 / Python 3.9 Apple Silicon must still get an install.
+
+    Before this step ran on fresh installs there was nothing here to fail; the update
+    path was unpinned and resolved an older mlx. Pinning turns both into a hard exit
+    on a host with no matching wheel, so the step steps aside instead -- Studio comes
+    up chat-only, which is what those hosts already got.
+    """
+    calls = _run_to_extras(
+        monkeypatch,
+        platform = "macos_arm",
+        skip_base = skip_base,
+        no_torch = False,
+        shared_base = shared_base,
+        mlx_installable = False,
+    )
+    assert calls == []
+    steps = _run_to_extras.steps
+    assert "MLX stack (Apple Silicon)" not in steps
+    assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
+    # The denominator must not depend on the host: a skipped step still spends its slot.
+    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1
+
+
+def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
+    """Same total either way, so the bar cannot end at 13/14 on an old Mac."""
+    _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False,
+        mlx_installable = True,
+    )
+    supported = stack._TOTAL
+    _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False,
+        mlx_installable = False,
+    )
+    assert stack._TOTAL == supported

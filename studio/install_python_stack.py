@@ -420,6 +420,31 @@ def _macos_release_major() -> "int | None":
         return None
 
 
+# Apple Silicon is not one target. The supported MLX versions publish
+# macosx_14_0_arm64 wheels and no sdist, and none of them ships a cp39 wheel, so
+# macOS 13 and Python 3.9 have nothing for the pins below to resolve to.
+#
+# Asked before the install rather than discovered by it, for the reason
+# _torchcodec_spec_is_installable gives: pip_install exits on failure, so the step
+# would end the whole install on a host that today just comes up chat-only. Read
+# off the wheel index rather than guessed -- `uv pip install --python-platform
+# aarch64-apple-darwin mlx==0.32.1` reports no matching platform tag, and the same
+# resolve at --python-version 3.9 reports no matching implementation tag.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_pins_are_installable() -> bool:
+    """Does this host have a wheel for the MLX versions the installer pins?
+
+    An unreadable macOS version counts as too old, like the torchcodec floor:
+    skipping costs Train/Export on that launch, attempting costs the install.
+    """
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return False
+    return (_macos_release_major() or 0) >= _MLX_MIN_MACOS_MAJOR
+
+
 # The supported Python range moves three times across the lines we select from.
 # Transcribed from upstream's published table (README / PyPI):
 #
@@ -7434,16 +7459,28 @@ def install_python_stack() -> int:
     # Not on a --no-torch install: it declined the training stack, and the runtime's
     # no_torch verdict tells the user an update will not put it back.
     if IS_MAC_ARM and not NO_TORCH:
-        _progress("MLX stack (Apple Silicon)")
-        pip_install(
-            "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
-            "--no-cache-dir",
-            "--upgrade",
-            "mlx==0.32.1",
-            "mlx-metal==0.32.1",
-            "mlx-lm==0.31.3",
-            "mlx-vlm>=0.4.4,<0.7.0",
-        )
+        # Both branches spend the slot, so the progress denominator does not depend
+        # on the host's macOS release or interpreter.
+        if _mlx_pins_are_installable():
+            _progress("MLX stack (Apple Silicon)")
+            pip_install(
+                "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
+                "--no-cache-dir",
+                "--upgrade",
+                "mlx==0.32.1",
+                "mlx-metal==0.32.1",
+                "mlx-lm==0.31.3",
+                "mlx-vlm>=0.4.4,<0.7.0",
+            )
+        else:
+            _progress("MLX stack (skipped, no wheel for this macOS or Python)")
+            _note(
+                f"macOS {_macos_release_major() or 'unknown'} on Python "
+                f"{sys.version_info.major}.{sys.version_info.minor} publishes no wheel for the "
+                f"supported MLX versions (needs macOS {_MLX_MIN_MACOS_MAJOR}+ and Python "
+                f"{_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]}+) -- leaving Train/Export disabled "
+                "rather than failing the install"
+            )
 
     # gfx906: the base install below resolves unsloth's unconditional bitsandbytes
     # dep to a generic CUDA wheel (no gfx906 kernels). Record bnb's presence now so

@@ -30,22 +30,37 @@ def _source() -> str:
     return STACK.read_text(encoding = "utf-8")
 
 
-def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
-    """The `if` test guarding every call whose arguments mention ``needle``."""
+def _guard_chains_of_calls_mentioning(source: str, needle: str) -> list[list[str]]:
+    """Every enclosing `if` test, outermost first, for each call mentioning ``needle``.
+
+    A chain rather than a single test: the step sits under the platform gate and then
+    under a second branch for whether this host has a wheel for the pinned versions.
+    Only the outermost one is the gate this file is about.
+    """
     tree = ast.parse(source)
-    guards = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        for call in ast.walk(node):
-            if not isinstance(call, ast.Call):
-                continue
-            if any(
-                isinstance(arg, ast.Constant) and isinstance(arg.value, str) and needle in arg.value
-                for arg in call.args
+    chains: list[list[str]] = []
+
+    def walk(node, enclosing: list[str]):
+        for child in ast.iter_child_nodes(node):
+            inner = enclosing
+            if isinstance(child, ast.If):
+                inner = enclosing + [ast.get_source_segment(source, child.test) or ""]
+            if isinstance(child, ast.Call) and any(
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and needle in arg.value
+                for arg in child.args
             ):
-                guards.append(ast.get_source_segment(source, node.test) or "")
-    return guards
+                chains.append(enclosing)
+            walk(child, inner)
+
+    walk(tree, [])
+    return chains
+
+
+def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
+    """The outermost `if` test guarding every call whose arguments mention ``needle``."""
+    return [chain[0] for chain in _guard_chains_of_calls_mentioning(source, needle) if chain]
 
 
 def test_the_mlx_install_step_is_gated_on_no_torch():
