@@ -2396,9 +2396,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                 )
-                # Every idle slot went, including those of holders parked on a tool prompt or
-                # running their tools; their charges must go with them.
-                controller.note_cells_reclaimed()
+                # ONLY when every idle slot went. `needed` is the overshoot, so the erase
+                # can stop after one slot, and `note_cells_reclaimed` is global: applied
+                # after a partial erase it hands every parked holder's commitment back
+                # while some of their cells are still resident, and a waiter is admitted
+                # into them. The later reclaim path already guards the same way.
+                if freed >= int(occupancy.get("idle_tokens") or 0):
+                    controller.note_cells_reclaimed()
                 _gguf_slots_seen["occupancy"] = None
 
     _gguf_live_state = {"state": ParticipantState.DECODING}
@@ -2482,6 +2486,18 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
+
+
+def _openai_llama_note_raw_measured(*, llama_backend, gen_id: str) -> None:
+    """The raw holder's upstream has produced: its prompt is prefilled and resident.
+
+    Counted holders never report tokens, so they stayed unmeasured and were charged twice
+    once `/slots` saw them. Called at a stream's first data line, once.
+    """
+    try:
+        get_preemption_controller(_preempt_key(llama_backend)).note_measured(gen_id)
+    except Exception:
+        logger.debug("could not mark the raw holder measured", exc_info = True)
 
 
 def _openai_llama_preemption_arm(
@@ -2635,11 +2651,23 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                 if freed:
                     _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
                     _controller = get_preemption_controller(key)
-                    _controller.note_resident(
-                        max(0, int(occupancy.get("resident") or 0) - freed),
-                        max(0, int(occupancy.get("idle_tokens") or 0) - freed),
+                    # Re-read rather than subtract: this runs on a worker and each erase
+                    # can take seconds, during which a live chat publishes newer samples.
+                    # `old - freed` written over them was a stale, lower figure, and a
+                    # waiter was granted against cells that were occupied. A failed
+                    # re-read leaves the newest sample in place.
+                    after = read_slot_occupancy(
+                        lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                     )
-                    _controller.note_cells_reclaimed()
+                    if after is not None:
+                        _controller.note_resident(
+                            int(after.get("resident") or 0),
+                            int(after.get("idle_tokens") or 0),
+                        )
+                    # And only when every idle slot went: an erase that returned zero
+                    # leaves cells resident that a global reclaim would hand out.
+                    if freed >= int(occupancy.get("idle_tokens") or 0):
+                        _controller.note_cells_reclaimed()
             except Exception:
                 pass
 
@@ -6975,9 +7003,7 @@ def _monitor_queue_state() -> Optional[dict]:
     ):
         return None
     direct = _direct_llama_inflight
-    snapshot = peek_llama_admission_snapshot(
-        _preempt_key(llama_backend)
-    )
+    snapshot = peek_llama_admission_snapshot(_preempt_key(llama_backend))
     if snapshot is not None:
         busy = snapshot.active + direct
         active = min(snapshot.capacity, busy)
@@ -29731,6 +29757,7 @@ async def _responses_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, disconnect_event)
             )
+            _raw_measured = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
@@ -29746,6 +29773,9 @@ async def _responses_stream(
                     continue
                 if not raw_line.startswith("data: "):
                     continue
+                if not _raw_measured:
+                    _raw_measured = True
+                    _openai_llama_note_raw_measured(llama_backend = llama_backend, gen_id = resp_id)
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
@@ -33381,6 +33411,7 @@ async def _anthropic_passthrough_stream(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
             lines_iter = resp.aiter_lines()
+            _raw_measured = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
@@ -33394,6 +33425,11 @@ async def _anthropic_passthrough_stream(
                     continue
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
+                if not _raw_measured:
+                    _raw_measured = True
+                    _openai_llama_note_raw_measured(
+                        llama_backend = llama_backend, gen_id = message_id
+                    )
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break
@@ -35037,6 +35073,7 @@ async def _openai_passthrough_stream_admitted(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
                 lines_iter = resp.aiter_lines()
+                _raw_measured = False
                 async for raw_line in _aiter_llama_stream_items(
                     lines_iter,
                     cancel_event = cancel_event,
@@ -35053,6 +35090,11 @@ async def _openai_passthrough_stream_admitted(
                         continue
                     if not raw_line.startswith("data:"):
                         continue
+                    if not _raw_measured:
+                        _raw_measured = True
+                        _openai_llama_note_raw_measured(
+                            llama_backend = llama_backend, gen_id = completion_id
+                        )
                     saw_stream_item = True
                     data_text = raw_line[5:].strip()
                     if data_text == "[DONE]":

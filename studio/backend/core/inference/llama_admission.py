@@ -525,9 +525,7 @@ class LlamaAdmissionLease:
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         patience = None if deadline is None else float(timeout_s)
         hard_deadline = (
-            None
-            if patience is None
-            else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
+            None if patience is None else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
         )
         last_progress = progress() if progress is not None else None
         if commitment_only:
@@ -881,6 +879,7 @@ class LlamaAdmissionQueue:
         "_waiters",
         "_parked",
         "_unpark_tickets",
+        "_unpark_wants",
         "_unpark_seq",
         "_committed",
         "_budget",
@@ -903,6 +902,9 @@ class LlamaAdmissionQueue:
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
+        # The KV each ticket is coming back for, by ticket. A ticket holds a slot back for itself and, from here, its
+        # room too: the head-of-line rule the waiters already live by.
+        self._unpark_wants: dict = {}
         self._unpark_seq = 0
         # KV tokens held by live leases, against the cache size the caller reports. 0 budget disables the check, which
         # is what every pre-existing caller gets.
@@ -940,10 +942,20 @@ class LlamaAdmissionQueue:
             return True
         return self._committed + tokens <= self._budget
 
+    def _unpark_tokens_locked(self, before: Optional[int] = None) -> int:
+        """KV the resume tickets are coming back for: all of them, or those ahead of ``before``."""
+        total = 0
+        for queued in self._unpark_tickets:
+            if before is not None and queued == before:
+                break
+            total += int(self._unpark_wants.get(queued, 0) or 0)
+        return total
+
     def _can_admit_locked(
         self,
         reserved: int,
         tokens: int = 0,
+        reserved_tokens: int = 0,
     ) -> bool:
         # Slots still held above a shrunk capacity keep occupying the backend, so count every held slot against the
         # ceiling, not just the ids below it. ``reserved`` holds slots back for approved holders waiting to resume;
@@ -951,15 +963,18 @@ class LlamaAdmissionQueue:
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
         # A free slot is not enough: with --kv-unified every slot reports the full n_ctx, so the pool can hand out more
-        # slots than the one cache can serve.
-        return self._fits_budget_locked(tokens)
+        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for:
+        # a later, smaller resume that fitted where an earlier one did not overtook it, and with room handed out in
+        # that order the earlier one could wait out its deadline while capacity came and went.
+        return self._fits_budget_locked(tokens + max(0, int(reserved_tokens or 0)))
 
     def _take_slot_locked(
         self,
         reserved: int,
         tokens: int = 0,
+        reserved_tokens: int = 0,
     ) -> Optional[int]:
-        if not self._can_admit_locked(reserved, tokens):
+        if not self._can_admit_locked(reserved, tokens, reserved_tokens):
             return None
         slot = self._free.pop()
         self._in_use |= 1 << slot
@@ -1004,7 +1019,9 @@ class LlamaAdmissionQueue:
             # for more, so an arrival admitted here would take exactly that, pinning a growing conversation at its
             # opening size for as long as traffic lasts.
             if not self._waiters and self._reparking == 0:
-                slot = self._take_slot_locked(len(self._unpark_tickets), cost)
+                slot = self._take_slot_locked(
+                    len(self._unpark_tickets), cost, self._unpark_tokens_locked()
+                )
                 if slot is not None:
                     # No snapshot here: callers read it through snapshot_now(), which re-reads the queue, so building
                     # one per admitted request would be pure allocation on the hot path.
@@ -1190,6 +1207,7 @@ class LlamaAdmissionQueue:
             self._unpark_seq += 1
             ticket = self._unpark_seq
             self._unpark_tickets.append(ticket)
+            self._unpark_wants[ticket] = want
         try:
             while True:
                 with self._lock:
@@ -1198,8 +1216,11 @@ class LlamaAdmissionQueue:
                         if queued == ticket:
                             break
                         ahead += 1
-                    # Only the approvals ahead of this one hold slots back from it.
-                    slot = self._take_slot_locked(ahead, want)
+                    # Only the approvals ahead of this one hold slots, and their room, back
+                    # from it: ticket order for the room as well as the slot.
+                    slot = self._take_slot_locked(
+                        ahead, want, self._unpark_tokens_locked(before = ticket)
+                    )
                     if slot is not None:
                         return slot
                     if cancel_event is not None and cancel_event.is_set():
@@ -1220,6 +1241,7 @@ class LlamaAdmissionQueue:
                     self._unpark_tickets.remove(ticket)
                 except ValueError:
                     pass
+                self._unpark_wants.pop(ticket, None)
                 self._grant_waiters_locked()
 
     def cancel(self, waiter: _Waiter) -> None:
@@ -1266,12 +1288,14 @@ class LlamaAdmissionQueue:
         # traffic keeps arriving. Head-of-line blocking is the fair trade here, and it matches the FIFO the rest of this
         # queue already promises.
         while self._waiters and self._can_admit_locked(
-            len(self._unpark_tickets), self._waiters[0].tokens
+            len(self._unpark_tickets), self._waiters[0].tokens, self._unpark_tokens_locked()
         ):
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
                 continue
-            slot = self._take_slot_locked(len(self._unpark_tickets), waiter.tokens)
+            slot = self._take_slot_locked(
+                len(self._unpark_tickets), waiter.tokens, self._unpark_tokens_locked()
+            )
             lease = LlamaAdmissionLease(self, slot, waiter.tokens)
             waiter.granted_lease = lease
             try:
