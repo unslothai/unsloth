@@ -102,6 +102,31 @@ def _tool_event(**overrides):
     }
 
 
+def _tool_result_event(**overrides):
+    """A studio tool-loop result event, with per-test overrides."""
+    return {
+        "type": "tool_end",
+        "tool_name": "python",
+        "tool_call_id": "call_0",
+        "result": "done",
+        **overrides,
+    }
+
+
+def _tool_result_turn(
+    *,
+    role = "user",
+    type = "tool_result",
+    tool_use_id = "t1",
+    content = "42",
+):
+    """A turn whose content is one tool_result part, with per-test overrides."""
+    return {
+        "role": role,
+        "content": [{"type": type, "tool_use_id": tool_use_id, "content": content}],
+    }
+
+
 def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     # Anthropic asks the GGUF generator not to promote reasoning into a duplicate
     # visible fallback; the balanced <think> markup becomes one typed thinking
@@ -729,16 +754,7 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_tool_result_maps_to_tool_role(self):
         msgs = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tu_1",
-                        "content": "Result text",
-                    },
-                ],
-            }
+            _tool_result_turn(tool_use_id = "tu_1", content = "Result text")
         ]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
@@ -1291,9 +1307,7 @@ class TestAnthropicStreamEmitter:
     def test_duplicate_tool_start_merges_into_open_tool_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        first_events = e.feed(
-            _tool_event(tool_name = "render_html")
-        )
+        first_events = e.feed(_tool_event(tool_name = "render_html"))
         second_events = e.feed(
             {
                 "type": "tool_start",
@@ -1328,9 +1342,7 @@ class TestAnthropicStreamEmitter:
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        start_events = e.feed(
-            _tool_event(tool_name = "t", tool_call_id = "tc_1")
-        )
+        start_events = e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
         start_payload = next(
             json.loads(event.split("data: ")[1])
             for event in start_events
@@ -1338,14 +1350,7 @@ class TestAnthropicStreamEmitter:
         )
         tool_use_id = start_payload["content_block"]["id"]
         assert tool_use_id.startswith("toolu_")
-        events = e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "done",
-            }
-        )
+        events = e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1"))
         # content_block_stop (tool) + tool_result; the next text opens its own block.
         assert len(events) == 2
         assert "content_block_stop" in events[0]
@@ -1413,18 +1418,9 @@ class TestAnthropicStreamEmitter:
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before"})
         assert e.block_index == 0
-        e.feed(
-            _tool_event(tool_name = "t", tool_call_id = "tc_1")
-        )
+        e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
         assert e.block_index == 1
-        e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "ok",
-            }
-        )
+        e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1", result = "ok"))
         e.feed({"type": "content", "text": "After"})
         assert e.block_index == 2
 
@@ -1432,17 +1428,8 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before tool"})
-        e.feed(
-            _tool_event(tool_name = "t", tool_call_id = "tc_1")
-        )
-        e.feed(
-            {
-                "type": "tool_end",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "result": "ok",
-            }
-        )
+        e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
+        e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1", result = "ok"))
         # After tool_end, prev_text should be reset; the content opens a fresh
         # text block and diffs against an empty baseline.
         events = e.feed({"type": "content", "text": "After tool"})
@@ -1616,12 +1603,7 @@ class TestAnthropicToolNonStreaming:
                 "tool_call_id": "call_0",
                 "arguments": {"code": "<!doctype html><html></html>"},
             }
-            yield {
-                "type": "tool_end",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "result": "Rendered HTML canvas.",
-            }
+            yield _tool_result_event(tool_name = "render_html", result = "Rendered HTML canvas.")
 
         response = asyncio.run(
             _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
@@ -2229,10 +2211,7 @@ class TestAnthropicReasoningArgs:
                         {"type": "tool_use", "id": "toolu_1", "name": "ls", "input": {}},
                     ],
                 },
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}],
-                },
+                _tool_result_turn(tool_use_id = "toolu_1", content = "ok"),
             ],
         )
         converted = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
@@ -2579,10 +2558,7 @@ class TestAnthropicMessagesToolRouting:
                     "role": "assistant",
                     "content": [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}],
                 },
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
-                },
+                _tool_result_turn(role = "user"),
             ]
         )
 
@@ -2686,10 +2662,7 @@ class TestAnthropicMessagesToolRouting:
                             {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
                         ],
                     },
-                    {
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
-                    },
+                    _tool_result_turn(role = "user"),
                 ]
             },
         ],
@@ -3773,12 +3746,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
         def gen():
             yield _tool_event(type = "tool_start")
             yield {"type": "heartbeat"}
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "r1",
-            }
+            yield _tool_result_event(result = "r1")
             # Second call: dropped by disable_parallel_tool_use, still executed
             # server-side (heartbeats + live output).
             yield _tool_event(tool_call_id = "call_1")
@@ -3790,12 +3758,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
                 "text": "x",
             }
             yield {"type": "heartbeat"}
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "result": "r2",
-            }
+            yield _tool_result_event(tool_call_id = "call_1", result = "r2")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
@@ -3870,12 +3833,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
                     "tool_call_id": "call_0",
                     "text": f"line {i}\n",
                 }
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "done",
-            }
+            yield _tool_result_event(type = "tool_end")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
@@ -3937,12 +3895,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
         def gen():
             # First (kept) call.
             yield _tool_event(type = "tool_start")
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "result": "r1",
-            }
+            yield _tool_result_event(result = "r1")
             # Second call: dropped whole by disable_parallel_tool_use but still
             # executed server-side, streaming chatty stdout with no heartbeats.
             yield _tool_event(tool_call_id = "call_1")
@@ -3953,12 +3906,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
                     "tool_call_id": "call_1",
                     "text": f"line {i}\n",
                 }
-            yield {
-                "type": "tool_end",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "result": "r2",
-            }
+            yield _tool_result_event(tool_call_id = "call_1", result = "r2")
             yield {"type": "content", "text": "final answer"}
 
         return gen()
