@@ -6945,7 +6945,26 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
-def _windows_shared_groups(source_label: str | None) -> list[list[str]]:
+# ggml-org/llama.cpp#23462 ("cmake: remove STATIC from impl libraries") split the
+# per-binary entry code out of the executables into paired ``lib<binary>-impl``
+# shared libraries, landing between b9279 and b9283. An archive for an older
+# pinned tag is monolithic and correctly ships no llama-server-impl.dll, so
+# requiring it there rejects a healthy prebuilt and drops the install to a source
+# build. Same boundary the runtime_patterns_for_choice note records.
+LLAMA_SERVER_IMPL_SPLIT_BUILD = 9283
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    """Upstream build number of a ``bNNNN`` tag, also matching the fork's
+    ``bNNNN-mix-<sha>``. None when the tag carries no build number (a branch or
+    commit pin), which callers treat as "assume current"."""
+    if not isinstance(tag, str):
+        return None
+    match = re.match(r"b(\d+)(?:[-.]|$)", tag.strip())
+    return int(match.group(1)) if match else None
+
+
+def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> list[list[str]]:
     """Runtime files every Windows install kind owes, before its backend DLL.
 
     Requiring only ``llama.dll`` let a truncated extract validate and then fail at
@@ -6957,7 +6976,9 @@ def _windows_shared_groups(source_label: str | None) -> list[list[str]]:
     if source_label in {"published", "upstream"}:
         groups.append(["llama-common.dll"])
         groups.append(["llama-server.exe"])
-        groups.append(["llama-server-impl.dll"])
+        build = _release_build_number(tag)
+        if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            groups.append(["llama-server-impl.dll"])
         groups.append(["ggml.dll"])
         groups.append(["ggml-base.dll"])
         groups.append(["ggml-cpu*.dll"])
@@ -6970,6 +6991,7 @@ def runtime_payload_health_groups(
     *,
     source_label: str | None = None,
     runtime_name: str | None = None,
+    tag: str | None = None,
 ) -> list[list[str]]:
     """Return required runtime file groups for an install kind."""
     if install_kind in {"linux-cpu", "linux-arm64"}:
@@ -7025,9 +7047,9 @@ def runtime_payload_health_groups(
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
-        return _windows_shared_groups(source_label)
+        return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
-        groups = _windows_shared_groups(source_label) + [["ggml-cuda.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
@@ -7035,9 +7057,9 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return _windows_shared_groups(source_label) + [["*hip*.dll"]]
+        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
     if install_kind == "windows-vulkan":
-        groups = _windows_shared_groups(source_label) + [["ggml-vulkan.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
@@ -7073,6 +7095,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             choice.install_kind,
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
+            tag = choice.tag,
         ),
     )
 
@@ -7093,12 +7116,16 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(
             {
                 tuple(group)
                 for group in runtime_payload_health_groups(
-                    kind, source_label = source_label, runtime_name = runtime_asset
+                    kind,
+                    source_label = source_label,
+                    runtime_name = runtime_asset,
+                    tag = marker_tag if isinstance(marker_tag, str) else None,
                 )
             }
             for kind in kinds

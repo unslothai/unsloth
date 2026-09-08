@@ -6942,6 +6942,59 @@ def test_windows_upstream_bundles_require_the_shared_runtime_too():
     assert "llama-common.dll" in patterns
 
 
+# Exact DLL/EXE payload of the real ggml-org/llama.cpp win-cpu-x64 zips either
+# side of the impl-library split (ggml-org/llama.cpp#23462, between b9279 and
+# b9283). b9279 is a complete, healthy archive that simply predates the split.
+_PRE_SPLIT_WINDOWS_PAYLOAD = (
+    "llama.dll",
+    "llama-common.dll",
+    "llama-server.exe",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu-haswell.dll",
+    "mtmd.dll",
+)
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+
+
+@pytest.mark.parametrize(
+    ("tag", "payload", "healthy"),
+    [
+        ("b9279", _PRE_SPLIT_WINDOWS_PAYLOAD, True),
+        ("b9283", _POST_SPLIT_WINDOWS_PAYLOAD, True),
+        # The split-era guard this PR added must still bite on a post-split tag.
+        ("b9283", _PRE_SPLIT_WINDOWS_PAYLOAD, False),
+    ],
+    ids = ["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
+)
+def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
+    tmp_path: Path, tag: str, payload: tuple[str, ...], healthy: bool
+):
+    """A pinned upstream tag older than b9283 ships no llama-server-impl.dll.
+
+    Requiring it unconditionally made validate_prebuilt_choice reject a valid
+    downloaded prebuilt and fall back to a costly Windows source build.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    runtime_dir.mkdir(parents = True)
+    for name in payload:
+        (runtime_dir / name).write_bytes(b"DLL")
+
+    choice = AssetChoice(
+        repo = "ggml-org/llama.cpp",
+        tag = tag,
+        name = f"llama-{tag}-bin-win-cpu-x64.zip",
+        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/x.zip",
+        source_label = "upstream",
+        install_kind = "windows-cpu",
+    )
+    assert (
+        INSTALL_LLAMA_PREBUILT.runtime_payload_is_healthy(install_dir, _windows_host(), choice)
+        is healthy
+    )
+
+
 def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
