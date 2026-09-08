@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// At mobile widths the sidebar is a Sheet overlay, so it occupies no layout
-// width. The titlebar decoration used to draw the pinned corner at the desktop
-// sidebar width anyway, leaving a rounded stub floating over the content
-// (unslothai/unsloth#8600). The separator underneath it is not sidebar
-// geometry and has to survive.
+// The mobile sidebar is a Sheet, so it holds no layout width, but the corner was
+// still drawn at the desktop width (unslothai/unsloth#8600). The separator under
+// it is not sidebar geometry and has to survive.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -70,8 +68,7 @@ test("mobile never offsets geometry by the desktop sidebar width", async () => {
   ]) {
     assert.match(titlebar, pattern);
   }
-  // The navigation slot keeps its fixed width on mobile: the sidebar toggle is
-  // Navbar's there, and a spacer holds the slot open.
+  // 7rem on mobile too: Navbar owns the toggle there and a spacer holds the slot.
   assert.match(
     titlebar,
     /const titlebarNavigationWidth =\s*showSidebarSurface && \(isMobile \|\| !pinned\) \? "7rem" : sidebarWidth;/,
