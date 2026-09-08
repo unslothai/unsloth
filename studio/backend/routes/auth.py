@@ -536,9 +536,9 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
 def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     """Exchange a one-time, short-TTL link token for normal session tokens.
 
-    Powers the opt-in Colab same-tab handoff: the same-tab URL carries a
-    single-use ``?link_token=...`` the UI posts here to obtain the same JWT the
-    login form issues. The token is consumed here (a replay is rejected) and is
+    The served setup page carries a single-use token that the UI posts here to
+    obtain the same JWT the login form issues, so the seeded admin password never
+    reaches a browser. The token is consumed here (a replay is rejected) and is
     never logged. Unauthenticated by design -- the token itself is the credential.
 
     Per-IP failure rate-limited like /login. This endpoint is unauthenticated and

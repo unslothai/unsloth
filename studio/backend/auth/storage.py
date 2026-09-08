@@ -961,7 +961,8 @@ def revoke_user_refresh_tokens(username: str) -> None:
 # One-time link tokens (the first-boot setup token)
 # ---------------------------------------------------------------------------
 
-# Short window: the token only has to survive the same-tab redirect into the UI.
+# Short window: the token only has to survive the trip from the served page into
+# the UI's first request.
 LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
 
 

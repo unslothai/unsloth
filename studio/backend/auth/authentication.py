@@ -450,7 +450,8 @@ def create_link_token(
     secret. The jti is recorded so the token can be exchanged exactly once.
 
     SECURITY: the returned value is a bearer credential. NEVER log it, and only
-    ever place it on the private same-tab URL, never on a shared/public link.
+    ever place it in a same-origin response to the operator, never on a shared or
+    public link.
 
     ``require_pending_setup`` refuses to mint unless the account is still
     awaiting its first password, checked inside the same transaction that records
