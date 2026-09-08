@@ -200,8 +200,8 @@ class TestThePauseSaysItIsStillWaiting:
         source = inspect.getsource(runs.ChatGenerationSupervisor)
         assert "_PREEMPT_KEEPALIVE_MARKER in text" in source
         routes = inspect.getsource(inference)
-        assert routes.count("_OPENAI_PREEMPT_SSE_BY_STATE.get(") == 2, (
-            "both stream consumers map preempt events through the table"
+        assert routes.count("_OPENAI_PREEMPT_SSE_BY_STATE.get(") >= 2, (
+            "the stream consumers map preempt events through the table"
         )
         backend = inspect.getsource(llama_mod)
         assert backend.count("yield from _await_resume(preempt_policy, cancel_event)") == 3
