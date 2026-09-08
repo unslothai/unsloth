@@ -1,0 +1,88 @@
+name: Temporary apply MLX trainer API fix
+
+on:
+  push:
+    branches:
+      - feat/agent-workspace-mlx-runtime
+    paths:
+      - .github/workflows/tmp-apply-mlx-trainer-api-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/agent-workspace-mlx-runtime
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update the MLX CI public API assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/mlx-ci.yml')
+          source = path.read_text(encoding='utf-8')
+          replacements = {
+              'from unsloth_zoo.mlx_trainer import UnslothMLXTrainer': (
+                  'from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig'
+              ),
+              "print('OK: UnslothMLXTrainer =', UnslothMLXTrainer)": (
+                  "print('OK: MLXTrainer =', MLXTrainer)\n"
+                  "          print('OK: MLXTrainingConfig =', MLXTrainingConfig)"
+              ),
+          }
+          for old, new in replacements.items():
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one occurrence of {old!r}, found {count}')
+              source = source.replace(old, new)
+          path.write_text(source, encoding='utf-8')
+          PY
+          git diff --check
+          grep -F 'from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig' .github/workflows/mlx-ci.yml
+          ! grep -F 'UnslothMLXTrainer' .github/workflows/mlx-ci.yml
+
+      - name: Validate the current public MLX API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          for attempt in 1 2 3; do
+            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((5 * attempt))
+          done
+          python - <<'PY'
+          from unsloth_zoo.mlx_loader import FastMLXModel
+          from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
+
+          assert FastMLXModel is not None
+          assert MLXTrainer is not None
+          assert MLXTrainingConfig is not None
+          print('OK: current MLX loader and trainer public API')
+          PY
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git add .github/workflows/mlx-ci.yml
+          git commit -m "ci(mlx): use the current trainer public API"
+          git push origin HEAD:feat/agent-workspace-mlx-runtime
