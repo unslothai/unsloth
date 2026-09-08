@@ -1747,7 +1747,23 @@ class InferenceOrchestrator:
                         self.active_model_name = None
                         self.models.clear()
                         return False
+                    from utils.process_lifetime import is_process_shutting_down
+
                     model_info = resp.get("model_info", {})
+                    # The spawn checks stop once the worker exists, so a "loaded" reply
+                    # dequeued just as shutdown kills it would still be published here.
+                    # active_model_name and models are what the already-loaded fast path
+                    # trusts, and it does not test liveness, so the next session would
+                    # report a dead worker as resident. Publish nothing instead.
+                    if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
+                        logger.info(
+                            "Shutdown overtook the load of '%s'; not publishing it as resident",
+                            model_name,
+                        )
+                        self.loading_models.discard(model_name)
+                        self.active_model_name = None
+                        self.models.clear()
+                        return False
                     self.active_model_name = model_info.get("identifier", model_name)
                     self.load_generation += 1
                     # A load always spawns a fresh subprocess holding only this model, so mirror that. A lingering stale

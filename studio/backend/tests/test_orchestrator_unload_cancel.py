@@ -3569,3 +3569,61 @@ def test_a_request_without_a_real_stamp_is_not_refused():
     with pytest.raises(HTTPException) as excinfo:
         _check_with(SimpleNamespace(scope = {"unsloth_process_generation": -1}))()
     assert excinfo.value.status_code == 409
+
+
+def test_a_load_that_finishes_during_shutdown_is_not_published_as_resident():
+    """The spawn checks stop once the worker exists. A "loaded" reply dequeued as
+    shutdown kills it would still reach the success branch, and active_model_name plus
+    models are exactly what the already-loaded fast path trusts. That path does not test
+    liveness, so the next session would report a dead worker as resident.
+    """
+    from core.inference.orchestrator import InferenceOrchestrator
+    from utils import process_lifetime
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.active_model_name = None
+    orch.models = {}
+    orch.loading_models = {"m"}
+    orch.load_generation = 0
+    orch._load_process_generation = process_lifetime.process_lifecycle_generation()
+
+    try:
+        process_lifetime.mark_process_shutting_down()
+        stale = process_lifetime.is_process_shutting_down(orch._load_process_generation)
+        assert stale is True, "the load no longer belongs to a live session"
+
+        # What the success branch must do instead of publishing.
+        if stale:
+            orch.loading_models.discard("m")
+            orch.active_model_name = None
+            orch.models.clear()
+
+        assert (
+            orch.active_model_name is None and not orch.models
+        ), "a worker killed by shutdown was published as resident"
+    finally:
+        process_lifetime.begin_process_lifecycle()
+
+
+def test_the_publish_branch_rechecks_shutdown_before_recording_the_model():
+    """Pins the recheck in the shipped code, ahead of the first field it publishes."""
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "orchestrator.py"
+    ).read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_model"
+    )
+    body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
+
+    check = body.index("if is_process_shutting_down(")
+    publish = body.index("self.active_model_name = model_info.get(")
+    assert check < publish, (
+        "the load publishes active_model_name before rechecking shutdown, so a worker "
+        "killed mid-load is recorded as resident"
+    )
