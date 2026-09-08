@@ -230,7 +230,7 @@ def main() -> None:
                     "outcome": None,
                 }, result
                 assert page.get_by_text("Downloading 1 item", exact = True).count() == 0
-                page.get_by_role("button", name = "Downloads", exact = True).wait_for()
+                assert page.locator(".hub-download-panel").count() == 0
             else:
                 assert result == {
                     "backendDownloaded": False,

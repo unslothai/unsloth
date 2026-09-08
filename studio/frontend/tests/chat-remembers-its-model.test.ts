@@ -26,8 +26,12 @@ const {
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
-  await import("../src/features/model-picker/model-config/per-model-config.ts");
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  resolveInitialConfig,
+  resolveResidentInitialConfig,
+  savePerModelConfig,
+} = await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { shouldPersistResolvedQueuedModel } = await import(
   "../src/features/chat/utils/queued-chat-run-settings.ts"
 );
@@ -649,12 +653,40 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
   );
   assert.match(
     remembered,
-    /resolveInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
   assert.equal(
-    resolveInitialConfig(selection.id, selection.ggufVariant).config
+    resolveResidentInitialConfig(selection.id, selection.ggufVariant).config
       .customContextLength,
     32768,
+  );
+});
+
+test("switch back recovers a repo-keyed context through a snapshot path", () => {
+  store.clear();
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.ok(
+    savePerModelConfig(repoId, "Q4_K_M", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 32768,
+    }),
+  );
+  assert.equal(resolveInitialConfig(snapshotPath, "Q4_K_M").remembered, false);
+  assert.equal(
+    resolveResidentInitialConfig(snapshotPath, "Q4_K_M").config
+      .customContextLength,
+    32768,
+  );
+  const remembered = slice(
+    page,
+    "const rememberedConfigFor = useCallback",
+    "const isExternalModel",
+  );
+  assert.match(
+    remembered,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
 });
 

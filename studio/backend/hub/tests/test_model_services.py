@@ -2372,10 +2372,10 @@ def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
 
     assert req.target_filenames == (
         "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
-        "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
     )
-    assert req.download_size_bytes == 20_600
-    assert req.companion_hashes == frozenset({"shared-q8"})
+    assert req.download_size_bytes == 22_100
+    assert req.companion_hashes == frozenset({"q8"})
 
 
 def test_qwen38_embedded_head_family_does_not_plan_its_nested_mtp_copy():
@@ -4045,7 +4045,7 @@ def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypat
         lambda: SimpleNamespace(hub_cache = str(hub_cache)),
     )
     # A manifest as an older build filed it: hashed from the unresolved spelling, and with no sha256
-    # because HF metadata was already unreachable when the worker recorded it.
+    # because HF metadata was already unreachable when the worker recorded it from the finished snapshot.
     legacy = state_dir.manifest_path(
         "model",
         "Org/Model-GGUF",
