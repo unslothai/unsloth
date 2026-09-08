@@ -1994,8 +1994,13 @@ def test_the_legacy_query_token_is_classified_like_the_header(monkeypatch):
     # The header still wins over a stale query value, and the no-token cases are unchanged.
     header = hf_token_arg("hf_header", allow_ambient_token = True)
     assert models_routes._resolve_hub_token(header, "hf_query") == "hf_header"
-    assert models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = False), None) is False
-    assert models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = True), None) is None
+    assert (
+        models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = False), None)
+        is False
+    )
+    assert (
+        models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = True), None) is None
+    )
 
 
 def test_the_embedding_memo_does_not_cross_caller_classes(monkeypatch):
@@ -2019,7 +2024,8 @@ def test_the_embedding_memo_does_not_cross_caller_classes(monkeypatch):
     monkeypatch.setattr("huggingface_hub.model_info", _no_hub)
     # Only the UI session is entitled to the operator's cache here.
     monkeypatch.setattr(
-        mc, "cache_reads_authorized",
+        mc,
+        "cache_reads_authorized",
         lambda token, **_k: isinstance(token, hf_tokens.AmbientAuthorizedToken),
     )
 
@@ -2037,7 +2043,10 @@ def test_the_embedding_settings_routes_classify_their_payload_token():
     import inspect
     from routes import settings as settings_routes
 
-    for endpoint in (settings_routes.update_embedding_model, settings_routes.resolve_embedding_model):
+    for endpoint in (
+        settings_routes.update_embedding_model,
+        settings_routes.resolve_embedding_model,
+    ):
         params = inspect.signature(endpoint).parameters
         assert "allow_ambient_token" in params, f"{endpoint.__name__} cannot tell its callers apart"
 
