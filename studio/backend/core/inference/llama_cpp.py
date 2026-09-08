@@ -21737,27 +21737,9 @@ class LlamaCppBackend:
                         if cache_ram is not None
                         else _extra_args_cache_ram(None, os.environ)
                     )
-                    if (
-                        _planner_owns_fit
-                        and _cache_ram_in_force is None
-                        and server_caps.get("supports_cache_ram")
-                    ):
-                        _auto_cache_ram_mib = self._clamped_cache_ram_mib(
-                            self._available_system_memory_mib(),
-                            max(
-                                0.0,
-                                (
-                                    model_size_fit
-                                    + kv_cache_bytes
-                                    + _mtp_reserve_bytes
-                                    + _cc_bytes(effective_ctx, _spill_n_gpus)
-                                )
-                                / (1024 * 1024)
-                                - sum(
-                                    max(0.0, _gpu_usable(_g, _pin_fraction)) for _g in (gpus or ())
-                                ),
-                            ),
-                        )
+                    # The clamp itself is derived below, once the host-only terms the
+                    # fit spends (a CPU drafter, the checkpoint snapshots, a CPU-pinned
+                    # projector) are priced, and written into the snapshot there.
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
                     _spill_inputs = {
@@ -21996,6 +21978,25 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
+                    # The planner is priced at _spill_ctx, which Auto's cap can leave
+                    # far above effective_ctx, and an accepted plan launches there: the
+                    # drafter's host KV grows with it, so the term the planner admits
+                    # against is sized at that context, not at the capped one.
+                    _cpu_draft_spill_bytes = (
+                        _cpu_draft_fit_bytes
+                        if _spill_ctx == effective_ctx or _cpu_draft_fit_bytes is None
+                        else self._cpu_resident_draft_bytes(
+                            _spill_ctx,
+                            drafter_path = _cpu_draft_path,
+                            draft_cache_type_k = _mtp_draft_ck,
+                            draft_cache_type_v = _mtp_draft_cv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
+                        )
+                    )
                     # The extras and env as the child really gets them: a gpu_ids pin
                     # drops the device flags AND their env twins, so classifying on
                     # either would void the VRAM term for a "--device none" the launch
@@ -22128,9 +22129,52 @@ class LlamaCppBackend:
                     #     it (an unset one is clamped and needs no term).
                     # Subtracted from the host RAM the planner admits against, so
                     # both its load-mode rule and its prompt-cache clamp see them.
+                    # Host RAM the --fit on child spends outside its GPU shortfall:
+                    # the same three CPU-only terms priced for the planner below,
+                    # at the context the fallback launches. Left out, the automatic
+                    # --cache-ram stayed at 8 GiB on a host those allocations had
+                    # already filled, and a declined plan has no clamp of its own.
+                    _host_only_fit_bytes = (
+                        int(_cpu_draft_fit_bytes or 0)
+                        + (
+                            max(
+                                0,
+                                _kv_bytes(effective_ctx, _effective_ctx_checkpoints)
+                                - _kv_bytes(effective_ctx),
+                            )
+                            if _effective_ctx_checkpoints
+                            else 0
+                        )
+                        + int(_mmproj_pinned_bytes or 0)
+                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0)
+                    )
+                    if (
+                        _planner_owns_fit
+                        and _cache_ram_in_force is None
+                        and server_caps.get("supports_cache_ram")
+                    ):
+                        _auto_cache_ram_mib = self._clamped_cache_ram_mib(
+                            self._available_system_memory_mib(),
+                            max(
+                                0.0,
+                                (
+                                    model_size_fit
+                                    + kv_cache_bytes
+                                    + _mtp_reserve_bytes
+                                    + _cc_bytes(effective_ctx, _spill_n_gpus)
+                                )
+                                / (1024 * 1024)
+                                - sum(
+                                    max(0.0, _gpu_usable(_g, _pin_fraction)) for _g in (gpus or ())
+                                ),
+                            )
+                            + _host_only_fit_bytes / (1024 * 1024),
+                        )
+                        if _auto_cache_ram_mib is not None:
+                            _spill_inputs["cache_ram_default_mib"] = int(_auto_cache_ram_mib)
                     _spill_inputs["host_ram_unpriced_bytes"] = max(
                         0,
-                        int(_cpu_draft_fit_bytes or 0)
+                        int(_cpu_draft_spill_bytes or 0)
                         + (
                             max(
                                 0,

@@ -52,6 +52,7 @@ def _launch_with(
     n_parallel = 4,
     caps = None,
     avail_mib = 64 * 1024,
+    speculative_type = "off",
     **load_kwargs,
 ):
     """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs)."""
@@ -93,7 +94,7 @@ def _launch_with(
     launched = _launch(
         backend,
         gguf,
-        speculative_type = "off",
+        speculative_type = speculative_type,
         n_ctx = n_ctx,
         n_parallel = n_parallel,
         **load_kwargs,
@@ -716,3 +717,66 @@ def test_the_micro_batch_map_follows_the_slots_rung_1_may_lower(tmp_path, monkey
     assert sorted(ub) == [1, 2, 3, 4]
     assert ub[4] == seen["inputs"]["n_ubatch"]
     assert ub[1] < ub[4]
+
+
+def test_a_cpu_pinned_drafter_is_priced_at_the_context_the_planner_is_asked_at(
+    tmp_path, monkeypatch
+):
+    """Auto caps the fallback context and the fit priced the -ngld 0 drafter's host
+    KV there, while the planner is asked at the context Auto wanted and an accepted
+    plan launches at it. Admitted against the capped figure, the plan took
+    --load-mode none on RAM a 128K drafter cache then outgrew."""
+    seen_ctx = []
+    orig = _backend
+
+    def hooked(*args, **kwargs):
+        backend, gguf = orig(*args, **kwargs)
+
+        def draft_bytes(n_ctx, **_kw):
+            seen_ctx.append(n_ctx)
+            return n_ctx * 4096
+
+        backend._cpu_resident_draft_bytes = draft_bytes
+        return backend, gguf
+
+    monkeypatch.setitem(globals(), "_backend", hooked)
+    sidecar = tmp_path / "dflash-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    plan = Plan(reason = "declined")
+    _cmd, _backend_, seen = _launch_with(
+        tmp_path,
+        monkeypatch,
+        plan,
+        caps = {"supports_dflash": True, "mtp_token": "draft-mtp", "supports_ngram_mod": True},
+        speculative_type = "dflash",
+        dflash_draft_path = str(sidecar),
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
+    assert seen["inputs"]["n_ctx"] == NATIVE_CTX
+    assert NATIVE_CTX in seen_ctx, seen_ctx
+    assert seen["inputs"]["host_ram_unpriced_bytes"] >= NATIVE_CTX * 4096
+
+
+def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, monkeypatch):
+    """The automatic --cache-ram was bounded by the GPU shortfall alone, so a
+    CPU-pinned projector, a -ngld 0 drafter or the checkpoint snapshots left the
+    ceiling at the default on a host they had already filled; a declined plan has
+    no clamp of its own to correct it."""
+    plan = Plan(reason = "declined")
+    _cmd, _backend_, base = _launch_with(tmp_path, monkeypatch, plan, avail_mib = 26 * 1024)
+    bound = base["inputs"]["cache_ram_default_mib"]
+    assert 1024 < bound < 8192, bound
+    orig = _backend
+
+    def hooked(*args, **kwargs):
+        backend, gguf = orig(*args, **kwargs)
+        backend._mmproj_vram_bytes = lambda path: 1024 * MIB if path else 0
+        return backend, gguf
+
+    monkeypatch.setitem(globals(), "_backend", hooked)
+    proj = tmp_path / "proj.gguf"
+    proj.write_bytes(b"GGUF")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(proj))
+    monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1")
+    _cmd, _backend_, seen = _launch_with(tmp_path, monkeypatch, plan, avail_mib = 26 * 1024)
+    assert seen["inputs"]["cache_ram_default_mib"] == bound - 1024
