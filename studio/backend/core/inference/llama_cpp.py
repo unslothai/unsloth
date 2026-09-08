@@ -31821,7 +31821,7 @@ class LlamaCppBackend:
                 # Per result, so a parallel batch is not squeezed into one
                 # result's worth of images.
                 batch_mcp_images: list = []
-                # Where this batch\'s results start, for the image turn\'s wording.
+                # Where this batch's results start, for the image turn\'s wording.
                 batch_conversation_start = len(conversation)
 
                 # The text-path provisional card uses the parser's default id ("call_0");

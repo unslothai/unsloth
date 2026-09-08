@@ -338,6 +338,14 @@ def flattened_rgb(image):
     """
     from PIL import Image
 
+    # A 16-bit source carries 0..65535; convert("RGB") reads those as 8-bit and clips
+    # everything above 255 to white. Same normalisation as the attachment decoder in
+    # routes/inference.py (_image_bytes_to_png_b64): only the I;16 family, which
+    # declares its range; I;16B / I;16L reject point(), so they go through "I" first.
+    if image.mode.startswith("I;16"):
+        if image.mode != "I;16":
+            image = image.convert("I")
+        image = image.point(lambda v: v * (1.0 / 257), mode = "L")
     has_alpha = image.mode in ("RGBA", "LA", "PA") or (
         image.mode == "P" and "transparency" in image.info
     )

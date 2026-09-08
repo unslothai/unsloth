@@ -1241,7 +1241,7 @@ def run_safetensors_tool_loop(
         deferred_noop_msgs: list = []
         # Per result; see append_image_turn's per_result note.
         batch_mcp_images: list = []
-        # Where this batch\'s results start, for the image turn\'s wording.
+        # Where this batch's results start, for the image turn\'s wording.
         batch_conversation_start = len(conversation)
 
         for _call_index, tc in enumerate(tool_calls or []):
@@ -1253,6 +1253,12 @@ def run_safetensors_tool_loop(
                 and tc.get("id", "") == provisional_render_html_id
             )
             decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            # The frontend keeps a round's tool cards together by this id
+            # (codexLocalToolRoundId) and otherwise flushes each completed pair on its
+            # own. This loop shows a parallel batch as ONE picture, and replay groups
+            # consecutive results the same way -- so without the id a batch persisted
+            # as separate pairs replayed as several pictures on the next request.
+            decision.provenance["round_id"] = iteration
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:

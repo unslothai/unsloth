@@ -10496,10 +10496,11 @@ def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
 
 
 def test_admission_prices_replay_against_what_generation_really_sends():
-    """Promotion trims replay to MAX_TOTAL_MODEL_IMAGES minus the caller's own
-    pictures, so charging a full eight replay slots ON TOP of the attachments
-    reserved embeddings the request never uses -- most of a small KV window, which
-    needlessly serialises everything beside it."""
+    """The GGUF paths keep the full replay allowance BESIDE the caller's own picture
+    (only a provider reserves the caller's room), so this request sends nine and is
+    charged nine. Subtracting the attachment admitted a second such request into KV
+    the first had already taken; charging a second full allowance on top of it would
+    over-reserve instead, so the replay is still capped at MAX_TOTAL_MODEL_IMAGES."""
     import json as _json
 
     from core.inference import mcp_images
@@ -10531,10 +10532,7 @@ def test_admission_prices_replay_against_what_generation_really_sends():
 
     _, image_parts = _openai_llama_admission_messages_for_estimate(history)
 
-    assert image_parts <= mcp_images.MAX_TOTAL_MODEL_IMAGES, (
-        f"reserved {image_parts} image embeddings for a request that sends at most "
-        f"{mcp_images.MAX_TOTAL_MODEL_IMAGES}"
+    assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1, (
+        f"reserved {image_parts} image embeddings for a request that sends "
+        f"{mcp_images.MAX_TOTAL_MODEL_IMAGES + 1}"
     )
-    # The attachment is still charged: under-reserving is the failure this exists to
-    # prevent, and #9842 charges per-image KV so parallel vision chats are honest.
-    assert image_parts >= 1

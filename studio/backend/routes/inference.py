@@ -2027,18 +2027,13 @@ def _openai_llama_admission_messages_for_estimate(
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     # promote_history caps what the envelopes become, so charging past that would
-    # reserve KV for images the prompt will not carry.
-    # Replay is charged for what generation will really send, not for a second full
-    # allowance. Promotion trims it to MAX_TOTAL_MODEL_IMAGES minus the caller's own
-    # pictures, so adding eight replay slots ON TOP of the attachments reserved
-    # embeddings the request never uses -- most of a small KV window, which
-    # needlessly serialises or rejects everything beside it. Clamped after the walk,
-    # because a tool result early in the conversation is seen before the attachments
-    # on later turns have been counted.
-    return estimate_messages, image_parts + min(
-        envelope_image_parts,
-        max(0, _MCP_MAX_TOTAL_MODEL_IMAGES - image_parts),
-    )
+    # reserve KV for images the prompt will not carry. This estimator prices the GGUF
+    # paths, and their promotion keeps the full replay allowance BESIDE the caller's
+    # own pictures (only a provider reserves the caller's room, and it has no KV
+    # admission here): one attachment plus eight replayed pictures sends nine, so
+    # nine are charged. Subtracting the attachments admitted concurrent requests
+    # past the KV budget for exactly that shape.
+    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
 
 
 def _openai_llama_admission_media_tokens(
@@ -31524,9 +31519,14 @@ async def anthropic_messages(
     # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
-    # The server-side agentic loop doesn't support multimodal input -- matches
-    # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
-    # the mixed-mode rejection were computed before the switch above.
+    # The server-side agentic loop takes no caller attachment -- matches the
+    # `not image_b64` gate in /v1/chat/completions -- but it does take a REPLAYED
+    # picture (replayed_image_parts below), so the gate reads the caller's own
+    # attachments off the original blocks, not _has_image, which the promotion
+    # above sets for a replay too and which routed a follow-up away from the tools
+    # it selected merely because an earlier tool had returned a picture.
+    # requested_studio_tools and the mixed-mode rejection were computed before the
+    # switch above.
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])
@@ -31538,7 +31538,9 @@ async def anthropic_messages(
     # enable_tools=false). Explicit False always wins. Same predicate as the
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
-    server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
+    server_tools = (
+        _selects_server_tools and llama_backend.supports_tools and not _anthropic_has_image
+    )
     # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
     # no-tools turn into a 500.
     client_tools = (

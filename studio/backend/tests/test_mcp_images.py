@@ -2444,3 +2444,76 @@ def test_the_gguf_admission_estimate_parses_off_the_loop():
     wrapper = inspect.getsource(inference_route._openai_llama_admission_reserve_async)
     assert "await asyncio.to_thread(\n            _openai_llama_admission_estimate," in wrapper
     assert "_messages_mention_mcp_images(" in wrapper
+
+
+def test_a_sixteen_bit_picture_is_scaled_not_clipped():
+    """convert("RGB") on I;16 clips 0..65535 to 8 bits, so ordinary 16-bit imagery came
+    out nearly white while the tool card showed the real picture."""
+    from PIL import Image
+
+    source = Image.new("I;16", (4, 4))
+    source.putdata([30_000] * 16)
+    flat = mcp_images.flattened_rgb(source)
+    assert flat.mode == "RGB"
+    value = flat.getpixel((0, 0))[0]
+    assert 110 <= value <= 122, value
+
+    buffer = io.BytesIO()
+    source.save(buffer, format = "PNG")
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+    url = mcp_images._png_data_url(payload)
+    assert url
+    decoded = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    assert 110 <= decoded.getpixel((0, 0))[0] <= 122
+
+
+def test_gguf_admission_charges_replay_beside_the_attachments():
+    """The GGUF paths keep the full replay allowance beside the caller's pictures, so one
+    attachment plus eight replayed pictures sends nine and must be charged nine."""
+    import routes.inference as inference_route
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "this"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}},
+            ],
+        },
+    ]
+    for r in range(9):
+        messages.append(
+            {
+                "role": "tool",
+                "name": "mcp__s__shot",
+                "tool_call_id": f"c{r}",
+                "content": _envelope("[1]", _image()),
+            }
+        )
+    _estimate, image_parts = inference_route._openai_llama_admission_messages_for_estimate(
+        messages, vision = True
+    )
+    assert image_parts == 1 + mcp_images.MAX_TOTAL_MODEL_IMAGES
+
+
+def test_the_anthropic_server_tool_gate_reads_caller_attachments_only():
+    """A promoted replay sets _has_image too; gating on it routed a follow-up away from
+    the server tools it selected because an earlier tool had returned a picture."""
+    import inspect
+
+    import routes.inference as inference_route
+
+    body = inspect.getsource(inference_route.anthropic_messages)
+    assert "and not _anthropic_has_image\n" in body
+    assert "supports_tools and not _has_image" not in body
+
+
+def test_the_safetensors_loop_stamps_a_round_id_on_every_decision():
+    """Replay groups consecutive results as one batch; the frontend keeps them
+    consecutive only when the cards share a round_id."""
+    import inspect
+
+    from core.inference import safetensors_agentic
+
+    body = inspect.getsource(safetensors_agentic)
+    assert 'decision.provenance["round_id"] = iteration' in body
