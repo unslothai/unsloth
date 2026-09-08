@@ -145,7 +145,7 @@ class TestARefusedResumeLeavesTheHolderPaused:
         source = inspect.getsource(llama_mod.LlamaCppBackend.generate_chat_completion_with_tools)
         for flag in ("_resumed", "_resumed_f"):
             gate = source.index(f"if {flag}:\n")
-            assert "preempt_policy.on_resumed()" in source[gate:gate + 400]
+            assert "preempt_policy.on_resumed()" in source[gate : gate + 400]
 
 
 class TestThePauseSaysItIsStillWaiting:
@@ -200,14 +200,20 @@ class TestThePauseSaysItIsStillWaiting:
         source = inspect.getsource(runs.ChatGenerationSupervisor)
         assert "_PREEMPT_KEEPALIVE_MARKER in text" in source
         routes = inspect.getsource(inference)
-        assert routes.count("_OPENAI_PREEMPT_SSE_BY_STATE.get(") >= 2, (
-            "the stream consumers map preempt events through the table"
-        )
+        assert (
+            routes.count("_OPENAI_PREEMPT_SSE_BY_STATE.get(") >= 2
+        ), "the stream consumers map preempt events through the table"
         backend = inspect.getsource(llama_mod)
         assert backend.count("yield from _await_resume(preempt_policy, cancel_event)") == 3
 
 
-async def _lease(queue, *, tokens, capacity = 2, budget = 100):
+async def _lease(
+    queue,
+    *,
+    tokens,
+    capacity = 2,
+    budget = 100,
+):
     reservation = queue.reserve(
         capacity = capacity, config = LlamaAdmissionConfig(), tokens = tokens, budget = budget
     )
@@ -309,7 +315,7 @@ class TestAPartialEraseReclaimsNothingGlobal:
     def test_the_early_reclaim_guards_like_the_later_one(self):
         source = inspect.getsource(inference)
         early = source.index('"reclaimed-idle-early"')
-        window = source[early:early + 1600]
+        window = source[early : early + 1600]
         assert 'if freed >= int(occupancy.get("idle_tokens") or 0):' in window
         assert window.index("if freed >= int") < window.index("controller.note_cells_reclaimed()")
 
@@ -340,9 +346,9 @@ class TestAPartialEraseReclaimsNothingGlobal:
             ],
         )
         inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
-        assert controller.participant("parked").cells_reclaimed is False, (
-            "one of two idle slots went and the parked holder was told its cells were gone"
-        )
+        assert (
+            controller.participant("parked").cells_reclaimed is False
+        ), "one of two idle slots went and the parked holder was told its cells were gone"
 
     def test_the_replacement_sample_is_a_fresh_reading(self, monkeypatch):
         controller = self._wired(
@@ -356,9 +362,9 @@ class TestAPartialEraseReclaimsNothingGlobal:
             ],
         )
         inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
-        assert controller.snapshot().committed >= 5500, (
-            "the worker wrote a stale `old - freed` over a newer residency sample"
-        )
+        assert (
+            controller.snapshot().committed >= 5500
+        ), "the worker wrote a stale `old - freed` over a newer residency sample"
         assert controller.participant("parked").cells_reclaimed is True
 
     def test_a_failed_re_read_keeps_the_newest_sample(self, monkeypatch):

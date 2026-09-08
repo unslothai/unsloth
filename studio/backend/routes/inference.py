@@ -33721,9 +33721,7 @@ async def _anthropic_passthrough_stream(
                     continue
                 if not _raw_measured:
                     _raw_measured = True
-                    _openai_llama_note_raw_measured(
-                        llama_backend = llama_backend, gen_id = message_id
-                    )
+                    _openai_llama_note_raw_measured(llama_backend = llama_backend, gen_id = message_id)
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break

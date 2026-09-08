@@ -99,7 +99,6 @@ class TestTheMarkerIsClearedWhereTheHandOffLanded:
 
     def test_both_commands_drop_it_on_the_in_venv_path(self):
         import inspect
-
         for command in (_studio().studio_default, _studio().run):
             source = inspect.getsource(command)
             landed = source.index("_hand_off_landed()")
@@ -167,6 +166,8 @@ class TestAnOldLauncherBehindASymlinkIsRefusedNotLooped:
         import inspect
 
         source = inspect.getsource(_studio().run)
-        ask = source.index("_refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)")
+        ask = source.index(
+            "_refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)"
+        )
         guard = source.index("_guard_reexec_loop(str(studio_venv_dir))")
         assert ask < guard
