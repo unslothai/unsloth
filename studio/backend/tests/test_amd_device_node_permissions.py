@@ -65,9 +65,7 @@ def _the_account_this_process_runs_as(monkeypatch):
     # there, which is not among the exceptions pytest catches, so on a runner with no
     # username in the environment every tmp_path test would die in fixture setup rather
     # than run.
-    _record = pwd.struct_passwd(
-        ("ada", "x", os.getuid(), os.getgid(), "", "/home/ada", "/bin/sh")
-    )
+    _record = pwd.struct_passwd(("ada", "x", os.getuid(), os.getgid(), "", "/home/ada", "/bin/sh"))
     monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _record)
 
 
@@ -2411,9 +2409,7 @@ def _install_sh_diag_route(leaf: str) -> str:
 
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
-    start = next(
-        i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf=")
-    )
+    start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
     script = "\n".join(
         [
@@ -3064,7 +3060,6 @@ def test_a_rocm_torch_index_is_unaffected_by_a_vulkan_bundle():
     assert "/dev/kfd" in out
 
 
-
 def test_an_unnamed_gid_zero_is_the_root_group_not_a_group_to_create(monkeypatch, linux):
     """A minimal container can own the node root:root and carry no group database entry for
     gid 0. The name lookup raises there, and filing that as an ordinary unnamed GID produced
@@ -3163,8 +3158,14 @@ def test_every_real_rocm_rel_leaf_still_takes_the_amd_route():
     """The control, and the reason this is anchored on the character class rather than on a
     fixed version shape: all six rocm-rel leaves this repository names must keep routing, two
     and three components alike."""
-    for _leaf in ("rocm-rel-6.1", "rocm-rel-6.4", "rocm-rel-6.5.0", "rocm-rel-7.0",
-                  "rocm-rel-7.2.1", "rocm-rel-7.3.1"):
+    for _leaf in (
+        "rocm-rel-6.1",
+        "rocm-rel-6.4",
+        "rocm-rel-6.5.0",
+        "rocm-rel-7.0",
+        "rocm-rel-7.2.1",
+        "rocm-rel-7.3.1",
+    ):
         assert _install_sh_diag_route(_leaf) == "true", _leaf
 
 
