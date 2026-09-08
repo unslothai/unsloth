@@ -99,7 +99,7 @@ def main() -> int:
         # dedented() drops the trailing newline, so the comment would otherwise
         # run into the function keyword and hide the declaration from every
         # reader of this file, this script included.
-        comment = dedented(install_text[leading_comment_start(install_text, start):start])
+        comment = dedented(install_text[leading_comment_start(install_text, start) : start])
         comment = comment.rstrip("\n") + "\n"
         _, after = function_span(setup_text, previous)
         setup_text = setup_text[:after] + "\n\n" + comment + wanted + setup_text[after:]

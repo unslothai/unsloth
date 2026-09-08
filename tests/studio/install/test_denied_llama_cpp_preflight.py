@@ -66,8 +66,9 @@ def _normalized(source: str) -> str:
 @pytest.mark.parametrize("name", SHARED_FUNCTIONS)
 def test_installer_copy_matches_setup(name: str) -> None:
     """Edit one file, not the other, and this fails naming the function."""
-    assert _normalized(_function_source(INSTALL_PS1, name)) == _normalized(
-        _function_source(SETUP_PS1, name)
+    assert (
+        _normalized(_function_source(INSTALL_PS1, name))
+        == _normalized(_function_source(SETUP_PS1, name))
     ), f"{name} differs between install.ps1 and studio/setup.ps1; run python3 scripts/sync_shared_ps1_helpers.py"
 
 
@@ -407,7 +408,7 @@ def test_a_denied_node_cache_gets_the_same_guidance_as_the_llama_cache() -> None
     assert "errno.EACCES" in node
     assert "import errno" in node
     # The catch-all must stay last, or the classification never runs.
-    tail = node[node.rindex("def main("):]
+    tail = node[node.rindex("def main(") :]
     assert tail.index("except PermissionError") < tail.index("except Exception as exc:")
     # setup.ps1 turns the new code into the shared guidance rather than the
     # nodejs.org and network advice that follows every other nonzero exit.
