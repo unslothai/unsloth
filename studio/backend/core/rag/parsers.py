@@ -10,6 +10,7 @@ are lazy, so importing this module never fails on a missing dep.
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import re
@@ -447,7 +448,20 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        with open(path, encoding = "utf-8", errors = "replace") as f:
+        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        with open(path, "rb") as f:
+            prefix = f.read(4)
+        encoding = "utf-8-sig"
+        for bom, codec in (
+            (codecs.BOM_UTF32_LE, "utf-32"),
+            (codecs.BOM_UTF32_BE, "utf-32"),
+            (codecs.BOM_UTF16_LE, "utf-16"),
+            (codecs.BOM_UTF16_BE, "utf-16"),
+        ):
+            if prefix.startswith(bom):
+                encoding = codec
+                break
+        with open(path, encoding = encoding, errors = "replace") as f:
             raw = f.read()
         pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
         return (pages, []) if want_images else pages

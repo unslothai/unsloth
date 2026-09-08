@@ -67,6 +67,10 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_pwsh_runner_encoding.py'
+      # Every PowerShell test in this job shells out through it, so a change here can break
+      # all of them. It was in no path filter, so it triggered nothing.
+      - 'tests/_shared/unsloth_pwsh_runner.py'
       # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
       # row here is the sole place the keep path meets a real loader. install_*.py
       # above is only the entrypoint; these two are the rest of what it loads.
@@ -130,6 +134,10 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_pwsh_runner_encoding.py'
+      # Every PowerShell test in this job shells out through it, so a change here can break
+      # all of them. It was in no path filter, so it triggered nothing.
+      - 'tests/_shared/unsloth_pwsh_runner.py'
       # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
       # row here is the sole place the keep path meets a real loader. install_*.py
       # above is only the entrypoint; these two are the rest of what it loads.
@@ -220,6 +228,7 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
+          tests/python/test_pwsh_runner_encoding.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py

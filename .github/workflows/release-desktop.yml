@@ -1198,6 +1198,30 @@ jobs:
             -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
             -PUAProtection Enabled -ErrorAction Continue
 
+          # Set-MpPreference returns before the service has applied the change, and
+          # on a runner whose image ships real-time protection off it can be
+          # ignored outright. Retry, then settle, so a slow apply is not read as a
+          # refusal. Tamper protection is the usual reason a refusal sticks, and it
+          # cannot be turned off from here, so record it for the verdict below.
+          $rtpOn = $false
+          foreach ($try in 1..5) {
+            $rtpStatus = $null
+            try { $rtpStatus = Get-MpComputerStatus -ErrorAction Stop } catch { }
+            if ($rtpStatus -and $rtpStatus.RealTimeProtectionEnabled) { $rtpOn = $true; break }
+            Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Continue
+            Start-Sleep -Seconds (3 * $try)
+          }
+          $tamperProtected = $false
+          try {
+            $tp = Get-MpComputerStatus -ErrorAction Stop
+            if ($null -ne $tp.IsTamperProtected) { $tamperProtected = [bool]$tp.IsTamperProtected }
+          } catch { }
+          if ($rtpOn) {
+            Write-Host 'real-time protection is enabled'
+          } else {
+            Write-Host "real-time protection could not be enabled after 5 attempts (IsTamperProtected=$tamperProtected)"
+          }
+
           # Audit (2), never Block: 01443614 approximates the cloud-reputation half
           # of a Smart App Control verdict, and fires on low prevalence, i.e. ours.
           $asrRules = @(
@@ -1274,8 +1298,22 @@ jobs:
           # guard drops a readable $pref's MAPS and block-at-first-sight checks.
           $fatal = @()
           $degraded = @()
+          # Real-time protection is on-access scanning, and this job never opens
+          # the bundle: it scans copies on demand with MpCmdRun. What its absence
+          # actually costs is block-at-first-sight, which only consults the cloud
+          # on an on-access open. The cloud verdicts this gate exists to catch
+          # ("!ml", low prevalence) still reach an on-demand scan through MAPS,
+          # so treat it as fatal only when the scan cannot be trusted on its own
+          # terms - that is, when the EICAR control did not fire or MAPS is
+          # unreachable, both of which are already fatal in their own right below.
+          # Deciding that here would read $controlPassed before it is set, so the
+          # demotion is applied after the control runs.
+          $rtpOff = $false
           if ($status) {
-            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+            if (-not $status.RealTimeProtectionEnabled) {
+              $rtpOff = $true
+              $rtpDetail = "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode), IsTamperProtected=$tamperProtected)"
+            }
           }
           if ($pref) {
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
@@ -1342,6 +1380,20 @@ jobs:
           }
           if ($cmdletsDown) {
             Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
+
+          # Real-time protection off, resolved now that the control has run. The
+          # EICAR control proves the engine scans on demand and the MAPS check
+          # proves the cloud is reachable; with both, an on-demand scan still sees
+          # signature and cloud verdicts, and only block-at-first-sight is lost.
+          # Without either, the scan proves nothing and this stays fatal - but
+          # those are already in $fatal, so demoting here cannot mask them.
+          if ($rtpOff) {
+            if ($controlPassed -and $maps) {
+              $degraded += "$rtpDetail; block-at-first-sight cannot fire, on-demand signature and cloud verdicts still can"
+            } else {
+              $fatal += $rtpDetail
+            }
           }
 
           if ($degraded) {
