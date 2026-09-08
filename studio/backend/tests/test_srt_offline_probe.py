@@ -47,8 +47,12 @@ def test_local_probe_needs_no_public_dns(monkeypatch, dns_error, outcome):
             raise srt_probe.subprocess.TimeoutExpired("controlled", timeout)
         return (b"UNSLOTH_SRT_NATIVE_PROBE_OK" if outcome == "success" else b"refused"), None
 
-    proc = SimpleNamespace(returncode = 0 if outcome == "success" else 1,
-                           communicate = communicate, kill = lambda: None, wait = lambda **kw: None)
+    proc = SimpleNamespace(
+        returncode = 0 if outcome == "success" else 1,
+        communicate = communicate,
+        kill = lambda: None,
+        wait = lambda **kw: None,
+    )
     monkeypatch.setattr(srt_probe.srt_adapter, "request_for", request_for)
     monkeypatch.setattr(srt_probe.srt_adapter, "spawn", lambda *args, **kwargs: proc)
     monkeypatch.setattr(srt_probe.srt_adapter, "verify_success", lambda p: verified.append(p))

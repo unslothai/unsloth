@@ -34,7 +34,9 @@ def test_completion_survives_output_backlog(monkeypatch, size, metadata_first):
         return "final-result"
 
     gen = stream.stream_tool_execution(
-        invoke, tool_name = "python", cancel_event = cancel,
+        invoke,
+        tool_name = "python",
+        cancel_event = cancel,
         launch_event_factory = lambda value: value,
     )
     events = []
@@ -78,7 +80,7 @@ def test_batch_stops_at_control_before_next_text_even_when_dropping(budget):
     text, done = stream._drain_queue(fifo, sentinel, budget, pending)
     assert not done
     assert pending == [record]
-    assert text == ("long output" if budget is None else "long output"[:budget + 1])
+    assert text == ("long output" if budget is None else "long output"[: budget + 1])
     assert fifo.get_nowait() == "later output"
     assert fifo.get_nowait() is sentinel
 
@@ -93,8 +95,9 @@ def test_close_cancels_worker_without_success_record():
         stopped.set()
         return "cancelled"
 
-    gen = stream.stream_tool_execution(invoke, tool_name = "python", cancel_event = cancel,
-                                      launch_event_factory = lambda r: r)
+    gen = stream.stream_tool_execution(
+        invoke, tool_name = "python", cancel_event = cancel, launch_event_factory = lambda r: r
+    )
     assert next(gen)["type"] == "tool_output"
     gen.close()
     assert cancel.is_set()

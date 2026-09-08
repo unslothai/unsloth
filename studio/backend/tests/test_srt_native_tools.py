@@ -74,11 +74,19 @@ def test_native_completion_after_output_survives_stream(native_session, monkeypa
     cancel = threading.Event()
 
     def invoke(output, completion):
-        return execute(code, None, 30, "native-stream", output_callback = output,
-                       launch_record_callback = completion)
+        return execute(
+            code,
+            None,
+            30,
+            "native-stream",
+            output_callback = output,
+            launch_record_callback = completion,
+        )
 
     gen = tool_stream_exec.stream_tool_execution(
-        invoke, tool_name = kind, cancel_event = cancel,
+        invoke,
+        tool_name = kind,
+        cancel_event = cancel,
         launch_event_factory = lambda record: {"type": "tool_execution", "record": record.as_dict()},
     )
     events = []

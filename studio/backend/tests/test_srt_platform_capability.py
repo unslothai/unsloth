@@ -38,9 +38,12 @@ def test_macos_read_disclosure_reaches_execution_record(monkeypatch, tmp_path):
     monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: "identity")
     monkeypatch.setattr(srt_probe, "probe", lambda **kwargs: (True, "write controls passed"))
     monkeypatch.setattr(os_sandbox.srt_adapter, "request_for", lambda *args, **kwargs: {})
-    prepared = os_sandbox.prepare_tool_launch(os_sandbox.ToolLaunchPlan(
-        argv = (os_sandbox.sys.executable, "-c", "print(1)"),
-        workdir = str(tmp_path), env = {},
-    ))
+    prepared = os_sandbox.prepare_tool_launch(
+        os_sandbox.ToolLaunchPlan(
+            argv = (os_sandbox.sys.executable, "-c", "print(1)"),
+            workdir = str(tmp_path),
+            env = {},
+        )
+    )
     assert "host_files_readable" in prepared.execution_record.as_dict()["limitations"]
     assert prepared.execution_record.effective_mode == "os_isolation_required"

@@ -222,9 +222,7 @@ def stream_tool_execution(
 
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(
-            output_queue, done_sentinel, max_chars, pending_events
-        )
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars, pending_events)
         if hit_sentinel:
             finished = True
         return text

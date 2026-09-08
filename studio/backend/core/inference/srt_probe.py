@@ -149,10 +149,10 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             accepted, _ = listener.accept()
             accepted.close()
         host_udp.bind(("127.0.0.1", 0))
-        host_udp.settimeout(.5)
+        host_udp.settimeout(0.5)
         udp_address = host_udp.getsockname()
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-            client.settimeout(.5)
+            client.settimeout(0.5)
             client.sendto(b"network-control", udp_address)
             packet, address = host_udp.recvfrom(128)
             host_udp.sendto(packet, address)
