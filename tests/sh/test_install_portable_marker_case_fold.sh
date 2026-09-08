@@ -130,7 +130,10 @@ build_case_insensitive() { # master
 convert() { # master leaf platform
     _cv_path="$PATH"
     [ "$3" = darwin ] && _cv_path="$T/fakebin:$PATH"
-    env -i HOME="$T/home" PATH="$_cv_path" USER="${USER:-tester}" \
+    # UNSLOTH_PORTABLE=0 because this helper IS the convert-back operation. A bare run now
+    # adopts a marker it finds on the named root instead of clearing it, so without the
+    # explicit ask case [5] -- where the leaf carries a neighbour's marker -- never converts.
+    env -i HOME="$T/home" PATH="$_cv_path" USER="${USER:-tester}" UNSLOTH_PORTABLE=0 \
         UNSLOTH_STUDIO_HOME="$1/$2" bash -c "$SNIP" _ > "$T/out" 2>"$T/err"
     _cv_rc=$?
     if [ "$_cv_rc" -ne 0 ] || ! grep -q '^reached|' "$T/out"; then
@@ -210,9 +213,17 @@ echo "[6] the flat layout is untouched by any of this"
 M7="$(new_root)"
 mkdir -p "$M7/unsloth_studio/bin"
 printf '%s\n' "$M7" > "$M7/.unsloth-portable-root"
-env -i HOME="$T/home" PATH="$T/fakebin:$PATH" USER="${USER:-tester}" \
+env -i HOME="$T/home" PATH="$T/fakebin:$PATH" USER="${USER:-tester}" UNSLOTH_PORTABLE=0 \
     UNSLOTH_STUDIO_HOME="$M7" bash -c "$SNIP" _ > "$T/out" 2>"$T/err" || true
-check "darwin: a flat root still loses its own marker" gone "$(marker_state "$M7")"
+check "darwin: an asked-for conversion clears a flat root's own marker" gone "$(marker_state "$M7")"
+
+# And without the ask, that marker is what keeps the flat root portable across an update.
+M7b="$(new_root)"
+mkdir -p "$M7b/unsloth_studio/bin"
+printf '%s\n' "$M7b" > "$M7b/.unsloth-portable-root"
+env -i HOME="$T/home" PATH="$T/fakebin:$PATH" USER="${USER:-tester}" \
+    UNSLOTH_STUDIO_HOME="$M7b" bash -c "$SNIP" _ > "$T/out" 2>"$T/err" || true
+check "darwin: a bare re-run keeps a flat root's marker" present "$(marker_state "$M7b")"
 
 echo
 echo "[7] the runtime half: both Python copies must agree about the tree"

@@ -34,14 +34,14 @@ case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: bl
 case "$blockA" in *"--root) _next_is_root=true ;;"*) : ;; *) echo "FAIL: blockA lost --root"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockB" in *'STUDIO_HOME="$UNSLOTH_ROOT/studio"'*) : ;; *) echo "FAIL: blockB lost the portable branch"; exit 1 ;; esac
-case "$blockC" in *"UV_CACHE_DIR="*) : ;; *) echo "FAIL: blockC extraction broke"; exit 1 ;; esac
-case "$blockC" in *"UV_PYTHON_INSTALL_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python dir"; exit 1 ;; esac
-case "$blockC" in *"UV_PYTHON_BIN_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python bin dir"; exit 1 ;; esac
-case "$blockC" in *"NPM_CONFIG_CACHE="*) : ;; *) echo "FAIL: blockC lost the npm cache"; exit 1 ;; esac
+case "$blockC" in *"_epr_default UV_CACHE_DIR "*) : ;; *) echo "FAIL: blockC extraction broke"; exit 1 ;; esac
+case "$blockC" in *"_epr_default UV_PYTHON_INSTALL_DIR "*) : ;; *) echo "FAIL: blockC lost the uv python dir"; exit 1 ;; esac
+case "$blockC" in *"_epr_default UV_PYTHON_BIN_DIR "*) : ;; *) echo "FAIL: blockC lost the uv python bin dir"; exit 1 ;; esac
+case "$blockC" in *"_epr_default NPM_CONFIG_CACHE "*) : ;; *) echo "FAIL: blockC lost the npm cache"; exit 1 ;; esac
 # bun reads none of npm's configuration, so the npm pin above does not cover it.
-case "$blockC" in *"BUN_INSTALL_CACHE_DIR="*) : ;; *) echo "FAIL: blockC lost the bun cache"; exit 1 ;; esac
-case "$blockC" in *"CUDA_CACHE_PATH="*) : ;; *) echo "FAIL: blockC lost the cuda cache"; exit 1 ;; esac
-case "$blockC" in *"PIP_CACHE_DIR="*) : ;; *) echo "FAIL: blockC lost the pip cache"; exit 1 ;; esac
+case "$blockC" in *"_epr_default BUN_INSTALL_CACHE_DIR "*) : ;; *) echo "FAIL: blockC lost the bun cache"; exit 1 ;; esac
+case "$blockC" in *"_epr_default CUDA_CACHE_PATH "*) : ;; *) echo "FAIL: blockC lost the cuda cache"; exit 1 ;; esac
+case "$blockC" in *"_epr_default PIP_CACHE_DIR "*) : ;; *) echo "FAIL: blockC lost the pip cache"; exit 1 ;; esac
 
 SNIP='substep() { :; }
 '"$blockA"'

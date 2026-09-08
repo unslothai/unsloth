@@ -206,8 +206,11 @@ venv_tag() { # dir
 }
 convert_normal() { # dir [env assignments...] -- a NORMAL reinstall over the same tree
     _cn="$1"; shift
+    # UNSLOTH_PORTABLE=0 because this helper IS the request to convert back. A bare re-run now
+    # adopts the flat root's own marker and stays portable, so without the ask nothing here
+    # converts and every assertion below reads as a rollback failure.
     # shellcheck disable=SC2086
-    env -i HOME="$T/home" PATH="$PATH" USER="${USER:-tester}" \
+    env -i HOME="$T/home" PATH="$PATH" USER="${USER:-tester}" UNSLOTH_PORTABLE=0 \
         UNSLOTH_STUDIO_HOME="$_cn" "$@" bash -c "$SNIP" _ \
         > "$T/out" 2>"$T/err"
     _nrc=$?

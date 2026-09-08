@@ -96,8 +96,17 @@ marker_state() { # path
 H="$(new_home)"
 mkdir -p "$H/.unsloth/studio/unsloth_studio/bin" "$H/.unsloth/share" "$H/.unsloth/bin"
 printf '%s\n' "$H/.unsloth" > "$H/.unsloth/.unsloth-portable-root"
-run_install "$H" --
-check "normal reinstall drops the marker above the default studio root" gone "$(marker_state "$H/.unsloth")"
+# UNSLOTH_PORTABLE=0 is the ask. A bare re-run now ADOPTS the marker instead (the documented
+# update is `curl ... | sh` with no arguments, and silently converting there moved every cache
+# back under $HOME); the case below pins that half.
+run_install "$H" UNSLOTH_PORTABLE=0 --
+check "an asked-for normal reinstall drops the marker above the default studio root" gone "$(marker_state "$H/.unsloth")"
+
+H1b="$(new_home)"
+mkdir -p "$H1b/.unsloth/studio/unsloth_studio/bin" "$H1b/.unsloth/share" "$H1b/.unsloth/bin"
+printf '%s\n' "$H1b/.unsloth" > "$H1b/.unsloth/.unsloth-portable-root"
+run_install "$H1b" --
+check "a bare re-run keeps the marker instead" present "$(marker_state "$H1b/.unsloth")"
 
 # ── 2. A portable run must keep its own marker.
 H2="$(new_home)"
@@ -125,8 +134,8 @@ check "--shortcuts-only keeps the marker" present "$(marker_state "$H3b/.unsloth
 H4="$(new_home)"
 mkdir -p "$H4/flat/unsloth_studio"
 printf '%s\n' "$H4/flat" > "$H4/flat/.unsloth-portable-root"
-run_install "$H4" "UNSLOTH_STUDIO_HOME=$H4/flat" --
-check "normal reinstall drops the marker in a flat portable root" gone "$(marker_state "$H4/flat")"
+run_install "$H4" UNSLOTH_PORTABLE=0 "UNSLOTH_STUDIO_HOME=$H4/flat" --
+check "an asked-for normal reinstall drops the marker in a flat portable root" gone "$(marker_state "$H4/flat")"
 
 # ── 5. ...unless a NESTED portable install still resolves through that marker.
 H5="$(new_home)"
@@ -245,8 +254,8 @@ PYEOF
     # happen at install time. Flip this expectation if the runtime ever grows an
     # explicit opt-out.
     check "and UNSLOTH_PORTABLE=0 cannot turn it off" true "$(probe "$H8" UNSLOTH_PORTABLE=0)"
-    run_install "$H8" --
-    check "after a normal reinstall the runtime reads as non-portable" false "$(probe "$H8")"
+    run_install "$H8" UNSLOTH_PORTABLE=0 --
+    check "after an asked-for normal reinstall the runtime reads as non-portable" false "$(probe "$H8")"
 
     # ── 9. The runtime half of case 6b, which is what makes that one more than a
     # file that stayed put: the flat install next door has to still resolve as

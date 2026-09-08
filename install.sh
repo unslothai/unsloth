@@ -153,6 +153,41 @@ esac
 [ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
+# Nothing on the command line and nothing in the environment: adopt the layout already on
+# disk. The documented update path is `curl ... | sh` with no arguments and no exports, and
+# without this it read as "make this a normal install": _clear_stale_portable_marker deleted
+# the master record and the portable marker, the caches moved back under $HOME, and the only
+# notice was a substep. Converting back is a real thing to want, but it should be something
+# the user asks for, not what routine updating does. UNSLOTH_PORTABLE=0 is that ask.
+#
+# Marker files only, never a bare directory: the same evidence every reader already trusts,
+# written by a previous run of this script.
+if [ "$_PORTABLE_MODE" != true ] && [ -z "$(_trim_ws "${UNSLOTH_PORTABLE:-}")" ]; then
+    _adopt_root=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_adopt_root" ] || _adopt_root=$(_trim_ws "${STUDIO_HOME:-}")
+    if [ -n "$_adopt_root" ]; then
+        # A named Studio root: only its own flat marker speaks for it.
+        if [ -f "$_adopt_root/.unsloth-portable-root" ]; then
+            _PORTABLE_MODE=true
+            _UNSLOTH_ROOT="$_adopt_root"
+        fi
+    else
+        # Held in a variable rather than spelled out: `        _UNSLOTH_ROOT="$HOME/.unsloth"`
+        # at this indent is the awk anchor tests/sh/test_install_portable_root.sh uses to find
+        # the END of the flag parser, and a second copy here truncated its extraction at the
+        # wrong `fi` -- every --portable assertion then ran against an empty resolution.
+        _adopt_default="$HOME/.unsloth"
+        if [ -f "$_adopt_default/.unsloth-portable-root" ] \
+            || [ -f "$_adopt_default/studio/.unsloth-master-root" ]; then
+            _PORTABLE_MODE=true
+            _UNSLOTH_ROOT="$_adopt_default"
+        fi
+    fi
+    if [ "$_PORTABLE_MODE" = true ]; then
+        substep "this install is portable; keeping it that way"
+        substep "run with UNSLOTH_PORTABLE=0 to convert it back to a normal install"
+    fi
+fi
 # _PORTABLE_FLAT: the master root IS the Studio root. A root the user named for
 # Studio must not gain a studio/ level, which would relocate an existing install.
 _PORTABLE_FLAT=false
@@ -1083,27 +1118,73 @@ _export_portable_roots() {
     export UNSLOTH_STUDIO_HOME="$STUDIO_HOME"
     export UNSLOTH_LLAMA_CPP_PATH="$UNSLOTH_ROOT/llama.cpp"
 
+    # Cache locations are DEFAULTED, not forced. storage_roots._setup_cache_env already yields
+    # to a non-blank explicit value, and main's own _configure_uv_cache prints "preserving
+    # custom UV_CACHE_DIR" for one; forcing them here made the same install honour the user's
+    # choice or discard it depending on whether they came through the shim, the launcher or
+    # the backend. Someone who exported a multi-GB wheel cache onto another disk meant it, and
+    # silently refilling it costs them the download twice. Blank counts as unset, matching the
+    # resolver, so an inherited `KEY=` cannot pin a cache to "".
+    # _epr_default VAR VALUE
+    _epr_default() {
+        eval "_epr_cur=\${$1:-}"
+        case "$_epr_cur" in
+            *[![:space:]]*) _epr_kept="$_epr_kept $1" ;;
+            *) eval "export $1=\"\$2\"" ;;
+        esac
+    }
+    _epr_kept=""
+
     # uv's cache, interpreters and tools are three separate places.
-    export UV_INSTALL_DIR="$UNSLOTH_ROOT/bin"
-    export UV_CACHE_DIR="$UNSLOTH_ROOT/cache/uv"
-    export UV_PYTHON_INSTALL_DIR="$UNSLOTH_ROOT/cache/uv-python"
-    export UV_TOOL_DIR="$UNSLOTH_ROOT/cache/uv-tools"
-    export UV_TOOL_BIN_DIR="$UNSLOTH_ROOT/bin"
+    _epr_default UV_INSTALL_DIR "$UNSLOTH_ROOT/bin"
+    _epr_default UV_CACHE_DIR "$UNSLOTH_ROOT/cache/uv"
+    _epr_default UV_PYTHON_INSTALL_DIR "$UNSLOTH_ROOT/cache/uv-python"
+    _epr_default UV_TOOL_DIR "$UNSLOTH_ROOT/cache/uv-tools"
+    _epr_default UV_TOOL_BIN_DIR "$UNSLOTH_ROOT/bin"
     # Separate from UV_PYTHON_INSTALL_DIR: the python3.x symlinks land here,
     # defaulting to ~/.local/bin.
-    export UV_PYTHON_BIN_DIR="$UNSLOTH_ROOT/bin"
+    _epr_default UV_PYTHON_BIN_DIR "$UNSLOTH_ROOT/bin"
+    # Forced: not a location but a promise not to write outside the root.
     export UV_NO_MODIFY_PATH=1
 
-    export NPM_CONFIG_CACHE="$UNSLOTH_ROOT/cache/npm"
+    _epr_default NPM_CONFIG_CACHE "$UNSLOTH_ROOT/cache/npm"
     # bun, not npm, is what setup.sh reaches for first when it rebuilds a source
     # frontend, and it reads none of npm's configuration: with only NPM_CONFIG_CACHE
     # set, `bun pm cache` still answers ~/.bun/install/cache and every package it
     # downloads lands there, outside the root this run promises holds everything.
-    export BUN_INSTALL_CACHE_DIR="$UNSLOTH_ROOT/cache/bun"
-    export CUDA_CACHE_PATH="$UNSLOTH_ROOT/cache/cuda"
+    _epr_default BUN_INSTALL_CACHE_DIR "$UNSLOTH_ROOT/cache/bun"
+    _epr_default CUDA_CACHE_PATH "$UNSLOTH_ROOT/cache/cuda"
     # install_python_stack falls back to plain pip when uv fails, and not every
     # call site passes --no-cache-dir, so ~/.cache/pip fills without this.
-    export PIP_CACHE_DIR="$UNSLOTH_ROOT/cache/pip"
+    _epr_default PIP_CACHE_DIR "$UNSLOTH_ROOT/cache/pip"
+
+    # Keeping a caller's cache is the right call, but it also means this install is no longer
+    # the single directory the flag promises. Say so rather than letting the closing "remove
+    # the root with one rm" message imply something that is not true.
+    if [ -n "$_epr_kept" ]; then
+        substep "kept your own cache locations:$_epr_kept" "$C_WARN"
+        substep "any of these outside $UNSLOTH_ROOT stay behind when the root is removed" "$C_WARN"
+    fi
+
+    # The one relocation that costs a download rather than a recompile. In portable mode the
+    # runtime resolver moves HF_HUB_CACHE under the root, so a machine that already has models
+    # in the shared cache keeps them on disk but stops seeing them, and the next run fetches
+    # them again. Nothing here moves or deletes anything -- that is the point -- but the user
+    # should hear it before it costs them the bandwidth and twice the space.
+    #
+    # Only when they have not named HF_HOME or HF_HUB_CACHE themselves: the resolver leaves an
+    # explicit one alone, so there is nothing to warn about. `ls`, not `du`: a warm hub cache
+    # is tens of thousands of files and sizing it would stall the install for seconds.
+    if [ -z "$(_trim_ws "${HF_HUB_CACHE:-}")" ] && [ -z "$(_trim_ws "${HF_HOME:-}")" ]; then
+        _epr_hf_hub="$HOME/.cache/huggingface/hub"
+        if [ -d "$_epr_hf_hub" ] && [ -n "$(ls -A "$_epr_hf_hub" 2>/dev/null)" ]; then
+            substep "portable mode moves the model cache under the root" "$C_WARN"
+            substep "$_epr_hf_hub stays on disk but is no longer read;" "$C_WARN"
+            substep "models are downloaded again. Delete it to reclaim the space, or export" "$C_WARN"
+            substep "HF_HUB_CACHE='$_epr_hf_hub' to keep sharing it (it then stays" "$C_WARN"
+            substep "behind when the root is removed)." "$C_WARN"
+        fi
+    fi
 
     # Same filesystem, or uv's hardlink into the venv degrades to a full copy.
     mkdir -p -- "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
@@ -1178,7 +1259,25 @@ _export_portable_roots() {
         else
             _PORTABLE_MARKER_PRIOR_3=n
         fi
-        if ! printf '%s\n' "$UNSLOTH_ROOT" > "$_epr_record" 2>/dev/null; then
+        # Temp file plus mv, not `> "$_epr_record"`: the redirection truncates on open, so a
+        # write that then fails (a full volume, which a portable root on a small or removable
+        # disk is exactly where to expect) left a PREVIOUS valid record empty. The error arm
+        # below clears the rollback slot, so nothing put it back either, and an empty record
+        # sends the runtime to $HOME/.unsloth instead of the root it names. mv within the same
+        # directory is atomic, and on failure the old bytes are still there. The shim publish
+        # further down already does it this way.
+        _epr_tmp="$_epr_record.$$"
+        # Also registered for the install-wide cleanup: the failure arm below removes it, but a
+        # signal never reaches that arm and the staging file would sit in the Studio root.
+        _EPR_TMP="$_epr_tmp"
+        # The -d test comes first and is not redundant: `mv file dir` moves the file INTO the
+        # directory rather than failing, so with a directory in the record's place the rename
+        # would report success and leave no record at all.
+        if [ -d "$_epr_record" ] \
+            || ! { printf '%s\n' "$UNSLOTH_ROOT" > "$_epr_tmp" 2>/dev/null \
+                    && mv -f "$_epr_tmp" "$_epr_record" 2>/dev/null; }; then
+            rm -f "$_epr_tmp" 2>/dev/null || true
+            _EPR_TMP=""
             _PORTABLE_MARKER_PATH_3=""
             _PORTABLE_MARKER_PRIOR_3=""
             echo "ERROR: could not write the master root record at $_epr_record." >&2
@@ -1217,6 +1316,8 @@ _export_portable_roots() {
             fi
             exit 1
         fi
+        # The mv consumed it; release the cleanup slot so nothing else can claim that name.
+        _EPR_TMP=""
     elif [ -f "$_epr_record" ]; then
         _PORTABLE_MARKER_PATH_3="$_epr_record"
         _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_epr_record" 2>/dev/null)"
@@ -1913,6 +2014,9 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    # The master root record's staging file. Its own failure arm removes it, but a signal
+    # (or a write killed by SIGXFSZ) skips that arm, and the leftover sits in the Studio root.
+    [ -n "${_EPR_TMP:-}" ] && rm -f "$_EPR_TMP" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -1949,6 +2053,7 @@ _UIP_WORK=""
 _UIP_STAGE=""
 _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
+_EPR_TMP=""
 _ROCM_TAG_MEMO=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
@@ -2728,24 +2833,30 @@ LAUNCHER_EOF
                 _css_quoted_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
                 printf '%s\n' "export UNSLOTH_HOME='$_css_quoted_root'"
                 printf '%s\n' "export UNSLOTH_PORTABLE=1"
-                printf '%s\n' "export UV_CACHE_DIR='$_css_quoted_root/cache/uv'"
-                printf '%s\n' "export UV_PYTHON_INSTALL_DIR='$_css_quoted_root/cache/uv-python'"
-                printf '%s\n' "export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
-                printf '%s\n' "export UV_TOOL_BIN_DIR='$_css_quoted_root/bin'"
-                printf '%s\n' "export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
+                # Defaulted, not forced, the same way UNSLOTH_LLAMA_CPP_PATH is below and the
+                # runtime resolver already behaves: a caller who exported a cache elsewhere
+                # keeps it. UNSLOTH_HOME and UNSLOTH_PORTABLE above are identity and stay
+                # forced. Written with an `||` rather than `${VAR:=...}` because inside "${ }"
+                # the single quotes around the path would end up in the value.
+                printf '%s\n' "[ -n \"\${UV_CACHE_DIR:-}\" ] || export UV_CACHE_DIR='$_css_quoted_root/cache/uv'"
+                printf '%s\n' "[ -n \"\${UV_PYTHON_INSTALL_DIR:-}\" ] || export UV_PYTHON_INSTALL_DIR='$_css_quoted_root/cache/uv-python'"
+                printf '%s\n' "[ -n \"\${UV_TOOL_DIR:-}\" ] || export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
+                printf '%s\n' "[ -n \"\${UV_TOOL_BIN_DIR:-}\" ] || export UV_TOOL_BIN_DIR='$_css_quoted_root/bin'"
+                printf '%s\n' "[ -n \"\${UV_PYTHON_BIN_DIR:-}\" ] || export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
                 # setup.sh reinstalls uv whenever `command -v uv` misses, which
                 # is every update here. astral's cascade (UV_INSTALL_DIR,
                 # UV_UNMANAGED_INSTALL, XDG_BIN_HOME) ends at ~/.local/bin, so
                 # UV_INSTALL_DIR must be pinned.
-                printf '%s\n' "export UV_INSTALL_DIR='$_css_quoted_root/bin'"
+                printf '%s\n' "[ -n \"\${UV_INSTALL_DIR:-}\" ] || export UV_INSTALL_DIR='$_css_quoted_root/bin'"
+                # Forced: not a location, a promise not to write outside the root.
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
-                printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
+                printf '%s\n' "[ -n \"\${NPM_CONFIG_CACHE:-}\" ] || export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
                 # bun ignores npm's cache configuration entirely, and an update that
                 # rebuilds a source frontend prefers bun over npm.
-                printf '%s\n' "export BUN_INSTALL_CACHE_DIR='$_css_quoted_root/cache/bun'"
-                printf '%s\n' "export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
+                printf '%s\n' "[ -n \"\${BUN_INSTALL_CACHE_DIR:-}\" ] || export BUN_INSTALL_CACHE_DIR='$_css_quoted_root/cache/bun'"
+                printf '%s\n' "[ -n \"\${CUDA_CACHE_PATH:-}\" ] || export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
                 # uv is not the only installer setup.sh reaches for; pip's own cache needs pinning.
-                printf '%s\n' "export PIP_CACHE_DIR='$_css_quoted_root/cache/pip'"
+                printf '%s\n' "[ -n \"\${PIP_CACHE_DIR:-}\" ] || export PIP_CACHE_DIR='$_css_quoted_root/cache/pip'"
             fi
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
@@ -4050,6 +4161,32 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         elif grep -qxF "exec '$_venv_guard_exe' \"\$@\"" \
                 "$STUDIO_HOME/bin/unsloth" 2>/dev/null; then
             _venv_guard_owned=true
+        fi
+        # Fourth shape, and the only one that looks outside STUDIO_HOME: an install made
+        # before #5190 (2026-05-05) shipped both the owner marker AND env-mode itself. Such a
+        # tree has none of the three above, because all three are written under a custom root
+        # and it never had one -- its studio.conf went to the fixed default
+        # ~/.local/share/unsloth, where the UNSLOTH_EXE line has been written since #4568
+        # (2026-03-25). Without this, `install.sh --portable` on a default install that has
+        # not been refreshed since April refuses outright, while a plain upgrade of the very
+        # same tree is accepted: --portable always takes the env branch, and env-mode is what
+        # arms this guard.
+        #
+        # Narrow on purpose. It only fires when STUDIO_HOME *is* the legacy default root, so
+        # it cannot vouch for a user-named directory, which is the case this guard exists for.
+        # Canonicalized both sides, like the legacy comparison in create_studio_shortcuts, so
+        # a symlinked $HOME does not defeat the equality.
+        if [ "$_venv_guard_owned" != true ]; then
+            _venv_guard_legacy="$HOME/.unsloth/studio"
+            if [ -d "$_venv_guard_legacy" ]; then
+                _venv_guard_legacy=$(CDPATH= cd -P -- "$_venv_guard_legacy" 2>/dev/null && pwd -P) \
+                    || _venv_guard_legacy="$HOME/.unsloth/studio"
+            fi
+            if [ "$STUDIO_HOME" = "$_venv_guard_legacy" ] \
+                && grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
+                    "$HOME/.local/share/unsloth/studio.conf" 2>/dev/null; then
+                _venv_guard_owned=true
+            fi
         fi
         if [ "$_venv_guard_owned" != true ]; then
             echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
@@ -7207,18 +7344,25 @@ if [ "$_PORTABLE_MODE" = true ]; then
             "export UNSLOTH_HOME='$_shim_root'" \
             "export UNSLOTH_PORTABLE=1" \
             "export UNSLOTH_STUDIO_HOME='$_shim_studio'" \
-            "export UNSLOTH_LLAMA_CPP_PATH='$_shim_root/llama.cpp'" \
-            "export UV_CACHE_DIR='$_shim_root/cache/uv'" \
-            "export UV_PYTHON_INSTALL_DIR='$_shim_root/cache/uv-python'" \
-            "export UV_TOOL_DIR='$_shim_root/cache/uv-tools'" \
-            "export UV_TOOL_BIN_DIR='$_shim_root/bin'" \
-            "export UV_PYTHON_BIN_DIR='$_shim_root/bin'" \
-            "export UV_INSTALL_DIR='$_shim_root/bin'" \
+            "# The three above are this install's identity and are forced. Everything below" \
+            "# is a cache location, defaulted only when the caller named none: the runtime" \
+            "# resolver (storage_roots._setup_cache_env) already yields to an explicit value," \
+            "# and a shim that overrode one made the same install honour the user's choice or" \
+            "# ignore it depending on which entry point they happened to use. Someone who" \
+            "# points a multi-GB wheel cache at another disk means it." \
+            "[ -n \"\${UNSLOTH_LLAMA_CPP_PATH:-}\" ] || export UNSLOTH_LLAMA_CPP_PATH='$_shim_root/llama.cpp'" \
+            "[ -n \"\${UV_CACHE_DIR:-}\" ] || export UV_CACHE_DIR='$_shim_root/cache/uv'" \
+            "[ -n \"\${UV_PYTHON_INSTALL_DIR:-}\" ] || export UV_PYTHON_INSTALL_DIR='$_shim_root/cache/uv-python'" \
+            "[ -n \"\${UV_TOOL_DIR:-}\" ] || export UV_TOOL_DIR='$_shim_root/cache/uv-tools'" \
+            "[ -n \"\${UV_TOOL_BIN_DIR:-}\" ] || export UV_TOOL_BIN_DIR='$_shim_root/bin'" \
+            "[ -n \"\${UV_PYTHON_BIN_DIR:-}\" ] || export UV_PYTHON_BIN_DIR='$_shim_root/bin'" \
+            "[ -n \"\${UV_INSTALL_DIR:-}\" ] || export UV_INSTALL_DIR='$_shim_root/bin'" \
+            "# Forced: this one is not a location but a promise not to write outside the root." \
             "export UV_NO_MODIFY_PATH=1" \
-            "export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
-            "export BUN_INSTALL_CACHE_DIR='$_shim_root/cache/bun'" \
-            "export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
-            "export PIP_CACHE_DIR='$_shim_root/cache/pip'" \
+            "[ -n \"\${NPM_CONFIG_CACHE:-}\" ] || export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
+            "[ -n \"\${BUN_INSTALL_CACHE_DIR:-}\" ] || export BUN_INSTALL_CACHE_DIR='$_shim_root/cache/bun'" \
+            "[ -n \"\${CUDA_CACHE_PATH:-}\" ] || export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
+            "[ -n \"\${PIP_CACHE_DIR:-}\" ] || export PIP_CACHE_DIR='$_shim_root/cache/pip'" \
             "exec '$_shim_venv/bin/unsloth' \"\$@\"" > "$_shim_tmp" 2>/dev/null \
         && chmod +x "$_shim_tmp" 2>/dev/null \
         && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null

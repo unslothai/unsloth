@@ -669,6 +669,32 @@ _unsloth_uninstall_main() {
                  || [ -f "$_custom_root/.unsloth-portable-root" ]; }; then
             _custom_is_master=1
         fi
+        # ~/.unsloth is the one root the user never chose. `--portable` with no `--root`
+        # selects it for them, so a directory that has existed since their first install --
+        # and may hold whatever they put beside it -- would become a tree this script deletes
+        # wholesale. Removing a root the user NAMED is the promised behaviour and predates
+        # these PRs (a custom UNSLOTH_STUDIO_HOME has always gone in one piece); removing one
+        # they did not name is not.
+        #
+        # So for this path only, take the portable-mode children and leave the rest. Every
+        # other child -- studio/, llama.cpp/, node/, whisper.cpp/, stable-diffusion.cpp/, the
+        # locks -- is already removed by name in the default block below, which then ends with
+        # an `rmdir` that refuses a non-empty directory. That block is the model here, and it
+        # runs after this loop, so the directory still disappears when it holds only ours.
+        _custom_default_root="$HOME/.unsloth"
+        if [ -d "$_custom_default_root" ]; then
+            _custom_default_root=$(CDPATH= cd -P -- "$_custom_default_root" 2>/dev/null && pwd -P) \
+                || _custom_default_root="$HOME/.unsloth"
+        fi
+        if [ "$_custom_root" = "$_custom_default_root" ]; then
+            # Portable-only children; the shared ones belong to the default block.
+            _remove_path "$_custom_root/bin"
+            _remove_path "$_custom_root/share"
+            _remove_path "$_custom_root/cache"
+            _remove_path "$_custom_root/.unsloth-portable-root"
+            _remove_path "$_custom_root/.unsloth-master-root"
+            continue
+        fi
         _remove_root_recording_db "$_custom_root"
         # A master root is not a Studio root, so there is no legacy sibling to walk to: the one
         # an older build wrote for a nested install is <root>/stable-diffusion.cpp, already gone

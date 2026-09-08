@@ -258,7 +258,9 @@ H9="$(new_home)"
 mkdir -p "$H9/.unsloth/studio/unsloth_studio"
 printf 'portable\n' > "$H9/.unsloth/studio/unsloth_studio/tag"
 printf '%s\n' "$H9/.unsloth" > "$H9/.unsloth/.unsloth-portable-root"
-rc="$(run_install "$H9" FAIL_MODE=ok --)"
+# UNSLOTH_PORTABLE=0: converting back is now something the user asks for, not what a bare
+# update does. The rollback behaviour under test is unchanged either way.
+rc="$(run_install "$H9" FAIL_MODE=ok UNSLOTH_PORTABLE=0 --)"
 check "D4 a successful normal reinstall exits 0" 0 "$rc"
 check "D4 and the stale marker stays removed" gone "$(marker_state "$H9/.unsloth")"
 
@@ -267,7 +269,7 @@ H10="$(new_home)"
 mkdir -p "$H10/.unsloth/studio/unsloth_studio"
 printf 'portable\n' > "$H10/.unsloth/studio/unsloth_studio/tag"
 printf '%s\n' "$H10/.unsloth" > "$H10/.unsloth/.unsloth-portable-root"
-rc="$(run_install "$H10" FAIL_MODE=launch --)"
+rc="$(run_install "$H10" FAIL_MODE=launch UNSLOTH_PORTABLE=0 --)"
 check "D5 a failed autostart still exits nonzero" 7 "$rc"
 check "D5 but the conversion to a normal install stands" gone "$(marker_state "$H10/.unsloth")"
 

@@ -39,15 +39,18 @@ run_case() {
     echo "FAIL  shim does not parse: $label"; fails=$((fails+1)); return
   fi
   sed '/^exec /d' "$d/unsloth" > "$d/vars.sh"
-  got="$(sh -c ". '$d/vars.sh'; printf '%s' \"\$UNSLOTH_HOME\"" 2>/dev/null)"
+  got="$(sh -c "unset UNSLOTH_HOME; . '$d/vars.sh'; printf '%s' \"\$UNSLOTH_HOME\"" 2>/dev/null)"
   if [ "$got" != "$root" ]; then
     echo "FAIL  UNSLOTH_HOME roundtrip: $label want [$root] got [$got]"; fails=$((fails+1)); return
   fi
-  got_studio="$(sh -c ". '$d/vars.sh'; printf '%s' \"\$UNSLOTH_STUDIO_HOME\"" 2>/dev/null)"
+  got_studio="$(sh -c "unset UNSLOTH_STUDIO_HOME; . '$d/vars.sh'; printf '%s' \"\$UNSLOTH_STUDIO_HOME\"" 2>/dev/null)"
   if [ "$got_studio" != "$root/studio" ]; then
     echo "FAIL  UNSLOTH_STUDIO_HOME roundtrip: $label"; fails=$((fails+1)); return
   fi
-  got_uv="$(sh -c ". '$d/vars.sh'; printf '%s' \"\$UV_CACHE_DIR\"" 2>/dev/null)"
+  # unset first: the shim DEFAULTS the caches rather than seizing them, so this developer
+  # box's own UV_CACHE_DIR would be kept and the quoting of the default never exercised.
+  # The deferral itself is what tests/sh/test_portable_keeps_explicit_caches.sh covers.
+  got_uv="$(sh -c "unset UV_CACHE_DIR; . '$d/vars.sh'; printf '%s' \"\$UV_CACHE_DIR\"" 2>/dev/null)"
   if [ "$got_uv" != "$root/cache/uv" ]; then
     echo "FAIL  UV_CACHE_DIR roundtrip: $label want [$root/cache/uv] got [$got_uv]"; fails=$((fails+1)); return
   fi
