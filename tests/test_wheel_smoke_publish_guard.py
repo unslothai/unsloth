@@ -238,10 +238,57 @@ def test_the_job_that_runs_this_module_has_no_paths_filter():
     doc = _lint_doc()
     on = _on_block(doc)
     for trigger in ("pull_request", "push"):
+        # Presence first. `continue` on a missing key let the trigger be deleted
+        # outright and still pass, which is a bigger hole than filtering it:
+        # dropping `push` keeps the PR check green while removing this guard from
+        # every later direct push to main.
+        assert trigger in on, (
+            f"workflow-trigger-lint no longer runs on {trigger}, so this module stops "
+            f"being collected for that event."
+        )
         config = on.get(trigger)
+        # A bare `pull_request:` parses as None and filters nothing, which is fine.
         if not isinstance(config, dict):
             continue
         assert not config.get("paths") and not config.get("paths-ignore"), (
             f"workflow-trigger-lint now filters its {trigger} trigger on paths, so it no "
             f"longer runs on every workflow-only PR."
         )
+
+
+@pytest.mark.parametrize(
+    ("body", "rc"),
+    [
+        # << closes only on an exact delimiter, so an indented copy stays body
+        # and the text after it is not a command.
+        ("cat <<'USAGE'\n    USAGE\ntwine upload dist/*.whl\nUSAGE\n", 1),
+        # <<- strips leading tabs, so a tab-indented delimiter does close it.
+        ("cat <<-USAGE\n\tUSAGE\nUSAGE\npython -m twine upload dist/*.whl\n", 0),
+    ],
+    ids = ["exact-delimiter-only", "dash-strips-tabs"],
+)
+def test_heredoc_terminators_follow_bash_rules(tmp_path, body, rc):
+    assert _run_guard(tmp_path, PROLOGUE + body).returncode == rc
+
+
+@pytest.mark.parametrize(
+    "upload_line",
+    [
+        "python -m twine upload dist/*.whl >twine.log",
+        "python -m twine upload dist/*.whl > twine.log",
+        "python -m twine upload dist/*.whl 2> err.log",
+        "python -m twine upload dist/*.whl 2>&1 | tee log",
+        "python -m twine upload dist/*.whl >>twine.log",
+    ],
+)
+def test_redirections_are_not_artifacts(tmp_path, upload_line):
+    """`>twine.log` is shell syntax. Counting it failed a valid release line."""
+    r = _run_guard(tmp_path, PROLOGUE + upload_line + "\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_redirection_does_not_hide_a_non_wheel(tmp_path):
+    """Dropping redirections must not drop the artifact check with them."""
+    r = _run_guard(tmp_path, PROLOGUE + "python -m twine upload dist/*.tar.gz >log\n")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "non-wheel" in r.stdout

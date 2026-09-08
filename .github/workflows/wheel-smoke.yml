@@ -167,6 +167,18 @@ jobs:
                   if skip:
                       skip = False
                       continue
+                  # A control operator ends this command; whatever follows is a
+                  # different one and its words are not twine's arguments.
+                  if t in {"|", "||", "&&", ";", "&"}:
+                      break
+                  # Redirections are shell syntax, not artifacts. `>twine.log`
+                  # arrives as one token and used to be reported as a non-wheel
+                  # artifact, failing CI on a perfectly valid upload line.
+                  redirect = re.match(r"^\d*(?:>>|>&|>|<<?|&>)(.*)$", t)
+                  if redirect:
+                      # Bare operator: its target is the next token.
+                      skip = not redirect.group(1)
+                      continue
                   if t.startswith("-"):
                       skip = t in VALUED_FLAGS
                       continue
@@ -182,16 +194,22 @@ jobs:
               build.sh whose real publish line was deleted still report PASS,
               which is the one thing the has-an-upload check exists to catch.
               """
-              out, terminator = [], None
+              out, terminator, dash = [], None, False
               for line in text.splitlines():
                   if terminator is not None:
-                      # <<- strips leading tabs from the terminator, << does not.
-                      if line.strip() == terminator:
+                      # Bash closes <<WORD only on an EXACT match; an indented
+                      # copy of the delimiter stays part of the body. <<-WORD
+                      # strips leading TABS (not spaces) before comparing. Using
+                      # .strip() for both closed a << heredoc early, so the text
+                      # after it was read as commands.
+                      candidate = line.lstrip("\t") if dash else line
+                      if candidate == terminator:
                           terminator = None
                       continue
-                  opened = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
+                  opened = re.search(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2", line)
                   if opened:
-                      terminator = opened.group(2)
+                      dash = bool(opened.group(1))
+                      terminator = opened.group(3)
                       continue
                   if line.lstrip().startswith("#"):
                       continue
