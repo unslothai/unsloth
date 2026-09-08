@@ -120,6 +120,8 @@ def _compact_log_value(value: str, limit: int = 48) -> str:
 
 def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") -> str:
     """Summarize argv without paths or prompt text."""
+    # Prompt values can resemble options; redact them before extracting settings.
+    cmd = _sd_cpp_command_for_log(cmd)
     mode = _compact_log_value(_last_option_value(cmd, "--mode") or default_mode)
     fields = [f"mode={mode}"]
     model = _last_option_value(cmd, "--diffusion-model")

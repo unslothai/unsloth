@@ -627,14 +627,24 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
 
 
-def test_default_run_log_is_compact_and_omits_user_text_and_paths(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize(
+    "prompt, negative",
+    [
+        ("private prompt " * 40, "private negative prompt " * 20),
+        ("--mode=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--mode=private-negative-prompt"),
+        ("--diffusion-model=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--diffusion-model=private-negative-prompt"),
+    ],
+)
+def test_default_run_log_is_compact_and_omits_user_text_and_paths(
+    tmp_path, monkeypatch, caplog, prompt, negative
+):
     monkeypatch.setattr(eng, "_verbose_native_logs", lambda: False)
     caplog.set_level("INFO", logger = eng.__name__)
     e = _engine(tmp_path)
     out = tmp_path / "private-output.png"
     _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
-    prompt = "private prompt " * 40
-    negative = "private negative prompt " * 20
 
     e.generate(
         SdCppModelFiles(diffusion_model = "/private/models/z.gguf"),
@@ -661,6 +671,9 @@ def test_default_run_log_is_compact_and_omits_user_text_and_paths(tmp_path, monk
     assert negative not in rendered
     assert "/private/models/z.gguf" not in rendered
     assert str(out) not in rendered
+    cmd = _FakePopen.captured_cmd
+    assert cmd[cmd.index("--prompt") + 1] == prompt
+    assert cmd[cmd.index("--negative-prompt") + 1] == negative
 
 
 def test_verbose_run_log_keeps_argv_but_redacts_prompts(tmp_path, monkeypatch, caplog):
