@@ -47,7 +47,6 @@ def _patches_enabled() -> bool:
     return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-# Resolve the diffusers classes we patch; an import failure -> None (skipped at install).
 try:
     from diffusers.models.normalization import (
         AdaLayerNormContinuous as _AdaLayerNormContinuous,
@@ -65,7 +64,8 @@ except Exception:  # noqa: BLE001
     _NPU = False
 
 
-# Patched forwards, each mirroring diffusers semantics with the fused fast path (``addcmul(input, t1, t2) == input + t1 * t2``).
+# Patched forwards, each mirroring diffusers semantics with the fused fast path (``addcmul(input, t1, t2) == input + t1
+# * t2``).
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
     scale, shift = torch.chunk(emb, 2, dim = 1)
@@ -106,8 +106,10 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a tuple `dim` (diffusers reduces
-    # only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from the ORIGINAL tensor).
+    # fall back where F.rms_norm is NOT equivalent to diffusers
+    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a tuple
+    # `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from the
+    # ORIGINAL tensor).
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
@@ -116,13 +118,12 @@ def _rmsnorm_forward(self, hidden_states):
     if weight.dtype in (torch.float16, torch.bfloat16) and hidden_states.dtype == weight.dtype:
         # Common DiT path (bf16 acts + bf16 weight): F.rms_norm matches diffusers bit-for-bit.
         return F.rms_norm(hidden_states, self.dim, weight, self.eps)
-    # Mixed dtype / fp32 weight -> exact original.
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left UNPATCHED, and stashed for exact restore.
+# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left
+# UNPATCHED, and stashed for exact restore.
 def _specs():
-    # (class, patched_fn)
     return [
         (_AdaLayerNormContinuous, _adaln_continuous_forward),
         (_AdaLayerNormZero, _adaln_zero_forward),
@@ -142,7 +143,7 @@ def install_compile_safe_patches() -> int:
     """
     global _orig_rmsnorm_forward
     if not _patches_enabled():
-        uninstall_patches()  # ensure OFF even if a prior call installed them
+        uninstall_patches()
         return 0
     if _patched:
         return len(_patched)
@@ -153,7 +154,6 @@ def install_compile_safe_patches() -> int:
         if cls is _RMSNorm and not hasattr(F, "rms_norm"):
             logger.info("eager-patch: skipping RMSNorm (this torch has no F.rms_norm)")
             continue
-        # Capture the live original before patching, for the RMSNorm fast path's fallback.
         if cls is _RMSNorm:
             _orig_rmsnorm_forward = cls.forward
         if apply_patch(cls, "forward", new_fn, match_level = "relaxed"):

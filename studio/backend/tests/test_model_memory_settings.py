@@ -2420,7 +2420,7 @@ class TestAnActiveFitterVoidsTheAllLayersVerdict:
 
 class TestTheEffectiveFitterState:
     """fit_is_enabled_in answers for the extras; this answers for the child, so
-    Studio's own --fit counts and llama.cpp's ON default is respected."""
+    Unsloth's own --fit counts and llama.cpp's ON default is respected."""
 
     @pytest.mark.parametrize(
         ("args", "env", "expected"),
@@ -2443,7 +2443,7 @@ class TestTheEffectiveFitterState:
         assert _lsa.fit_is_effectively_on(args, env) is expected
 
     def test_the_launch_asks_over_the_whole_command(self):
-        """Source check: Studio emits its own --fit into cmd, so reading the
+        """Source check: Unsloth emits its own --fit into cmd, so reading the
         extras alone would miss it."""
         import inspect
 

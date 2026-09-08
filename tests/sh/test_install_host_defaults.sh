@@ -5,7 +5,7 @@
 # Installer scripts and README must not put a wildcard bind in a user-visible
 # DEFAULT launch command. Binding 0.0.0.0 exposes the raw port to the LAN, so it
 # has to be something the reader opts into, never what they are handed first.
-# Provenance: #5267 (default the Studio host to 127.0.0.1) and #7774 (anchor the
+# Provenance: #5267 (default the Unsloth host to 127.0.0.1) and #7774 (anchor the
 # host-defaults assertions).
 #
 # The property, stated without reference to any heading:

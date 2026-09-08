@@ -691,7 +691,7 @@ def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
 
 
 def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
-    """One rule, in one place: Studio asks the zoo to size the worker rather than sizing it too."""
+    """One rule, in one place: Unsloth asks the zoo to size the worker rather than sizing it too."""
     import types
 
     import utils.hf_xet_fallback as shim
@@ -783,7 +783,7 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
 
 
 # --- free-RAM clamp (issue #9032) ---------------------------------------------------------------
-# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Studio clamps the
+# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Unsloth clamps the
 # result to what is free. The bar: shrink under pressure, change nothing otherwise.
 
 _GB = 1_000_000_000

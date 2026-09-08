@@ -233,13 +233,13 @@ function SidebarProvider({
           // same span appended to <body> costs 0.10 ms either way.
           //
           // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
-          // chain and the built Studio stylesheet, at 300,464 elements, one
+          // chain and the built Unsloth stylesheet, at 300,464 elements, one
           // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
           // descendant rule / 10.30 ms both in Chromium, and 4.33 / 4.58 /
           // 4.58 / 4.33 ms in WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in
           // Firefox: flat in both, within noise of each other. So this change
           // is free where it does not help and it does not regress the engine
-          // Studio uses on Linux.
+          // Unsloth uses on Linux.
           //
           // The child combinator is not a weakening. `data-variant` is rendered
           // on the root element of `Sidebar` below, and `Sidebar` is a direct

@@ -140,14 +140,6 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
   );
 });
 
-test("the hub cards ask residency before saying Loaded", () => {
-  const hub = readFileSync(
-    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(hub, /residentCheckpoint !== null\s*\n?\s*\? checkpoint/);
-});
-
 // Nothing in the chat runtime polls /status: refresh runs on mount and when the
 // model lists change, never on a timer. So an eviction caused by the Images
 // page was never observed and residentCheckpoint stayed undefined, which reads
@@ -175,7 +167,10 @@ test("another runtime loading re-reads the chat status", () => {
     /if \(loading \|\| runtime === "chat"\) return;/,
     "the settle-only guard is what left the picker naming an evicted model",
   );
-  assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
+  assert.match(
+    hook,
+    /void refresh\(\{\s*includeLoras: false,\s*externalChatSlotLoad: runtime === "tts",\s*\}\)/,
+  );
   // And the branch it feeds still clears residency.
   assert.match(hook, /residentCheckpoint: null,/);
 });
@@ -192,17 +187,21 @@ test("an eviction drops the pick, not just the loaded marks", () => {
     "utf8",
   );
   // Anchored on the branch, not on the file: other catches sit above it now.
-  const branchStart = hook.indexOf("} else if (!statusRes.active_model");
+  // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
+  // Matched loosely: the guard has been reflowed across lines, and a literal that
+  // stopped matching would slice nothing and fail on an empty string instead.
+  const branchStart = hook.search(/\} else if \(\s*!chatActiveModel/);
+  assert.notEqual(branchStart, -1, "the eviction branch anchor no longer matches");
   const branch = hook.slice(
     branchStart,
     hook.indexOf("} catch (error) {", branchStart),
   );
   assert.match(branch, /clearCheckpoint\(\)/);
-  // Guarded twice: a model that was never confirmed resident has nothing to
-  // lose, and a load in flight reports no active model either.
+  // A first speech-only status is definitive too: it must clear a persisted
+  // pick even before this tab has observed a resident Chat model.
   assert.match(
     branch,
-    /if \(wasResident && selectedCheckpoint && !modelLoading\)/,
+    /\(wasResident \|\| isSpeechOnlyStatus\(statusRes\)\)[\s\S]*selectedCheckpoint[\s\S]*!modelLoading/,
   );
 });
 

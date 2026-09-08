@@ -488,7 +488,7 @@ def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
 
 def test_activation_shortfall_is_an_actionable_400(monkeypatch):
     """The one exception here whose text is written FOR the caller. Sanitising it into a bare 500
-    left an OpenAI client with a server error for a request only they can fix, while the Studio
+    left an OpenAI client with a server error for a request only they can fix, while the Unsloth
     route showed them the resolution, the budget and the remedies."""
     from core.inference.diffusion_memory import ImageActivationShortfallError
 

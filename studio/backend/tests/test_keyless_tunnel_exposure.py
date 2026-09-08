@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Why a published tunnel closes keyless on loopback but not on the LAN listener.
+"""Why a tunnel on a wildcard bind closes loopback but not the LAN listener.
 
 The asymmetry looks like an oversight and is not, so it is worth a test: two
 readers in a row have taken it for one. A tunnel makes a loopback peer ambiguous,
-because ``CloudflareTunnel`` targets ``http://localhost:<port>`` on purpose, so
+because Studio targets a loopback address for wildcard binds, so
 tunnelled internet traffic arrives on loopback and is indistinguishable from a
-real local client. Nothing makes a LAN peer ambiguous the same way: the managed
-tunnel never presents a LAN address, so the LAN branch is still deciding on
+real local client. In this configuration the managed tunnel never presents a
+LAN address, so the LAN branch is still deciding on
 authoritative socket state.
 
 Closing LAN as well would cost a legitimate LAN client its access for no gain,
 and it would not touch the case it looks like it addresses either. An
 externally run cloudflared or ngrok sets neither ``app_state.cloudflare_url``
 nor ``_remote_connector_active``, so Studio cannot see it at all.
+
+Explicit interface binds can use that interface as the tunnel origin; these
+tests cover the wildcard bind below and its separate private LAN listener.
 """
 
 from __future__ import annotations
@@ -107,7 +110,7 @@ def test_a_published_tunnel_closes_loopback_and_leaves_the_lan_listener_alone(mo
             loopback, lan = request_for(LOOPBACK), request_for(LAN)
         # loopback is ambiguous while a tunnel terminates on it
         assert keyless_request_allowed(loopback) is False, signal
-        # the LAN socket is not: the managed tunnel never arrives with a LAN address
+        # on a wildcard bind the managed tunnel does not arrive with a LAN address
         assert keyless_request_allowed(lan) is True, signal
         monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising = False)
 

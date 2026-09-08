@@ -422,7 +422,7 @@ const SERVER_LOG_TAIL_MAX_BYTES: usize = 64 * 1024;
 ///
 /// run.py's `_setup_server_disk_logging` aims faulthandler here, so when the GPU
 /// runtime aborts this holds the Python stack naming the call that died, and no
-/// other file Studio keeps does.
+/// other file Unsloth keeps does.
 ///
 /// Only two are collected, so an entry is rejected HERE rather than later in
 /// `read_tail`: one that merely matches the name would otherwise spend a slot and

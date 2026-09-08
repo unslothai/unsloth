@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { SettingsDialog } from "./settings-dialog";
+export { SettingsDialogMount } from "./settings-dialog-mount";
+export {
+  type DownloadTransportMode,
+  type DownloadTransportSettings,
+  loadDownloadTransportSettings,
+  subscribeDownloadTransportSettings,
+  updateDownloadTransportSettings,
+} from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
@@ -53,7 +60,16 @@ export type {
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
-export { useShortcut, useShortcutLabel } from "./hooks/use-shortcut";
+export {
+  COMPOSER_INPUT_SELECTOR,
+  isImeComposing,
+  isSurfaceBackgrounded,
+  isSurfaceInForeground,
+  useShortcut,
+  useShortcutLabel,
+  useShortcutLabels,
+} from "./hooks/use-shortcut";
+export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
   useKeyboardShortcutsStore,

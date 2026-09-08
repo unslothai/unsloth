@@ -563,7 +563,7 @@ def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
     monkeypatch, _probe_lifetime_records
 ):
     # The child-side PDEATHSIG bind is Linux only, and the Windows job object is documented to
-    # fail when Studio already runs inside an incompatible host job. In that configuration this
+    # fail when Unsloth already runs inside an incompatible host job. In that configuration this
     # record is the only thing left that can reach a probe still holding a CUDA context, both
     # from the shutdown sweep and from the next startup.
     import multiprocessing
@@ -623,7 +623,7 @@ def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
 ):
     # Descriptors, process slots and /dev/shm all come back. Latching the OSError would hold the
     # backend on the in-process probe -- and so on the ~800 MiB the child exists to avoid -- for
-    # every later miss, until Studio restarts.
+    # every later miss, until Unsloth restarts.
     import multiprocessing
 
     calls = {"n": 0}

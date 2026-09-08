@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Wipe Studio's auth state and boot `unsloth studio` in the background, exporting
+# Wipe Unsloth's auth state and boot `unsloth studio` in the background, exporting
 # the pid so a later step can stop it.
 #
 # Usage:

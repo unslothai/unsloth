@@ -30,7 +30,7 @@ function storedPinned(): string[] | null {
 }
 
 /**
- * Another Studio window rewriting the pin list: the record changes underneath
+ * Another Unsloth window rewriting the pin list: the record changes underneath
  * this window and a "storage" event follows, which is the only way the list can
  * change without this window's store doing it. Goes through the real listener,
  * so what the store learns is exactly what a second window would teach it.
@@ -303,7 +303,7 @@ test("outside a drag session movePinned still persists on every call", () => {
 
 // --- another window writing mid-drag ---------------------------------------
 // pinned-models installs a window "storage" listener that replaces the list
-// wholesale, so a second Studio window can rewrite the order underneath a drag
+// wholesale, so a second Unsloth window can rewrite the order underneath a drag
 // that is still in flight. A snapshot taken before that write no longer
 // describes what is in localStorage, so restoring it would put this window out
 // of step with the record and the next write from here would clobber the other
@@ -499,5 +499,85 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
   assert.match(
     rows,
     /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
+  );
+});
+
+test("deleting a repo drops its quant pins, not just the repo's own", () => {
+  // A pin is keyed `repoId::quant`. A whole-repo delete removes every quant, but only the plain
+  // repo key was being cleared, so the quant pins stayed in localStorage with no row left to
+  // unpin them -- and came back pinned the day that quant was downloaded again.
+  setPinned([
+    "unsloth/Qwen3-8B-GGUF::Q4_K_M",
+    "unsloth/Qwen3-8B-GGUF",
+    "unsloth/Qwen3-8B-GGUF::UD-Q4_K_XL",
+    "unsloth/Gemma-3-4B-GGUF::Q8_0",
+    "unsloth/Gemma-3-4B-GGUF",
+  ]);
+  usePinnedModelsStore.getState().unpinRepo("unsloth/Qwen3-8B-GGUF");
+  const left = usePinnedModelsStore.getState().pinned;
+  assert.deepEqual(left, [
+    "unsloth/Gemma-3-4B-GGUF::Q8_0",
+    "unsloth/Gemma-3-4B-GGUF",
+  ]);
+  // One write, and the survivors keep their order.
+  assert.deepEqual(storedPinned(), left);
+});
+
+test("unpinning a repo leaves a longer repo id that merely starts the same", () => {
+  // Prefix matching on the bare id would take "unsloth/Qwen3-8B-GGUF-128K" with it. The `::`
+  // is what makes the boundary, so it belongs in the filter rather than beside it.
+  setPinned([
+    "unsloth/Qwen3-8B-GGUF-128K",
+    "unsloth/Qwen3-8B-GGUF-128K::Q4_K_M",
+    "unsloth/Qwen3-8B-GGUF",
+  ]);
+  usePinnedModelsStore.getState().unpinRepo("unsloth/Qwen3-8B-GGUF");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "unsloth/Qwen3-8B-GGUF-128K",
+    "unsloth/Qwen3-8B-GGUF-128K::Q4_K_M",
+  ]);
+});
+
+test("unpinning a repo that was never pinned writes nothing", () => {
+  // Every repo-level delete calls this, pinned or not; a write per delete would churn the
+  // record and wake every other window's storage listener for no change.
+  setPinned(["unsloth/Gemma-3-4B-GGUF"]);
+  usePinnedModelsStore.getState().unpinRepo("unsloth/Nothing-Here");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "unsloth/Gemma-3-4B-GGUF",
+  ]);
+  assert.equal(storedPinned(), null, "no write, so the record is untouched");
+});
+
+test("both repo-level deletes clear pins through that one action", async () => {
+  // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
+  // drift into two answers about what a pin outlives.
+  const pickers = await readFile(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    pickers.split("unpinRepo(c.repo_id);").length - 1,
+    2,
+    "the partial GGUF repo row and the cached model row alike",
+  );
+  assert.ok(
+    !pickers.includes("if (pinnedSet.has(pinKey(c.repo_id))) {"),
+    "and neither clears by toggling the bare repo key",
+  );
+  const rows = await readFile(
+    new URL(
+      "../src/features/hub/catalog/models-catalog-rows.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.ok(
+    rows.includes(
+      "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",
+    ),
   );
 });

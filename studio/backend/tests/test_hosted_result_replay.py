@@ -9,7 +9,7 @@ client as its own ``_toolEvent`` frame, but the loop rebuilds the assistant
 message from the text and tool calls it saw, so that output was absent from the
 replayed conversation and the model answered from the local results alone.
 
-Studio's own tool events carry a top-level ``type`` and never appear as
+Unsloth's own tool events carry a top-level ``type`` and never appear as
 ``_toolEvent``, so local results are not replayed twice.
 """
 

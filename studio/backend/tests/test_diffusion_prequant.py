@@ -601,7 +601,7 @@ def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
 def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
     monkeypatch, real_prequant_safe_globals
 ):
-    """The exact set read out of the pickles Studio actually resolves.
+    """The exact set read out of the pickles Unsloth actually resolves.
 
     Surveyed with ``pickletools`` (no unpickling) over every hosted prequant repo the family
     tables name -- image and video, fp8 and int8, rotated and not -- so a checkpoint naming
@@ -791,7 +791,7 @@ def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(m
 def test_an_old_torch_registers_nothing_at_all(monkeypatch):
     """2.4/2.5 take the (object, name) pairs without looking at them and only fail later, in
     ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry of a PROCESS-WIDE
-    list -- so a tuple left there breaks every OTHER weights_only load in Studio too. Hence:
+    list -- so a tuple left there breaks every OTHER weights_only load in Unsloth too. Hence:
     decide by version first, register nothing below 2.6."""
     torch = types.ModuleType("torch")
     torch.serialization = types.SimpleNamespace(
@@ -1420,7 +1420,7 @@ def test_other_root_revalidation_never_breaks_a_load_that_works(monkeypatch, tmp
 
 
 def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):
-    # The other half: a real fetch must land where Studio is reading, not under the stale constant.
+    # The other half: a real fetch must land where Unsloth is reading, not under the stale constant.
     asked: list = []
     source = PrequantSource(
         kind = "repo", location = "unsloth/Z-Image-Turbo-FP8", filename = "Z-Image-Turbo-FP8.pt"
@@ -1740,7 +1740,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
 
 
 def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch, tmp_path):
-    """``_resolve_checkpoint_path`` can answer from huggingface_hub's import-time root while Studio
+    """``_resolve_checkpoint_path`` can answer from huggingface_hub's import-time root while Unsloth
     pins its live one, so a config pinned to the live root misses in exactly the cache-moved case
     the checkpoint lookup just accepted -- silently, as the raise becomes a None return."""
     import torch

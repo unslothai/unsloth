@@ -5,11 +5,11 @@
 
 The request flag is explicit at every boundary. ``None`` follows the shared
 process default from ``passthrough_healing.nudge_enabled`` (off unless
-``UNSLOTH_TOOL_CALL_NUDGE=1``), while Studio may opt in by sending ``True``.
+``UNSLOTH_TOOL_CALL_NUDGE=1``), while Unsloth may opt in by sending ``True``.
 
 Mechanism (verified here without loading a model):
 
-  * the GGUF loop and external Studio loop use the same normalizer;
+  * the GGUF loop and external Unsloth loop use the same normalizer;
   * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
   * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend
@@ -112,7 +112,7 @@ def test_studio_routes_forward_the_request_flag():
     # (external API clients that omit it fall back to the opt-in default).
     from routes import inference as routes_inference
     for handler in (
-        routes_inference.openai_chat_completions,
+        routes_inference.produce_openai_chat_completions,
         routes_inference.anthropic_messages,
     ):
         src = inspect.getsource(handler)

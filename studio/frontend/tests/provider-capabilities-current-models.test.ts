@@ -9,6 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
@@ -76,14 +77,103 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
   }
 });
 
-test("ChatGPT subscription models expose Studio-owned search and code tools", () => {
+test("Astra exposes mandatory reasoning with its full effort ladder", () => {
+  const caps = getExternalReasoningCapabilities("openai_codex", "gpt-6-astra");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.deepEqual(
+    [...caps.reasoningEffortLevels],
+    ["low", "medium", "high", "xhigh", "max"],
+  );
+  for (const effort of ["none", "minimal"] as const) {
+    assert.equal(clampReasoningEffortToLevels(effort, caps.reasoningEffortLevels), "low");
+  }
+  assert.equal(clampReasoningEffortToLevels("max", caps.reasoningEffortLevels), "max");
+});
+
+test("Astra reasoning does not enable unrelated model families", () => {
+  for (const model of ["gpt-6-other", "gpt-60-astra"]) {
+    assert.equal(getExternalReasoningCapabilities("openai_codex", model).supportsReasoning, false);
+  }
+});
+
+test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
+  // "minimal" was replaced by "none" from 5.1 on, and offering it fails the
+  // turn with "does not support 'minimal' with this model".
+  const ladders: Array<[string, readonly string[]]> = [
+    ["gpt-5.2", ["none", "low", "medium", "high", "xhigh"]],
+    ["gpt-5.1", ["none", "low", "medium", "high"]],
+  ];
+  for (const [model, levels] of ladders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
+  // The Codex tunings keep reasoning mandatory: no minimal, and no none on
+  // the 5.1 line. Only codex-max has xhigh, so it sorts first.
+  const codexLadders: Array<[string, readonly string[]]> = [
+    ["gpt-5-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-mini", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-max", ["low", "medium", "high", "xhigh"]],
+  ];
+  for (const [model, levels] of codexLadders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, false, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
+  // Bare gpt-5 keeps the old ladder, so the splits must not swallow it.
+  const five = getExternalReasoningCapabilities("openai", "gpt-5");
+  assert.equal(five.supportsReasoningOff, false);
+  assert.deepEqual(
+    [...five.reasoningEffortLevels],
+    ["minimal", "low", "medium", "high"],
+  );
+});
+
+test("the chat-latest aliases advertise no reasoning at all", () => {
+  // They are non-reasoning, and the family prefixes would otherwise swallow
+  // them: `gpt-5.1-chat-latest` starts with `gpt-5.1`. Advertising reasoning
+  // makes the adapter send `reasoning_effort` on every turn, which the
+  // Responses API rejects with "Unsupported parameter: 'reasoning.effort' is
+  // not supported with this model" -- so the model never answers at all.
+  for (const model of [
+    "gpt-5-chat-latest",
+    "gpt-5.1-chat-latest",
+    "gpt-5.2-chat-latest",
+    "gpt-5.3-chat-latest",
+    // Azure names its deployment without the `-latest` tail.
+    "gpt-5-chat",
+  ]) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoning, false, model);
+  }
+  // The reasoning families themselves must keep theirs.
+  for (const model of ["gpt-5.1", "gpt-5.2", "gpt-5", "gpt-5.3-codex"]) {
+    assert.equal(
+      getExternalReasoningCapabilities("openai", model).supportsReasoning,
+      true,
+      model,
+    );
+  }
+  // `chatgpt-4o-latest` is a different shape and was already non-reasoning.
+  assert.equal(
+    getExternalReasoningCapabilities("openai", "chatgpt-4o-latest")
+      .supportsReasoning,
+    false,
+  );
+});
+
+test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
     "gpt-5.4": { vision: true, studio_tools: true },
     "gpt-5.6-sol": { vision: true, studio_tools: true },
+    "gpt-6-astra": { vision: true, studio_tools: true },
   });
-  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol"]) {
+  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol", "gpt-6-astra"]) {
     const caps = getExternalReasoningCapabilities("openai_codex", model);
     assert.equal(caps.supportsReasoning, true, model);
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);
@@ -154,7 +244,7 @@ test("generic Custom connections use only their explicit max-output override", (
     32768,
   );
 
-  // the override is provider-owned, so values above Studio's context-length convention
+  // the override is provider-owned, so values above Unsloth's context-length convention
   // stay valid as long as they round-trip safely through JSON
   assert.equal(getExternalMaxOutputTokens("custom", "model", 1048577), 1048577);
   assert.equal(

@@ -69,7 +69,7 @@ def standardize_chat_format(
     elif "texts" in column_names:
         chat_column = "texts"
     else:
-        return dataset  # No chat column found
+        return dataset
 
     def _iter_probe_rows():
         try:
@@ -92,7 +92,7 @@ def standardize_chat_format(
                 continue
             for key, value in message.items():
                 if type(value) is not str:
-                    continue  # Skip non-strings
+                    continue
                 uniques[key].append(value)
 
     if "from" in uniques and "value" in uniques:
@@ -234,10 +234,10 @@ def convert_chatml_to_alpaca(
                 # First assistant message -> output
                 elif role in ["assistant", "gpt", "output"] and not output:
                     output = content
-                    break  # Stop after first assistant response
+                    break
 
             instructions.append(instruction)
-            inputs.append("")  # Alpaca input usually empty
+            inputs.append("")
             outputs.append(output)
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
@@ -448,7 +448,7 @@ def convert_to_vlm_format(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": current_instruction},
-                    {"type": "image", "image": image_data},  # PIL object
+                    {"type": "image", "image": image_data},
                 ],
             },
             {"role": "assistant", "content": [{"type": "text", "text": text_data}]},
@@ -787,7 +787,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     def _resolve_image(image_data):
         """Resolve image data to a PIL Image."""
         if hasattr(image_data, "size") and hasattr(image_data, "mode"):
-            return image_data  # Already PIL
+            return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
                 import fsspec

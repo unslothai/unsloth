@@ -59,12 +59,15 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -95,6 +98,9 @@ const PREFS_KEYS: string[] = [
   // asked to throw away, and a chord bound to something unusable has no
   // escape hatch from this button.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
+  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
+  // transport changes made elsewhere.
+  TRANSPORT_MODE_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
@@ -117,6 +123,16 @@ const PREFS_KEYS: string[] = [
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  // The memory bar's opt-in. Reset All advertises restoring defaults and this
+  // feature's default is off, so leaving the key out left it switched on across
+  // a reset that said it had turned everything back.
+  //
+  // Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
+  // reason the note above gives: it lives in chat-runtime-store, which is in an
+  // import cycle with this file, so the constant would still be in its temporal
+  // dead zone when this module-scope list is built. A test pins this literal
+  // against the store's constant so the two cannot drift apart silently.
+  "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
@@ -631,6 +647,10 @@ export function GeneralTab() {
 
       <DocumentsRagSection />
 
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
+      </SettingsSection>
+
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.uploads.maxUploadSize")}
@@ -723,6 +743,10 @@ export function GeneralTab() {
             {t("settings.general.resetPreferences.action")}
           </Button>
         </SettingsRow>
+        {/* Same section as the reset row: both rewrite state the user cannot easily put
+            back, and the desktop-only repair renders nothing on the web build, which
+            would leave a section header with no rows under it if it had its own. */}
+        <DesktopRepairControl />
       </SettingsSection>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

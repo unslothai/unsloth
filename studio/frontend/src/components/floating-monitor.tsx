@@ -3,11 +3,13 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+
 import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
-import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -241,6 +243,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   // republishing through them would re-render every overlay in the stack for
   // each one, which is most of what made dragging feel heavy.
   useLayoutEffect(() => {
+    void layout;
     const monitor = monitorRef.current;
     if (!(monitor && constraintsElement)) {
       return;
@@ -465,7 +468,9 @@ function FloatingMonitorPanel({
     ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
     : 0;
   const devices = displayedGpu?.devices ?? [];
-  const vramTotal = aggregateGpuMemoryTotalGb(devices);
+  const memoryTotals = gpuMemoryTotalsGb(devices);
+  const vramTotal = memoryTotals.total;
+  const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
@@ -493,6 +498,7 @@ function FloatingMonitorPanel({
       style={{ zIndex }}
     >
       <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
@@ -596,7 +602,12 @@ function FloatingMonitorPanel({
                 </div>
                 <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {formatGiB(vramTotal)}
+                  {hasSharedPool
+                    ? t("settings.resources.environment.vramWithShared", {
+                        vram: formatGiB(memoryTotals.dedicated),
+                        shared: formatGiB(memoryTotals.shared),
+                      })
+                    : formatGiB(vramTotal)}
                 </div>
                 <Progress
                   value={vramUsageKnown ? vramPercent : 0}

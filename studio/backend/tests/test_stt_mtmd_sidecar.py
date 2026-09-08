@@ -1104,7 +1104,7 @@ def test_download_probe_is_memoised_then_dropped_when_a_download_ends(monkeypatc
 
 
 def test_download_probe_expires(monkeypatch):
-    """A cache emptied outside Studio is noticed without a restart."""
+    """A cache emptied outside Unsloth is noticed without a restart."""
     mtmd_mod._forget_downloaded_probe()
     monkeypatch.setattr(mtmd_mod, "_DOWNLOADED_PROBE_TTL_SECONDS", 0.0)
     calls = []

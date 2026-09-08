@@ -168,3 +168,46 @@ def test_schemeless_github_repo_still_routes_to_readme_api():
     assert tools._github_repo_readme_api_url(normalized) == (
         "https://api.github.com/repos/unslothai/unsloth/readme"
     )
+
+
+def _request_url_for(monkeypatch, url):
+    from core.inference import tools
+
+    seen = {}
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            seen["url"] = req.full_url
+            raise RuntimeError("captured")
+
+    monkeypatch.setattr(tools, "_resolve_with_budget", lambda *a: (True, "", "93.184.216.34"))
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a: _Opener())
+    tools._fetch_url_raw(url, timeout = 5)
+    return seen.get("url", "")
+
+
+def test_non_ascii_path_is_percent_encoded(monkeypatch):
+    got = _request_url_for(monkeypatch, "https://de.wikipedia.org/wiki/Künstliche_Intelligenz")
+    assert "K%C3%BCnstliche" in got
+    assert got.isascii(), got
+
+
+def test_non_ascii_query_is_percent_encoded(monkeypatch):
+    got = _request_url_for(monkeypatch, "https://example.com/s?q=café")
+    assert "caf%C3%A9" in got
+    assert got.isascii(), got
+
+
+def test_already_encoded_url_is_not_double_encoded(monkeypatch):
+    got = _request_url_for(monkeypatch, "https://de.wikipedia.org/wiki/K%C3%BCnstliche_Intelligenz")
+    assert "K%C3%BCnstliche" in got
+    assert "%25" not in got
+
+
+def test_ascii_url_is_unchanged(monkeypatch):
+    got = _request_url_for(monkeypatch, "https://example.com/a/b?x=1&y=2")
+    assert got.endswith("/a/b?x=1&y=2"), got

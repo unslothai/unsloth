@@ -276,7 +276,7 @@ def _empty_hf_hub_cache(tmp_path_factory):
 def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     """Point BOTH hub-cache roots at an empty dir, so the suite is host independent.
 
-    Studio pins its live setting out of this env snapshot; huggingface_hub falls back to
+    Unsloth pins its live setting out of this env snapshot; huggingface_hub falls back to
     ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
     download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
     reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
@@ -942,3 +942,28 @@ def real_prequant_safe_globals(monkeypatch):
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     return resolver
+
+
+@pytest.fixture(autouse = True)
+def _no_carried_over_hardware_measurements():
+    """Both hardware caches start empty for every test, as they do in a fresh process.
+
+    The torch build snapshot and the physical GPU inventory are module globals with a
+    60 second TTL, so one test's host -- a suite that makes `import torch` fail, say --
+    would otherwise answer for every test that ran within a minute of it. Cleared
+    afterwards as well, so a test that warms one deliberately does not leak either.
+    """
+    from utils.hardware import hardware as _hw
+
+    def _clear():
+        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
+        # these while it writes, so clearing without waiting lets a previous test's REAL host land
+        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
+        # the order the background refresh takes them in.
+        with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
+            _hw._torch_build_snapshot_cache = None
+            _hw._physical_gpu_inventory_cache = None
+
+    _clear()
+    yield
+    _clear()

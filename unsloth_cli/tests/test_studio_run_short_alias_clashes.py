@@ -126,8 +126,7 @@ def _invoke(monkeypatch, args):
     return captured
 
 
-# (short_flag, value, llama-server long name). All were silently
-# mis-parsed pre-cleanup.
+# (short_flag, value, llama-server long name). All were silently mis-parsed pre-cleanup.
 _PREVIOUSLY_BROKEN = [
     ("-fa", None, "--flash-attn"),
     ("-fit", None, "--fit"),
@@ -174,9 +173,9 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
 
 
-# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The
-# preprocessor promotes EXACT matches back to their typer params and
-# leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through tail.
+# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The preprocessor promotes EXACT matches
+# back to their typer params and leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through
+# tail.
 
 
 @pytest.mark.parametrize(
@@ -334,8 +333,8 @@ def test_consume_helper_preserves_value_when_no_match():
     assert remaining == ["--top-k", "20"]
 
 
-# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8`
-# (port=8, parallel dropped). The rewrite splits to `-np 8` pre-parse.
+# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8` (port=8, parallel dropped).
+# The rewrite splits to `-np 8` pre-parse.
 
 
 def test_expand_np_rewrites_attached_form(monkeypatch):
@@ -419,8 +418,8 @@ def test_consume_helper_rejects_empty_inline_value():
         helper(["-m="], ("-m",), None, "--model")
 
 
-# Gate isolation: importing unsloth_cli from a third-party script must
-# leave its sys.argv intact. Pins the narrow basename set.
+# Gate isolation: importing unsloth_cli from a third-party script must leave its sys.argv intact.
+# Pins the narrow basename set.
 
 
 @pytest.mark.parametrize(

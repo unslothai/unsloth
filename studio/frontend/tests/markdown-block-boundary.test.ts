@@ -16,7 +16,7 @@ import {
  * through `React.lazy`, and it fetches them the first time a reply contains
  * that construct. A rejected import rethrows during render. Before the boundary
  * these tests protect, the nearest catcher was TanStack Router's, so ONE chunk
- * that would not load replaced all of Studio with "Something went wrong!",
+ * that would not load replaced all of Unsloth with "Something went wrong!",
  * unmounted the assistant-ui runtime with it, and left the reply's stream with
  * nothing consuming it.
  *
@@ -340,7 +340,7 @@ test("every markdown block is rendered inside the boundary", () => {
   // quiet revert.
   assert.ok(
     wrappersAroundBlockContent().includes("MarkdownBlockBoundary"),
-    "the block component is rendered outside MarkdownBlockBoundary, so a fence whose highlighter fails to load unmounts all of Studio through the router's error boundary again",
+    "the block component is rendered outside MarkdownBlockBoundary, so a fence whose highlighter fails to load unmounts all of Unsloth through the router's error boundary again",
   );
 });
 

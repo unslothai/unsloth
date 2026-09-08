@@ -183,7 +183,7 @@ class SyntheticDataKit:
         float8_kv_cache = False,
         conservativeness = 1.0,
         token = None,
-        timeout = 1200,  # maybe this is not enough for large models if we need to download
+        timeout = 1200,
         **kwargs,
     ):
         assert type(model_name) is str
@@ -232,7 +232,6 @@ class SyntheticDataKit:
             elif dtype_val == torch.float32:
                 dtype_val = "float32"
             engine_args["dtype"] = dtype_val
-            # Convert torch dtype to valid CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
@@ -254,9 +253,7 @@ class SyntheticDataKit:
         for key, value in engine_args.items():
             flag = key.replace("_", "-")
             if key == "compilation_config":
-                # [TODO] Unsure why subprocess doesn't process json properly
-                # Also -O3 breaks on T4!
-                # subprocess_commands += ["-O3",]
+                # -O3 breaks on T4.
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
@@ -265,10 +262,8 @@ class SyntheticDataKit:
                     "--" + flag,
                 ]
             elif which == "False":
-                # Ignore flag
                 pass
             elif which == "None":
-                # Ignore flag
                 pass
             else:
                 subprocess_commands += [
@@ -282,7 +277,9 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
+        # both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on"
+        # (0.19), with the optional server index some versions insert
+        ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
@@ -297,10 +294,11 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            ready_regex = None,
+            # vLLM >= 0.19 logs startup lines to STDERR
+            ready_regex = ready_re,
             text = False,
         )
-        # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
+        # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
 
         self._await_vllm_server(timeout = timeout)
         print("vLLM Server Ready Detected")
@@ -341,24 +339,26 @@ class SyntheticDataKit:
         """
         deadline = _deadline(timeout)
         while True:
-            # Cap each lap at the time left: a flat `poll_interval` overshoots
-            # any shorter timeout, and readiness inside that overshoot would
-            # return success from an expired deadline. No deadline means full
-            # laps, which still notice a dead child where the bare
-            # `Event.wait(None)` this replaced would have hung forever.
+            # Cap each lap at the time left: a flat poll_interval overshoots any shorter timeout, and
+            # readiness inside that overshoot would return success from an expired deadline. No deadline means
+            # full laps, which still notice a dead child where the bare Event.wait(None) this replaced hung.
             remaining = _remaining(deadline)
             if remaining is not None and remaining <= 0:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
             wait = poll_interval if remaining is None else min(poll_interval, remaining)
             if self.stdout_capture.wait_for_ready(timeout = wait):
                 return
+            # checked BEFORE the exit/closed arms, so a server that is ready on
+            # stderr is never reported as never having started
+            if self.stderr_capture.wait_for_ready(timeout = 0):
+                return
             returncode = self.vllm_process.poll()
             if returncode is not None:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
-            # Expiry is checked at the top, so a dead or closed child keeps
-            # its own message rather than being reported as a timeout.
+            # Expiry is checked at the top, so a dead or closed child keeps its own message rather than being
+            # reported as a timeout.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
@@ -412,8 +412,7 @@ class SyntheticDataKit:
             response = requests.get("http://localhost:8000/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
-            # ConnectionError alone let a read timeout escape as a stray
-            # traceback out of the readiness loop.
+            # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
             return False
 
     def cleanup(self):
@@ -445,7 +444,6 @@ class SyntheticDataKit:
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Delete vLLM module as well
         if hasattr(self, "_delete_vllm"):
             self._delete_vllm(llm = None)
 
@@ -477,8 +475,8 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
-            # A non-positive stride (max_tokens - overlap) makes the n_chunks
-            # computation below divide by zero or go negative, so reject it.
+            # A non-positive stride (max_tokens - overlap) makes the n_chunks computation below divide by zero
+            # or go negative.
             raise RuntimeError(
                 f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
@@ -489,21 +487,16 @@ class SyntheticDataKit:
         # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
-            # The whole document fits in one chunk window, so emit it as a single
-            # chunk. Routing it through the multi-chunk path below would drop it
-            # (the linspace/stack pairing emits one fewer range than boundary
-            # points) or, for a document shorter than the overlap, slice the wrong
-            # tokens via negative start indices. Empty doc -> no chunk.
+            # The whole document fits one chunk window: the multi-chunk path below would drop it (the
+            # linspace/stack pairing emits one fewer range than boundary points) or, for a document shorter
+            # than the overlap, slice the wrong tokens via negative start indices.
             boundaries = [[0, length]] if length > 0 else []
         else:
-            # length > max_tokens > overlap here, so length - overlap > 0 and the
-            # linspace boundaries below are always non-negative.
-            # Minimal count: overlapping chunks cover `length` in
-            # ceil((length - overlap) / stride) chunks, not ceil(length / stride)
-            # which over-splits just past a stride multiple.
+            # Minimal count: overlapping chunks cover `length` in ceil((length - overlap) / stride) chunks, not
+            # ceil(length / stride), which over-splits just past a stride multiple.
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # n_chunks + 1 points: [:-1]/[1:] pairing yields n_chunks ranges; using
-            # n_chunks points gave one fewer, oversized chunk (over max_tokens).
+            # n_chunks + 1 points: the [:-1]/[1:] pairing yields n_chunks ranges; n_chunks points gave one
+            # fewer, oversized chunk (over max_tokens).
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()

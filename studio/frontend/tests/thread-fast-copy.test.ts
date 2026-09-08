@@ -589,7 +589,7 @@ function el(
   tagName: string,
   options: {
     alt?: string;
-    /** What a class rule gives this element's visibility, e.g. Studio's `invisible`. */
+    /** What a class rule gives this element's visibility, e.g. Unsloth's `invisible`. */
     ruleVisibility?: string;
     /** [property, value, priority] triples, as an inline style attribute. */
     inline?: ReadonlyArray<readonly [string, string, string?]>;
@@ -1304,7 +1304,7 @@ test("an image with an empty alt contributes nothing", () => {
 });
 
 test("the alt text holder has no box of its own", () => {
-  // Studio's message images are display:block, so an inline holder placed beside one sits between
+  // Unsloth's message images are display:block, so an inline holder placed beside one sits between
   // two blocks, the engine wraps it in an anonymous block, and the alt text arrives with a leading
   // newline the clipboard does not have. Measured on the real thread as 40,650 characters against
   // the clipboard's 40,648, two images each contributing one extra break. Taking the image out of

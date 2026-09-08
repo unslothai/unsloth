@@ -100,6 +100,28 @@ def test_audio_uses_recommended_sampling_when_omitted(monkeypatch):
     assert captured["top_k"] == 64
 
 
+@pytest.mark.parametrize(
+    "model_id",
+    (
+        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M",
+    ),
+)
+def test_moss_uses_the_published_audio_sampling_defaults(model_id):
+    expected = {
+        "temperature": 1.7,
+        "top_p": 0.8,
+        "top_k": 25,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    assert ic.get_family_inference_params(model_id) == expected
+    resolved = ic.load_inference_config(model_id)
+    assert {key: resolved[key] for key in ("temperature", "top_p", "top_k", "min_p")} == {
+        key: expected[key] for key in ("temperature", "top_p", "top_k", "min_p")
+    }
+
+
 def test_audio_operator_pin_overrides_client(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)

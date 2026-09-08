@@ -6,8 +6,8 @@
 // GGUF metadata arriving after a job was adopted does exactly that. Hiding the
 // ETA for one poll beats showing one for a size that is no longer the target.
 //
-// Also pins that the voice poller ignores a hidden tab's throttled callbacks,
-// the way the hub poll loop already does.
+// Also pins that the poll loop ignores a hidden tab's throttled callbacks: its
+// gaps time the poller, not the transfer, and would read as the burst rate.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -59,21 +59,28 @@ test("a total that grows drops the ETA measured against the old one", () => {
   );
 });
 
-test("the voice poller drops a hidden tab's throttled samples", () => {
-  const source = readFileSync(
+test("the poll loop drops a hidden tab's throttled samples", () => {
+  // Voice used to run a second estimator of its own for a progress bar beside
+  // the shared panel. Both are gone, so this is the only one left to guard.
+  const voice = readFileSync(
     new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
     "utf8",
   );
-  const guard = source.indexOf("document.hidden");
-  assert.ok(guard > 0, "the voice poller should skip a hidden tab");
-  const clear = source.indexOf("downloadSamplesRef.current.length = 0", guard);
-  const sample = source.indexOf(
-    "appendSample(downloadSamplesRef.current",
-    guard,
+  assert.ok(
+    !voice.includes("downloadSamplesRef"),
+    "voice no longer estimates a rate of its own",
   );
+
+  const source = readFileSync(
+    new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
+    "utf8",
+  );
+  const guard = source.indexOf("document.hidden");
+  assert.ok(guard > 0, "the poll loop should skip a hidden tab");
+  const clear = source.indexOf("rt.speedSamples.length = 0", guard);
   assert.ok(clear > 0, "a hidden tab should clear the samples");
   assert.ok(
-    sample < 0 || clear < sample,
+    clear - guard < 120,
     "the hidden-tab branch must clear rather than sample",
   );
 });

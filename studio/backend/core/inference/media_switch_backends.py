@@ -87,7 +87,7 @@ def backend_busy(backend: Any) -> bool:
 def other_backend_busy(owner: str) -> bool:
     """Whether the other media backend is loading or generating, off the loop.
 
-    Guarded and lazy: a Studio that never opened the other page has no backend to ask, and
+    Guarded and lazy: an Unsloth that never opened the other page has no backend to ask, and
     importing one just to find that out would drag torch in for nothing.
     """
     import sys
