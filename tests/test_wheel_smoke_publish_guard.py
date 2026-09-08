@@ -165,8 +165,7 @@ def _lint_doc():
 def test_this_module_runs_in_the_unfiltered_guard_job():
     """Named explicitly, because testpaths means nothing collects it by accident."""
     runs = "\n".join(
-        str(step.get("run", ""))
-        for step in _lint_doc()["jobs"]["workflow-trigger-lint"]["steps"]
+        str(step.get("run", "")) for step in _lint_doc()["jobs"]["workflow-trigger-lint"]["steps"]
     )
     assert Path(__file__).name in runs, (
         f"workflow-trigger-lint does not name {Path(__file__).name}. It is the only job "
