@@ -481,7 +481,9 @@ def test_a_hybrid_host_running_cuda_torch_keeps_the_pytorch_message(monkeypatch,
 
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(
-        hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd", "nvidia"}),
+        hardware,
+        "CHAT_ONLY_MISMATCH_VENDORS",
+        frozenset({"amd", "nvidia"}),
     )
     monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: False)
     monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
@@ -539,9 +541,7 @@ def test_a_cpu_only_llama_build_is_not_sent_after_the_groups(monkeypatch, linux)
         "_installed_ggml_backends",
         staticmethod(lambda _b: frozenset({"cpu", "base"})),
     )
-    assert "usermod" not in LlamaCppBackend._explain_empty_gpu_probe(
-        "/nonexistent/llama-server"
-    )
+    assert "usermod" not in LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
 
 
 def test_a_mask_is_reported_alongside_the_permission_hint(monkeypatch, linux):
@@ -597,9 +597,7 @@ def test_the_hint_says_so_when_kfd_does_not_exist_at_all(monkeypatch, linux):
     assert "kernel stack" in hint
 
 
-def test_a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack(
-    monkeypatch, linux
-):
+def test_a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack(monkeypatch, linux):
     """The control: /dev/kfd exists, so the stack is loaded and the groups are the whole
     repair. Telling this user to install it would be the #10466 mistake."""
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
@@ -607,9 +605,7 @@ def test_a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack(
     assert "kernel stack" not in amd.amd_node_permission_hint()
 
 
-def test_a_vulkan_caller_is_not_told_about_a_kernel_stack_it_does_not_need(
-    monkeypatch, linux
-):
+def test_a_vulkan_caller_is_not_told_about_a_kernel_stack_it_does_not_need(monkeypatch, linux):
     """Vulkan never opens /dev/kfd, so its absence is not that caller's problem."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
     assert "kernel stack" not in amd.amd_node_permission_hint(needs_kfd = False)
