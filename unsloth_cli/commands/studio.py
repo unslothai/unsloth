@@ -3127,6 +3127,10 @@ def run(
         if start_api_key_marker:
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
         try:
+            # Before the platform branch: the Windows hand-off inherits this environment as
+            # the exec does, and guarding the exec alone left it free to chain old children.
+            _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)
+            _guard_reexec_loop(str(studio_venv_dir))
             if sys.platform == "win32":
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
                     popen_kwargs = {}
@@ -3139,8 +3143,6 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
-                _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)
-                _guard_reexec_loop(str(studio_venv_dir))
                 os.execvp(str(studio_bin), args)
         finally:
             # execvp doesn't return on success; restore env after a Windows wait or a failed launch.
