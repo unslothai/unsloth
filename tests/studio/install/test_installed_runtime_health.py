@@ -158,10 +158,15 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
     (root / "build" / "bin" / "Release").mkdir(parents = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
     windows = ILP.detect_host()
-    windows = type(windows)(**{
-        **windows.__dict__,
-        "system": "Windows", "is_windows": True, "is_linux": False, "is_macos": False,
-    })
+    windows = type(windows)(
+        **{
+            **windows.__dict__,
+            "system": "Windows",
+            "is_windows": True,
+            "is_linux": False,
+            "is_macos": False,
+        }
+    )
     # Windows looks in build/bin/Release, which exists; a Linux host looks in build/bin.
     assert ILP.installed_runtime_health(root, host = windows)[1] != "llama_runtime_dir_missing"
 

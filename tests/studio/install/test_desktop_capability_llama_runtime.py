@@ -102,7 +102,12 @@ def _console_script() -> Path:
     return VENV_PYTHON.parent / name
 
 
-def _capabilities(install_dir: Path, tmp_path: Path, *, json_output: bool = True):
+def _capabilities(
+    install_dir: Path,
+    tmp_path: Path,
+    *,
+    json_output: bool = True,
+):
     """Run the installed console script against ``install_dir`` and return (rc, stdout).
 
     UNSLOTH_LLAMA_CPP_PATH is the same override ``default_managed_llama_dir`` honours in
@@ -187,9 +192,9 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
         assert key in payload, f"{key} disappeared from the capability payload"
         # bool is a subclass of int, so an int field must not accept a bool.
         if expected is int:
-            assert isinstance(payload[key], int) and not isinstance(payload[key], bool), (
-                f"{key} is {payload[key]!r}, not an int"
-            )
+            assert isinstance(payload[key], int) and not isinstance(
+                payload[key], bool
+            ), f"{key} is {payload[key]!r}, not an int"
         else:
             assert isinstance(payload[key], expected), f"{key} is {payload[key]!r}"
     assert payload["desktop_protocol_version"] == EXPECTED_PROTOCOL_VERSION
@@ -223,9 +228,9 @@ def test_studio_is_importable_from_an_installed_wheel():
     assert result.returncode == 0, result.stderr
     module_file, callable_flag = result.stdout.strip().splitlines()
     assert callable_flag == "True"
-    assert "site-packages" in module_file, (
-        f"resolved to {module_file}, not the installed package; the checkout shadowed it"
-    )
+    assert (
+        "site-packages" in module_file
+    ), f"resolved to {module_file}, not the installed package; the checkout shadowed it"
 
 
 @NEEDS_VENV
@@ -398,9 +403,7 @@ def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
     """Read off the source, so it holds without the venv too. A key added here without a
     matching Option<T> in managed.rs is invisible to the desktop; a key removed breaks it.
     """
-    source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(
-        encoding = "utf-8"
-    )
+    source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     body = source.split("def desktop_capabilities(", 1)[1]
     body = body.split("if json_output:", 1)[0]
     emitted = set(re.findall(r'^\s+"([a-z_]+)":', body, flags = re.MULTILINE))
@@ -436,9 +439,9 @@ def test_the_desktop_reads_every_emitted_key_as_optional():
     fields = dict(re.findall(r"^\s+([a-z_]+):\s*(.+),$", struct_body, flags = re.MULTILINE))
     for key in (*PRE_PR_KEYS, *NEW_KEYS):
         assert key in fields, f"the desktop struct has no field for {key}"
-        assert fields[key].startswith("Option<"), (
-            f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
-        )
+        assert fields[key].startswith(
+            "Option<"
+        ), f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
 
 
 def test_unknown_keys_do_not_break_the_desktop_parse():

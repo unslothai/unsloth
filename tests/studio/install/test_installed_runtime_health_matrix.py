@@ -378,9 +378,7 @@ def test_a_complete_install_of_every_shipped_shape_is_healthy_everywhere(
 
 
 @pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
-def test_removing_any_single_required_file_is_reported_broken(
-    tmp_path, cell, host, backend, shape
-):
+def test_removing_any_single_required_file_is_reported_broken(tmp_path, cell, host, backend, shape):
     """One file at a time, because that is the shape quarantine leaves: the tree is otherwise
     whole, so a check that only looks at the directory or the marker would pass it."""
     marker = shape_with_backend(shape, backend)
@@ -558,9 +556,9 @@ def test_the_verdict_does_not_move_with_the_detected_gpu(tmp_path, host_id, host
         healthy_verdicts.add(ILP.installed_runtime_health(healthy, host = variant))
         gutted_verdicts.add(ILP.installed_runtime_health(gutted, host = variant))
     assert healthy_verdicts == {(True, "")}, f"{host_id}-{backend}: {healthy_verdicts}"
-    assert gutted_verdicts == {(False, "llama_runtime_payload_incomplete")}, (
-        f"{host_id}-{backend}: {gutted_verdicts}"
-    )
+    assert gutted_verdicts == {
+        (False, "llama_runtime_payload_incomplete")
+    }, f"{host_id}-{backend}: {gutted_verdicts}"
 
 
 # ---------------------------------------------------------------------------

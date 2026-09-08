@@ -7158,9 +7158,7 @@ def platform_only_host() -> HostInfo:
 
 
 def installed_runtime_health(
-    install_dir: Path | None = None,
-    *,
-    host: HostInfo | None = None,
+    install_dir: Path | None = None, *, host: HostInfo | None = None
 ) -> tuple[bool, str] | None:
     """(ok, reason) for the managed llama.cpp runtime, or None when none is installed.
 
