@@ -27751,7 +27751,7 @@ def _responses_reasoning_output_item(
     return ResponsesOutputReasoning(**kwargs).model_dump()
 
 
-def _reject_unserviceable_responses_attachment(part) -> None:
+def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
     """Refuse an attachment the local adapter cannot serve, instead of dropping it.
 
     Same four rules and same wording as ``_responses_tool_output_content``, which already
@@ -27788,14 +27788,26 @@ def _reject_unserviceable_responses_attachment(part) -> None:
                 "input",
                 "Responses input_image message detail must be auto, low, high, or original.",
             )
+        if role != "user":
+            _raise_unsupported_openai_parameter(
+                "input",
+                f"Responses input_image message parts are only supported on user messages; "
+                f"{role} content is flattened to text by the local adapter.",
+            )
 
 
 def _reject_unserviceable_responses_attachments(item) -> None:
-    """Run the attachment refusal over one input message's content parts."""
+    """Run the attachment refusal over one input message's content parts.
+
+    Role matters for images: only a user turn keeps its parts. Every other role is flattened
+    by ``_responses_message_text``, which keeps text and dropped the image in silence, because
+    Chat Completions wants a plain string on system and assistant and strict templates reject
+    an array there. So an image on those roles cannot be forwarded, only refused.
+    """
     if isinstance(item.content, str):
         return
     for part in item.content or []:
-        _reject_unserviceable_responses_attachment(part)
+        _reject_unserviceable_responses_attachment(part, role = item.role)
 
 
 def _reject_unknown_responses_message_part(part) -> None:

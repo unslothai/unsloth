@@ -105,6 +105,17 @@ def test_the_route_refuses_an_attachment_on_a_non_user_turn(role):
     assert "input_file" in response.json()["detail"]["error"]["message"]
 
 
+@pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+def test_the_route_refuses_a_servable_image_on_a_role_that_flattens(role):
+    # These roles are flattened to a string, so the image was dropped and the turn answered.
+    part = {"type": "input_image", "image_url": "https://example.com/a.png"}
+    with _route_client() as client:
+        response = client.post("/v1/responses", json = _body(part, role = role))
+
+    assert response.status_code == 400, response.text
+    assert "only supported on user messages" in response.json()["detail"]["error"]["message"]
+
+
 @pytest.mark.parametrize("case", _REFUSED_PARTS, ids = _part_id)
 def test_the_refusal_lands_before_the_model_switch(case, monkeypatch):
     """The route holds this for its other refusals: a 400 must not evict the model."""

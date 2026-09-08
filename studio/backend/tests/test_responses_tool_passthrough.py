@@ -1072,22 +1072,69 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
         # Only attachments are hoisted, so an unmodelled text part passes here while the
-        # same part is refused on a user turn.
+        # same part is refused on a user turn. Every image is refused on these roles,
+        # servable or not: _responses_message_text keeps text and would drop it.
         part, refused, needle = case
-        attachment = part["type"] in ("input_file", "input_image")
         payload = ResponsesRequest(
             input = [
                 {"role": role, "content": [{"type": "input_text", "text": "hi"}, part]},
                 {"role": "user", "content": "go on"},
             ],
         )
-        if refused and attachment:
-            with pytest.raises(HTTPException) as exc:
-                _normalise_responses_input(payload)
-            assert exc.value.status_code == 400
-            assert needle in str(exc.value.detail)
+        if part["type"] == "input_file":
+            expected = needle
+        elif part["type"] == "input_image":
+            expected = needle if refused else "only supported on user messages"
         else:
             assert _normalise_responses_input(payload)
+            return
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert expected in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
+        # The role branches flatten content through _responses_message_text, which keeps only
+        # text, so an image that passed every shape check still vanished. Forwarding it is not
+        # an option: Chat Completions wants a plain string on system and assistant.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        text_part,
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "only supported on user messages" in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    def test_a_servable_image_still_passes_on_a_user_turn(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hi"},
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
 
     def test_instructions_still_merge_when_a_turn_is_servable(self):
         payload = ResponsesRequest(
