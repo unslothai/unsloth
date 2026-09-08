@@ -1086,8 +1086,12 @@ def _base_model_candidates(base_model: str) -> list[str]:
     """
     found: set = set()
     for table in _unsloth_quant_mappers():
-        if base_model in table:
-            _flattened_repo_ids(table[base_model], found)
+        # Both cases: the tables carry the name as written and a lower-cased copy, and
+        # `__get_model_name` looks up the lower-cased one, so it can return a repo id whose
+        # case differs from the entry reached by the recorded spelling.
+        for key in (base_model, base_model.lower()):
+            if key in table:
+                _flattened_repo_ids(table[key], found)
     found.discard(base_model)
     return [base_model] + sorted(repo for repo in found if _is_hub_model_id(repo))
 

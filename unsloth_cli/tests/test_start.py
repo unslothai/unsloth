@@ -4188,6 +4188,15 @@ def test_base_model_candidates_cover_every_table_the_loader_consults():
     assert len(candidates) == len(set(candidates))
 
 
+def test_base_model_candidates_cover_the_case_the_loader_returns():
+    # `__get_model_name` looks the base up by its lower-cased name, so the repo it returns
+    # can be spelled differently from the entry reached by the recorded name. Verified
+    # against a real load: `Qwen/Qwen2.5-0.5B-Instruct` fetches this exact repo id.
+    candidates = start._base_model_candidates("Qwen/Qwen2.5-0.5B-Instruct")
+
+    assert "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit" in candidates
+
+
 def test_quant_mappers_load_without_importing_unsloth():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(start, "_QUANT_MAPPERS", None)
