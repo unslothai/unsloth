@@ -41,8 +41,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-# UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1. auto loads a matching bundle and saves one after the first compiled generation; 1 also re-saves on a hit; 0 disables it.
-# Measured on Qwen-Image (B200): compile hitch 29.1 -> 22.2 s, bit-identical, 7.9 MB bundle. The rest is dynamo tracing + guards, which Mega-cache does not capture.
+# UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1. auto loads a matching bundle and saves one after the first
+# compiled generation; 1 also re-saves on a hit; 0 disables it. Measured on Qwen-Image (B200): compile hitch 29.1 ->
+# 22.2 s, bit-identical, 7.9 MB bundle. The rest is dynamo tracing + guards, which Mega-cache does not capture.
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR: root dir for bundles (default under the workspace).
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 disables the auto save (load-only); 1 keeps it.
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
@@ -71,7 +72,8 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
-    # auto: save by default (without a saved bundle no user gets a warm restart); the SAVE env overrides: "0" load-only, "1" on.
+    # auto: save by default (without a saved bundle no user gets a warm restart); the SAVE env overrides: "0" load-only,
+    # "1" on.
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -85,7 +87,7 @@ def _triton_version() -> Optional[str]:
     try:
         import triton  # noqa: PLC0415
         return str(getattr(triton, "__version__", None))
-    except Exception:  # noqa: BLE001 — triton optional
+    except Exception:  # noqa: BLE001 - triton optional
         return None
 
 
@@ -118,14 +120,15 @@ def environment_fingerprint() -> dict[str, Any]:
         fp["torch"] = str(torch.__version__)
         fp["torch_cuda"] = str(torch.version.cuda)
         if torch.cuda.is_available():
-            # The CURRENT device, not 0: a load pinned to another card compiles for that
-            # architecture, and keying the bundle by GPU 0 lets two cards share or overwrite
-            # each other's supposedly architecture-specific artifacts.
+            # the CURRENT device, not 0: keying by GPU 0 lets two cards share or overwrite each other's
+            # architecture-specific artifacts
+            # The CURRENT device, not 0: a load pinned to another card compiles for that architecture, and keying the
+            # bundle by GPU 0 lets two cards share or overwrite each other's supposedly architecture-specific artifacts.
             index = torch.cuda.current_device()
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-    except Exception:  # noqa: BLE001 — best-effort
+    except Exception:  # noqa: BLE001 - best-effort
         pass
     return fp
 
@@ -240,7 +243,6 @@ def begin(
         mode = mode,
     )
 
-    # Isolate inductor's on-disk cache per key so bundles never cross-contaminate.
     try:
         cdir.mkdir(parents = True, exist_ok = True)
         ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
@@ -253,7 +255,8 @@ def begin(
     if ctx.bundle.exists() and ctx.manifest_path.exists():
         ctx.hit = _try_load(ctx, logger)
         if ctx.hit and mode != "on":
-            # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape re-dirties via register_shape; mode "on" keeps saving.
+            # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape re-dirties via
+            # register_shape; mode "on" keeps saving.
             ctx.saved = True
     else:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
@@ -274,7 +277,7 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
         if key not in ctx.shapes:
             ctx.shapes.add(key)
             ctx.saved = False
-    except Exception:  # noqa: BLE001 — bookkeeping only
+    except Exception:  # noqa: BLE001 - bookkeeping only
         pass
 
 
@@ -309,10 +312,9 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
         if info is None:
             _warn(logger, "compile-cache: load_cache_artifacts returned None (no hit)")
             return False
-        # Static-compile shapes this bundle covers (see register_shape).
         try:
             ctx.shapes = {tuple(s) for s in manifest.get("shapes", [])}
-        except Exception:  # noqa: BLE001 — coverage bookkeeping only
+        except Exception:  # noqa: BLE001 - coverage bookkeeping only
             ctx.shapes = set()
         _info(logger, f"compile-cache: loaded bundle for key {ctx.key}")
         return True

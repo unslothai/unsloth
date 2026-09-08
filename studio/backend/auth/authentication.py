@@ -91,7 +91,11 @@ def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentia
 
 def _request_would_use_keyless(request: Any) -> bool:
     """Classify a request before the security dependency has recorded its result."""
-    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
+    from utils.keyless_api_access import (
+        APPROVED_DUMMY_BEARERS,
+        is_empty_bearer,
+        keyless_request_allowed,
+    )
 
     if not keyless_request_allowed(request):
         return False
@@ -108,6 +112,8 @@ def _request_would_use_keyless(request: Any) -> bool:
         return True
     if len(values) != 1:
         return False
+    if is_empty_bearer(values[0]):
+        return True
     scheme, token = get_authorization_scheme_param(values[0])
     return scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS
 
@@ -145,6 +151,7 @@ class _BearerOrKeyless(HTTPBearer):
     async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
         from utils.keyless_api_access import (
             APPROVED_DUMMY_BEARERS,
+            is_empty_bearer,
             keyless_request_allowed,
             mark_keyless_admission,
             request_was_admitted_keyless,
@@ -171,7 +178,7 @@ class _BearerOrKeyless(HTTPBearer):
             if recorded is None
             else recorded
         )
-        if not authorization and eligible:
+        if (not authorization or is_empty_bearer(header)) and eligible:
             mark_keyless_admission(request, True)
             return _KEYLESS_CREDENTIALS
         dummy = eligible and usable_bearer and token in APPROVED_DUMMY_BEARERS
@@ -187,7 +194,7 @@ class _BearerOrKeyless(HTTPBearer):
 
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
-security = _BearerOrKeyless(scheme_name = "HTTPBearer")  # Reads Authorization: Bearer <token>
+security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -365,9 +372,10 @@ async def credentials_for_token(
     """
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
-    # A real token is authoritative and never needs keyless classification. The
-    # remaining settings/listener reads use SQLite and DNS, so keep them off the
-    # event loop just like the normal credential lookup path.
+    # /api/health slices the bearer out itself, so a blank one arrives as "", not as None.
+    if token is not None and not token.strip():
+        token = None
+    # Settings/listener reads hit SQLite and DNS, so keep them off the event loop.
     if token and token not in APPROVED_DUMMY_BEARERS:
         return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
     eligible = await run_in_threadpool(keyless_request_allowed, request)
@@ -487,7 +495,6 @@ async def _get_current_credential(
 
     token = credentials.credentials
 
-    # --- API key path (sk-unsloth-...) ---
     if token.startswith(API_KEY_PREFIX):
         verified = await run_in_threadpool(validate_api_key_with_credential, token)
         if verified is None:
@@ -498,7 +505,6 @@ async def _get_current_credential(
         username, secret = verified
         return username, credential_generation(secret)
 
-    # --- JWT path ---
     subject = _decode_subject_without_verification(token)
     if subject is None:
         raise HTTPException(

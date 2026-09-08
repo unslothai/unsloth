@@ -16,11 +16,7 @@ logger = get_logger(__name__)
 
 # Opening a cloud placeholder for data recalls it. These attributes are available through
 # ``stat_result.st_file_attributes`` on Windows without reading file contents.
-_WINDOWS_CONTENT_RECALL_ATTRIBUTES = (
-    0x00001000  # FILE_ATTRIBUTE_OFFLINE
-    | 0x00040000  # FILE_ATTRIBUTE_RECALL_ON_OPEN
-    | 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-)
+_WINDOWS_CONTENT_RECALL_ATTRIBUTES = 0x00001000 | 0x00040000 | 0x00400000
 
 
 def file_contents_available_locally(path, stat_result = None) -> bool:
@@ -37,12 +33,11 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
 
 
+# A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the
+# way the real file does; only the magic bytes settle it.
+# The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own
+# "._model.gguf" is a real model.
 # ── macOS Finder metadata companions ───────────────────────────
-# A volume without native xattrs (exFAT, FAT, most SMB and NFS) makes macOS keep a file's xattrs
-# in a "._" companion carrying the same extension, so it answers every name-shaped question the
-# way the real file does and sorts ahead of it. Nothing may be refused for the prefix alone: a
-# user's own "._model.gguf" is a real model, and only the magic bytes settle it.
-
 _MAGIC = b"\x00\x05\x16\x07"
 
 PathLike = TypeVar("PathLike", str, Path)
@@ -238,15 +233,10 @@ def is_local_path(path: str) -> bool:
 
     # Obvious HF patterns
     if path.count("/") == 1 and not path.startswith(("/", ".", "~")):
-        return False  # Looks like org/model format
+        return False
 
     # Filesystem indicators
-    return (
-        path.startswith(("/", ".", "~"))  # Unix absolute/relative
-        or ":" in path  # Windows drive or URL
-        or "\\" in path  # Windows separator
-        or os.path.isabs(path)  # System-absolute
-    )
+    return path.startswith(("/", ".", "~")) or ":" in path or "\\" in path or os.path.isabs(path)
 
 
 def get_cache_path(model_name: str) -> Optional[Path]:
@@ -404,7 +394,7 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
 
     if expect_dir:
         try:
-            entry = os.lstat(path)  # No-follow, and the only stat here.
+            entry = os.lstat(path)
         except OSError as exc:
             raise FileNotFoundError(str(path)) from exc
         if not stat_module.S_ISDIR(entry.st_mode):

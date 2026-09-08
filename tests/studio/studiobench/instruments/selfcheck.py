@@ -55,16 +55,16 @@ from ..scoring.schema import ExcludedCell, Measure
 
 STALL_TOLERANCE_MS = 20.0
 INJECTED_STALL_MS = 120.0
-#: Milliseconds of main-thread time burned per SSE chunk when the streaming-cost injection is
-#: armed. Sized against what it has to stand in for: preprocessLaTeX over a 96,000 character reply
-#: is projected at 246 ms across a whole stream, so a per-chunk figure in the low single digits is
-#: the same ORDER as the effect the metric is meant to resolve, not a boulder it cannot miss.
+#: Milliseconds of main-thread time burned per SSE chunk when the streaming-cost injection is armed.
+#: Sized against what it stands in for: preprocessLaTeX over a 96,000 character reply is projected
+#: at 246 ms across a whole stream, so a per-chunk figure in the low single digits is the same ORDER
+#: as the effect the metric must resolve.
 INJECTED_STREAM_COST_MS = 3.0
 #: The share of injected cost `stream_cost` must read back. Not 1.0: the metric measures the task
 #: chain from the chunk to the event loop draining, and a burn queued as a microtask lands inside
-#: that chain but the chain also contains the app's own work, so recovery is bounded below by
-#: attribution and above by nothing. Under-recovery is the failure that matters, because a metric
-#: that recovers a quarter of a known cost will under-report an unknown one by the same factor.
+#: that chain but so does the app's own work. Under-recovery is the failure that matters, because a
+#: metric that recovers a quarter of a known cost will under-report an unknown one by the same
+#: factor.
 MIN_STREAM_COST_RECOVERY = 0.70
 INJECTED_INPUT_DELAY_MS = 400.0
 MIN_INPUT_P95_SHIFT_MS = 350.0
@@ -143,8 +143,9 @@ class SelfCheckReport:
         return {"ok": self.ok, "gates": [gate.to_json() for gate in self.gates]}
 
 
-# ---------------------------------------------------------------------------------------
 # pure evaluators
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -446,13 +447,12 @@ def evaluate_tri_clock(
     )
 
 
-# ---------------------------------------------------------------------------------------
 # browser-side snippets and drivers
+
+#: Burns a known amount of main-thread time once, on the next frame. A busy wait, not a sleep: a
+#: sleep is recovered through a different scheduler path than a blocked main thread.
 # ---------------------------------------------------------------------------------------
 
-#: Burns a known amount of main-thread time once, on the next frame. A busy wait, not a sleep:
-#: a sleep is recovered through a different scheduler path than a blocked main thread, which is
-#: the thing being calibrated.
 STALL_INJECT_JS = """
 (stallMs) => {
   return new Promise((resolve) => {
@@ -465,20 +465,17 @@ STALL_INJECT_JS = """
 }
 """
 
-#: Burns a known amount of main-thread time PER SSE CHUNK, inside the task chain that chunk
-#: starts. This is the streaming analogue of STALL_INJECT_JS: a stall injected once tests whether
-#: the frame recorder is watching the right window, and this tests whether the streaming-cost
-#: accumulator integrates a cost spread thinly across a whole stream, which is the shape of every
-#: effect it was built for and the shape a single-action metric cannot see.
-#:
-#: THE BURN IS QUEUED AS A MICROTASK, not run inline in the decode wrapper, and that is what makes
-#: the check independent of wrapper order. `add_init_script` runs scripts in the order they were
-#: added, and the instrument's own TextDecoder wrapper is installed by `Instrument.attach` after
-#: the scripts assembled in __main__. Whichever wrapper ends up outermost, a microtask queued
-#: during the decode runs after the current task's synchronous code and before the MessageChannel
-#: macrotask that closes the measured chain -- so the burn is inside the chain either way. Burning
-#: inline would land it before the accumulator timestamps the chunk under one ordering and after
-#: it under the other, and the check would silently measure nothing.
+#: Burns a known amount of main-thread time PER SSE CHUNK, inside the task chain that chunk starts.
+#: The streaming analogue of STALL_INJECT_JS: this tests whether the streaming-cost accumulator
+#: integrates a cost spread thinly across a whole stream, which is the shape of every effect it was
+#: built for.
+#: THE BURN IS QUEUED AS A MICROTASK, not run inline in the decode wrapper, which makes the check
+#: independent of wrapper order. `add_init_script` runs scripts in the order added and the
+#: instrument's own TextDecoder wrapper is installed by `Instrument.attach` after the scripts
+#: assembled in __main__; whichever ends up outermost, a microtask queued during the decode runs
+#: after the current task's synchronous code and before the MessageChannel macrotask that closes
+#: the chain. Burning inline would land it before the accumulator timestamps the chunk under one
+#: ordering and after it under the other.
 STREAM_COST_INJECT_JS = """
 (() => {
   if (window.__sbStreamCostInject) { return; }
@@ -582,7 +579,7 @@ INPUT_DELAY_INIT_JS = """
 })();
 """
 
-#: Reads `supportedEntryTypes` directly. Never a try/catch around observe().
+#:Reads `supportedEntryTypes` directly. Never a try/catch around observe().
 LONGTASK_SUPPORT_JS = """
 () => {
   try {

@@ -2,22 +2,33 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// lan-access-section.tsx pulls in hugeicons, so only its pure helpers are tested here
+// lan-access-section.tsx pulls in hugeicons, so runtime tests stay on pure helpers.
 import {
   type ApiLanAccessStatus,
+  type LanAccessStatus,
   keylessLanAccessDescription,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
+  lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
   normalizeLanAccessStatus,
+  validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
 
 const LAN = "http://192.168.1.24:8888";
 const SECOND = "http://10.0.0.7:8888";
 const PUBLIC = "http://64.227.100.5:8888";
+const SECTION_SOURCE = readFileSync(
+  new URL(
+    "../src/features/settings/components/lan-access-section.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 function apiStatus(over: Partial<ApiLanAccessStatus> = {}): ApiLanAccessStatus {
   return {
@@ -42,6 +53,9 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       error: null,
       // biome-ignore lint/style/useNamingConvention: API schema
       auto_start: true,
+
+      configured_port: 43210,
+      active_port: 43210,
       // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -50,6 +64,10 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       can_stop: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       block_reason: null,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      bind_host: "0.0.0.0",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      wildcard_bind: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       serves_web_ui: true,
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -62,10 +80,16 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     publicUrls: [],
     error: null,
     autoStart: true,
+
+    portConfigurationSupported: true,
+    configuredPort: 43210,
+    activePort: 43210,
     managedBy: "settings",
     canStart: false,
     canStop: true,
     blockReason: null,
+    bindHost: "0.0.0.0",
+    wildcardBind: true,
     servesWebUi: true,
     keylessLanEligible: true,
     keylessScope: "off",
@@ -78,12 +102,51 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.deepEqual(s.urls, []);
   assert.deepEqual(s.publicUrls, []);
   assert.equal(s.error, null);
+
+  assert.equal(s.configuredPort, null);
+  assert.equal(s.activePort, null);
+  assert.equal(s.portConfigurationSupported, false);
+  assert.equal(lanAccessPortReadOnly(s), true);
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
+  assert.equal(s.bindHost, null);
+  assert.equal(s.wildcardBind, false);
   assert.equal(s.servesWebUi, true);
   assert.equal(s.keylessLanEligible, false);
   assert.equal(s.keylessScope, "off");
   assert.equal(s.keylessTools, false);
+});
+
+test("an explicit automatic port remains distinct from an old backend", () => {
+  const s = normalizeLanAccessStatus(
+    apiStatus({ configured_port: null, active_port: null }),
+  );
+  assert.equal(s.portConfigurationSupported, true);
+  assert.equal(s.configuredPort, null);
+  assert.equal(lanAccessPortReadOnly(s), false);
+});
+
+test("the port form is capability-gated and keeps its live error region mounted", () => {
+  assert.equal(
+    SECTION_SOURCE.match(/["'`]Port["'`]/g)?.length,
+    1,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /\{status\?\.portConfigurationSupported\s*\?\s*\(\s*<SettingsRow\s+label="Port"/,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /aria-describedby=\{portErrorVisible\s*\?\s*portErrorId\s*:\s*undefined\}/,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /<\/div>\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
+  );
+  assert.doesNotMatch(
+    SECTION_SOURCE,
+    /\{portErrorVisible\s*\?\s*\(\s*<span\s+id=\{portErrorId\}/,
+  );
 });
 
 test("keyless state and messaging preserve every security boundary", () => {
@@ -193,6 +256,41 @@ test("auto-start is read-only with no status, or under Colab", () => {
   );
 });
 
+test("port editing is limited to stopped, non-Colab LAN access", () => {
+  assert.equal(lanAccessPortReadOnly(null), true);
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(
+        apiStatus({ state: "online", configured_port: null }),
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(
+        apiStatus({ block_reason: "colab", configured_port: null }),
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(apiStatus({ configured_port: null })),
+    ),
+    false,
+  );
+});
+
+test("custom LAN ports accept only whole ports in range", () => {
+  for (const value of ["1", "8888", "43210", "65535"]) {
+    assert.equal(validLanAccessPort(value), true, value);
+  }
+  for (const value of ["", "0", "1.5", "65536", "nope"]) {
+    assert.equal(validLanAccessPort(value), false, value);
+  }
+});
+
 // ── lanAccessStopDisconnectsOrigin ──
 // a false negative here leaves the page polling an origin its own stop just killed
 
@@ -242,7 +340,23 @@ test("stop-disconnects does not treat a different port as the same origin", () =
   );
 });
 
+test("stop-disconnects accepts a bracketed IPv6 LAN origin", () => {
+  const url = "http://[fd00::24]:8888";
+  assert.equal(lanAccessStopDisconnectsOrigin([url], url), true);
+});
+
 // ── lanAccessBlockMessage ──
+
+function blocked(
+  reason: string,
+  over: Partial<LanAccessStatus> = {},
+): LanAccessStatus {
+  return {
+    ...normalizeLanAccessStatus(apiStatus()),
+    blockReason: reason,
+    ...over,
+  };
+}
 
 test("every block reason the backend can emit has a message", () => {
   // mirrors the block_reason chain in utils/lan_access_settings.py
@@ -255,7 +369,10 @@ test("every block reason the backend can emit has a message", () => {
   ];
   for (const reason of reasons) {
     for (const isDesktop of [true, false]) {
-      const msg = lanAccessBlockMessage(reason, isDesktop);
+      const msg = lanAccessBlockMessage(
+        blocked(reason, { bindHost: "0.0.0.0", wildcardBind: true }),
+        isDesktop,
+      );
       assert.ok(
         msg && msg.length > 0,
         `no message for ${reason} (desktop=${isDesktop})`,
@@ -264,9 +381,55 @@ test("every block reason the backend can emit has a message", () => {
   }
 });
 
+test("a launch bound to one host names that host, not the wildcard", () => {
+  // any host but the three loopback aliases is launch-managed, hostnames included
+  for (const host of ["10.1.1.144", "fd00::5", "studio.local"]) {
+    const msg = lanAccessBlockMessage(
+      blocked("launch_managed", { bindHost: host }),
+      false,
+    );
+    assert.ok(msg?.includes(`binds ${host}`), host);
+    assert.ok(msg?.includes(`--host ${host}`), host);
+    assert.ok(!msg?.includes("every network interface"), host);
+  }
+});
+
+test("the backend decides what counts as a wildcard, whatever it is spelled", () => {
+  for (const host of ["0.0.0.0", "::", "::0"]) {
+    const msg = lanAccessBlockMessage(
+      blocked("launch_managed", { bindHost: host, wildcardBind: true }),
+      false,
+    );
+    assert.ok(msg?.includes("every network interface"), host);
+    assert.ok(msg?.includes(`--host ${host}`), host);
+    assert.ok(!msg?.includes(`binds ${host} `), host);
+  }
+});
+
+test("an empty wildcard bind is distinct from a missing bind field", () => {
+  const msg = lanAccessBlockMessage(
+    blocked("launch_managed", { bindHost: "", wildcardBind: true }),
+    false,
+  );
+  assert.equal(
+    msg,
+    "This launch binds every network interface, so Unsloth is on the network already.",
+  );
+  assert.ok(!msg.includes("--host"));
+});
+
+test("a backend that omits the bind host still explains the block", () => {
+  // fixed text with nothing to interpolate, so the sentence itself is the contract
+  assert.equal(
+    lanAccessBlockMessage(blocked("launch_managed"), false),
+    "This launch already puts Unsloth on the network.",
+  );
+});
+
 test("the pending-password message is desktop-aware", () => {
-  const desktop = lanAccessBlockMessage("admin_password_change_required", true);
-  const web = lanAccessBlockMessage("admin_password_change_required", false);
+  const reason = blocked("admin_password_change_required");
+  const desktop = lanAccessBlockMessage(reason, true);
+  const web = lanAccessBlockMessage(reason, false);
   assert.notEqual(desktop, web);
   assert.ok(!desktop?.includes("reset-password"));
   assert.ok(web?.includes("reset-password"));
@@ -274,8 +437,8 @@ test("the pending-password message is desktop-aware", () => {
 
 test("an unknown or absent reason yields no message", () => {
   assert.equal(lanAccessBlockMessage(null, false), null);
-  assert.equal(lanAccessBlockMessage("something_new", false), null);
-  assert.equal(lanAccessBlockMessage("", true), null);
+  assert.equal(lanAccessBlockMessage(blocked("something_new"), false), null);
+  assert.equal(lanAccessBlockMessage(blocked(""), true), null);
 });
 
 // ── lanAccessErrorMessage ──
@@ -291,6 +454,14 @@ test("every listener failure the backend can raise has a message", () => {
     const msg = lanAccessErrorMessage(error);
     assert.ok(msg && msg.length > 0, `no message for ${error}`);
   }
+});
+
+
+test("bind failures distinguish automatic from an occupied custom port", () => {
+  assert.ok(lanAccessErrorMessage("bind_failed")?.includes("8888 to 8908"));
+  const custom = lanAccessErrorMessage("bind_failed", 43210);
+  assert.ok(custom?.includes("43210"));
+  assert.ok(custom?.includes("choose another"));
 });
 
 test("no error means no message, and an unknown one still says something", () => {

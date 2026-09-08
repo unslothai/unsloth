@@ -28,15 +28,44 @@ export const XET_NOTICE_TITLE = "Download is running";
 export const XET_NOTICE_DESCRIPTION =
   "Xet sends the file in small pieces, so the bar can sit at 0% and then jump to done. Nothing is stuck.";
 export const XET_NOTICE_DESCRIPTION_CLASS = "!text-muted-foreground";
+// A restart is also a start disclosure. Keeping its copy here lets poll-loop
+// combine it with the Xet explanation instead of creating an unrelated toast
+// that can outlive its download.
+export const RESTART_NOTICE_TITLE = "Restarting this download";
+export const RESTART_NOTICE_DESCRIPTION =
+  "The earlier partial can't be resumed, so this download is starting over.";
+export const RESTART_XET_NOTICE_DESCRIPTION =
+  "The partial can't be resumed, so Xet is starting over. The bar may stay at 0% and jump to done.";
 
 /** The notice, plus whatever the starting surface wanted to add. Chat auto-loads and
  * says so; the Hub does not, passes nothing, and gets the short form. The test budget
  * applies to that form alone, since only it renders over the hub toolbar. */
-export function composeNoticeDescription(
+function appendCallerDescription(
+  description: string,
   callerToast?: { description: string } | null,
 ): string {
   const extra = callerToast?.description?.trim();
-  return extra ? `${XET_NOTICE_DESCRIPTION} ${extra}` : XET_NOTICE_DESCRIPTION;
+  return extra ? `${description} ${extra}` : description;
+}
+
+export function composeNoticeDescription(
+  callerToast?: { description: string } | null,
+): string {
+  return appendCallerDescription(XET_NOTICE_DESCRIPTION, callerToast);
+}
+
+/** One accepted restart, optionally carrying the Xet and caller facts. */
+export function composeRestartNoticeDescription({
+  xet,
+  callerToast,
+}: {
+  xet: boolean;
+  callerToast?: { description: string } | null;
+}): string {
+  return appendCallerDescription(
+    xet ? RESTART_XET_NOTICE_DESCRIPTION : RESTART_NOTICE_DESCRIPTION,
+    callerToast,
+  );
 }
 
 /** Only the transport that behaves this way, and only while it is news.

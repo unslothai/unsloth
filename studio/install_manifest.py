@@ -33,11 +33,10 @@ MANIFEST_SCHEMA = 1
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
 NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 
-# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned.
-# The manifest is deliberately dropped before every dependency pass, so it cannot
-# answer for a run killed mid-pass; this marker is written before that pass and
-# outlives it. Without it an interrupted GGUF-only install reads as a stale venv on
-# the next update, which then tries to delete the venv it is running out of.
+# The manifest is dropped before every dependency pass, so it cannot answer for a run killed mid-pass; this marker
+# outlives it, or an interrupted GGUF-only install reads as a stale venv.
+# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned; the next update then tries to
+# delete the venv it is running out of.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
@@ -274,6 +273,8 @@ def write_manifest(
     steps_total: int = 0,
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
+    expected_torch_tag: Optional[str] = None,
+    expected_torch_tag_pinned: Optional[bool] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -286,21 +287,26 @@ def write_manifest(
         "platform": f"{sys.platform}-{platform.machine()}",
         "prefix": str(venv_root()),
         "steps_total": steps_total,
-        # The venv's own copy wins over the caller's. `verify_install` reads the
-        # installed package's requirements, so recording the installer's would
-        # compare two different trees and call a finished install stale. An
-        # editable / source install has no copy under site-packages, and there
-        # the caller's root is already the tree both sides read.
+        # The venv's own copy wins over the caller's: verify_install reads the installed package's requirements, so
+        # recording the installer's would compare two trees and call a finished install stale.
         "requirement_files": requirement_digests(installed_requirements_root(root) or req_root),
     }
-    # Additive, so MANIFEST_SCHEMA does not move and every existing manifest stays
-    # valid. Absent means "unknown", which is NOT False: only a manifest written by
-    # a build that knew about the key can answer, and callers fall back to their own
-    # detection otherwise. Recorded because install.ps1 / install.sh export
-    # UNSLOTH_NO_TORCH for their own run only -- a later `unsloth studio update`
-    # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
+    # Additive, so MANIFEST_SCHEMA does not move and existing manifests stay valid. Absent means
+    # "unknown", NOT False: only a manifest written by a build that knew the key can answer. Recorded
+    # because install.ps1 / install.sh export UNSLOTH_NO_TORCH for their own run only, so a later
+    # `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
+    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in its userinfo, query or fragment,
+    # and this file lives in the venv and is read back by verify-install, desktop-capabilities and the setup fast path.
+    if expected_torch_tag:
+        payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
+    # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
+    # landed on: setup.ps1 picks /cpu automatically on a GPU-less host and publishes it exactly
+    # as it publishes a pinned one, and reading the automatic case as deliberate leaves a later
+    # eGPU with no repair offered. Absent means unknown, as with every other additive key.
+    if expected_torch_tag_pinned is not None:
+        payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -314,11 +320,7 @@ def write_manifest(
 def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     try:
         raw = manifest_path(root).read_text(encoding = "utf-8")
-    # UnicodeDecodeError is a ValueError, not an OSError: a manifest re-saved as
-    # ANSI by an editor (the payload embeds the user profile path, so non-ASCII
-    # names show up there) or truncated mid-write must read as "no manifest", not
-    # raise. install_python_stack.py resolves no-torch mode through here at import,
-    # so anything escaping aborts the whole install.
+    # UnicodeDecodeError is a ValueError.
     except (OSError, ValueError):
         return None
     try:
@@ -372,6 +374,49 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     except OSError:
         pass
     return None
+
+
+def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
+    """The torch flavor this venv was installed with, or None when unknown.
+
+    None means nothing recorded it: no manifest, or one written before the key
+    existed. Callers must treat None as "unknown" and fall back to their own
+    detection, never as "cpu" -- claiming a flavor nobody selected would let a
+    repair reinstall over a deliberate build.
+
+    There is no marker companion here (unlike no_torch): the manifest is dropped
+    before every dependency pass, so this answers only for the PREVIOUS install,
+    which is exactly the question a repair asks. A run whose own setup script
+    exported the flavor never reaches this.
+    """
+    manifest = read_manifest(root)
+    if manifest is None:
+        return None
+    value = manifest.get("expected_torch_tag")
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    return value or None
+
+
+def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
+    """Whether the recorded flavor was NAMED rather than automatically selected.
+
+    False when nothing recorded it, including a manifest written before the key
+    existed. That is the safe direction here and the opposite of the usual "unknown
+    falls back to the old behaviour": treating an unproven CPU record as deliberate is
+    what leaves a host that has since gained a GPU with no repair offered at all, which
+    is the failure this whole field exists to distinguish. A repair is something the
+    user can decline; a silently CPU-only GPU box is not.
+    """
+    manifest = read_manifest(root)
+    if manifest is None:
+        return False
+    # An ACTUAL boolean. bool("false") is True, so a migrated or hand-edited manifest
+    # carrying the string would read as a deliberate pin and suppress the repair on a
+    # host that never chose one. Anything that is not a bool is unknown provenance, and
+    # the safe answer for unknown is the same False an absent key gets.
+    return manifest.get("expected_torch_tag_pinned") is True
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
@@ -475,12 +520,241 @@ def missing_requirements(
     return missing
 
 
+# Shared between wheels, so one uninstall deletes another's recorded files.
+# Mirrors _SHARED_NON_RUNTIME_ROOTS in unsloth_cli/_studio_deps.py.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
+)
+
+# `_move_launcher_aside` renames this before setup, so setup.ps1's deep check
+# sees it missing on every healthy Windows update. Nothing else is staged, so
+# nothing else is excused, or a stray sibling could hide any quarantine.
+_STAGED_LAUNCHER_NAME = "unsloth.exe"
+_STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
+
+# Rewritten in place by our own setup: the size claim is waived, absence is not.
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+# `npm run build` in the installed tree rehashes every asset, so RECORD names
+# files our own setup deleted. Skipped whole: they are gone, not shorter.
+_INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
+
+
+def _staged_beside(target) -> bool:
+    """Whether an absent launcher is one an update moved aside a moment ago.
+
+    Usable, not merely present: `_recover_missing_launcher` reads these through
+    `_is_valid_pe`, so a copy it would reject is no excuse. Same two-byte test.
+    """
+    try:
+        path = Path(target)
+        if path.name != _STAGED_LAUNCHER_NAME:
+            return False
+        for suffix in _STAGED_LAUNCHER_SUFFIXES:
+            staged = path.with_name(path.name + suffix)
+            try:
+                if staged.stat().st_size < 2:
+                    continue
+                with staged.open("rb") as handle:
+                    if handle.read(2) == b"MZ":
+                        return True
+            except OSError:
+                continue
+        return False
+    except (OSError, ValueError):
+        return False
+
+
+def _within(target: Path, anchor: Path) -> bool:
+    """Whether a parent-relative row lands inside the environment.
+
+    One outside it belongs to something else, which reinstalling ours cannot fix.
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+    try:
+        resolved.relative_to(anchor)
+    except ValueError:
+        return False
+    return True
+
+
+def _venv_anchor(site_packages: Path) -> Optional[Path]:
+    """The venv a site-packages belongs to, or None and the caller skips them."""
+    try:
+        current = site_packages.resolve()
+    except OSError:
+        return None
+    # site-packages is 2 (Windows) or 3 (posix) below the prefix.
+    for _ in range(4):
+        if (current / "pyvenv.cfg").is_file():
+            return current
+        if current == current.parent:
+            break
+        current = current.parent
+    return None
+
+
+# Neither installer wraps the scan in a timeout, so a stalled mount would wedge
+# setup. Warm cost of the largest real case is ~65ms.
+PAYLOAD_SCAN_BUDGET_SECONDS = 5.0
+
+
+def damaged_payload_files(
+    package_name: str = "unsloth",
+    limit: int = 3,
+    budget_seconds: float = PAYLOAD_SCAN_BUDGET_SECONDS,
+    companion_names: Sequence[str] = (),
+    scan_paths: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Recorded files of the managed distribution that are gone or truncated.
+
+    Every check above reads metadata, which a quarantine of the payload leaves
+    intact. Only the named package and companions, unlike `damaged_installed_files`:
+    this runs on the fast path to decide whether to repair ours. `scan_paths`
+    aims it at another venv. Never raises, and an environment it cannot read or
+    finish reading is reported undamaged, since guessing the other way would
+    repair a healthy venv on every run.
+
+    The walk's own deadline bounds many slow stats but not one that never
+    returns, which a wedged mount produces and no installer wraps in a timeout.
+    So it runs on a daemon thread and is abandoned; the interpreter does not
+    wait for one at exit (1.04s measured, thread parked in a syscall).
+    `budget_seconds = 0` is unbounded, for the installer already committed to a
+    full pass.
+    """
+    if budget_seconds <= 0:
+        return _scan_payload_files(package_name, limit, 0.0, companion_names, scan_paths)
+
+    import threading
+
+    done: List[List[str]] = []
+
+    def scan() -> None:
+        done.append(
+            _scan_payload_files(package_name, limit, budget_seconds, companion_names, scan_paths)
+        )
+
+    worker = threading.Thread(target = scan, daemon = True)
+    worker.start()
+    # The walk's deadline is the ordinary way out and reports what it found;
+    # this margin only bounds the wait for a call that is not coming back.
+    worker.join(budget_seconds + 1.0)
+    return done[0] if done else []
+
+
+def _scan_payload_files(
+    package_name: str,
+    limit: int,
+    budget_seconds: float,
+    companion_names: Sequence[str],
+    scan_paths: Optional[Sequence[str]],
+) -> List[str]:
+    """The walk itself. Bounded between calls only; see `damaged_payload_files`."""
+    import csv
+    import io
+    import stat
+    from importlib.metadata import distributions
+
+    found: List[str] = []
+    deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
+    try:
+        wanted = {_canonical(name) for name in (package_name, *companion_names) if name}
+        paths = list(scan_paths) if scan_paths is not None else _metadata_scan_paths()
+        if not paths:
+            return found
+        seen: set = set()
+        for dist in distributions(path = paths):
+            try:
+                name = _canonical(dist.metadata["Name"] or "")
+                if name not in wanted or name in seen:
+                    continue
+                seen.add(name)
+                record = dist.read_text("RECORD")
+            except Exception:
+                continue
+            # RECORD is optional per the spec, and unreadable says nothing.
+            if not record:
+                continue
+            try:
+                anchor = _venv_anchor(Path(dist.locate_file("")))
+            except Exception:
+                anchor = None
+            # csv, not splitlines: a quoted field may hold a newline
+            for row in csv.reader(io.StringIO(record, newline = "")):
+                # Every row: batching this let one slow mount overrun 5s by a minute.
+                if deadline is not None and time.monotonic() > deadline:
+                    return found
+                rel = row[0] if row else ""
+                if not rel or rel.endswith("/"):
+                    continue
+                norm = rel.replace("\\", "/")
+                if ".dist-info/" in norm or ".egg-info/" in norm or norm.endswith(".pyc"):
+                    continue
+                parts = tuple(p for p in norm.split("/") if p and p != ".")
+                if not parts or norm.startswith("/") or ":" in parts[0]:
+                    continue
+                if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
+                    continue
+                if any(parts[: len(tree)] == tree for tree in _INSTALLER_REGENERATED_TREES):
+                    continue
+                try:
+                    target = dist.locate_file(rel)
+                    # `..` is ordinary for console scripts and data files.
+                    # Bounded rather than skipped: a quarantined `bin/unsloth`
+                    # leaves the tree intact and the command gone.
+                    if ".." in parts and (anchor is None or not _within(Path(target), anchor)):
+                        continue
+                    info = target.stat()
+                except FileNotFoundError:
+                    if not _staged_beside(target):
+                        found.append(f"{rel} is missing")
+                except NotADirectoryError:
+                    # Not a FileNotFoundError: a parent replaced by a file.
+                    found.append(f"{rel} is not reachable")
+                except OSError:
+                    # Unreadable is not missing, and a reinstall cannot fix it.
+                    continue
+                else:
+                    if not stat.S_ISREG(info.st_mode):
+                        found.append(f"{rel} is not a regular file")
+                    elif (
+                        len(row) >= 3
+                        and row[2]
+                        and row[2].isdigit()
+                        and parts[-1] not in _INSTALLER_REWRITTEN_NAMES
+                        and info.st_size < int(row[2])
+                    ):
+                        found.append(f"{rel} is {info.st_size} bytes, expected {row[2]}")
+                if len(found) >= limit:
+                    return found
+    except Exception:
+        return found[:limit]
+    return found
+
+
 def verify_install(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
     package_name: str = "unsloth",
     installed: Optional[Dict[str, str]] = None,
     installed_conflicts: Optional[Sequence[str]] = None,
+    deep: bool = False,
+    scan_paths: Optional[Sequence[str]] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
@@ -491,6 +765,12 @@ def verify_install(
     to describe a venv other than this interpreter's; without them the version
     and dependency checks would answer for the venv the caller happens to be
     running in.
+
+    `deep` adds the payload scan, off by default because an external CLI loads
+    this module out of the venv it drives: opt-out would spend the desktop
+    preflight's 10 second budget with no way for an old caller to decline.
+    `scan_paths` names that venv's site-packages, without which RECORD rows
+    resolve against the wrong tree.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -499,6 +779,7 @@ def verify_install(
     manifest = read_manifest(root)
     manifest_ok = False
     reason: Optional[str] = None
+    vanished = False
 
     if manifest is None:
         reason = "studio_install_incomplete"
@@ -519,6 +800,10 @@ def verify_install(
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
+        # Every check below compares against `current`, which an absent
+        # distribution passes -- as does a manifest written with no version at
+        # all, which is what write_manifest records for one already gone.
+        vanished = not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
@@ -531,6 +816,32 @@ def verify_install(
     if manifest_ok and not deps_ok:
         # Install finished but the boot deps are gone: venv edited afterwards.
         reason = "studio_deps_missing"
+
+    # Last: the only check that touches the filesystem.
+    if manifest_ok and deps_ok and deep and (installed is None or scan_paths):
+        # Reused, not re-read: a manifest rewritten mid-run would make the scan
+        # disagree with the checks that already passed.
+        scan_package = (manifest or {}).get("package") or package_name
+        # unsloth-zoo only for the default install: `--package X` installs X
+        # alone, so its neighbours are not ours to repair.
+        companions = ("unsloth-zoo",) if _canonical(scan_package) == "unsloth" else ()
+        # No dist-info leaves the scan nothing to walk, and no check above ever
+        # looked at the companion's version.
+        if not vanished:
+            for companion in companions:
+                present = (
+                    _installed_version(companion, installed)
+                    if installed is not None
+                    else installed_version_probe(companion)[0]
+                )
+                if not present:
+                    vanished = True
+                    break
+        if vanished or damaged_payload_files(
+            scan_package, companion_names = companions, scan_paths = scan_paths
+        ):
+            manifest_ok = False
+            reason = "studio_install_damaged"
 
     return {
         "ok": manifest_ok and deps_ok,

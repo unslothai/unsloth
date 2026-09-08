@@ -34,7 +34,13 @@ def inference(
         "--system-prompt",
         help = "Optional system prompt to prepend.",
     ),
-    max_seq_length: int = typer.Option(2048, "--max-seq-length"),
+    max_seq_length: int = typer.Option(
+        0,
+        "--max-seq-length",
+        help = "Context length in tokens. 0 takes the checkpoint's trained window on GGUF "
+        "and MLX, and 2048 on the transformers backend. A value that differs from a "
+        "running Unsloth server's reloads the model.",
+    ),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     tensor_parallel: bool = typer.Option(
         False,
@@ -98,9 +104,7 @@ def inference(
             )
         raise typer.Exit(code = 1)
 
-    # A running Unsloth server keeps the model warm between runs. Under
-    # mlx.launch, every rank must enter the local MLX path instead of rank 0
-    # alone talking to a server.
+    # Under mlx.launch every rank must enter the local MLX path, not just rank 0 talking to a warm server.
     load_opts = dict(
         hf_token = hf_token,
         max_seq_length = max_seq_length,
