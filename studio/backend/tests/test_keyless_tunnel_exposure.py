@@ -3,21 +3,13 @@
 
 """Why a tunnel on a wildcard bind closes loopback but not the LAN listener.
 
-The asymmetry looks like an oversight and is not, so it is worth a test: two
-readers in a row have taken it for one. A tunnel makes a loopback peer ambiguous,
-because Studio targets a loopback address for wildcard binds, so
-tunnelled internet traffic arrives on loopback and is indistinguishable from a
-real local client. In this configuration the managed tunnel never presents a
-LAN address, so the LAN branch is still deciding on
-authoritative socket state.
-
-Closing LAN as well would cost a legitimate LAN client its access for no gain,
-and it would not touch the case it looks like it addresses either. An
-externally run cloudflared or ngrok sets neither ``app_state.cloudflare_url``
-nor ``_remote_connector_active``, so Studio cannot see it at all.
-
-Explicit interface binds can use that interface as the tunnel origin; these
-tests cover the wildcard bind below and its separate private LAN listener.
+The managed tunnel targets loopback on a wildcard bind, so tunnelled traffic is
+indistinguishable from a real local client there and never presents a LAN address.
+Closing LAN too would cost legitimate LAN clients their access and still miss the case
+it looks like it covers: an externally run cloudflared or ngrok sets neither
+``app_state.cloudflare_url`` nor ``_remote_connector_active``, so Studio never sees it.
+An explicit interface bind can be the tunnel origin instead; these tests cover the
+wildcard bind and its separate private LAN listener.
 """
 
 from __future__ import annotations
