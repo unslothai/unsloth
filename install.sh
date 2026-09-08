@@ -795,10 +795,16 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # Shorter than that guard's list on purpose. It refuses to overwrite and can afford a weak
 # signal; this one authorizes a delete, so bin/unsloth, which is any file of that name, is not
 # on it. A root that has one needs no marker anyway: the uninstaller already accepts it.
-# A sentinel this list may trust: a regular file, never a link. -f follows a link, and one
-# planted in somebody's workspace would otherwise short-circuit the emptiness test below and
-# earn that workspace a marker the uninstaller deletes on.
-_claim_sentinel() { [ -f "$1" ] && [ ! -L "$1" ]; }
+# A sentinel this list may trust: a regular file, never a link, and never inside a linked
+# directory. -f follows a link, and -L answers for the named file only, so a planted marker, or a
+# linked `share` holding a genuine one, would otherwise short-circuit the emptiness test below
+# and earn somebody's workspace a marker the uninstaller deletes on. $2 is the containing dir.
+_claim_sentinel() {
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ -n "${2:-}" ] && [ -L "$2" ] && return 1
+    return 0
+}
 
 _claim_studio_root() {
     _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
@@ -806,8 +812,8 @@ _claim_studio_root() {
     # killed between the unlink and the write would lose the only proof this root is ours.
     _claim_sentinel "$_claim_marker" && return 0
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" \
-       && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf"; then
+       && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" "$VENV_DIR" \
+       && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf" "$STUDIO_HOME/share"; then
         if [ -d "$STUDIO_HOME" ]; then
             # Not enumerable: the globs cannot expand without read and every test below fails
             # without search, so an occupied workspace would read as empty. Fail closed like

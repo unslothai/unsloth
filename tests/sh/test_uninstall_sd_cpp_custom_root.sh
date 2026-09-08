@@ -36,6 +36,7 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     # The loop removes roots through this wrapper; without it and its marker helper the
     # fragment dies with "command not found" and every assertion below is vacuous.
     sed -n '/^_set_marker() {/,/^}/p'              "$UNINSTALL_SH"
+    sed -n '/^_restore_owner_marker() {/,/^}/p'     "$UNINSTALL_SH"
     sed -n '/^_remove_root_recording_db() {/,/^}/p' "$UNINSTALL_SH"
     # The owned-root lister that decides which sd-servers are pkilled before a tree is deleted.
     sed -n '/^_owned_sd_cpp_roots() {/,/^}/p'      "$UNINSTALL_SH"
@@ -44,7 +45,7 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 } > "$HELPERS_FILE"
 grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
 # _is_studio_root's own helpers, or every root reads as foreign and nothing below is removed.
-for _needed in _is_owner_marker _is_venv_dir; do
+for _needed in _is_owner_marker _is_venv_dir _restore_owner_marker; do
     grep -q "^$_needed() {" "$HELPERS_FILE" || { echo "FAIL: helpers missing $_needed"; exit 1; }
 done
 grep -q '_sd_cpp_sibling_bases() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _sd_cpp_sibling_bases"; exit 1; }

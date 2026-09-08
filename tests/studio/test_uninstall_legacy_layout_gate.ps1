@@ -246,6 +246,29 @@ try {
     ClaimCheck "somebody's workspace with a venv of their own" $false "env" @("unsloth_studio\pyvenv.cfg")
     # A file called bin\unsloth.exe is any file of that name, and this list authorizes a delete.
     ClaimCheck "a workspace holding a plain bin\unsloth.exe" $false "env" @("bin\unsloth.exe", "notes.txt")
+    # A LINKED share or unsloth_studio holding a genuine marker: the attribute answers for the
+    # named file only, so without the container check the workspace around it reads as ours.
+    foreach ($pair in @(@("share", "studio.conf"), @("unsloth_studio", ".unsloth-studio-owned"))) {
+        $wroot = Join-Path $tmp ("claim-linked-" + $pair[0])
+        $wreal = Join-Path $tmp ("claim-linked-" + $pair[0] + "-real")
+        New-Item -ItemType Directory -Path $wroot -Force | Out-Null
+        New-Item -ItemType Directory -Path $wreal -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $wreal $pair[1]) -Value "x"
+        Set-Content -LiteralPath (Join-Path $wroot "notes.txt") -Value "mine"
+        $dl = $null
+        foreach ($kind in @("Junction", "SymbolicLink")) {
+            try {
+                $dl = New-Item -ItemType $kind -Path (Join-Path $wroot $pair[0]) -Target $wreal -ErrorAction Stop
+                if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) { break }
+            } catch { $dl = $null }
+        }
+        if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) {
+            $StudioRedirectMode = "env"
+            Write-StudioRootOwnerMarker -Root $wroot
+            Check "a linked $($pair[0]) is not ownership proof" `
+                (-not (Test-Path -LiteralPath (Join-Path $wroot ".unsloth-studio-owned") -PathType Leaf))
+        }
+    }
     # A link named like our marker: Test-Path follows it, which would skip the emptiness test.
     $lm = Join-Path $tmp "claim-linked-marker"
     New-Item -ItemType Directory -Path $lm -Force | Out-Null

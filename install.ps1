@@ -1265,8 +1265,15 @@ public static class UnslothStudioFinalPathV2
     # and one planted in somebody's workspace would otherwise short-circuit the emptiness test
     # and earn that workspace a marker the uninstaller deletes on.
     function Test-StudioPlainFile {
-        param([string]$Path)
+        param([string]$Path, [string]$Container)
         try {
+            # The container too: -L / the ReparsePoint attribute answers for the named file only,
+            # so a linked `share` or `unsloth_studio` holding a genuine marker would otherwise
+            # read as proof that the whole workspace around it is ours.
+            if (-not [string]::IsNullOrWhiteSpace($Container)) {
+                $dir = Get-Item -LiteralPath $Container -Force -ErrorAction SilentlyContinue
+                if ($dir -and (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $false }
+            }
             $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
             return (-not $item.PSIsContainer -and
                 (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
@@ -1302,8 +1309,10 @@ public static class UnslothStudioFinalPathV2
                 } catch { $occupied = $true }
                 $claimable = (
                     $StudioRedirectMode -ne 'env' -or
-                    (Test-StudioPlainFile -Path (Join-Path $Root "unsloth_studio\.unsloth-studio-owned")) -or
-                    (Test-StudioPlainFile -Path (Join-Path $Root "share\studio.conf")) -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "unsloth_studio\.unsloth-studio-owned") `
+                        -Container (Join-Path $Root "unsloth_studio")) -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "share\studio.conf") `
+                        -Container (Join-Path $Root "share")) -or
                     -not $occupied
                 )
                 if (-not $claimable) { return }

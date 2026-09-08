@@ -145,6 +145,18 @@ Environment:
     # reparse point, and afterwards the path stops resolving and reads as absent either way.
     # Verifying rather than chasing the link is deliberate: following a reparse point out of
     # the expected location to delete its target is what the deny list exists to stop.
+    # A removal that got part way can take the sentinels and then fail on a locked child, leaving
+    # a root the next run's gate would refuse and strand. Put the marker back so a retry
+    # recognises what the last one started.
+    function _RestoreOwnerMarker {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+        $marker = Join-Path $Path ".unsloth-studio-owned"
+        if (Test-Path -LiteralPath $marker) { return }
+        try { [System.IO.File]::WriteAllText($marker, "") } catch { }
+    }
+
     function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -176,6 +188,7 @@ Environment:
             } catch { }
         }
         _RemovePath $Path
+        _RestoreOwnerMarker $Path
         if ($hadDb) {
             if (Test-Path -LiteralPath $dbPath -PathType Leaf) {
                 $script:RemoveFailed = $true
@@ -855,6 +868,20 @@ Environment:
     $knownRoots = @()
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
+    # The roots this run would actually delete. Everything that STOPS a process is given this
+    # list rather than $knownRoots, because all of it runs before the gates below: a stale
+    # studio.conf can name a directory another application has taken over, and _RootFromConf
+    # only started resolving one when Split-Path stopped throwing. _StopByPortFile keeps
+    # $knownRoots, which it uses to VERIFY a port file's owner rather than to select a victim.
+    # _IsUnsafeRoot as well as _IsStudioRoot, because the removal loop refuses on either.
+    $ownedRoots = @()
+    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
+        -not (_IsUnsafeRoot $defaultStudioHome)) {
+        $ownedRoots += $defaultStudioHome
+    }
+    foreach ($r in $customRoots) {
+        if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
+    }
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
@@ -864,7 +891,7 @@ Environment:
     foreach ($r in $customRoots) {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
-    _StopStudioProcesses -KnownRoots $knownRoots
+    _StopStudioProcesses -KnownRoots $ownedRoots
     # The app and the WebView2 helpers holding its profile open must both exit before the
     # EBWebView delete below. Same resolver as that removal, or the sweep misses the profile
     # we then try to delete and the helpers keep holding locks.
@@ -940,17 +967,6 @@ Environment:
     # process running from under what it is given, and it runs BEFORE the ownership gates below,
     # so a stale UNSLOTH_STUDIO_HOME whose parent holds ANOTHER install's marked sd.cpp would
     # have its diffusion job killed and then be refused, removing nothing.
-    # _IsUnsafeRoot as well as _IsStudioRoot, because the removal loop below refuses on either.
-    # install.ps1 accepts any writable root, so a real install can sit on the deny list, and
-    # stopping processes for a tree this run then leaves standing is pure harm.
-    $ownedRoots = @()
-    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
-        -not (_IsUnsafeRoot $defaultStudioHome)) {
-        $ownedRoots += $defaultStudioHome
-    }
-    foreach ($r in $customRoots) {
-        if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
-    }
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         if (-not (_IsStudioRoot $r)) { continue }
@@ -962,12 +978,6 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    # $ownedRoots, not $knownRoots. _StopProcessesLockingRoots force-stops every process running
-    # from under what it is given, and it runs before the gates, so a root this run then refuses
-    # would have processes killed for a tree left standing. That reaches further than a mistyped
-    # variable: a stale studio.conf can name a directory another application has since taken
-    # over, and _RootFromConf only started resolving one when Split-Path stopped throwing.
-    # $knownRoots stays whole for _StopByPortFile, which uses it to VERIFY a port file's owner.
     $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
     # Reparse expansion is gated on ownership too, and for the same reason: following a link
     # turns one path into generic subdirectories of wherever it points -- node, bin,

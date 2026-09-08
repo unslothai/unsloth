@@ -197,6 +197,33 @@ fi
 # The other half of the same question: install.sh decides when to WRITE the marker this gate
 # reads. In env mode $STUDIO_HOME is a user-chosen workspace, so claiming one the installer is
 # about to refuse would hand somebody's project to the uninstaller.
+# A removal that took the sentinels and then failed on a locked child must leave the root
+# identifiable, or the retry the failure asks for is refused.
+echo
+echo "After a partial removal:"
+_fn=$(sed -n '/^_restore_owner_marker() {/,/^}/p' "$UNINSTALL_SH")
+if [ -z "$_fn" ]; then
+    echo "  FAIL: could not extract _restore_owner_marker"; FAIL=$((FAIL+1))
+else
+    eval "$_fn"
+    _partial="$_TMP_ROOT/partial_removal"
+    mkdir -p "$_partial/locked"
+    : > "$_partial/locked/held.bin"
+    _restore_owner_marker "$_partial"
+    if _is_studio_root "$_partial" managed; then
+        echo "  PASS: a half-removed root is still recognised on the next run"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: a half-removed root is stranded"; FAIL=$((FAIL+1))
+    fi
+    _gone="$_TMP_ROOT/partial_removal_gone"
+    _restore_owner_marker "$_gone"
+    if [ -e "$_gone" ]; then
+        echo "  FAIL: a fully removed root was recreated"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: a fully removed root is not recreated"; PASS=$((PASS+1))
+    fi
+fi
+
 echo
 echo "Who the installer is allowed to claim:"
 # _claim_studio_root calls _claim_sentinel, so both come across or every claim silently takes
@@ -242,6 +269,26 @@ else
     # A file called bin/unsloth is any file called bin/unsloth. The uninstaller reads it only as
     # a symlink into the venv, and this list authorizes a delete, so it is not on it.
     claim_check "a workspace holding a plain bin/unsloth" left env "bin/unsloth" "notes.txt"
+    # A LINKED share or unsloth_studio holding a genuine marker: -L answers for the named file
+    # only, so without the container check the whole workspace around it reads as ours.
+    for _cl in "share/studio.conf" "unsloth_studio/.unsloth-studio-owned"; do
+        _cldir=$(dirname "$_cl")
+        STUDIO_HOME="$_TMP_ROOT/claim_linked_$(printf '%s' "$_cl" | tr -c 'a-zA-Z0-9' '_')"
+        # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
+        VENV_DIR="$STUDIO_HOME/unsloth_studio"
+        _STUDIO_HOME_REDIRECT="env"
+        _clreal="$STUDIO_HOME.real"
+        mkdir -p "$STUDIO_HOME" "$_clreal"
+        : > "$_clreal/$(basename "$_cl")"
+        : > "$STUDIO_HOME/notes.txt"
+        ln -s "$_clreal" "$STUDIO_HOME/$_cldir"
+        _claim_studio_root
+        if [ -f "$STUDIO_HOME/.unsloth-studio-owned" ]; then
+            echo "  FAIL: a linked $_cldir got the workspace claimed"; FAIL=$((FAIL+1))
+        else
+            echo "  PASS: a linked $_cldir is not ownership proof"; PASS=$((PASS+1))
+        fi
+    done
 
     # A link named like our marker: -f follows it, which would skip the emptiness test and get
     # the link replaced by a real marker on somebody's workspace.

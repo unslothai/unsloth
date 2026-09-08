@@ -298,6 +298,16 @@ trap _cleanup_markers EXIT
 # link, and afterwards the path stops resolving and reads as absent either way.
 # Verifying rather than chasing the link is deliberate: following a symlink out of the
 # expected location to `rm -rf` its target is what the deny lists exist to prevent.
+# A removal that got part way can take the sentinels and then fail on a locked child, leaving a
+# root the next run's gate would refuse and strand. Put the marker back so a retry recognises
+# what the last one started.
+_restore_owner_marker() {
+    [ -d "$1" ] || return 0
+    if [ -e "$1/.unsloth-studio-owned" ] || [ -L "$1/.unsloth-studio-owned" ]; then return 0; fi
+    printf '' > "$1/.unsloth-studio-owned" 2>/dev/null || true
+    return 0
+}
+
 _remove_root_recording_db() {
     _rrd_root="$1"
     # shellcheck disable=SC1007
@@ -325,6 +335,7 @@ _remove_root_recording_db() {
         fi
     fi
     _remove_path "$_rrd_root"
+    _restore_owner_marker "$_rrd_root"
     if [ "$_rrd_had_db" = 1 ]; then
         if [ -f "$_rrd_db" ]; then
             # Only the link went, or the delete failed: the data is still on disk.

@@ -58,6 +58,17 @@ Check "and by the deny list, which the removal loop also refuses on" `
 # application has taken over. $knownRoots stays whole for _StopByPortFile, which only verifies.
 Check "the stop scan is given the gated roots, not every known one" `
     ($ps1Text -match '(?m)^\s*\$stopRoots = @\(\$ownedRoots\) \+')
+# _StopStudioProcesses selects victims from what it is given and also runs before the gates.
+Check "and so is the process sweep" `
+    ($ps1Text -match '(?m)^\s*_StopStudioProcesses -KnownRoots \$ownedRoots\s*$')
+# ... which means the gated list has to exist before the stop step, not after it.
+Check "and that list is built before the stop step" `
+    ([regex]::Match($ps1Text, '(?m)^\s*\$ownedRoots = @\(\)').Index -lt
+     [regex]::Match($ps1Text, '(?m)^\s*_StopStudioProcesses -KnownRoots').Index)
+# A removal that got part way must leave the root identifiable, or the retry it asks for is
+# refused by the gate this PR adds.
+Check "a partial removal puts the ownership marker back" `
+    ($ps1Text -match '(?m)^\s*_RemovePath \$Path\s*\r?\n\s*_RestoreOwnerMarker \$Path\s*$')
 # The legacy <parent>\stable-diffusion.cpp sibling is derived from the same corrected
 # Split-Path, and the scan that receives it also runs before the gates.
 Check "the legacy sd.cpp stop root is gated the same way" `
