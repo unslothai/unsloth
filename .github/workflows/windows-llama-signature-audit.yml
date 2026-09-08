@@ -25,7 +25,7 @@ on:
       enforce:
         description: 'Fail the job when an unsigned PE is found'
         required: false
-        default: 'false'
+        default: 'true'
   schedule:
     # Weekly. The prebuilt release rotates every few days and each rotation
     # replaces every file hash, so this is a trend rather than a one-off.
@@ -202,7 +202,7 @@ jobs:
       - name: Verdict
         shell: pwsh
         env:
-          ENFORCE: ${{ github.event.inputs.enforce || 'false' }}
+          ENFORCE: ${{ github.event.inputs.enforce || 'true' }}
           UNSIGNED: ${{ steps.inventory.outputs.unsigned }}
         run: |
           $ErrorActionPreference = 'Continue'
@@ -211,9 +211,12 @@ jobs:
             Write-Host 'Every audited binary is signed.'
             exit 0
           }
-          # Not a hard failure by default: every published bundle is unsigned
-          # today, so enforcing now would just paint main red until the signing
-          # change in unslothai/llama.cpp lands. Flip the default to true then.
+          # Hard failure by default. This was a warning while every published
+          # bundle was unsigned, since enforcing then would only have painted
+          # main red. That is no longer the case: b10830-mix-d5c17a0 is signed
+          # 992/992 across all 17 Windows bundles, so any unsigned file now is
+          # a regression in the signing step rather than the known baseline.
+          # Dispatch with enforce=false to survey without failing.
           if ($env:ENFORCE -eq 'true') {
             Write-Host "::error::$unsigned unsigned PE file(s) in the published Windows bundles"
             exit 1
