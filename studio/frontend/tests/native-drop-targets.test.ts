@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -143,13 +143,7 @@ for (const ratio of [3, 1.5]) {
 // The chat-wide handler has to ask before acting, or a drop aimed at a dialog's
 // own zone lands as a chat attachment behind it.
 test("the chat drop handler defers to a registered target", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/native-intents/use-native-drop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/native-intents/use-native-drop.ts");
   assert.match(
     source,
     /if \(nativeDropTargetAt\(event\.payload\.position\)\) \{\s*publish\(\{ status: "idle" \}\);\s*return;/,
@@ -157,10 +151,7 @@ test("the chat drop handler defers to a registered target", async () => {
 });
 
 test("the shared image picker owns native drops and ignores stale reads", async () => {
-  const source = await readFile(
-    new URL("../src/components/image-dropzone.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/image-dropzone.tsx");
   assert.match(source, /const nativeDropRef = useNativeDropTarget\(\{/);
   assert.match(source, /ref=\{nativeDropRef\}/);
   assert.match(source, /registerNativeAttachmentPath\(path\)/);
@@ -176,10 +167,7 @@ test("the shared image picker owns native drops and ignores stale reads", async 
 // The picker rejects a format the native side would refuse anyway, so the two
 // lists have to stay in step or a droppable image starts being turned away.
 test("the picker's droppable formats match the native path policy", async () => {
-  const picker = await readFile(
-    new URL("../src/components/image-dropzone.tsx", import.meta.url),
-    "utf8",
-  );
+  const picker = await readSrcAsync("components/image-dropzone.tsx");
   const rust = await readFile(
     new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
     "utf8",
@@ -198,13 +186,7 @@ test("the picker's droppable formats match the native path policy", async () => 
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
 // ChatPage, so an unconditional setState there rerenders the page per event.
 test("the chat drop overlay only publishes a changed state", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/native-intents/use-native-drop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/native-intents/use-native-drop.ts");
   assert.match(
     source,
     /setDropState\(\(prev\) => \(sameDropState\(prev, next\) \? prev : next\)\)/,

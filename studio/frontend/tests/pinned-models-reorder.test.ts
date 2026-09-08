@@ -2,10 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  installLocalStorageFake,
+  readSrcAsync,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -477,25 +480,13 @@ test("a storage event with no drag in flight just replaces the list", () => {
 // row menu offers datasets no pin action, so the drag must not offer one either,
 // or dragging dataset rows persistently reorders the user's model pins.
 test("the hub's pinned grid never makes a dataset row draggable", async () => {
-  const lists = await readFile(
-    new URL(
-      "../src/features/hub/catalog/models-catalog-lists.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
   assert.match(
     lists,
     /const itemPinKey =\s*!isDataset &&\s*item\.row\.repoId &&\s*pinnedSet\.has\(pinKey\(item\.row\.repoId\)\)/,
   );
   // The invariant the gate keeps: the row menu withholds pin/unpin for datasets.
-  const rows = await readFile(
-    new URL(
-      "../src/features/hub/catalog/models-catalog-rows.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const rows = await readSrcAsync("features/hub/catalog/models-catalog-rows.tsx");
   assert.match(
     rows,
     /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
@@ -552,13 +543,7 @@ test("unpinning a repo that was never pinned writes nothing", () => {
 test("both repo-level deletes clear pins through that one action", async () => {
   // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
   // drift into two answers about what a pin outlives.
-  const pickers = await readFile(
-    new URL(
-      "../src/features/model-picker/components/model-selector/pickers.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const pickers = await readSrcAsync("features/model-picker/components/model-selector/pickers.tsx");
   assert.equal(
     pickers.split("unpinRepo(c.repo_id);").length - 1,
     2,
@@ -568,13 +553,7 @@ test("both repo-level deletes clear pins through that one action", async () => {
     !pickers.includes("if (pinnedSet.has(pinKey(c.repo_id))) {"),
     "and neither clears by toggling the bare repo key",
   );
-  const rows = await readFile(
-    new URL(
-      "../src/features/hub/catalog/models-catalog-rows.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const rows = await readSrcAsync("features/hub/catalog/models-catalog-rows.tsx");
   assert.ok(
     rows.includes(
       "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",

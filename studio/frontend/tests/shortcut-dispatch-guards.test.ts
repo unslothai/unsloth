@@ -7,7 +7,7 @@ import test from "node:test";
 
 import ts from "typescript";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -43,10 +43,7 @@ test("a keydown mid-IME-composition is not a chord", () => {
 });
 
 test("the dispatcher checks composition before it matches anything", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/hooks/use-shortcut.ts");
   // Before the match, so no chord is found, and before preventDefault, so the
   // candidate window keeps its key.
   assert.match(
@@ -120,10 +117,7 @@ test("every match under a modal is still not the foreground", () => {
 });
 
 test("dictation asks at press time, not through enabled", async () => {
-  const source = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/assistant-ui/thread.tsx");
   const at = source.indexOf('useShortcut(\n    "startDictation"');
   assert.notEqual(at, -1, "the dictation chord lost its call site");
   const body = source.slice(at, source.indexOf("\n  );", at));
@@ -138,10 +132,7 @@ test("dictation asks at press time, not through enabled", async () => {
 // A write that fails with a good payload used to report nothing at all, so the
 // chord was indistinguishable from a dead key.
 test("both copy chords report a failed write", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     source,
     /} else if \(empty\.value\) \{[\s\S]*?\} else \{[\s\S]*?toast\.error\("Could not copy this chat\."\)/,
@@ -152,10 +143,7 @@ test("both copy chords report a failed write", async () => {
 // Current membership says nothing about where a chat's older files went: it can
 // join a project, record that session, and move back out.
 test("the sandbox probe does not skip a chat that is out of a project", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   const at = source.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(at, -1);
   const body = source.slice(at, source.indexOf("\n  }", at));
@@ -186,10 +174,7 @@ test("both composers gate dictation on the foreground", async () => {
 });
 
 test("route shortcuts stay idle while Settings is open", async () => {
-  const sourceText = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const sourceText = await readSrcAsync("app/routes/__root.tsx");
   const source = ts.createSourceFile(
     "__root.tsx",
     sourceText,
@@ -248,17 +233,11 @@ test("route shortcuts stay idle while Settings is open", async () => {
 // The sidebar used to hold the unread set in component state, which died with
 // it. A module store does not, so the next account inherits it.
 test("signing out drops the previous account's navigation state", async () => {
-  const store = await readFile(
-    new URL("../src/features/chat/stores/chat-navigation-store.ts", import.meta.url),
-    "utf8",
-  );
+  const store = await readSrcAsync("features/chat/stores/chat-navigation-store.ts");
   assert.match(store, /resetAccountState: \(\) =>/);
   // A fresh Set, or every account after the first shares one.
   assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\), unreadRowIds: \{\} \}\)/);
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // On unmount, which is what the auth routes do to the sidebar.
   assert.match(
     sidebar,
@@ -269,10 +248,7 @@ test("signing out drops the previous account's navigation state", async () => {
 // The latch holds back a repeat of the action that took the selection, not a
 // different command issued straight after it.
 test("the selection latch is keyed by action", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(sidebar, /selectionActedRef = useRef<\{ id: ShortcutId; at: number \} \| null>/);
   assert.match(sidebar, /last\?\.id === id &&/);
   assert.doesNotMatch(sidebar, /followsSelectionAction\(\)/);
@@ -281,14 +257,8 @@ test("the selection latch is keyed by action", async () => {
 // One selector has to mean "the composer" whichever of the two is on screen, or
 // Escape stops declining in Compare and the dictation gate reads the wrong one.
 test("both composers answer to the shared selector", async () => {
-  const shared = await readFile(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const shared = await readSrcAsync("features/chat/shared-composer.tsx");
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   const { COMPOSER_INPUT_SELECTOR } = await import(
     "../src/features/settings/hooks/use-shortcut.ts"
   );
@@ -373,10 +343,7 @@ test("an absent surface is not a covered one", () => {
 // Window-level chords stay registered under a dialog, so the destructive ones
 // have to ask at press time whether the sidebar is still the foreground.
 test("the sidebar's mutating chords refuse to fire under a dialog", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   for (const id of [
     "archiveChat",
     "markChatUnread",
@@ -408,10 +375,7 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
 // thread folder and in the project one. Probing only the thread folder
 // answered for one and hid the other.
 test("the sandbox probe leaves the shared project folder alone", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   const at = sidebar.indexOf("async function sandboxSessionIdsHolding(");
   assert.notEqual(at, -1);
   const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
@@ -426,10 +390,7 @@ test("the sandbox probe leaves the shared project folder alone", async () => {
 // Loading a model that drops the level in force leaves the effort set to one
 // the model does not list, and indexOf then returns -1.
 test("an unlisted reasoning effort steps to the first supported level", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   const at = page.indexOf("const current = levels.indexOf(state.reasoningEffort);");
   assert.notEqual(at, -1);
   const body = page.slice(at, at + 700);
@@ -465,10 +426,7 @@ test("only a chord that types nothing keeps the composer exception", () => {
 });
 
 test("the dispatcher drops the exception for a typing chord", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/hooks/use-shortcut.ts");
   assert.match(
     source,
     /const exception = typesInTextField\(hit\) \? undefined : textFieldException;/,
@@ -479,13 +437,7 @@ test("the dispatcher drops the exception for a typing chord", async () => {
 // Every keydown is swallowed while recording, and on a bare-key row Escape is
 // a chord rather than a cancel, so a keyboard-only user had no way out.
 test("recording can be left from the keyboard", async () => {
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const tab = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   const at = tab.indexOf("const onKeyDown = (event: KeyboardEvent) => {");
   assert.notEqual(at, -1);
   const body = tab.slice(at, at + 900);
@@ -497,10 +449,7 @@ test("recording can be left from the keyboard", async () => {
 
 // The page stays mounted under a dialog, so `enabled` still says yes.
 test("the header pickers do not open behind a dialog", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   for (const id of ["openModelPicker", "openProjectPicker"]) {
     const at = page.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
@@ -538,13 +487,7 @@ test("both composers refuse to attach from behind a modal", async () => {
 // not be reachable by accident, and the Chat route stays mounted under a
 // dialog, so `keyboardReady` alone still says yes.
 test("a tool call cannot be answered from behind a dialog", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/components/assistant-ui/tool-confirmation-controls.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/assistant-ui/tool-confirmation-controls.tsx");
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
     const at = source.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
@@ -560,10 +503,7 @@ test("a tool call cannot be answered from behind a dialog", async () => {
 // A selection made behind a dialog is invisible and still what the mutating
 // chords act on afterwards, and the clipboard is outside the app entirely.
 test("selection and clipboard chords stop at a covered sidebar", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   for (const id of ["selectAllChats", "copyChatAsMarkdown", "copySessionId"]) {
     const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
     assert.notEqual(at, -1, `${id} is gone`);
@@ -581,16 +521,10 @@ test("selection and clipboard chords stop at a covered sidebar", async () => {
 // so the click lands on a page that shows its own loading state. Gating the
 // chords on the unknown verdict would make them disagree with their own rows.
 test("the workspace chords wait on the same verdict their rows do", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
   assert.match(root, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
   assert.match(root, /enabled: routeShortcutEnabled && !videoDisabled,/);
-  const rowState = await readFile(
-    new URL("../src/components/nav-row-state.ts", import.meta.url),
-    "utf8",
-  );
+  const rowState = await readSrcAsync("components/nav-row-state.ts");
   assert.match(
     rowState,
     /if \(row\.pending\) \{\n\s*return \{\n\s*disabled: false,/,
@@ -601,10 +535,7 @@ test("the workspace chords wait on the same verdict their rows do", async () => 
 // The reasoning, Fast mode and fork chords drive controls on the page behind a
 // dialog just as the pickers do.
 test("the remaining chat-page chords stop at a covered surface", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   for (const id of [
     "cycleReasoningEffort",
     "increaseReasoningEffort",
@@ -619,10 +550,7 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
       `${id} acts on the covered surface`,
     );
   }
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   const at = thread.indexOf('"forkChat",');
   assert.notEqual(at, -1);
   assert.match(

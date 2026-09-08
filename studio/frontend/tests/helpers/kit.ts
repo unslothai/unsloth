@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 
 import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inference-status.ts";
 import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
+
+/**
+ * A module under `src` read as text, addressed the way the app imports it: the
+ * path is relative to `src`, so it does not move when a test file does.
+ *
+ * Tests that assert on source shape rather than behaviour read the module this
+ * way; the shape is the assertion, so the text has to be the shipped file.
+ */
+export function readSrc(relative: string): string {
+  return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
+}
+
+/** `readSrc` for a caller that is already awaiting. */
+export function readSrcAsync(relative: string): Promise<string> {
+  return readFile(new URL(`../../src/${relative}`, import.meta.url), "utf8");
+}
 
 /**
  * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode give the

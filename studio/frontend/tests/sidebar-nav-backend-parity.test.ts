@@ -6,6 +6,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { DEFAULT_CUSTOMIZATION } from "../src/features/settings/stores/appearance-custom-store.ts";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 // A record predating sidebarNav is served the backend's own defaults, so a drift there
 // hands the user a layout this side never shipped. settings.py says the two must match;
 // the backend's parity test compares against a hand-copied list, which cannot catch a
@@ -30,10 +32,7 @@ test("the backend sidebar nav defaults match the frontend", async () => {
 // keyed by SidebarNavItemId, so a dropped `pending` there just stops spinning, it does not
 // fail to compile.
 test("Train and Video are still the capability-gated rows", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
     source,
   );

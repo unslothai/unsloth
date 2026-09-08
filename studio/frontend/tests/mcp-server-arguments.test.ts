@@ -19,6 +19,8 @@ import {
   waitForPendingMcpServerMutations,
 } from "../src/features/chat/api/mcp-server-mutation-tracker.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -96,26 +98,14 @@ test("command, order, value, and intentional empty argument changes require enco
 });
 
 test("the helper never parses, splits, joins, trims, or quotes commands", () => {
-  const helper = readFileSync(
-    new URL("../src/features/chat/mcp-server-form.ts", import.meta.url),
-    "utf8",
-  );
+  const helper = readSrc("features/chat/mcp-server-form.ts");
   assert.doesNotMatch(helper, /\.(?:split|join|trim)\s*\(/);
   assert.doesNotMatch(helper, /JSON\.stringify|replace\s*\(/);
 });
 
 test("the dialog wires backend codec calls, stale guards, and a stdio-only editor", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const api = readFileSync(
-    new URL("../src/features/chat/api/mcp-servers-api.ts", import.meta.url),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
+  const api = readSrc("features/chat/api/mcp-servers-api.ts");
 
   assert.match(api, /mcpRequest\("\/stdio\/decode"/);
   assert.match(api, /mcpRequest\("\/stdio\/encode"/);
@@ -176,13 +166,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
 });
 
 test("every mutable MCP form editor is locked for the full pending interval", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
   const argumentsEditor = sourceBetween(
     dialog,
     "function ArgumentsEditor",
@@ -231,13 +215,7 @@ test("every mutable MCP form editor is locked for the full pending interval", ()
 });
 
 test("a decode error is announced and executable edits unlock manual recovery", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
 
   assert.match(
     dialog,
@@ -262,13 +240,7 @@ test("a decode error is announced and executable edits unlock manual recovery", 
 });
 
 test("dialog actions and reconciliation stop when the dialog closes", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
 
   assert.match(
     dialog,
@@ -286,17 +258,8 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
 });
 
 test("pending MCP actions remain keyed to their own server", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
+  const composer = readSrc("features/chat/mcp-composer-button.tsx");
 
   assert.match(composer, /pendingUrlsRef = useRef\(new Set<string>\(\)\)/);
   assert.match(
@@ -312,13 +275,7 @@ test("pending MCP actions remain keyed to their own server", () => {
 });
 
 test("dialog closure is blocked while a CRUD mutation is in flight", () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
   const closeHandler = sourceBetween(
     dialog,
     "function handleOpenChange",
@@ -348,10 +305,7 @@ test("dialog closure is blocked while a CRUD mutation is in flight", () => {
 });
 
 test("composer applies mutation responses before releasing each preset", () => {
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/mcp-composer-button.tsx");
 
   assert.match(
     composer,
@@ -380,10 +334,7 @@ test("composer applies mutation responses before releasing each preset", () => {
 });
 
 test("MCP configuration remains reachable when the loaded model lacks tools", () => {
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/mcp-composer-button.tsx");
 
   assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
   assert.match(composer, /The loaded model cannot use MCP tools/);
@@ -395,13 +346,7 @@ test("MCP configuration remains reachable when the loaded model lacks tools", ()
 });
 
 test("full unmount invalidates cancellable stdio encode continuations", async () => {
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
   const refsAndCleanup = sourceBetween(
     dialog,
     "const formGenerationRef = useRef(0)",
@@ -737,21 +682,9 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   const chatRoot = fileURLToPath(
     new URL("../src/features/chat/", import.meta.url),
   );
-  const dialog = readFileSync(
-    new URL(
-      "../src/features/chat/chat-mcp-servers-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const api = readFileSync(
-    new URL("../src/features/chat/api/mcp-servers-api.ts", import.meta.url),
-    "utf8",
-  );
-  const composer = readFileSync(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
+  const dialog = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
+  const api = readSrc("features/chat/api/mcp-servers-api.ts");
+  const composer = readSrc("features/chat/mcp-composer-button.tsx");
   const listApi = sourceBetween(
     api,
     "export function listMcpServers",

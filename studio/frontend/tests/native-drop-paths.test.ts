@@ -56,7 +56,7 @@ import {
   isAudioOnly3gpBytes,
   isVideoFile,
 } from "../src/lib/video-utils.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -150,34 +150,19 @@ test("OpenDocument picker types are accepted by native drops", () => {
     assert.ok(SUPPORTED_DROP_HINT.includes(extension));
   }
 
-  const providerSource = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const providerSource = readSrc("features/chat/runtime-provider.tsx");
   assert.match(providerSource, OPEN_DOCUMENT_ADAPTER_ACCEPT_RE);
 
-  const nativeDropSource = readFileSync(
-    new URL(
-      "../src/features/native-intents/use-native-drop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const nativeDropSource = readSrc("features/native-intents/use-native-drop.ts");
   assert.match(nativeDropSource, OPEN_DOCUMENT_DROP_TO_COMPOSER_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_REGISTRATION_CLASS_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_IMAGE_REGISTRATION_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_BACKEND_GATE_RE);
 
-  const chatPageSource = readFileSync(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const chatPageSource = readSrc("features/chat/chat-page.tsx");
   assert.match(chatPageSource, OPEN_DOCUMENT_CHAT_QUEUE_RE);
 
-  const threadSource = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const threadSource = readSrc("components/assistant-ui/thread.tsx");
   assert.match(threadSource, OPEN_DOCUMENT_DRAIN_RE);
 
   const rustSource = readFileSync(
@@ -347,10 +332,7 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
     ),
   ].sort();
 
-  const providerSource = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const providerSource = readSrc("features/chat/runtime-provider.tsx");
   const accepted = providerSource
     .match(VISION_ADAPTER_ACCEPT_RE)?.[1]
     .split(",")
@@ -397,10 +379,7 @@ test("every accepted image extension has a Rust MIME arm", () => {
 
 // The one constant drop-paths.ts names in its own "keep in sync" comment.
 test("the drop image list matches the composer's file picker", () => {
-  const composerSource = readFileSync(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
+  const composerSource = readSrc("features/chat/shared-composer.tsx");
   const picker = composerSource
     .match(COMPOSER_IMAGE_ACCEPT_RE)?.[1]
     .split(",")
@@ -721,10 +700,7 @@ test("the picker remains able to show extensionless text basenames", () => {
     ".txt,text/plain",
   );
 
-  const threadSource = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const threadSource = readSrc("components/assistant-ui/thread.tsx");
   assert.match(threadSource, PICKER_BASENAME_CALL_RE);
 });
 
@@ -999,10 +975,7 @@ test("a text attachment is read once, not once per stage", async () => {
 });
 
 test("both attachment stages go through the decode-once path", () => {
-  const provider = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const provider = readSrc("features/chat/runtime-provider.tsx");
   const adapter = provider.slice(
     provider.indexOf("class TextAttachmentAdapter"),
     provider.indexOf("class HtmlAttachmentAdapter"),
@@ -1104,10 +1077,7 @@ test("compare mode takes the same audio files the chat composer does", () => {
   );
   assert.equal(isAudioAttachmentFile(new File([], "notes.txt", { type: "" })), false);
   // The compare composer classifies through the shared helper, not file.type.
-  const composer = readFileSync(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/shared-composer.tsx");
   assert.equal(/file\.type\.match\(\/\^audio/.test(composer), false);
   assert.match(composer, /isAudioAttachmentFile\(file\)/);
   assert.match(composer, /accept=\{AUDIO_PICKER_ACCEPT\}/);
@@ -1143,13 +1113,7 @@ test("a declaration past the first pages is not missed", async () => {
     },
   );
   // The source carries no byte ceiling on the scan for a cutoff to creep back in.
-  const source = readFileSync(
-    new URL(
-      "../src/features/chat/text-attachment-accept.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/text-attachment-accept.ts");
   assert.equal(source.includes("DECLARATION_SCAN_BYTES"), false);
 });
 
@@ -1368,10 +1332,7 @@ test("the tracker magic tables agree, and cover ProTracker's second marker", asy
   assert.ok(rustMagics.includes("!PM!"), "Rust table is missing !PM!");
 
   const module = await import("../src/features/chat/text-attachment-accept.ts");
-  const source = readFileSync(
-    new URL("../src/features/chat/text-attachment-accept.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/text-attachment-accept.ts");
   const tsTable = source.match(/const TRACKER_MOD_MAGICS = new Set\(\[([\s\S]*?)\]\)/);
   assert.ok(tsTable, "TRACKER_MOD_MAGICS not found in text-attachment-accept.ts");
   const tsMagics = [...tsTable[1]!.matchAll(/"((?:[^"\\]|\\.){1,8})"/g)].map((m) =>
@@ -1599,10 +1560,7 @@ test("frontend and Rust accept the same dropped text extensions", () => {
 });
 
 test("the composer adapter reads the shared text accept list", () => {
-  const src = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
     src,
     /class TextAttachmentAdapter implements AttachmentAdapter \{[\s\S]*?accept = TEXT_ATTACHMENT_ACCEPT;/,
@@ -1612,10 +1570,7 @@ test("the composer adapter reads the shared text accept list", () => {
     assert.ok(TEXT_ATTACHMENT_ACCEPT.includes(ext), ext);
   }
 
-  const attachmentContentSource = readFileSync(
-    new URL("../src/features/chat/attachment-content.ts", import.meta.url),
-    "utf8",
-  );
+  const attachmentContentSource = readSrc("features/chat/attachment-content.ts");
   assert.match(
     attachmentContentSource,
     /import \{[\s\S]*?TEXT_ATTACHMENT_ACCEPT[\s\S]*?decodeTextAttachmentBytes[\s\S]*?\} from "\.\/text-attachment-accept";/,
@@ -1724,13 +1679,7 @@ test("a file dialog offers 3GP recordings, and routing still does not", () => {
   assert.equal(AUDIO_ATTACHMENT_ACCEPT.split(",").includes(".3gp"), false);
   assert.ok(AUDIO_PICKER_ACCEPT.startsWith(AUDIO_ATTACHMENT_ACCEPT));
 
-  const adapter = readFileSync(
-    new URL(
-      "../src/features/chat/audio-attachment-adapter.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/audio-attachment-adapter.ts");
   assert.match(adapter, /accept = AUDIO_ATTACHMENT_ACCEPT;/);
   assert.equal(/AUDIO_PICKER_ACCEPT/.test(adapter), false);
 });
@@ -1747,18 +1696,12 @@ test("a 3GP clip picked through the audio dialog is still refused as video", asy
 test("the composer classifies before an adapter is picked", () => {
   // A composite matches on name and MIME synchronously, so the restamping has
   // to happen in the wrapper above it rather than inside an adapter.
-  const src = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
     src,
     /class PreStreamAwareAttachmentAdapter[\s\S]*?if \(!needsAttachmentTrackInspection\(state\.file\)\)[\s\S]*?await classifiedAttachmentFile\(state\.file\)/,
   );
-  const composer = readFileSync(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(composer, /await classifiedAttachmentFiles\(input\)/);
 });
 
@@ -1978,10 +1921,7 @@ test("the reference picker takes the formats its drop path does", async () => {
     assert.ok(REFERENCE_PICKER_ACCEPT.video.split(",").includes(ext), ext);
   }
 
-  const picker = readFileSync(
-    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-    "utf8",
-  );
+  const picker = readSrc("features/video/reference-picker.tsx");
   assert.match(picker, /accept=\{REFERENCE_PICKER_ACCEPT\[kind\]\}/);
 });
 
@@ -2149,10 +2089,7 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
     "Please choose a video file",
   );
 
-  const picker = readFileSync(
-    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-    "utf8",
-  );
+  const picker = readSrc("features/video/reference-picker.tsx");
   assert.match(picker, /await classifiedAttachmentFile\(picked\)/);
 });
 
@@ -2244,10 +2181,7 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
 
   // Nothing in the predicate turns on size any more, so no surface's limit can
   // drift past it again.
-  const source = readFileSync(
-    new URL("../src/lib/video-utils.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("lib/video-utils.ts");
   assert.match(
     source,
     /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\);\s*\}/,
@@ -2320,10 +2254,7 @@ test("a preview finds a declaration that sits past its own slice", async () => {
     "string",
   );
 
-  const source = readFileSync(
-    new URL("../src/features/chat/attachment-content.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/attachment-content.ts");
   assert.match(source, /decodeTextAttachmentBytes\(bytes, file\.name, truncated, whole\)/);
   assert.match(source, /DECLARES_ITS_CHARSET_RE/);
 });
@@ -2376,10 +2307,7 @@ test("the reference drop zone takes what its dialog offers", async () => {
     assert.ok(REFERENCE_DROP_ACCEPT.video.split(",").includes(ext), ext);
   }
 
-  const picked = readFileSync(
-    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-    "utf8",
-  );
+  const picked = readSrc("features/video/reference-picker.tsx");
   assert.match(picked, /accept: REFERENCE_DROP_ACCEPT\[kind\]/);
 });
 
@@ -2410,10 +2338,7 @@ test("a quoted parameter value resolves its escapes", async () => {
 test("the clipboard reader takes what the native side hands it", () => {
   // Rust reads a pasted clip to MAX_CLIPBOARD_VIDEO_BYTES; refusing it here
   // threw away a file already read and encoded, and dropped the paste with it.
-  const source = readFileSync(
-    new URL("../src/features/chat/utils/clipboard-files.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/utils/clipboard-files.ts");
   const rust = readFileSync(
     new URL("../../src-tauri/src/native_clipboard.rs", import.meta.url),
     "utf8",

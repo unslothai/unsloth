@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   type LockSet,
@@ -12,6 +11,8 @@ import {
   sameListDraft,
   samePromptDraft,
 } from "../src/features/chat/prompt-storage/mutation-lock.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const empty: LockSet = new Set<string>();
 
@@ -53,13 +54,7 @@ test("releasing an id nobody holds is a no-op on the same set", () => {
 });
 
 test("the detail panes do not own a mutation lock", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   // Both panes are mounted with key={entry.id}, so a useState lock inside one
   // resets on every row switch. That is the defect; keep it from coming back.
   assert.doesNotMatch(
@@ -82,13 +77,7 @@ test("the detail panes do not own a mutation lock", async () => {
 // later during render, with no finally left to release it, and the row's Save and
 // Delete stay disabled for good. The ref is the authority for that reason.
 test("the lock decides from the ref, not from a scheduled updater", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.match(source, /const mutatingRef = useRef<ReadonlySet<string>>/);
   assert.match(
     source,
@@ -135,13 +124,7 @@ test("list drafts compare by items, not by identity", () => {
 // minted a second id and stored a duplicate, and a rejection was unhandled, so a
 // failed create looked exactly like a successful one.
 test("both create paths are guarded and report failure", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   // Above the forms, like the row locks: the forms are conditionally mounted, so
   // selecting a rail row while a create is out would otherwise hand a reopened
   // form a fresh false guard and let it mint a second id for the same draft.
@@ -174,13 +157,7 @@ test("both create paths are guarded and report failure", async () => {
 // The draft is what covers the entry the pane still holds, which is the pre-save
 // copy until the list is refetched. Clearing it first flashes the old text back.
 test("a save clears its draft only after the refreshed entry is in", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.equal(
     source.split("await onRefresh();\n        onSaved(submitted);").length - 1,
     2,
@@ -197,13 +174,7 @@ test("a save clears its draft only after the refreshed entry is in", async () =>
 // the deleted row is still in promptEntries reselects it. The pane then renders
 // an entry the backend no longer has until the refetch lands.
 test("a delete clears its selection only after the row is gone", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   const leadIns = source.split("onDeleted(entry.id);").slice(0, -1);
   assert.equal(leadIns.length, 2, "both detail panes should clear a deleted row");
   for (const before of leadIns) {
@@ -226,13 +197,7 @@ test("a delete clears its selection only after the row is gone", async () => {
 // when its text wraps on a narrow dialog. At 320x320 the guess left the body
 // 57px too tall and Use, Save and Run fell outside the clip.
 test("the dialog body claims no height it has to guess", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.doesNotMatch(
     source,
     /min-h-\[[^\]]*dvh/,
@@ -252,13 +217,7 @@ test("the dialog body claims no height it has to guess", async () => {
 // lands discarded text that never reached the server, which is the defect
 // samePromptDraft already guards on the edit panes.
 test("a create resets its draft only if it still holds what was sent", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.match(source, /samePromptDraft\(prev, submitted\) \? emptyPromptDraft\(\) : prev/);
   assert.match(source, /sameListDraft\(prev, submitted\) \? emptyListDraft\(\) : prev/);
   // The created path must not run the Cancel callback, which discards outright.
@@ -286,13 +245,7 @@ test("an empty draft does not match a submitted one", () => {
 // grow faster than the item count. The backend takes 10000 items in one list, so
 // the editor has to be able to wait.
 test("an oversized list waits to be asked before mounting its editor", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.match(source, /const EDITOR_ROW_LIMIT = \d+;/);
   const limit = Number(/const EDITOR_ROW_LIMIT = (\d+);/.exec(source)?.[1]);
   assert.ok(limit > 0 && limit < 500, `${limit} is not a limit that avoids the freeze`);
@@ -319,13 +272,7 @@ test("an oversized list waits to be asked before mounting its editor", async () 
 // A create outlives the form that started it, and completion used to clear the
 // search, move the selection and close whatever New form was open by then.
 test("a finished create only moves the view its own form still owns", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.equal(
     source.split("onCreated(id, submitted, mounted.current);").length - 1,
     2,
@@ -348,13 +295,7 @@ test("a finished create only moves the view its own form still owns", async () =
 // hidden one too. Correcting the hidden tab's selection against that dropped the
 // row it had, and clearing the query in an effect left one render to do it in.
 test("only the visible tab's selection is corrected", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.match(source, /if \(activeTab === "prompts"\) \{\n\s+if \(filteredPrompts\.length === 0\)/);
   assert.match(source, /const selectTab = useCallback\(\(tab: Tab\) => \{/);
   assert.doesNotMatch(
@@ -370,13 +311,7 @@ test("only the visible tab's selection is corrected", async () => {
 // that first cleanup, so every create reported an unmounted form and the New
 // form never closed on success.
 test("the New form's mounted flag is set in effect setup", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.equal(
     source.split("mounted.current = true;").length - 1,
     2,
@@ -409,13 +344,7 @@ test("no id can be crafted to collide across the two kinds", () => {
 });
 
 test("both panes take their lock through lockKey", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   assert.equal(source.split('runMutation(lockKey("prompt", entry.id)').length - 1, 2);
   assert.equal(source.split('runMutation(lockKey("list", entry.id)').length - 1, 2);
   assert.doesNotMatch(

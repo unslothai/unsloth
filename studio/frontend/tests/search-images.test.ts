@@ -33,6 +33,8 @@ import {
 } from "../src/components/assistant-ui/sandbox-files.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const ENTRY = {
   id: "0123456789ab",
   title: "Golden Retriever",
@@ -450,10 +452,7 @@ test("extractListSubjects reads the lead of each listed item", () => {
 test("the inline card is block-level, so a list item cannot flow text around it", () => {
   // A list item styles its paragraphs `[&>p]:inline`. An inline card lands in the
   // middle of the sentence and the text wraps around it, which is what shipped once.
-  const source = readFileSync(
-    new URL("../src/components/assistant-ui/search-image.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/search-image.tsx");
   const wrapper = /data-search-image=\{entry\.id\}/.test(source)
     ? source.slice(source.indexOf("if (!entry) return null;"))
     : "";

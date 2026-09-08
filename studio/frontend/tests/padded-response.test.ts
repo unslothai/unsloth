@@ -18,10 +18,9 @@ import test from "node:test";
 
 import { assertCompletedPaddedBody } from "../src/features/chat/api/padded-response.ts";
 
-const chatApi = readFileSync(
-  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const chatApi = readSrc("features/chat/api/chat-api.ts");
 
 test("a real payload passes through", () => {
   assertCompletedPaddedBody({ status: "loaded", model: "org/A" }, "Model load");

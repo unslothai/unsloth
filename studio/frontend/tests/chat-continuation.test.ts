@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -1406,10 +1405,7 @@ test("a claim whose run was never issued is left to lapse, not held", async () =
   // the message until this one closes. So the message has to still be there before anything
   // is held. Pinned at the source, since there is no renderer here -- the same way
   // composer-keystroke-subscription-budget.test.ts pins its seams.
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   const claimed = thread.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
@@ -1455,23 +1451,14 @@ test("a losing claim does not follow the row onto the next branch", () => {
   // re-renders this component rather than remounting it, and the flag set for the message
   // that lost carried over onto a message nobody has claimed at all -- no automatic
   // continuation for it, for as long as that row lives.
-  const rows = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/progressive-messages.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
     /<MessageByIndexProvider key=\{index\}/,
     "rows are no longer keyed by index; this test needs rewriting",
   );
 
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   const start = thread.indexOf("const ContinueMessageBarForLastMessage");
   assert.notEqual(start, -1, "the bar moved; this test needs rewriting");
   const component = thread.slice(
@@ -1536,10 +1523,7 @@ test("a claim taken for a run that was never issued is given back", async () => 
 test("the bar rolls its claim back when it issues no run", () => {
   // The behaviour above, pinned where it has to be called from: the early return that
   // decided no run would be issued.
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   const claimed = thread.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
@@ -1667,10 +1651,7 @@ test("the keeper is wired to the failure the adapter already reports", () => {
   // There is exactly one signal for a run that failed on its way out, and it is not a
   // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
   // per thread. Pinned at both ends, since neither side is exercised by a unit test.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const wrapper = adapter.slice(adapter.indexOf("yield* adapter.run(args)"));
   assert.match(
     wrapper,
@@ -1678,13 +1659,7 @@ test("the keeper is wired to the failure the adapter already reports", () => {
     "the adapter no longer reports a failed run per thread; this test needs rewriting",
   );
 
-  const wiring = readFileSync(
-    new URL(
-      "../src/features/chat/utils/auto-continue-run-keeper.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const wiring = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
   assert.match(
     wiring,
     /PROMPT_QUEUE_RUN_FAILED_EVENT/,
@@ -1890,10 +1865,7 @@ test("only the gate's own tokens are read as a refusal", () => {
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
   // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const gate = adapter.slice(adapter.indexOf("const imageGateReason ="));
   assert.match(
     gate,
@@ -1906,13 +1878,7 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
     "the pulse compare mode waits on is still fired under that token",
   );
 
-  const wiring = readFileSync(
-    new URL(
-      "../src/features/chat/utils/auto-continue-run-keeper.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const wiring = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
   assert.match(
     wiring,
     /isImageGateRunOnly\(state\.runOwnerByThreadId\[threadId\]\)/,

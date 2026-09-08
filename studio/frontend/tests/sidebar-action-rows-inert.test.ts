@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 // The pinned top rows run an action rather than open a page, so neither may
 // mark itself active: nav rows paint one pill for both states, and an active
 // action row therefore sits there looking permanently hovered.
@@ -40,10 +42,7 @@ test("Search never marks itself active either", async () => {
 test("a nav row paints the same pill when active and when hovered", async () => {
   // The reason the rows above pass false. If active ever gets its own
   // background, that reason is gone and this can be revisited.
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
+  const css = await readSrcAsync("index.css");
   const rule = /([^}]*)\{\s*background-color: var\(--nav-surface-hover\)/.exec(
     css,
   );
@@ -148,10 +147,7 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
+  const css = await readSrcAsync("index.css");
   // Only the Windows auto reset may set a width; hiding the rail is what a
   // width override caused before.
   const railWidthDecls = (

@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -144,10 +144,7 @@ test("an actively detecting reply is not deferred", () => {
 // wait on every navigation. Asserted on source: env.ts is not importable outside vite.
 test("the bounded hardware wait is spent at most once per page load", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   assert.match(
     src,
     /let hardwareWaitSpent = false/,
@@ -165,10 +162,7 @@ test("the bounded hardware wait is spent at most once per page load", async () =
 // provisional into measured, so it only holds the login form behind the torch import.
 test("an unauthenticated read never spends the detection window", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   assert.match(
     src,
     /const spendWait = Boolean\(token\) && !hardwareWaitSpent/,
@@ -181,10 +175,7 @@ test("an unauthenticated read never spends the detection window", async () => {
 // leaving the awaited caller on the local default and redirecting a GPU host to /chat.
 test("the latch is claimed after the wait, not during it", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
   // Anchor on the loop's own closing brace, NOT on the latch. Searching for the latch
   // made this assertion unfalsifiable: String.prototype.search returns the FIRST match,
@@ -211,10 +202,7 @@ test("the latch is claimed after the wait, not during it", async () => {
 // as local, changing model filtering, paths and install commands.
 test("a provisional forced refresh keeps the server-reported platform", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   assert.match(
     src,
     /const keepPlatform =\s*\n?\s*data\.device_type === undefined && previous\.fetched/,
@@ -237,11 +225,8 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
 // kept the conservative deferred verdict and stayed chat-only until a hard refresh.
 test("a deferred verdict is recorded so the sidebar can poll out of it", async () => {
   const { readFile } = await import("node:fs/promises");
-  const env = await readFile(new URL("../src/config/env.ts", import.meta.url), "utf8");
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const env = await readSrcAsync("config/env.ts");
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     env,
     /detectionDeferred: isDetectionDeferred\(data\)/,
@@ -259,10 +244,7 @@ test("a deferred verdict is recorded so the sidebar can poll out of it", async (
 // a stale token spends the whole window and holds /login on a cold boot.
 test("a rejected token stops the wait instead of polling it out", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
   // Same brace anchor as above rather than the latch pattern, so the slice cannot move
   // with the code it is meant to be measuring.
@@ -286,10 +268,7 @@ test("a rejected token stops the wait instead of polling it out", async () => {
 // the latch on a refused token leaves the route guard on local defaults until a refresh.
 test("a rejected token does not consume the once-per-load window", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   assert.match(
     src,
     /if \(spendWait && !tokenRejected\) hardwareWaitSpent = true;/,
@@ -309,10 +288,7 @@ test("a rejected token does not consume the once-per-load window", async () => {
 // answered -- which PR #7607's lazy detection can stretch to minutes.
 test("the store exposes an unknown state, not just chat-only", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   assert.match(
     src,
     /capabilitiesUnknown: \(\) => boolean;/,
@@ -331,10 +307,7 @@ test("the store exposes an unknown state, not just chat-only", async () => {
 // never flips. Calling that unknown would spin Train and Video for the whole session.
 test("a deferred verdict counts as settled, not as still checking", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("config/env.ts");
   const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(src);
   assert.ok(selector, "capabilitiesUnknown is no longer a block the deferred case can live in");
   assert.match(
@@ -346,10 +319,7 @@ test("a deferred verdict counts as settled, not as still checking", async () => 
 
 test("the sidebar gates Train and Video on a measured verdict", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     src,
     /const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;/,
@@ -378,10 +348,7 @@ test("the sidebar gates Train and Video on a measured verdict", async () => {
 // pre-measurement guess strands a healthy host there for the rest of the session.
 test("the route guard waits out an unknown verdict on Train and Video", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("app/routes/__root.tsx");
   const guard = /const SELF_GATED_WHILE_UNKNOWN = \[([^\]]*)\]/.exec(src);
   assert.ok(guard, "no list of paths that wait the verdict out");
   for (const path of ["/studio", "/video"]) {
@@ -404,10 +371,7 @@ test("the route guard waits out an unknown verdict on Train and Video", async ()
 // so the page has to say which, rather than fail at load.
 test("the Video page gates on the backend's own capability answer", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/video/video-page.tsx");
   assert.match(
     src,
     /hardware\.videoSupported === false/,
@@ -478,10 +442,7 @@ test("a chat-only Apple Silicon host keeps Video navigable", () => {
 // tests above only describe.
 test("the Video row is disabled exactly when the hint has something to say", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     src,
     /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\)/,
@@ -514,10 +475,7 @@ test("the Video row is disabled exactly when the hint has something to say", asy
 // the rest of the session.
 test("a failed hardware probe is retried, not left unloaded", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("hooks/use-hardware-info.ts");
   assert.match(
     src,
     /if \(!cancelled && !hw\.loaded\) retry = setTimeout\(load, RETRY_MS\);/,
@@ -537,10 +495,7 @@ test("a failed hardware probe is retried, not left unloaded", async () => {
 // is a permanent "Checking this machine..." rather than a stale value.
 test("a cache filled between render and subscribe still reaches the component", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("hooks/use-hardware-info.ts");
   assert.match(
     src,
     /if \(cached\) listener\(cached\);\s*\n\s*else load\(\);/,

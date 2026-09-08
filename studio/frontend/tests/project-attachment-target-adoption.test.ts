@@ -6,10 +6,11 @@
 // attach path went through ensureThreadId: the choice was dropped and inherited.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "../src/features/chat/utils/project-attachment-target.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const PENDING = "__pending__";
 type Target = "project" | "chat";
@@ -75,13 +76,7 @@ test("clearing with nothing pending changes nothing", () => {
 
 // Adoption has to run on both paths that turn a fresh composer into a chat.
 test("both chat-creating paths adopt the pending choice", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
   // Attaching a file first: ensureThreadId materializes the thread.
   assert.match(
     source,
@@ -95,26 +90,14 @@ test("both chat-creating paths adopt the pending choice", () => {
 });
 
 test("the composer clears its pending choice when it goes away", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
   assert.match(source, /clearPendingProjectAttachmentTarget\(\)/);
 });
 
 // Membership is read from the chat's own row, so there is a window where it is
 // unknown. Attaching in it would file the file by guess.
 test("attaching is held until the chat's project is known", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
   assert.match(
     source,
     /const projectUnresolved = threadProjectId === undefined;/,
@@ -135,10 +118,7 @@ test("attaching is held until the chat's project is known", () => {
 // A send outlives navigation, and hydration and a model load both run before the
 // project is first resolved.
 test("the run keeps the project it started in", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     source,
     // Whichever await comes first: the property is that the read is the run's
@@ -205,13 +185,7 @@ test("an abandoned composer cannot consume the next composer's choice", () => {
 // The counter has to move on both ways the entry changes hands, or a claim
 // taken before one of them still looks current afterwards.
 test("both writers of the pending entry move the claim", () => {
-  const store = readFileSync(
-    new URL(
-      "../src/features/chat/stores/chat-runtime-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.equal(
     store.match(/pendingAttachmentTargetClaim \+= 1;/g)?.length,
     2,
@@ -222,13 +196,7 @@ test("both writers of the pending entry move the claim", () => {
     /if \(claim !== undefined && claim !== pendingAttachmentTargetClaim\) \{\s*return state;/,
   );
 
-  const bar = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const bar = readSrc("features/rag/components/thread-documents-bar.tsx");
   // Read before initialize(), not after it resolves.
   assert.match(
     bar,
@@ -242,10 +210,7 @@ test("both writers of the pending entry move the claim", () => {
 // the choice unmounts without ever seeing the new id, and the Thread's own bar
 // mounts with the id already set, so neither of the bar's adopt paths runs.
 test("the project composer's choice survives the swap to a thread", () => {
-  const page = readFileSync(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = readSrc("features/chat/chat-page.tsx");
   // The swap: this is what unmounts the composer.
   assert.match(page, /\{pendingNewThreadId \? \(/);
   // Adopted before it, in the path that learns the id, and only for the choice
@@ -264,13 +229,7 @@ test("the project composer's choice survives the swap to a thread", () => {
   );
 
   // The claim the store hands out changes on every pending write, value or not.
-  const store = readFileSync(
-    new URL(
-      "../src/features/chat/stores/chat-runtime-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
     store,
     /if \(threadId === null\) \{\s*pendingAttachmentTargetClaim \+= 1;/,
@@ -278,23 +237,14 @@ test("the project composer's choice survives the swap to a thread", () => {
 
   // Why the bar cannot cover it: the Thread's bar starts with an id, so the
   // first-id branch never fires for it.
-  const bar = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const bar = readSrc("features/rag/components/thread-documents-bar.tsx");
   assert.match(bar, /const hadThreadIdRef = useRef\(threadId !== null\);/);
 });
 
 // A browser-local preference that a reset leaves behind outlives the reset: new
 // attachments keep going to the scope the user just asked to forget.
 test("the attach-target preference is cleared by the preferences reset", () => {
-  const tab = readFileSync(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const tab = readSrc("features/settings/tabs/general-tab.tsx");
   const start = tab.indexOf("const PREFS_KEYS");
   const keys = tab.slice(start, tab.indexOf("];", start));
   assert.ok(start >= 0, "PREFS_KEYS moved");

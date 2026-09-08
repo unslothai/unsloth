@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 // Both spinners are ml-auto, so each one sits at its row's padding-right plus
 // its own margin-right. The two rows carry different padding, so the margins
 // have to make up the difference or the column visibly steps.
@@ -22,10 +24,7 @@ function grab(source: string, pattern: RegExp, what: string): string {
 }
 
 test("nav and Recents spinners land on one trailing column", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
 
   const navRow = grab(
     source,
@@ -177,10 +176,7 @@ test("the expanded row and the flyout both show a pending tooltip", async () => 
 });
 
 test("both capability rows carry a pending tooltip", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   for (const row of ["train", "video"]) {
     const block = source.slice(source.indexOf(`    ${row}: {`));
     const body = block.slice(0, block.indexOf("\n    },"));
@@ -213,10 +209,7 @@ test("a measured row is left exactly as it was", async () => {
 // Two render sites take these props: the inline rows and the More flyout. A row moved into
 // More by Settings -> Appearance must not go back to rendering the guess.
 test("both nav render sites resolve pending the same way", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   const resolves = source.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
   assert.equal(resolves.length, 2, `expected both render sites to resolve, got ${resolves.length}`);
   // And neither passes the raw fields past it.

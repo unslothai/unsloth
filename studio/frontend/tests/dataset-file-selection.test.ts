@@ -18,6 +18,8 @@ import {
   selectDatasetFiles,
 } from "../src/features/images/train/dataset-files.ts";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 /** a picked file of a given byte size. chunking reads only `size`, so the payload is stubbed:
  *  materializing it made these cases allocate over a gigabyte between them. */
 function sized(name: string, bytes: number): File {
@@ -477,10 +479,7 @@ test("uses the flat list when the entries API is unavailable", async () => {
 test("the labeling grid is gated on images, not just its toggle", async () => {
   // A mixed folder keeps its listing on clip_count alone, so deleting the last image leaves the
   // grid with no toggle to close it unless the grid itself sits inside the same guard.
-  const source = await readFile(
-    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
   const guard = "{selectedDataset.image_count > 0 && (";
   const toggle = source.indexOf("<LabelingGridToggle");
   const grid = source.indexOf("<DatasetLabelingGrid");

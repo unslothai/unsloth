@@ -6,10 +6,9 @@
 // waved away, and would otherwise also reopen one deliberately turned off.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store } = installLocalStorageFake();
 
@@ -105,21 +104,12 @@ test("setting the dismissal to what it already is changes nothing", () => {
 });
 
 test("the dismissal key is cleared by Reset all local preferences", () => {
-  const generalTab = readFileSync(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const generalTab = readSrc("features/settings/tabs/general-tab.tsx");
   assert.match(generalTab, /LOADED_MODELS_PREFERENCE_KEYS\.dismissed,/);
 });
 
 test("the card carries a close button, and a load brings it back", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const indicator = readSrc("features/loaded-models/loaded-models-indicator.tsx");
   assert.match(indicator, /aria-label="Close loaded models"/);
   assert.match(
     indicator,
@@ -140,13 +130,7 @@ test("the card carries a close button, and a load brings it back", () => {
 // Requested by name: hugeicons.com/icon/sparkle. Singular, so NOT the free
 // set's SparklesIcon (two stars) nor lib/sparkles-icon, which is a shield.
 test("the card is badged with the single sparkle, not the brain", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const indicator = readSrc("features/loaded-models/loaded-models-indicator.tsx");
   assert.match(indicator, /icon=\{SparkleIcon\}/);
   assert.match(indicator, /from "@\/lib\/sparkle-icon"/);
   assert.doesNotMatch(indicator, /AiBrain01Icon|SparklesIcon/);
@@ -155,13 +139,7 @@ test("the card is badged with the single sparkle, not the brain", () => {
 // Releasing the weights is not the same act as closing the card, so it must not
 // wear the same X.
 test("a row ejects with the eject glyph, the header closes with an X", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const indicator = readSrc("features/loaded-models/loaded-models-indicator.tsx");
   const row = indicator.slice(
     indicator.indexOf("function LoadedModelRow"),
     indicator.indexOf("export function LoadedModelsIndicator"),
@@ -182,13 +160,7 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
 // 401 ran authFetch's refresh-then-redirect ladder against no session at all.
 // Asserted by reading the source, since the node suite has no DOM to mount in.
 test("recording follows the route and auth gate, but not the dismissal", () => {
-  const INDICATOR = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
   // The auth gate lives in canShowIndicator, so `reachable` is what carries it.
   assert.match(INDICATOR, /const reachable = canShowIndicator\(pathname\);/);
   assert.match(

@@ -30,6 +30,8 @@ import {
 } from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 function keyEvent(
   code: string,
   mods: Partial<{
@@ -298,10 +300,7 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
 // The walk is the one chord whose end is a key coming up rather than going
 // down, so it is the one that a window losing focus can strand.
 test("the recent walk ends on losing the window, not just on keyup", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   const at = sidebar.indexOf("const end = () =>");
   assert.ok(at !== -1, "the traversal listener moved");
   const body = sidebar.slice(at, sidebar.indexOf("}, []);", at));
@@ -337,10 +336,7 @@ test("the private-window chord is reserved and carries no default", () => {
 // verdict, so they are the two workspace chords that can put a gate where the
 // user's workspace was.
 test("the workspace chords land where the guard lets them", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
   assert.match(
     root,
     /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
@@ -364,10 +360,7 @@ test("the workspace chords land where the guard lets them", async () => {
     root,
     /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: routeShortcutEnabled && !videoDisabled,/,
   );
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     sidebar,
     /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\);/,
@@ -616,13 +609,7 @@ test("bare Escape is the recorder's own exit, so only a prompt-gated row takes i
 
   // The recorder swallows every keydown, so bare Escape has to stay its way
   // out, except on the rows whose own chord it is.
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const tab = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   assert.match(
     tab,
     /event\.code === "Escape" &&\n(?:\s*![a-zA-Z.]+ &&\n)+\s*!def\?\.allowBareKey\n\s*\) \{\n\s*setRecording\(null\);/,
@@ -903,10 +890,7 @@ test("an unbound or unclaimed chord has no owner", () => {
 // browser eats leaves the Shortcuts tab itself hard to reach, so the General
 // reset has to cover this key or the user is stuck with it.
 test("Reset all local preferences clears the rebound chords", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
     source.indexOf("const PREFS_KEYS"),
     source.indexOf("];", source.indexOf("const PREFS_KEYS")),
@@ -959,10 +943,7 @@ test("every locale overlay carries the shortcut strings", async () => {
 });
 
 test("a cleared alternate keeps its row, so it can be restored", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/keyboard-shortcuts-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   // Clearing a slot stores null, so a row that keys off the resolved value
   // alone would hide the slot's own restore control along with the chord.
   assert.match(
@@ -1037,10 +1018,7 @@ test("a chord's surface does not come back open on the next visit", async () => 
 // registry, so nothing stops another chord built on Escape from reaching it.
 // Clear all unreads ships one on macOS.
 test("only bare Escape drops the selection", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   const at = sidebar.indexOf('if (event.key !== "Escape"');
   assert.notEqual(at, -1, "the selection listener moved");
   const block = sidebar.slice(at, sidebar.indexOf("clearSelection();", at));
@@ -1092,10 +1070,7 @@ test("the workspace chords do not leave the mobile drawer over the workspace", a
 // gone unless the message is hovered. The assistant bar never mounted the fork
 // button, so any thread ending in a reply had no listener at all.
 test("the fork chord is registered where it mounts, not from an action bar", async () => {
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
 
   // The registration is its own component, rendering nothing.
   const start = thread.indexOf("const ForkChatShortcut: FC = () => {");
@@ -1149,10 +1124,7 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
 // pinned while no tour is running. A chord routed through it would open the
 // picker and lose it on the next tick.
 test("the model picker chord opens without the tour's pin", async () => {
-  const chatPage = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const chatPage = await readSrcAsync("features/chat/chat-page.tsx");
 
   // The pin, and the effect that keys on it.
   assert.match(
@@ -1180,10 +1152,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 // screen. A chord has no row under the cursor, and the open chat may be behind
 // a collapsed section, past a folder's limit, or on a route with no chat list.
 test("the rename chord does not land in a surface only a row can show", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // The chord asks for the dialog; the context menu, which has a row under the
   // cursor by definition, keeps the pill.
   assert.match(
@@ -1262,10 +1231,7 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
 });
 
 test("the composer chords outlive the recording bar", async () => {
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   // Dictation swaps ComposerRightControls out for the recording bar, so a
   // chord registered in there could start dictation and never stop it.
   const controls = thread.indexOf("const ComposerRightControls:");
@@ -1288,10 +1254,7 @@ test("the composer chords outlive the recording bar", async () => {
 });
 
 test("a collapsed sidebar section is not published for the chords", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // Navigation and Select all walk what is on screen, so a section the user
   // closed counts as gone, the same as a closed project folder.
   assert.match(
@@ -1309,14 +1272,8 @@ test("a collapsed sidebar section is not published for the chords", async () => 
 });
 
 test("the MCP chord does not live behind the MCP pill", async () => {
-  const button = await readFile(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const button = await readSrcAsync("features/chat/mcp-composer-button.tsx");
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   // MCP ships off for a chat and the pill only renders once it is on, so a
   // chord registered inside the pill would do nothing until it was found by
   // hand. The dialog and its chord mount for the chat instead.
@@ -1336,14 +1293,8 @@ test("the MCP chord does not live behind the MCP pill", async () => {
 });
 
 test("the copy chords keep their gesture across the read", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const clipboard = await readFile(
-    new URL("../src/lib/copy-to-clipboard.ts", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  const clipboard = await readSrcAsync("lib/copy-to-clipboard.ts");
   // Both copies read storage first, and a strict engine drops the gesture
   // across that await, leaving writeText and its execCommand fallback with
   // nothing to run inside. The write starts with a promised payload instead.
@@ -1360,17 +1311,11 @@ test("the copy chords keep their gesture across the read", async () => {
 });
 
 test("the project picker chord is described by what it does", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   // The header switcher navigates to the chosen project's landing; moving a
   // chat between projects is a different flow, on the chat row's own menu.
   assert.match(page, /onSelectProject=\{openProjectLanding\}/);
-  const strings = await readFile(
-    new URL("../src/i18n/locales/en.ts", import.meta.url),
-    "utf8",
-  );
+  const strings = await readSrcAsync("i18n/locales/en.ts");
   const at = strings.indexOf("openProjectPicker: {");
   const entry = strings.slice(at, strings.indexOf("},", at));
   assert.ok(!/move/i.test(entry), "no move-to-project promise");
@@ -1378,10 +1323,7 @@ test("the project picker chord is described by what it does", async () => {
 });
 
 test("the new-chat chords stay out of the auth flow", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
   // /login has no shell, and requireAuth bounces /chat straight back, so these
   // are gated like the workspace chords beside them.
   for (const id of ["newChat", "newTemporaryChat", "newStandaloneChat"]) {
@@ -1394,10 +1336,7 @@ test("the new-chat chords stay out of the auth flow", async () => {
 });
 
 test("switching back to Chat lands on the view the user left", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
   // ChatPage renders the frozen search while off-route, and a bare /chat is a
   // fresh chat, so the chord has to hand that search back to the router.
   const at = root.indexOf('"switchToChat"');
@@ -1413,10 +1352,7 @@ test("switching back to Chat lands on the view the user left", async () => {
 });
 
 test("opening a chat by chord drops the selection, as clicking a row does", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // Archive, pin and mark-unread prefer the selection when there is one, so a
   // stale one sends them to rows that are no longer on screen.
   const at = sidebar.indexOf("function openChatItem(");
@@ -1430,10 +1366,7 @@ test("opening a chat by chord drops the selection, as clicking a row does", asyn
 });
 
 test("effort chords only run for a model whose effort is read", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   const at = page.indexOf("const shiftReasoningEffort");
   const body = page.slice(at, page.indexOf("useShortcut(\"cycleReasoningEffort\"", at));
   // enable_thinking models still list levels, but the request drops the effort.
@@ -1443,14 +1376,8 @@ test("effort chords only run for a model whose effort is read", async () => {
 });
 
 test("New chat inherits the project on screen, inferred or not", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
   // On Chat the runtime's project is the visible one, inferred ones included:
   // the page resolves it from the thread or the compare pair when the URL
   // carries no ?project=, so a chat in a project stays in it.
@@ -1509,10 +1436,7 @@ test("a Super chord off macOS records nothing rather than a different chord", ()
 // user sees outside the shortcuts tab. Hard-coded, they keep advertising the
 // shipped chord after a rebind, and a dead one after a clear.
 test("the sidebar hints render the bound chord, not the shipped default", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   for (const literal of ['"⌘K"', '"Ctrl+K"', "<DropdownMenuShortcut>⌘,"]) {
     assert.ok(
       !source.includes(literal),
@@ -1546,10 +1470,7 @@ test("a hint label follows the override and disappears when cleared", () => {
 // A row with no i18n keys renders a raw key path, and one missing from the
 // search index cannot be found from the settings search box.
 test("every action is translated and indexed for settings search", async () => {
-  const en = await readFile(
-    new URL("../src/i18n/locales/en.ts", import.meta.url),
-    "utf8",
-  );
+  const en = await readSrcAsync("i18n/locales/en.ts");
   const at = en.indexOf("    keyboardShortcuts: {");
   assert.notEqual(at, -1);
   const subtree = en.slice(at, en.indexOf("\n    },", at));
@@ -1568,10 +1489,7 @@ test("every action is translated and indexed for settings search", async () => {
     );
   }
 
-  const index = await readFile(
-    new URL("../src/features/settings/settings-search.ts", import.meta.url),
-    "utf8",
-  );
+  const index = await readSrcAsync("features/settings/settings-search.ts");
   for (const def of SHORTCUT_DEFS) {
     assert.ok(
       index.includes(`"${def.labelKey}"`),
@@ -1657,10 +1575,7 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
 // The chords read the published lists, so those have to end where the screen
 // does: whole-sidebar gates included, not just each section's disclosure.
 test("the published chat lists stop where the sidebar stops", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // The same two conditions the three chat groups render behind, plus the
   // icon rail, which hides them in CSS rather than dropping them.
   assert.match(
@@ -1697,10 +1612,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
 // no presence outside the rows, so one carried off screen is invisible and
 // still live.
 test("a selection does not outlive the rows it was made on", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   // The whole sidebar going takes the whole selection with it.
   assert.match(
     sidebar,
@@ -1791,10 +1703,7 @@ test("a selection does not outlive the rows it was made on", async () => {
 // selectionCount as 0. Without a latch it archives the open chat, which was
 // never selected, and says nothing about it.
 test("a selection chord does not fall through to the open chat", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(sidebar, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
     const body = sidebar.slice(
@@ -1828,10 +1737,7 @@ test("a selection chord does not fall through to the open chat", async () => {
 // The only action with no menu item anywhere and no undo, so a silent wipe
 // leaves the user nothing to tell it apart from a dead key.
 test("clearing every unread says what it cleared", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   const body = sidebar.slice(
     sidebar.indexOf('useShortcut("clearAllUnreads"'),
     sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("clearAllUnreads"')),
@@ -1847,10 +1753,7 @@ test("clearing every unread says what it cleared", async () => {
 // order picks the winner. Compare panes make that easy to get wrong: the
 // backend reuses "call_0" per response, so the store key cannot be it.
 test("a parked tool request is keyed by its own approval, not call_0", async () => {
-  const adapter = await readFile(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = await readSrcAsync("features/chat/api/chat-adapter.ts");
   // Scope first, so two panes differ even before the approval token does.
   assert.match(
     adapter,
@@ -1892,10 +1795,7 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
 // effect again, without end. React error #185, which took down the whole chat
 // route rather than just the sidebar.
 test("the rows the selection guard reads keep their identity", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   for (const name of [
     "visibleProjectRecords",
     "visiblePinnedItems",
@@ -1918,10 +1818,7 @@ test("the rows the selection guard reads keep their identity", async () => {
 // identity on every render, which is what made the selection guard's effect
 // re-run without end.
 test("the sidebar item lists are built once per change, not per render", async () => {
-  const hook = await readFile(
-    new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url),
-    "utf8",
-  );
+  const hook = await readSrcAsync("features/chat/hooks/use-chat-sidebar-items.ts");
   for (const name of ["items", "archivedItems"]) {
     const at = hook.indexOf(`const ${name} = `);
     assert.notEqual(at, -1, `${name} is gone`);
@@ -1937,10 +1834,7 @@ test("the sidebar item lists are built once per change, not per render", async (
 // chat-only chords used to read that as "no selection" and act on the open
 // chat, so Archive archived a chat the user had not pointed at.
 test("the chat-only chords stand aside for a project selection", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
     const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
     assert.notEqual(at, -1, `${id} is gone`);
@@ -1991,12 +1885,6 @@ test("the logout row is not offered on the desktop build", async () => {
     SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
     ["logOut"],
   );
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const tab = await readSrcAsync("features/settings/tabs/keyboard-shortcuts-tab.tsx");
   assert.match(tab, /!\(isTauri && def\.webOnly\)/);
 });

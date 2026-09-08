@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 // Touch never fires dragstart, so the row menu is the only way to reorder a
 // list there. A menu behind a trigger without sidebar-touch-reveal is inert on
 // coarse pointers, which silently takes manual ordering away from touch users.
@@ -27,10 +29,7 @@ function actionClassFor(source: string, label: string): string {
 
 test("only sidebar-touch-reveal actions work on a coarse pointer", async () => {
   // The rule the rest of this file depends on.
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
+  const css = await readSrcAsync("index.css");
   const coarse = /@media \(pointer: coarse\) \{([\s\S]*?)\n\t\}/.exec(css);
   assert.ok(coarse, "no coarse-pointer block in index.css");
   assert.match(coarse[1], /\.sidebar-row-action\.sidebar-touch-reveal/);

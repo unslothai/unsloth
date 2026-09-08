@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   type ContextTruncation,
@@ -11,6 +10,8 @@ import {
   latestTurnOwnTokens,
   mergeContextTruncation,
 } from "../src/features/chat/utils/context-truncation.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 function refusal(extra: Partial<ContextTruncation>): ContextTruncation {
   return {
@@ -251,10 +252,7 @@ test("a prompt whose floor is already over the window is never sent to a new cha
 });
 
 test("the third toast branch names the levers that can actually work", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The band moved out of "this message is too long" must not fall through to "start a
   // new chat", the one action that provably cannot work here.
   assert.match(source, /historyCannotHelp\(irreducible\)/);
@@ -269,10 +267,7 @@ test("the third toast branch names the levers that can actually work", () => {
 });
 
 test("the toast quotes the turn's own size, never the count that carries the floor", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   // Printing `latest_turn_tokens` directly is the defect this guards against coming back.
   assert.match(
     source,

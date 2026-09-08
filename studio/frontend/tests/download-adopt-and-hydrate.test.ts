@@ -4,11 +4,10 @@
 // Two decisions the download manager makes from a single reading, both of which used to be
 // wrong in the same way: treating a zero byte count as evidence of something it is not.
 
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -99,13 +98,7 @@ test("a scan that never happened does not retire a job", () => {
 });
 
 test("live idle polls retire an explicitly missing target before the grace period", () => {
-  const src = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/poll-loop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const src = readSrc("features/hub/download-manager/poll-loop.ts");
   const start = src.indexOf("function handleIdleAfterProgress");
   const end = src.indexOf("\nfunction handleTickError", start);
   const handler = src.slice(start, end);
@@ -136,13 +129,7 @@ test("the held-transfer marker travels with the counters it describes", () => {
 test("the adoption path actually seeds the marker onto the job", () => {
   // The helper above is pure, so it cannot catch the seed being computed and
   // then left off the rebuilt job, which is how the marker was lost once.
-  const src = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/poll-loop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const src = readSrc("features/hub/download-manager/poll-loop.ts");
   assert.match(
     src,
     /measuredTransfer:\s*seedMeasuredTransfer/,

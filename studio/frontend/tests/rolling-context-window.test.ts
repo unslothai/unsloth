@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   type ContextTruncation,
@@ -11,14 +10,10 @@ import {
   promptWasShortened,
 } from "../src/features/chat/utils/context-truncation.ts";
 
-const adapter = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
-const transport = readFileSync(
-  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const adapter = readSrc("features/chat/api/chat-adapter.ts");
+const transport = readSrc("features/chat/api/chat-api.ts");
 
 test("local chat opts into the rolling context policy", () => {
   assert.match(adapter, /isGguf === true/);
@@ -34,10 +29,7 @@ test("the transport preserves standard chunks with context metadata", () => {
 });
 
 test("durable replay persists context-truncation metadata", () => {
-  const runtimeProvider = readFileSync(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const runtimeProvider = readSrc("features/chat/runtime-provider.tsx");
   assert.match(runtimeProvider, /contextTruncation: mergeContextTruncation\(/);
   assert.match(runtimeProvider, /generationChunkCount/);
   assert.match(adapter, /generationFirstChunkAt/);
@@ -148,13 +140,7 @@ test("a rescued turn cannot silence the compactions that follow it", () => {
 });
 
 test("the notice and the toast read the same predicate as the boundary", () => {
-  const notice = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/compaction-notice.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const notice = readSrc("components/assistant-ui/compaction-notice.tsx");
   assert.match(notice, /promptWasShortened\(truncation\)/);
   assert.doesNotMatch(notice, /truncation\?\.fits/);
   assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
@@ -222,14 +208,8 @@ test("compaction counts accumulate and stay absent on a plain rolling window", (
 });
 
 test("the compaction notice renders from persisted metadata, not from a message", () => {
-  const notice = readFileSync(
-    new URL("../src/components/assistant-ui/compaction-notice.tsx", import.meta.url),
-    "utf8",
-  );
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const notice = readSrc("components/assistant-ui/compaction-notice.tsx");
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   // Read off metadata.custom so it can never become part of the conversation.
   assert.match(thread, /custom\?\.contextTruncation/);
   assert.match(thread, /<CompactionNotice truncation=\{contextTruncation\}/);
@@ -237,10 +217,7 @@ test("the compaction notice renders from persisted metadata, not from a message"
 });
 
 test("the compaction notice is gated on the eviction boundary MOVING", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   // Every request after the window fills runs the fit, so "this turn compacted" puts a
   // notice on every reply. The trigger is dropped_messages rising above the last turn
   // that reported it: more of the conversation actually leaving the context.
@@ -302,18 +279,9 @@ const functionBody = (source: string, name: string): string => {
 };
 
 test("the notice is a NOTICE, never part of the conversation", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
-  const exporter = readFileSync(
-    new URL("../src/features/chat/utils/conversation-markdown-export.ts", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const exporter = readSrc("features/chat/utils/conversation-markdown-export.ts");
 
   // 1. A sibling of the rendered content parts, not one of them: inside
   //    MessagePrimitive.Parts everything that walks parts would pick it up.
@@ -381,10 +349,7 @@ test("an irreducible fit reports a diagnosis, and it is dropped once something f
 });
 
 test("the too-long advice depends on WHICH part does not fit", () => {
-  const adapterSource = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
   // Telling someone to shorten the conversation is a dead end when the history has
   // already been evicted and the single message is what overflows.
   assert.match(adapterSource, /contextTruncation\?\.fits === false/);
@@ -395,10 +360,7 @@ test("the too-long advice depends on WHICH part does not fit", () => {
 });
 
 test("a fits:false diagnosis is not a compaction", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
   // were removed" is untrue, and toasting it burns the once-per-thread flag. Asserted on
   // the predicate rather than the literal expression, so it survives a rewording.
@@ -407,10 +369,7 @@ test("a fits:false diagnosis is not a compaction", () => {
 });
 
 test("the advice depends on WHOSE turn does not fit", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   // A tool loop refits with the tool result appended, so the offending turn is often
   // output the user never wrote and cannot edit, leaving no remedy.
   assert.match(source, /latest_turn_role/);
@@ -423,10 +382,7 @@ test("the advice depends on WHOSE turn does not fit", () => {
 });
 
 test("the too-long check uses the prompt budget, not the raw window", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The fit reserves up to a quarter of the window for the reply, so a 3,500-token
   // message cannot fit a 4,096-token context. The raw window would blame the
   // conversation and send the user to a new chat that fails identically.

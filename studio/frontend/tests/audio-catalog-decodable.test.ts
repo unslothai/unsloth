@@ -12,20 +12,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const catalog = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/model-catalog.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const policy = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/audio-picker-policy.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const catalog = readSrc("features/model-picker/components/model-selector/model-catalog.ts");
+const policy = readSrc("features/model-picker/components/model-selector/audio-picker-policy.ts");
 
 // The codec-backed families decoded by the legacy main-slot backend. Native
 // architecture families are checked against their dedicated backend below.

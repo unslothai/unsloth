@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { residentRuntimeMatchesConfig, residentSpeculativeNeedsRepair } =
@@ -1781,13 +1781,7 @@ test("selectModel asks about a repairable drafter before adopting", () => {
  * reads it -- but evaluated, so this asserts behavior rather than spelling.
  */
 test("the speculative normalizer reads llama.cpp's disable spellings as off", () => {
-  const store = readFileSync(
-    new URL(
-      "../src/features/chat/stores/chat-runtime-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   const start = store.indexOf("export function normalizeSpeculativeType");
   assert.ok(start > 0, "normalizeSpeculativeType moved; follow it here");
   const source = store
