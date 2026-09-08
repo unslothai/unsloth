@@ -3,26 +3,21 @@
 
 """End-to-end contract for the ``llama_runtime_ok`` keys in ``desktop-capabilities``.
 
-``test_installed_runtime_health`` covers the probe function and
-``test_keep_install_backcompat_9979`` covers the payload tables. What is left, and what
-this file owns, is the wiring in between: the command that the desktop actually shells
-out to has to emit those keys from a real pip install, and it has to keep emitting the
-payload older desktops already parse.
+The probe function and the payload tables are covered by
+``test_installed_runtime_health`` and ``test_keep_install_backcompat_9979``. This file
+owns the wiring between them: the command the desktop shells out to must emit those keys
+from a real pip install and keep emitting the payload older desktops already parse.
 
-Two failure modes are worth the subprocess cost and cannot be seen from an in-process
-import:
+Two failure modes justify the subprocess cost, since an in-process import cannot see them:
 
-* ``studio`` not being packaged. The probe lives behind
-  ``from studio.install_llama_prebuilt import installed_runtime_health`` inside a bare
-  ``except Exception``, so if the wheel did not ship ``studio`` the feature would be
-  silently dead for every user: null forever, no error, no test failure anywhere that
-  runs from a source checkout, because a checkout has ``studio/`` on sys.path.
-* The command exiting non-zero or dropping a pre-existing key. The desktop hands the
-  whole stdout buffer to serde_json and treats a failed parse as Stale, so a payload
-  change is a launch-blocking change, not a cosmetic one.
+* ``studio`` not being packaged. The probe sits inside a bare ``except Exception``, so a
+  wheel without ``studio`` would report null forever with no error and no failure from a
+  source checkout, which has ``studio/`` on sys.path.
+* The command exiting non-zero or dropping a key. The desktop hands stdout to serde_json
+  and treats a failed parse as Stale, so a payload change is launch-blocking.
 
-The subprocess tests need a venv with the CLI installed from this working tree, which CI
-does not build; they skip when it is absent. Build one with::
+The subprocess tests need a venv with the CLI installed from this tree, which CI does not
+build; they skip when it is absent. Build one with::
 
     uv venv "$UNSLOTH_WORKSPACE/temp/venv_desktop_cap"
     uv pip install --python "$UNSLOTH_WORKSPACE/temp/venv_desktop_cap/bin/python" .
@@ -51,10 +46,9 @@ SPEC.loader.exec_module(ILP)
 
 MANAGED_RS = PACKAGE_ROOT / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
 
-# Every key the payload carried before the two llama_runtime keys were added, with the
-# type the desktop's Option<T> fields require. Spelled out rather than derived from the
-# command's own dict: a test that reads the dict it is checking cannot notice a key being
-# dropped or retyped, which is exactly the break this guards.
+# Every key the payload carried before the two llama_runtime keys, with the type the
+# desktop's Option<T> fields require. Spelled out rather than derived from the command's
+# own dict, which could not notice a key being dropped or retyped.
 PRE_PR_KEYS: dict[str, type | tuple[type, ...]] = {
     "desktop_protocol_version": int,
     "desktop_manageability_version": int,
@@ -67,8 +61,8 @@ PRE_PR_KEYS: dict[str, type | tuple[type, ...]] = {
 }
 NEW_KEYS = ("llama_runtime_ok", "llama_runtime_reason")
 
-# Bumping either of these tells an older desktop the CLI speaks a protocol it does not
-# know, so an additive key must not touch them. Asserted against the observed payload.
+# Bumping either tells an older desktop the CLI speaks a protocol it does not know, so an
+# additive key must not touch them.
 EXPECTED_PROTOCOL_VERSION = 1
 EXPECTED_MANAGEABILITY_VERSION = 2
 
@@ -110,16 +104,14 @@ def _capabilities(
 ):
     """Run the installed console script against ``install_dir`` and return (rc, stdout).
 
-    UNSLOTH_LLAMA_CPP_PATH is the same override ``default_managed_llama_dir`` honours in
-    setup.sh and the updater, so pointing it at a fixture keeps the developer's real
-    ~/.unsloth out of the run. UNSLOTH_STUDIO_HOME is redirected for the same reason:
-    the command also reports install state, which reads that tree.
+    Both overrides point at fixtures so the developer's real ~/.unsloth and Studio home
+    stay out of the run.
     """
     env = dict(os.environ)
     env["UNSLOTH_LLAMA_CPP_PATH"] = str(install_dir)
     env["UNSLOTH_STUDIO_HOME"] = str(tmp_path / "studio_home")
-    # cwd matters: run from the source checkout and `studio` resolves to the tree next to
-    # it rather than to site-packages, which is the shadowing this file exists to rule out.
+    # cwd matters: from the source checkout `studio` resolves to the tree beside it rather
+    # than site-packages, the shadowing this file rules out.
     args = [str(_console_script()), "studio", "desktop-capabilities"]
     if json_output:
         args.append("--json")
@@ -137,9 +129,8 @@ def _capabilities(
 def _shared_health_groups() -> list[list[str]]:
     """Required runtime file groups every install kind on this platform shares.
 
-    Mirrors ``_kept_install_payload_is_healthy`` for a marker that names no backend,
-    which is the shape the fixture below writes. Derived from the tables rather than
-    hardcoded so the fixture stays complete on whatever platform runs it.
+    Mirrors ``_kept_install_payload_is_healthy`` for a marker naming no backend, the shape
+    the fixture below writes. Derived from the tables so it holds on any platform.
     """
     host = ILP.platform_only_host()
     prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
@@ -164,10 +155,9 @@ def _shared_health_groups() -> list[list[str]]:
 
 
 def _complete_tree(root: Path) -> Path:
-    """A marker plus every file the health tables require, and return the runtime dir.
+    """A marker plus every file the health tables require; returns the runtime dir.
 
-    Empty files: nothing here is executed. ``installed_runtime_health`` only looks, since
-    it runs on the launch path and the setup scripts own the exec probes.
+    Empty files, since ``installed_runtime_health`` only looks and never executes.
     """
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
@@ -177,8 +167,8 @@ def _complete_tree(root: Path) -> Path:
         encoding = "utf-8",
     )
     for group in _shared_health_groups():
-        # The first pattern of each group with its globs dropped is a name that still
-        # matches it: libggml-cpu*.so* -> libggml-cpu.so.
+        # Dropping the globs from the first pattern still matches it:
+        # libggml-cpu*.so* -> libggml-cpu.so.
         (runtime_dir / group[0].replace("*", "")).write_text("", encoding = "utf-8")
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
@@ -190,7 +180,7 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
     """Every key an older desktop already reads, still present and still its old type."""
     for key, expected in PRE_PR_KEYS.items():
         assert key in payload, f"{key} disappeared from the capability payload"
-        # bool is a subclass of int, so an int field must not accept a bool.
+        # bool subclasses int, so an int field must not accept a bool.
         if expected is int:
             assert isinstance(payload[key], int) and not isinstance(
                 payload[key], bool
@@ -208,10 +198,9 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
 def test_studio_is_importable_from_an_installed_wheel():
     """The whole feature hangs off this import succeeding outside a source checkout.
 
-    ``desktop_capabilities`` swallows every exception from the probe, so a ``studio``
-    package missing from the wheel would not fail loudly: it would report null for every
-    user on every machine and the desktop would never offer a repair. Run from a cwd that
-    is not the checkout, otherwise the tree next to the tests answers instead.
+    ``desktop_capabilities`` swallows every probe exception, so a ``studio`` package
+    missing from the wheel would report null for every user with no error. Run from a cwd
+    that is not the checkout, or the tree beside the tests answers instead.
     """
     assert VENV_PYTHON is not None
     probe = (
@@ -235,8 +224,7 @@ def test_studio_is_importable_from_an_installed_wheel():
 
 @NEEDS_VENV
 def test_nothing_installed_reports_null_rather_than_false(tmp_path):
-    """NotInstalled is not a broken install. The desktop repairs on an explicit false, so
-    a false here would send a user who never installed a runtime through a repair."""
+    """The desktop repairs on an explicit false, so NotInstalled must not report one."""
     empty = tmp_path / "empty"
     empty.mkdir()
     rc, out = _capabilities(empty, tmp_path)
@@ -261,8 +249,7 @@ def test_a_complete_tree_reports_true_with_an_empty_reason(tmp_path):
 
 @NEEDS_VENV
 def test_a_quarantined_library_reports_false_with_a_reason(tmp_path):
-    """One library taken out of an otherwise complete tree. This is the shape antivirus
-    leaves behind, and the reason string is what the desktop surfaces to the user."""
+    """The shape antivirus leaves behind; the reason string is what the desktop shows."""
     root = tmp_path / "llama.cpp"
     runtime_dir = _complete_tree(root)
     victim = sorted(
@@ -297,8 +284,7 @@ def test_a_missing_llama_server_reports_binaries_missing(tmp_path):
 
 @NEEDS_VENV
 def test_the_human_readable_form_still_prints_every_key(tmp_path):
-    """--json is what the desktop reads, but the bare form is what a support request
-    pastes, and it iterates the same dict."""
+    """The desktop reads --json; a support request pastes the bare form, same dict."""
     root = tmp_path / "llama.cpp"
     _complete_tree(root)
     rc, out = _capabilities(root, tmp_path, json_output = False)
@@ -310,12 +296,11 @@ def test_the_human_readable_form_still_prints_every_key(tmp_path):
 
 @NEEDS_VENV
 def test_the_probe_stays_off_the_critical_path_budget(tmp_path):
-    """The command runs at every app launch and the desktop times it out, so the probe's
-    cost is a product constraint, not a preference. Measured as the import plus the call,
-    which is all the try block does; the import dominates and the call is microseconds.
+    """The command runs at every launch under a desktop timeout, so its cost is a product
+    constraint. Measured as the import plus the call, which is all the try block does.
 
-    The bound is deliberately loose (half a second against a measured ~30ms) so this
-    catches a probe that grew a network call or a GPU detection, not CI jitter.
+    The bound is loose (half a second against a measured ~30ms), so it catches a probe that
+    grew a network call or a GPU detection rather than CI jitter.
     """
     assert VENV_PYTHON is not None
     root = tmp_path / "llama.cpp"
@@ -354,12 +339,10 @@ def test_the_probe_stays_off_the_critical_path_budget(tmp_path):
 def test_an_unimportable_probe_leaves_the_verdict_null(tmp_path):
     """The ``except Exception`` arm, exercised rather than read.
 
-    A machine can deny access to the tree, carry a corrupt marker, or resolve no
-    ``studio`` package at all. None of those may turn a working install into a stale one,
-    so every one of them has to land on null, and the rest of the payload has to survive
-    unchanged. An ImportError is the one that would hit every user at once, so that is
-    the one simulated here: a meta_path hook that refuses the module while a complete
-    tree sits on disk, which would otherwise answer true.
+    A denied tree, a corrupt marker or a missing ``studio`` package must all land on null
+    with the rest of the payload unchanged. ImportError is the one that would hit every
+    user at once, so it is the one simulated: a meta_path hook refusing the module while a
+    complete tree, which would otherwise answer true, sits on disk.
     """
     assert VENV_PYTHON is not None
     root = tmp_path / "llama.cpp"
@@ -400,8 +383,8 @@ def test_an_unimportable_probe_leaves_the_verdict_null(tmp_path):
 
 
 def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
-    """Read off the source, so it holds without the venv too. A key added here without a
-    matching Option<T> in managed.rs is invisible to the desktop; a key removed breaks it.
+    """Read off the source, so it holds without the venv. A key added without a matching
+    Option<T> in managed.rs is invisible to the desktop; a key removed breaks it.
     """
     source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     body = source.split("def desktop_capabilities(", 1)[1]
@@ -413,10 +396,9 @@ def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
 
 @NEEDS_VENV
 def test_dropping_the_new_keys_yields_the_pre_pr_payload(tmp_path):
-    """Additive, proven by subtraction: strip the two keys from a live payload and what is
-    left is byte for byte a payload the pre-PR desktop already accepted. Nothing else may
-    have moved, and in particular neither version constant, because bumping one is how a
-    desktop is told to treat the CLI as stale.
+    """Additive, proven by subtraction: strip the two keys and what is left is a payload the
+    pre-PR desktop already accepted. Neither version constant may move, since bumping one
+    tells a desktop to treat the CLI as stale.
     """
     root = tmp_path / "llama.cpp"
     _complete_tree(root)
@@ -429,10 +411,9 @@ def test_dropping_the_new_keys_yields_the_pre_pr_payload(tmp_path):
 
 
 def test_the_desktop_reads_every_emitted_key_as_optional():
-    """Backwards compatibility in the other direction: a desktop built from this tree has
-    to survive a pre-PR CLI that sends neither new key. serde fills an absent Option with
-    None, and managed.rs only treats Some(false) as broken, so absent is safe only as long
-    as no field here is non-Option.
+    """A desktop built from this tree must survive a pre-PR CLI sending neither new key.
+    serde fills an absent Option with None and managed.rs only treats Some(false) as broken,
+    so absent is safe only while every field stays an Option.
     """
     source = MANAGED_RS.read_text(encoding = "utf-8")
     struct_body = source.split("struct DesktopCapability {", 1)[1].split("\n}", 1)[0]
@@ -445,10 +426,9 @@ def test_the_desktop_reads_every_emitted_key_as_optional():
 
 
 def test_unknown_keys_do_not_break_the_desktop_parse():
-    """Forwards compatibility: an older desktop meeting a newer CLI. serde ignores unknown
-    fields unless told otherwise, so the guard is that nobody ever adds
-    deny_unknown_fields to the capability struct. Without that, today's additive keys would
-    have bricked every shipped desktop.
+    """An older desktop meeting a newer CLI. serde ignores unknown fields unless told
+    otherwise, so the guard is that nobody adds deny_unknown_fields to the capability
+    struct; without it, today's additive keys would have bricked every shipped desktop.
     """
     source = MANAGED_RS.read_text(encoding = "utf-8")
     assert "deny_unknown_fields" not in source
@@ -457,16 +437,15 @@ def test_unknown_keys_do_not_break_the_desktop_parse():
 
 
 def test_unknown_keys_do_not_break_the_cli_side_consumer():
-    """The same question for the Python consumer: the interrupted-install probe in CI
-    parses this payload and decides HEALTHY or REPAIRABLE from it. It reads named keys off
-    a dict, so extra keys must be inert; a consumer that compared key sets would fail the
-    build on the next additive field.
+    """The same question for the Python consumer: CI's interrupted-install probe decides
+    HEALTHY or REPAIRABLE from this payload by reading named keys, so extra keys must be
+    inert. A consumer comparing key sets would fail the build on the next additive field.
     """
     probe = PACKAGE_ROOT / ".github" / "scripts" / "interrupted_install_probe.py"
     if not probe.is_file():
         pytest.skip("CI probe script not present in this tree")
     source = probe.read_text(encoding = "utf-8")
-    # The parse is `json.loads` plus `.get`, never a key-set comparison or a strict schema.
+    # The parse is `json.loads` plus `.get`, never a key-set comparison.
     assert 'parsed.get("studio_install_ok")' in source
     assert not re.search(r"set\(parsed", source)
     payload = {key: ("" if kind is str else kind()) for key, kind in PRE_PR_KEYS.items()}
@@ -481,11 +460,10 @@ def test_unknown_keys_do_not_break_the_cli_side_consumer():
 
 
 def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatch):
-    """Codex 3957928987, P2. _find_llama_server_binary prefers LLAMA_SERVER_PATH and the
-    folder chosen in Studio's settings ahead of the managed tree, so grading the managed tree
-    regardless would send a user who runs their own build into repair over an install their
-    backend never opens. Offline that repair cannot even succeed, which turns a working
-    custom runtime into a blocked launch."""
+    """_find_llama_server_binary prefers LLAMA_SERVER_PATH and Studio's settings folder ahead
+    of the managed tree, so grading the managed tree regardless would send a user with their
+    own build into repair over an install their backend never opens. Offline that repair
+    cannot succeed, turning a working custom runtime into a blocked launch."""
     import importlib.util as _util
     import sys as _sys
     from pathlib import Path as _Path
@@ -494,8 +472,8 @@ def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatc
     spec = _util.spec_from_file_location(
         "unsloth_cli_commands_studio_probe", root / "unsloth_cli" / "commands" / "studio.py"
     )
-    # Importing the whole CLI module is heavy and pulls typer; the helper is a plain function,
-    # so it is read out of the source rather than imported, which keeps this test standalone.
+    # Importing the whole CLI module is heavy and pulls typer, so the helper is read out of
+    # the source instead, which keeps this test standalone.
     source = (root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     start = source.index("def _managed_llama_runtime_is_the_active_one")
     end = source.index('@studio_app.command("desktop-capabilities"', start)
@@ -507,8 +485,7 @@ def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatc
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     assert active() is True
 
-    # A direct binary elsewhere wins over the managed tree, so the managed verdict is not ours
-    # to report.
+    # A direct binary elsewhere wins, so the managed verdict is not ours to report.
     monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mine/llama-server")
     assert active() is False
 
@@ -519,8 +496,8 @@ def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatc
 
 def test_the_managed_runtime_path_override_is_not_treated_as_a_custom_runtime(monkeypatch):
     """UNSLOTH_LLAMA_CPP_PATH moves the managed root itself, so default_managed_llama_dir
-    already grades exactly the tree that variable names. Skipping on it would drop the
-    coverage for every user who relocated their install."""
+    already grades the tree it names. Skipping on it would drop coverage for every user who
+    relocated their install."""
     source = __import__("pathlib").Path(__file__).resolve().parents[3]
     text = (source / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     start = text.index("def _managed_llama_runtime_is_the_active_one")

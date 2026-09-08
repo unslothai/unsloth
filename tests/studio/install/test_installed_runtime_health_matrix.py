@@ -4,29 +4,24 @@
 """The launch preflight health probe across every platform, backend and shipped marker shape.
 
 ``installed_runtime_health`` is asked at desktop launch, and a ``(False, reason)`` marks the
-install stale, which runs a repair: ``unsloth studio update`` -> ``studio/setup.sh`` /
-``install.ps1`` -> ``install_llama_prebuilt.py``, which decides keep-or-reinstall with
-``_existing_install_runs``. Those two deciders are what this file holds together.
+install stale, which runs a repair that ends in ``_existing_install_runs`` deciding
+keep-or-reinstall. Those two deciders are what this file holds together.
 
 The load-bearing property is one directional inequality: a tree this probe calls broken must
-be a tree the repair would not keep. If it ever rejects something ``_existing_install_runs``
-keeps, the repair leaves the tree byte for byte identical, the next launch rejects it again,
-and the user has an unbreakable repair loop with no error to act on. That is asserted as a
-property over the whole matrix below rather than as a handful of examples, because the pair
-of deciders is what drifts, not any one case.
+be a tree the repair would not keep. Otherwise the repair leaves the tree identical, the next
+launch rejects it again, and the user has an unbreakable loop with no error to act on.
+Asserted as a property over the whole matrix, since the pair of deciders is what drifts.
 
 The other half is backwards compatibility. ``UNSLOTH_PREBUILT_INFO.json`` is append-only
-across twelve shapes with no version field, so a false ``(False, ...)`` on any of them is a
-repair loop for every user carrying that shape today. Every shipped shape is asserted healthy
-on every platform, not only the shape this release writes.
+across twelve shapes with no version field, so a wrong ``(False, ...)`` on any of them is a
+repair loop for every user carrying that shape today.
 
-Platforms are simulated through ``HostInfo`` and passed with the new ``host=`` keyword, the
-same technique as ``test_keep_install_backcompat_9979`` (which this file borrows its fixtures
-and marker tables from). WSL is not a fourth platform: ``platform.system()`` says ``Linux``
-there, ``HostInfo`` carries no WSL flag, and every path and payload table below is chosen off
-``is_windows`` / ``is_macos``, so a WSL install is graded by the Linux rows. arm64 Linux and
-arm64 macOS hosts are included; they matter for the install kind names, though the payload
-intersection is picked by the platform prefix rather than the architecture.
+Platforms are simulated through ``HostInfo`` and passed with ``host=``, as in
+``test_keep_install_backcompat_9979``, which this file borrows its fixtures and marker tables
+from. WSL is not a fourth platform: ``platform.system()`` says ``Linux`` there and every
+table is chosen off ``is_windows`` / ``is_macos``, so it is graded by the Linux rows. The
+arm64 hosts matter for the install kind names, though the payload intersection is picked by
+the platform prefix rather than the architecture.
 """
 
 import importlib.util
@@ -105,9 +100,8 @@ HOSTS = [
 ]
 
 
-# The payload each platform's install kinds share, as runtime_payload_health_groups computes
-# it. Kept as literal file names rather than the module's globs so the tables are an
-# independent statement of the requirement instead of a restatement of the code.
+# The payload each platform's install kinds share. Literal file names rather than the module's
+# globs, so these are an independent statement of the requirement.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -205,8 +199,8 @@ S10 = {**S9, "gfx_target": None, "mapped_targets": []}  # 2026-08-13 #7670
 S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}  # 2026-08-18 #8841 == main
 S12 = {**S11, "runtime_asset": None}  # this PR
 
-# A real marker, produced by actually running studio/install_llama_prebuilt.py. Its tag is
-# past the impl split, so it is the one shape that owes llama-server-impl.dll on Windows.
+# A real marker, produced by running studio/install_llama_prebuilt.py. Its tag is past the
+# impl split, so it is the one shape that owes llama-server-impl.dll on Windows.
 S12_REAL = {
     "requested_tag": "latest",
     "tag": "b10698",
@@ -248,12 +242,12 @@ SHAPES = [
     ("S12real", S12_REAL),
 ]
 
-# "metal" is not requestable and only exists on macOS, but a tree can be carried between
-# machines, so it is exercised on every platform rather than only its own.
+# "metal" only exists on macOS, but a tree can be carried between machines, so it is
+# exercised on every platform.
 BACKENDS = ["cpu", "cuda", "rocm", "vulkan", "metal"]
 
-# An asset name per backend, so the shapes that predate the ``backend`` key still resolve one
-# the way a real old install does: through backend_from_asset_name.
+# An asset name per backend, so shapes predating the ``backend`` key still resolve one the way
+# a real old install does, through backend_from_asset_name.
 _ASSET_TOKEN = {
     "cpu": "app-b1-linux-x64-cpu.tar.gz",
     "cuda": "app-b1-linux-x64-cuda12.tar.gz",
@@ -266,9 +260,8 @@ _ASSET_TOKEN = {
 def shape_with_backend(shape: dict, backend: str) -> dict:
     """A shipped shape re-pointed at ``backend`` the way that shape would record it.
 
-    Shapes older than #8520 have no ``backend`` key at all, and overwriting one onto them
-    would test a marker no install has ever carried. They get the asset name instead, which
-    is the fallback ``marker_backend`` uses for exactly those installs.
+    Shapes older than #8520 have no ``backend`` key, and adding one would test a marker no
+    install ever carried, so they get the asset name ``marker_backend`` falls back to.
     """
     marker = {**shape, "asset": _ASSET_TOKEN[backend]}
     if "backend" in shape:
@@ -279,9 +272,9 @@ def shape_with_backend(shape: dict, backend: str) -> dict:
 def required_runtime_files(platform: str, backend: str, marker: dict) -> list[str]:
     """The files a tree of this shape owes, stated independently of the module's tables.
 
-    Only backends this platform actually builds contribute a backend library: a marker
-    naming ``cuda`` on macOS filters to no macOS install kind, and the decider then falls
-    back to every kind the platform has, whose intersection is the shared payload alone.
+    Only backends the platform builds contribute a library: ``cuda`` on macOS filters to no
+    install kind, so the decider falls back to every kind the platform has, whose
+    intersection is the shared payload alone.
     """
     source = marker.get("source")
     files = list(_SHARED_PAYLOAD[platform])
@@ -312,11 +305,10 @@ def build_tree(
 ) -> Path:
     """Write a complete install tree at ``root``.
 
-    Complete means what ``_existing_install_runs`` needs as well as what the health probe
-    needs, since the invariant test drives both against the same tree: the root entrypoint
-    copies, ``convert_hf_to_gguf.py`` and ``gguf-py`` are all part of ``confirm_install_tree``.
-    The binaries are runnable shell stubs for the same reason. ``marker`` is the object to
-    serialise, ``None`` writes no marker, and a ``str`` is written verbatim.
+    Complete for ``_existing_install_runs`` as well as for the health probe, since the
+    invariant test drives both against the same tree, so the root entrypoint copies,
+    ``convert_hf_to_gguf.py`` and ``gguf-py`` are written and the binaries are runnable
+    stubs. ``marker`` is the object to serialise, ``None`` writes none, ``str`` verbatim.
     """
     platform = _platform_of(host)
     ext = ".exe" if host.is_windows else ""
@@ -355,8 +347,8 @@ def build_tree(
     return root
 
 
-# Every (host, backend, shape) cell. The health decision is driven by the platform booleans
-# and the marker's backend only, so this is the full space the probe can distinguish.
+# Every (host, backend, shape) cell. The decision is driven by the platform booleans and the
+# marker's backend only, so this is the full space the probe can distinguish.
 CELLS = [
     (f"{host_id}-{backend}-{shape_id}", host, backend, shape)
     for host_id, host in HOSTS
@@ -370,8 +362,8 @@ CELL_IDS = [cell[0] for cell in CELLS]
 def test_a_complete_install_of_every_shipped_shape_is_healthy_everywhere(
     tmp_path, cell, host, backend, shape
 ):
-    """The backwards-compatibility half. A false ``(False, ...)`` on any shape here is not a
-    cosmetic failure: it sends every user carrying that shape into a repair on next launch."""
+    """The backwards-compatibility half: a wrong ``(False, ...)`` on any shape sends every user
+    carrying it into a repair on next launch."""
     marker = shape_with_backend(shape, backend)
     root = build_tree(tmp_path / "llama.cpp", host = host, marker = marker, backend = backend)
     assert ILP.installed_runtime_health(root, host = host) == (True, ""), cell
@@ -379,13 +371,13 @@ def test_a_complete_install_of_every_shipped_shape_is_healthy_everywhere(
 
 @pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
 def test_removing_any_single_required_file_is_reported_broken(tmp_path, cell, host, backend, shape):
-    """One file at a time, because that is the shape quarantine leaves: the tree is otherwise
-    whole, so a check that only looks at the directory or the marker would pass it."""
+    """One file at a time, the shape quarantine leaves: the tree is otherwise whole, so a
+    check that only looks at the directory or the marker would pass it."""
     marker = shape_with_backend(shape, backend)
     platform = _platform_of(host)
     ext = ".exe" if host.is_windows else ""
-    # Deduplicated: llama-server.exe is both an entrypoint and a member of the Windows
-    # shared payload, and one tree is built per victim under its own name.
+    # Deduplicated: llama-server.exe is both an entrypoint and a member of the Windows shared
+    # payload. One tree is built per victim, under its own name.
     victims = required_runtime_files(platform, backend, marker)
     victims += [f"llama-server{ext}", f"llama-quantize{ext}"]
     for victim in dict.fromkeys(victims):
@@ -410,12 +402,10 @@ def test_removing_any_single_required_file_is_reported_broken(tmp_path, cell, ho
 def test_a_broken_tree_is_never_one_the_repair_would_keep(tmp_path, cell, host, backend, shape):
     """THE INVARIANT, as a property over the matrix rather than as examples.
 
-    Every damaged tree the probe rejects is put to ``_existing_install_runs``, which is what
-    the repair the rejection triggers ultimately consults. A tree rejected here and kept there
-    is repaired, left unchanged, and rejected again on the next launch: a loop the user cannot
-    break and gets no actionable error from. The trees carry runnable stubs and the full
-    ``confirm_install_tree`` set so the keep path reaches its real decision instead of bailing
-    on a fixture artefact.
+    Every damaged tree the probe rejects is put to ``_existing_install_runs``, which the repair
+    ultimately consults. A tree rejected here and kept there is repaired, left unchanged, and
+    rejected again next launch, with no actionable error. The trees carry runnable stubs and
+    the full ``confirm_install_tree`` set so the keep path reaches its real decision.
     """
     marker = shape_with_backend(shape, backend)
     platform = _platform_of(host)
@@ -438,8 +428,7 @@ def test_a_broken_tree_is_never_one_the_repair_would_keep(tmp_path, cell, host, 
             (_runtime_dir(root, host) / str(victim)).unlink()
         verdict = ILP.installed_runtime_health(root, host = host)
         if label == "healthy":
-            # The positive control, without which the implication below would hold for free:
-            # this fixture is a tree the keep path really does keep.
+            # The positive control, without which the implication below holds for free.
             assert verdict == (True, ""), cell
             assert ILP._existing_install_runs(root, host) is True, cell
             continue
@@ -455,8 +444,8 @@ def test_a_broken_tree_is_never_one_the_repair_would_keep(tmp_path, cell, host, 
 def test_the_structural_damage_cases_are_broken_and_never_kept(
     tmp_path, cell, host, backend, shape
 ):
-    """The three ways the tree loses more than a file, on every cell rather than on one:
-    the runtime directory itself is gone, the marker is gone, the marker is unreadable."""
+    """The three ways a tree loses more than a file, on every cell: the runtime directory is
+    gone, the marker is gone, the marker is unreadable."""
     marker = shape_with_backend(shape, backend)
 
     without_dir = build_tree(
@@ -472,8 +461,8 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     ), cell
     assert ILP._existing_install_runs(without_dir, host) is False, cell
 
-    # No marker is a source build, which this path never owned: not installed, not broken.
-    # Reporting it broken would offer a repair for a runtime the user never installed here.
+    # No marker is a source build this path never owned: not installed, not broken. Reporting
+    # it broken would offer a repair for a runtime the user never installed here.
     without_marker = build_tree(
         tmp_path / "no-marker",
         host = host,
@@ -482,11 +471,10 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     )
     assert ILP.installed_runtime_health(without_marker, host = host) is None, cell
 
-    # A marker that is present and unreadable is graded on its tree, not short-circuited to
-    # "nothing installed" (reversed after review, Codex 3957561256). load_prebuilt_metadata
-    # cannot tell the caller which it saw, so the file itself is what distinguishes them.
-    # Complete tree: healthy, which is what keeps the repair from looping, since the keep path
-    # keeps this tree too (confirm_install_tree checks only that the marker file exists).
+    # A present but unreadable marker is graded on its tree, not short-circuited to "nothing
+    # installed"; load_prebuilt_metadata cannot tell the two apart, so the file itself does.
+    # A complete tree stays healthy, which keeps the repair from looping, since the keep path
+    # keeps it too (confirm_install_tree only checks the marker file exists).
     corrupt = build_tree(
         tmp_path / "corrupt-marker",
         host = host,
@@ -496,8 +484,8 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     assert ILP.installed_runtime_health(corrupt, host = host) == (True, ""), cell
     assert ILP._existing_install_runs(corrupt, host) is True, cell
 
-    # Damaged as well as unreadable: this is the case the old behaviour missed, leaving
-    # preflight Ready with a library gone.
+    # Damaged as well as unreadable: the case the old behaviour missed, leaving preflight
+    # Ready with a library gone.
     corrupt_and_gutted = build_tree(
         tmp_path / "corrupt-marker-gutted",
         host = host,
@@ -513,8 +501,8 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
 
 
 def test_removing_a_file_this_install_kind_does_not_owe_stays_healthy(tmp_path):
-    """Over-strictness is the loop direction, so the files that are deliberately not required
-    are asserted too: the diffusion visual server outside a published Vulkan install, and
+    """Over-strictness is the loop direction, so the deliberately-not-required files are
+    asserted too: the diffusion visual server outside a published Vulkan install, and
     llama-server-impl.dll on a Windows archive built before the upstream impl split."""
     cuda = shape_with_backend(S12, "cuda")
     root = build_tree(tmp_path / "cuda", host = LINUX, marker = cuda, backend = "cuda")
@@ -539,9 +527,9 @@ def test_removing_a_file_this_install_kind_does_not_owe_stays_healthy(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GPU independence. The probe runs on the launch path with platform_only_host(), which
-# probes no hardware at all, so a verdict that moved with the GPU would mean the same tree
-# was healthy or broken depending on which detection the caller happened to pay for.
+# GPU independence. The probe runs with platform_only_host(), which probes no hardware, so a
+# verdict that moved with the GPU would make the same tree healthy or broken depending on
+# which detection the caller paid for.
 
 GPU_HOSTS = [
     ("no-gpu", {}),
@@ -560,8 +548,8 @@ GPU_HOSTS = [
     ids = [h[0] for h in HOSTS],
 )
 def test_the_verdict_does_not_move_with_the_detected_gpu(tmp_path, host_id, host, backend):
-    """Same tree, six hardware stories, one verdict. Asserted for a healthy tree and a gutted
-    one so a check that silently relaxed on, say, an Intel host would be caught."""
+    """Same tree, six hardware stories, one verdict. Asserted healthy and gutted, so a check
+    that silently relaxed on, say, an Intel host is caught."""
     marker = shape_with_backend(S12, backend)
     healthy = build_tree(tmp_path / "healthy", host = host, marker = marker, backend = backend)
     gutted = build_tree(tmp_path / "gutted", host = host, marker = marker, backend = backend)
@@ -580,9 +568,8 @@ def test_the_verdict_does_not_move_with_the_detected_gpu(tmp_path, host_id, host
 
 
 # ---------------------------------------------------------------------------
-# Item by item: both entrypoint binaries, since the payload groups are libraries and on Linux
-# and macOS name no executable at all, so a quarantined llama-server would otherwise read as
-# a complete install.
+# Both entrypoint binaries, since the payload groups name libraries only, so on Linux and
+# macOS a quarantined llama-server would otherwise read as a complete install.
 
 
 @pytest.mark.parametrize(
@@ -606,16 +593,16 @@ def test_a_missing_entrypoint_is_caught_with_a_complete_library_payload(
     ok, reason = ILP.installed_runtime_health(root, host = host)
     assert ok is False
     if host.is_windows and "server" in missing:
-        # llama-server.exe is itself a member of the Windows shared payload, so the library
-        # payload cannot be complete without it and the payload check answers first.
+        # llama-server.exe is itself in the Windows shared payload, so the payload check
+        # answers first.
         assert reason == "llama_runtime_payload_incomplete"
     else:
         assert reason == "llama_runtime_binaries_missing"
 
 
 # ---------------------------------------------------------------------------
-# Robustness. Every case here is a real disk state a user can arrive in, and the failure mode
-# to avoid is the same one throughout: an exception or a wrong verdict on the launch path.
+# Robustness. Every case is a real disk state a user can arrive in, and the failure to avoid
+# is the same throughout: an exception or a wrong verdict on the launch path.
 
 
 def test_an_install_dir_reached_through_a_symlink_is_judged_the_same(tmp_path):
@@ -627,8 +614,8 @@ def test_an_install_dir_reached_through_a_symlink_is_judged_the_same(tmp_path):
 
 
 def test_a_runtime_path_that_is_a_file_is_broken_not_an_exception(tmp_path):
-    """A truncated or interrupted extract can leave build/bin as a regular file. is_dir() is
-    false for it, and the payload globs on a non-directory must not raise on the launch path."""
+    """A truncated extract can leave build/bin as a regular file, and globbing a
+    non-directory must not raise on the launch path."""
     root = tmp_path / "llama.cpp"
     (root / "build").mkdir(parents = True)
     (root / "build" / "bin").write_text("not a directory", encoding = "utf-8")
@@ -640,9 +627,8 @@ def test_a_runtime_path_that_is_a_file_is_broken_not_an_exception(tmp_path):
 @pytest.mark.skipif(WINDOWS_HOST, reason = "chmod cannot clear read permission on Windows")
 @pytest.mark.skipif(ROOT_USER, reason = "root reads a 000 file regardless of its mode")
 def test_a_marker_the_process_cannot_read_is_graded_on_its_tree(tmp_path):
-    """Permission denied is one more way a marker stops parsing, so it lands in the same arm
-    as a truncated one: the file is there, the tree is real, and it is graded rather than
-    reported as nothing installed. The launch path must not raise on it either."""
+    """Permission denied is one more way a marker stops parsing, so it lands in the same arm as
+    a truncated one: the tree is real and is graded rather than called not installed."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
     marker_path = root / "UNSLOTH_PREBUILT_INFO.json"
     os.chmod(marker_path, 0o000)
@@ -671,9 +657,9 @@ def test_a_marker_the_process_cannot_read_is_graded_on_its_tree(tmp_path):
     ],
 )
 def test_a_marker_that_is_not_an_object_never_raises_and_never_loops(tmp_path, body):
-    """Valid JSON that is not an object, and invalid JSON, both read as "no marker" through
-    load_prebuilt_metadata. The empty object is the one that is a marker, and it names no
-    backend, so it owes the payload every install kind on the platform shares."""
+    """Valid JSON that is not an object and invalid JSON both read as "no marker" through
+    load_prebuilt_metadata. The empty object is a marker, and it names no backend, so it owes
+    the payload every install kind on the platform shares."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = body, backend = "cuda")
     verdict = ILP.installed_runtime_health(root, host = LINUX)
     assert verdict in (None, (True, ""))
@@ -682,9 +668,8 @@ def test_a_marker_that_is_not_an_object_never_raises_and_never_loops(tmp_path, b
 
 
 def test_a_tree_full_of_unrelated_files_is_still_answered_fast(tmp_path):
-    """The probe is on the launch path, so it is timed as well as checked: the payload check
-    globs the runtime directory once per group, and a user's runtime directory also holds
-    every model shard and log they have dropped in it."""
+    """On the launch path, so timed as well as checked: the payload check globs the runtime
+    directory once per group, and a user's also holds every model shard they dropped in it."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
     runtime = _runtime_dir(root, LINUX)
     for index in range(2000):
@@ -703,9 +688,8 @@ def test_a_tree_full_of_unrelated_files_is_still_answered_fast(tmp_path):
     ids = ["spaces", "unicode-latin", "unicode-cjk", "trailing-dot"],
 )
 def test_an_awkward_install_path_is_judged_normally(tmp_path, name):
-    """Default install roots are under the user's home, which carries whatever their account
-    name is. A path handled as anything other than a Path here would fail at launch only for
-    those users."""
+    """Default install roots sit under the user's home, so a path handled as anything other
+    than a Path would fail at launch for those users only."""
     root = build_tree(tmp_path / name / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
     assert ILP.installed_runtime_health(root, host = LINUX) == (True, "")
     (_runtime_dir(root, LINUX) / "libggml.so").unlink()
@@ -716,8 +700,8 @@ def test_an_awkward_install_path_is_judged_normally(tmp_path, name):
 
 
 def test_a_very_deep_install_path_is_judged_normally(tmp_path):
-    """Nothing here builds a path by string arithmetic, and a deep root is the cheapest way to
-    keep it that way: on Windows this is also where a non-extended path stops resolving."""
+    """A deep root is the cheapest way to keep paths off string arithmetic; on Windows it is
+    also where a non-extended path stops resolving."""
     deep = tmp_path
     for index in range(40):
         deep = deep / f"level{index}"
@@ -726,9 +710,9 @@ def test_a_very_deep_install_path_is_judged_normally(tmp_path):
 
 
 def test_the_probe_never_executes_anything_it_finds(tmp_path, monkeypatch):
-    """Preflight runs at every launch and the setup scripts already own the exec probes, so
-    the probe looks and does not run. Also the reason the invariant is one-directional: this
-    call can only ever be as strict as, or looser than, the keep path."""
+    """Preflight runs at every launch and the setup scripts own the exec probes, so this looks
+    and does not run. Also why the invariant is one-directional: this call can only be as
+    strict as, or looser than, the keep path."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
 
     def refuse(*args, **kwargs):

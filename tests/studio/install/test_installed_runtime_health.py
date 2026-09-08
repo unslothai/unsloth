@@ -3,16 +3,14 @@
 
 """The launch-time health probe for the managed llama.cpp runtime.
 
-Smart App Control and antivirus quarantine individual files out of a tree that is
-otherwise present and whose marker still says installed. Preflight decided staleness on
-the managed Python alone, so the desktop launched, and the missing DLL only surfaced at
-model load as an unrelated-looking error. ``installed_runtime_health`` is what the
-capability payload answers with so that install gets repaired instead.
+Quarantine takes files out of a tree that is otherwise present and whose marker still
+says installed. Preflight decided staleness on the managed Python alone, so the desktop
+launched and the missing DLL surfaced at model load as an unrelated-looking error.
+``installed_runtime_health`` is what the capability payload answers with instead.
 
-The payload tables themselves are covered by ``test_keep_install_backcompat_9979``;
-what is tested here is the composition around them: nothing installed is not a broken
-install, a missing runtime directory is distinguished from a gutted one, and the probe
-does not pay for a GPU detection it never reads.
+The payload tables are covered by ``test_keep_install_backcompat_9979``; tested here is
+the composition around them: nothing installed is not a broken install, a missing runtime
+directory differs from a gutted one, and the probe pays for no GPU detection.
 """
 
 import importlib.util
@@ -50,16 +48,14 @@ def _installed(tmp_path: Path, *, binaries: bool = False) -> Path:
 
 
 def test_no_marker_is_not_installed_rather_than_broken(tmp_path):
-    """None, not (False, ...). A user who has never installed a runtime must not be sent
-    through repair, and the desktop reads the two answers differently."""
+    """None, not (False, ...): a user who never installed a runtime must not be repaired."""
     (tmp_path / "llama.cpp").mkdir()
     assert ILP.installed_runtime_health(tmp_path / "llama.cpp") is None
     assert ILP.installed_runtime_health(tmp_path / "nothing-here") is None
 
 
 def test_a_marker_without_its_runtime_directory_is_broken(tmp_path):
-    """The whole tree can go, not only files inside it: quarantine that takes the last
-    file leaves the directory empty, and a manual cleanup leaves the marker orphaned."""
+    """The whole tree can go, not only files inside it, leaving the marker orphaned."""
     root = tmp_path / "llama.cpp"
     root.mkdir()
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
@@ -67,23 +63,22 @@ def test_a_marker_without_its_runtime_directory_is_broken(tmp_path):
 
 
 def test_an_empty_runtime_directory_is_broken_not_healthy(tmp_path):
-    """The marker says installed and the directory exists; every binary is gone. This is
-    the shape a quarantine leaves behind, and it used to pass preflight."""
+    """The shape a quarantine leaves behind, which used to pass preflight."""
     root = _installed(tmp_path)
     assert ILP.installed_runtime_health(root) == (False, "llama_runtime_payload_incomplete")
 
 
 def test_the_verdict_is_delegated_to_the_payload_tables(tmp_path, monkeypatch):
-    """One payload decider, not two. Duplicating the required-file list here is how the
-    launch probe and the keep-install path would drift apart."""
+    """One payload decider: duplicating the required-file list would let the launch probe
+    and the keep-install path drift apart."""
     root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     assert ILP.installed_runtime_health(root) == (True, "")
 
 
 def test_the_default_root_is_the_managed_install_dir(tmp_path, monkeypatch):
-    """Called with no argument by the CLI, which has no opinion about where the runtime
-    lives: the UNSLOTH_LLAMA_CPP_PATH override has to keep working through it."""
+    """The CLI calls this with no argument, so the UNSLOTH_LLAMA_CPP_PATH override has to
+    keep working through it."""
     root = _installed(tmp_path)
     monkeypatch.setattr(ILP, "default_managed_llama_dir", lambda: root)
     assert ILP.installed_runtime_health() == (False, "llama_runtime_payload_incomplete")
@@ -91,8 +86,7 @@ def test_the_default_root_is_the_managed_install_dir(tmp_path, monkeypatch):
 
 def test_platform_only_host_agrees_with_a_detected_host_on_the_platform_facts():
     """It stands in for detect_host() in the payload checks, which read these booleans and
-    nothing else. If the two ever disagreed, the probe would grade the tree for the wrong
-    operating system."""
+    nothing else. Disagreement would grade the tree for the wrong operating system."""
     cheap = ILP.platform_only_host()
     detected = ILP.detect_host()
     for field in ("system", "is_windows", "is_linux", "is_macos", "is_x86_64", "is_arm64"):
@@ -101,8 +95,8 @@ def test_platform_only_host_agrees_with_a_detected_host_on_the_platform_facts():
 
 
 def test_platform_only_host_does_not_probe_for_gpus(monkeypatch):
-    """The point of it. detect_host() shells out to nvidia-smi and friends and costs over a
-    second; a launch probe that only wants to know whether files are missing must not."""
+    """detect_host() shells out to nvidia-smi and costs over a second; a probe that only
+    looks for missing files must not."""
 
     def refuse(*args, **kwargs):
         raise AssertionError("platform_only_host must not run a subprocess")
@@ -118,8 +112,7 @@ def test_platform_only_host_does_not_probe_for_gpus(monkeypatch):
 @pytest.mark.parametrize("broken", [OSError("denied"), RuntimeError("boom")])
 def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken):
     """The best-effort handling lives in the CLI command, which turns a failure into a null
-    capability rather than a false stale verdict. Swallowing it twice would hide a real bug
-    in the payload tables from the test suite as well."""
+    capability. Swallowing it here too would hide a real payload-table bug."""
     root = _installed(tmp_path)
 
     def raise_it(*_):
@@ -131,8 +124,8 @@ def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken
 
 
 def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_path, monkeypatch):
-    """The payload groups are libraries, and on Linux and macOS they name no executable at
-    all, so the server binary going missing has to be looked for separately."""
+    """The payload groups name libraries only, so a missing server binary needs its own
+    check on Linux and macOS."""
     root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     host = ILP.platform_only_host()
@@ -142,8 +135,8 @@ def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_p
 
 
 def test_llama_quantize_is_required_because_the_setup_scripts_require_it(tmp_path, monkeypatch):
-    """Not an arbitrary second file: _existing_install_runs demands both, so demanding
-    both here keeps this call no stricter than the repair that answers it."""
+    """_existing_install_runs demands both, so demanding both here keeps this call no
+    stricter than the repair that answers it."""
     root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     host = ILP.platform_only_host()
@@ -153,8 +146,7 @@ def test_llama_quantize_is_required_because_the_setup_scripts_require_it(tmp_pat
 
 
 def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
-    """The simulation matrices grade a tree for a platform this machine is not, and the
-    desktop capability probe is the only caller that wants the local one."""
+    """The simulation matrices grade a tree for a platform this machine is not."""
     root = tmp_path / "llama.cpp"
     (root / "build" / "bin" / "Release").mkdir(parents = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
@@ -173,12 +165,10 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
 
 
 def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
-    """Reversed after review (Codex 3957561256, P2). An absent marker file is a runtime
-    nobody installed; a marker that is present and unreadable is a real tree whose write was
-    interrupted. Short-circuiting the second to None left preflight Ready when a library was
-    missing too, which is the exact failure this probe exists to catch. The keep path reads
-    such a marker as an unknown backend and grades the payload anyway, so grading it here
-    stays on the safe side of the no-stricter rule."""
+    """An absent marker is a runtime nobody installed; a present but unreadable one is a real
+    tree whose write was interrupted. Short-circuiting the second to None left preflight Ready
+    with a library missing, the exact failure this probe catches. The keep path grades such a
+    marker as an unknown backend anyway, so grading it here stays no stricter."""
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
@@ -187,10 +177,8 @@ def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
 
 
 def test_an_unparsable_marker_over_a_complete_tree_is_still_healthy(tmp_path, monkeypatch):
-    """The other half, and the one that keeps the loop shut: an unreadable marker on a tree
-    that is otherwise intact must not be called broken. _existing_install_runs keeps such a
-    tree (confirm_install_tree only checks the marker file exists), so reporting it broken
-    would repair, keep, and repair again on every launch for an offline user."""
+    """The other half, which keeps the loop shut: _existing_install_runs keeps a tree with an
+    unreadable marker, so calling it broken would repair, keep, and repair again every launch."""
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json", encoding = "utf-8")
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
@@ -205,11 +193,10 @@ def test_an_absent_marker_is_still_not_installed(tmp_path):
 
 
 def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
-    """Codex 3957928993, P1, reproduced before fixing: the tar payloads ship versioned chains
-    (libggml.so -> libggml.so.0 -> libggml.so.0.9.8) and Path.glob lists names without
-    following them, so quarantining only the versioned target left every pattern satisfied by
-    links the loader cannot open. Fixed in _runtime_payload_has, which both this probe and the
-    setup scripts' keep decision share, so the two tighten together."""
+    """The tar payloads ship versioned chains (libggml.so -> libggml.so.0 -> libggml.so.0.9.8)
+    and Path.glob does not follow links, so quarantining the versioned target left every
+    pattern satisfied by links the loader cannot open. Fixed in _runtime_payload_has, which
+    this probe and the keep decision share, so the two tighten together."""
     if os.name == "nt":
         pytest.skip("the shipped Windows payload has no symlink chains")
     root = _installed(tmp_path, binaries = True)
@@ -232,8 +219,8 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
 
 
 def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
-    """The same guard, from the other side: is_file() is what rejects a dangling link, and it
-    rejects a directory that happens to match too, which a bare glob would have accepted."""
+    """The same is_file() guard rejects a directory that happens to match, which a bare glob
+    would have accepted."""
     root = _installed(tmp_path, binaries = True)
     host = ILP.platform_only_host()
     groups = [["libllama.so*"]]

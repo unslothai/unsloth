@@ -7069,30 +7069,20 @@ _LINKER_NAME_RE = re.compile(r"^.+\.so(?P<version>(?:\.\d+)*)$")
 def _payload_match_is_loadable(path: Path) -> bool:
     """Whether a glob match is a file the loader would actually resolve.
 
-    Two ways a match can satisfy the pattern and still be useless.
+    ``Path.glob`` does not follow links, so a dangling link (or a directory)
+    still matches the pattern; ``is_file()`` drops both.
 
-    A dangling link: ``Path.glob`` lists names without following them, so a
-    payload that ships a chain and loses the target keeps a match the loader
-    cannot open. ``is_file()`` resolves the link, so a dangling one stops
-    counting, and a directory that happens to match stops counting too.
-
-    A versioned twin: a release ships ``libllama.so.0`` (the SONAME the binary
-    actually asks for) beside ``libllama.so.0.0.10360``, and the group pattern
-    ``libllama.so*`` matches both. Quarantining only the SONAME therefore left
-    the group satisfied by the twin, and the tree reported healthy while
-    ``llama-server --version`` exits 127 with "error while loading shared
-    libraries". Measured on a real install, which is also why this is not a
-    hypothetical: hand-built fixtures write one file per library and a release
-    writes two, so no fixture could show it. A name carrying more version
-    components than a SONAME can only ever be the twin, so it does not count on
-    its own. Names that are not ELF sonames at all (``.dll``, ``.dylib``, a bare
-    executable) are unaffected.
+    A release ships ``libllama.so.0`` (the SONAME the binary asks for) beside
+    ``libllama.so.0.0.10360``, and ``libllama.so*`` matches both, so quarantining
+    the SONAME left the group satisfied by the twin while ``llama-server
+    --version`` exited 127. A name with more version components than a SONAME can
+    only be the twin, so it does not count on its own. Non-soname names
+    (``.dll``, ``.dylib``, a bare executable) are unaffected.
     """
     try:
         if not path.is_file():
             return False
     except OSError:
-        # A path that cannot be stat'd is not one we can call present.
         return False
     match = _LINKER_NAME_RE.match(path.name)
     if match is None:
@@ -7165,14 +7155,11 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
 def platform_only_host() -> HostInfo:
     """A HostInfo carrying platform facts and nothing probed.
 
-    detect_host() costs over a second because it shells out to nvidia-smi and
-    friends. The payload health checks read only the platform booleans and the
-    marker's own backend, never a probed GPU field, so a caller that just wants
-    to know whether the installed tree still has its files should not pay for a
-    GPU probe. Held to that by a parity test against detect_host().
-
-    macos_version comes from platform.mac_ver(), which reads no hardware and is
-    the one non-boolean detect_host() derives rather than probes.
+    detect_host() costs over a second shelling out to nvidia-smi and friends. The
+    payload health checks read only the platform booleans and the marker's own
+    backend, never a probed GPU field, so they should not pay for that. A parity
+    test against detect_host() holds this to it. macos_version is derived from
+    platform.mac_ver() rather than probed.
     """
     system = platform.system()
     machine = platform.machine().lower()
@@ -7201,31 +7188,25 @@ def installed_runtime_health(
     """(ok, reason) for the managed llama.cpp runtime, or None when none is installed.
 
     Smart App Control and antivirus quarantine individual files out of a tree
-    that is otherwise present, so "the marker says installed" is not the same as
-    "the binaries are still there". The desktop's launch preflight asks this so a
-    runtime that lost files after a clean install is offered for repair instead
-    of failing later at model load, which is where it surfaced before as an
-    unrelated-looking error.
+    that is otherwise present, so "the marker says installed" is not "the binaries
+    are still there". Launch preflight asks this so such a runtime is offered for
+    repair instead of failing later at model load.
 
-    Deliberately no stricter than the setup scripts' own keep-or-reinstall
-    decision, and that is the load-bearing property rather than a preference: a
-    tree this call rejects but ``_existing_install_runs`` keeps would be repaired,
-    kept unchanged by the repair, and rejected again on the next launch, which is
-    a loop with no way out for the user. Every check below has a counterpart
-    there. Nothing here is executed, only looked for, since preflight is on the
-    launch path and the setup scripts already own the exec probes.
+    Must stay no stricter than the setup scripts' own keep-or-reinstall decision:
+    a tree rejected here but kept by ``_existing_install_runs`` would be repaired,
+    left unchanged, and rejected again next launch, a loop with no way out. Every
+    check below has a counterpart there. Nothing is executed, only looked for,
+    since preflight is on the launch path.
     """
     root = install_dir if install_dir is not None else default_managed_llama_dir()
     if load_prebuilt_metadata(root) is None:
-        # An absent marker file is a runtime nobody installed. A marker that is
-        # present and does not parse is a different thing, and it must not
-        # short-circuit to "not installed": that is a real tree, and if a library
-        # is missing from it as well then answering None leaves preflight Ready
-        # and the repair unoffered, which is the failure this function exists to
-        # catch. Fall through and grade it. _kept_install_payload_is_healthy
-        # already reads an unparseable marker as an unknown backend and checks
-        # the payload every kind on the platform shares, so the checks below stay
-        # ones the keep path shares and the no-stricter rule still holds.
+        # An absent marker means nobody installed a runtime. A marker that is
+        # present but unparseable is a real tree, and answering None for it would
+        # leave preflight Ready with the repair unoffered, the exact failure this
+        # catches, so fall through and grade it instead.
+        # _kept_install_payload_is_healthy treats such a marker as an unknown
+        # backend and checks only the payload every kind on the platform shares,
+        # so the no-stricter rule still holds.
         if not (root / "UNSLOTH_PREBUILT_INFO.json").is_file():
             return None
     host = host if host is not None else platform_only_host()
@@ -7234,9 +7215,9 @@ def installed_runtime_health(
         return False, "llama_runtime_dir_missing"
     if not _kept_install_payload_is_healthy(root, host):
         return False, "llama_runtime_payload_incomplete"
-    # The payload groups are libraries, and on Linux and macOS they name no
-    # executable at all, so a quarantined llama-server would otherwise read as a
-    # complete install. _existing_install_runs requires both of these too.
+    # The payload groups name libraries only, so on Linux and macOS a quarantined
+    # llama-server would otherwise read as a complete install.
+    # _existing_install_runs requires both of these too.
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
         if not (runtime_dir / f"llama-{name}{ext}").exists():
@@ -7336,17 +7317,14 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
 def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """Whether setup.sh may keep this tree instead of building llama.cpp from source.
 
-    Only reached once the prebuilt path has already failed, so a tree that cannot
-    load a model is never the right thing to keep. The shell test alone was the
-    two entrypoints being executable, which a quarantine that took a library
-    leaves untouched: the rebuild was skipped, the tree came back byte for byte
-    identical, and an update that repaired nothing reported success. Desktop
-    preflight now asks about that same tree on every launch, so the shortcut had
-    to learn what the launch check already knows.
+    Only reached once the prebuilt path has failed, so a tree that cannot load a
+    model is never worth keeping. The shell test was just "both entrypoints are
+    executable", which a quarantine that took a library leaves untouched: the
+    rebuild was skipped, the tree came back identical, and an update that repaired
+    nothing reported success while preflight kept flagging it.
 
     A tree with no marker is a genuine source build, which ships none of the
-    prebuilt payload (setup.ps1 links statically), so it keeps the old test
-    rather than being rebuilt every time.
+    prebuilt payload (setup.ps1 links statically), so it keeps the old test.
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True

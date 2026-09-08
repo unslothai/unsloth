@@ -4968,15 +4968,14 @@ class _WindowsLauncherUpdateTransaction:
 def _managed_llama_runtime_is_the_active_one() -> bool:
     """Whether the managed tree is the runtime the backend would actually load.
 
-    ``_find_llama_server_binary`` prefers, in order, ``LLAMA_SERVER_PATH``, then
-    ``UNSLOTH_LLAMA_CPP_PATH``, then the folder chosen in Studio's settings, and
-    only then the managed install. Grading the managed tree regardless would send
-    a user who runs their own build into repair over a leftover install their
-    backend never opens, and offline that repair cannot even succeed.
+    ``_find_llama_server_binary`` prefers ``LLAMA_SERVER_PATH``, then
+    ``UNSLOTH_LLAMA_CPP_PATH``, then Studio's settings folder, and only then the
+    managed install. Grading the managed tree regardless would send a user who
+    runs their own build into repair over a leftover install their backend never
+    opens, and offline that repair cannot even succeed.
 
-    ``UNSLOTH_LLAMA_CPP_PATH`` is not one of the cases to skip: it moves the
-    managed root itself, so ``default_managed_llama_dir`` already grades exactly
-    the tree that variable names.
+    ``UNSLOTH_LLAMA_CPP_PATH`` needs no skip: it moves the managed root itself, so
+    ``default_managed_llama_dir`` already grades the tree it names.
     """
     if os.environ.get("LLAMA_SERVER_PATH", "").strip():
         return False
@@ -4985,7 +4984,7 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
             get_stored_custom_llama_cpp_path,
         )
     except Exception:
-        # No settings module reachable means no stored selection to honour.
+        # No settings module means no stored selection to honour.
         return True
     return get_stored_custom_llama_cpp_path() is None
 
@@ -5010,15 +5009,15 @@ def desktop_capabilities(
         # Did the install finish and are the backend's boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
-        # And is the llama.cpp runtime the backend loads still intact. Absent
-        # when nothing is installed yet, which is NotInstalled rather than a
-        # broken install. Older desktops ignore both keys.
+        # And is the llama.cpp runtime the backend loads still intact. Null when
+        # nothing is installed yet (NotInstalled, not a broken install). Older
+        # desktops ignore both keys.
         "llama_runtime_ok": None,
         "llama_runtime_reason": "",
         "version": "unknown",
     }
-    # Best effort: a probe that cannot answer must not turn a working install
-    # into a stale one, so a failure here leaves llama_runtime_ok null.
+    # Best effort: a probe that cannot answer must not turn a working install into
+    # a stale one, so a failure here leaves llama_runtime_ok null.
     try:
         from studio.install_llama_prebuilt import installed_runtime_health
         if _managed_llama_runtime_is_the_active_one():
