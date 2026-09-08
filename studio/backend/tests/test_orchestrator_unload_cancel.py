@@ -3134,3 +3134,47 @@ def test_a_helper_backend_load_carries_the_process_generation():
         "load_model does not capture the process generation, so a stale load is "
         "released by an embedded restart"
     )
+
+
+def test_the_previous_uvicorn_thread_is_joined_before_the_latches_clear():
+    """A second run_server can start while the old server thread is still draining.
+    A request it already accepted, but which has not reached load_model_gated, is in
+    no snapshot; once the latches clear it looks exactly like a new-session request and
+    its backend call captures the freshly advanced generations. Joining first is what
+    distinguishes them, and there is nothing else that can.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    join = src.index("\n            _wait_for_server_shutdown()")
+    backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
+    process = src.index("\n        begin_process_lifecycle()")
+    route = src.index("\n        begin_load_lifecycle()")
+
+    assert join < backend < process < route, (
+        "the old server's requests are still in flight when the latches clear"
+    )
+
+
+def test_the_drain_is_skipped_when_no_shutdown_ever_happened():
+    """The join must not cost a first run, or a host that never shut down, the full
+    5s timeout: it is gated on the latch that only _graceful_shutdown sets.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    guard = src.index("if is_process_shutting_down():")
+    join = src.index("\n            _wait_for_server_shutdown()")
+    assert guard < join, "the drain is unconditional and would stall every first run"

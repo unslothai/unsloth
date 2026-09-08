@@ -2908,7 +2908,17 @@ def run_server(
         # The process latch clears between the two for the same reason: it is what
         # every OTHER spawner reads, so it must stay set until the teardown this waits
         # on has finished, and be clear before anything is admitted.
-        from utils.process_lifetime import begin_process_lifecycle
+        from utils.process_lifetime import begin_process_lifecycle, is_process_shutting_down
+
+        # Before any of that: let the previous session's uvicorn thread drain. A request
+        # it already accepted may not have reached load_model_gated yet, so it is in no
+        # snapshot and captures its generations only once it gets there -- by which time
+        # the clears below have made it indistinguishable from a new-session request.
+        # Joining is the only thing that can tell them apart. Gated on the latch so a
+        # first run, or a host that never shut down, does not wait; bounded by the same
+        # 5s timeout as the normal exit path, which logs and proceeds.
+        if is_process_shutting_down():
+            _wait_for_server_shutdown()
 
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
