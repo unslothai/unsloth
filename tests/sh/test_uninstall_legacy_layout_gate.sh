@@ -17,12 +17,15 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 HOME="$_TMP_ROOT/home"
 mkdir -p "$HOME"
 
-_fn=$(sed -n '/^_is_studio_root() {/,/^}/p' "$UNINSTALL_SH")
-if [ -z "$_fn" ]; then
-    echo "  FAIL: could not extract _is_studio_root from $UNINSTALL_SH"
-    exit 1
-fi
-eval "$_fn"
+# _is_studio_root calls _is_venv_dir, so both come across or the suite is vacuous.
+for _name in _is_venv_dir _is_studio_root; do
+    _fn=$(sed -n "/^$_name() {/,/^}/p" "$UNINSTALL_SH")
+    if [ -z "$_fn" ]; then
+        echo "  FAIL: could not extract $_name from $UNINSTALL_SH"
+        exit 1
+    fi
+    eval "$_fn"
+done
 
 # name, expected (own|foreign), mode (managed|custom), then paths; a trailing / makes a dir.
 # "managed" is the uninstaller's second argument, for $HOME/.unsloth/studio and nothing else.
@@ -53,6 +56,7 @@ check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unslot
 check "legacy .venv carrying the owner marker" own managed ".venv/.unsloth-studio-owned"
 check "pre-marker unsloth_studio venv" own managed "unsloth_studio/bin/unsloth" "unsloth_studio/bin/python"
 check "pre-marker legacy .venv" own managed ".venv/bin/unsloth" ".venv/bin/python"
+check "pre-marker venv proved by pyvenv.cfg alone" own managed ".venv/bin/unsloth" ".venv/pyvenv.cfg"
 # An install that died before the marker was written. The root is ours and holds nothing else.
 check "partial install: rollback copy only" own managed "unsloth_studio.rollback.20260908120000.4242/pyvenv.cfg"
 check "partial install: invalid legacy venv only" own managed ".venv.invalid.20260908120000.4242/pyvenv.cfg"
@@ -85,6 +89,9 @@ check "a FILE named like a leftover" foreign managed ".venv.invalid.202609081200
 check "an empty directory named like a leftover" foreign managed "unsloth_studio.rollback.20260908120000.4242/"
 check "a leftover-named directory holding the user's own files" foreign managed \
     ".venv.invalid.20260908120000.4242/notes.txt"
+# bin/unsloth is only pip's console script when it is inside a venv; on its own it is a file.
+check "a console script with no venv around it" foreign managed ".venv/bin/unsloth"
+check "the same under a directory named unsloth_studio" foreign managed "unsloth_studio/bin/unsloth"
 
 echo
 echo "Edge cases:"

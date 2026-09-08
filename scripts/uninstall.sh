@@ -353,6 +353,16 @@ _xdg_dir() {
 # env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
 # directory is NOT enough -- require the install-time owner marker so a user
 # directory that happens to contain a folder named "unsloth_studio" is safe.
+# Is $1 a Python venv? Every signal the gate reads out of a venv directory -- pip's console
+# script, the moved-aside copies -- is evidence only if the directory really is one. A bare file
+# at that path is somebody else's, and the managed root is deleted recursively.
+_is_venv_dir() {
+    [ -d "$1" ] || return 1
+    [ -f "$1/pyvenv.cfg" ] && return 0
+    [ -f "$1/bin/python" ] && return 0
+    return 1
+}
+
 _is_studio_root() {
     _r="$1"
     # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
@@ -372,17 +382,14 @@ _is_studio_root() {
     # deletes the project it points at.
     [ "$_managed" = managed ] || return 1
     for _v in unsloth_studio .venv; do
+        _is_venv_dir "$_r/$_v" || continue
         [ -f "$_r/$_v/bin/unsloth" ] && return 0
     done
     # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
     # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
-    # somebody else's. Only install.sh produces either name, and only ever by renaming a venv,
-    # so the shape is required as well: on a name alone, one file in a hand-made ~/.unsloth/studio
-    # would hand the whole directory to rm -rf.
+    # somebody else's. Only install.sh produces either name, and only ever by renaming a venv.
     for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
-        [ -d "$_p" ] || continue
-        [ -f "$_p/pyvenv.cfg" ] && return 0
-        [ -x "$_p/bin/python" ] && return 0
+        _is_venv_dir "$_p" && return 0
     done
     return 1
 }

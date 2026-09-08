@@ -417,6 +417,18 @@ Environment:
     # install whose .exe was removed by that policy's quarantine still owns its root.
     # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
     # on Windows, so every sentinel above postdates the bin\ shim dir.
+    # Is $Path a Python venv? Every signal the gate reads out of a venv directory -- pip's
+    # console script, the package behind it, the moved-aside copies -- is evidence only if the
+    # directory really is one. A bare name at that path is somebody else's, and the managed root
+    # is deleted recursively.
+    function _IsVenvDir {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        if (Test-Path -LiteralPath (Join-Path $Path "pyvenv.cfg") -PathType Leaf) { return $true }
+        return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
+    }
+
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -431,6 +443,7 @@ Environment:
         # the project it points at.
         if (-not $ManagedDefaultRoot) { return $false }
         foreach ($venv in @("unsloth_studio", ".venv")) {
+            if (-not (_IsVenvDir (Join-Path $Path $venv))) { continue }
             if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
             # Antivirus takes that .exe out of a venv that still runs; install.ps1:6412 repairs
             # through it, and a pre-marker root has nothing else left.
@@ -441,12 +454,10 @@ Environment:
         # An install that died between moving the old venv aside (install.ps1:4487, :4165) and
         # writing the marker (install.ps1:4524) leaves the root with neither, so it would be
         # refused as somebody else's. Only install.ps1 produces either name, and only ever by
-        # renaming a venv, so the shape is required as well: on a name alone, one file in a
-        # hand-made ~\.unsloth\studio would hand the whole directory to Remove-Item -Recurse.
+        # renaming a venv.
         foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
             foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
-                if (Test-Path -LiteralPath (Join-Path $dir.FullName "pyvenv.cfg") -PathType Leaf) { return $true }
-                if (Test-Path -LiteralPath (Join-Path $dir.FullName "Scripts\python.exe") -PathType Leaf) { return $true }
+                if (_IsVenvDir $dir.FullName) { return $true }
             }
         }
         return $false

@@ -29,6 +29,7 @@ assert_dir()   { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1));
 HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 {
     sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
+    sed -n '/^_is_venv_dir() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
     # The loop removes roots through this wrapper; without it and its marker helper the

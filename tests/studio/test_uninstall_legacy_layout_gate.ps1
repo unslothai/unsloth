@@ -21,11 +21,12 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors)
 Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 
-# _IsStudioRoot calls _IsUnslothCmdShim, so both must come across or the suite is vacuous.
+# _IsStudioRoot calls _IsUnslothCmdShim and _IsVenvDir, so all three must come across or the
+# suite is vacuous.
 $allFns = $ast.FindAll({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
     }, $true)
-foreach ($name in @("_IsUnslothCmdShim", "_IsStudioRoot")) {
+foreach ($name in @("_IsUnslothCmdShim", "_IsVenvDir", "_IsStudioRoot")) {
     $fn = $allFns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
     if (-not $fn) {
         Write-Host "  FAIL  $name not found in uninstall.ps1" -ForegroundColor Red
@@ -74,6 +75,8 @@ try {
     # Antivirus takes the .exe out of a venv that still runs, leaving nothing but the package.
     Check "pre-marker venv whose unsloth.exe antivirus quarantined" `
         (_IsStudioRoot (Make "quarantined" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py")) -ManagedDefaultRoot)
+    Check "pre-marker venv proved by pyvenv.cfg alone" `
+        (_IsStudioRoot (Make "cfg-only" @(".venv\pyvenv.cfg", ".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot)
 
     # An install that died before the marker was written. The root is ours and holds nothing else.
     Check "partial install: rollback copy only" `
@@ -111,6 +114,11 @@ try {
         (-not (_IsStudioRoot $emptyLeftover -ManagedDefaultRoot))
     Check "a leftover-named directory holding the user's own files is refused" `
         (-not (_IsStudioRoot (Make "leftover-user" @(".venv.invalid.20260908120000.4242\notes.md")) -ManagedDefaultRoot))
+    # Scripts\unsloth.exe and site-packages are only pip's work when they are inside a venv.
+    Check "a console script with no venv around it is refused" `
+        (-not (_IsStudioRoot (Make "loose-exe" @(".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot))
+    Check "a site-packages tree with no interpreter is refused" `
+        (-not (_IsStudioRoot (Make "loose-pkg" @("unsloth_studio\Lib\site-packages\unsloth\__init__.py")) -ManagedDefaultRoot))
     $foreign = Make "foreign-shim" @()
     New-Item -ItemType Directory -Path (Join-Path $foreign "bin") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $foreign "bin\unsloth.cmd") -Value "@echo off`r`npython -m mytool %*`r`n"
