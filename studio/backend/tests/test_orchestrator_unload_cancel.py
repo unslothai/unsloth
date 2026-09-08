@@ -3414,3 +3414,48 @@ def test_a_restart_waits_for_the_whole_shutdown_not_just_the_teardown_lock():
     wait = src.index("_shutdown_complete.wait(")
     backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
     assert wait < backend, "the lifecycle reopens before the previous shutdown finished"
+
+
+def test_an_old_sweep_does_not_terminate_the_new_lifecycles_children():
+    """A legitimate shutdown can outlast any bound a restart should wait for: steps 2
+    and 3 allow five seconds each before terminate_all even starts. So the restart
+    cannot be made to wait it out, and the sweep must instead be unable to see children
+    that a later lifecycle adopted.
+
+    Driven against a real disposable child, not this process: without the fix the sweep
+    really does signal what it finds, and an earlier version of this test using
+    os.getpid() took the test runner down with it.
+    """
+    import subprocess
+    import sys
+
+    from utils import process_lifetime as pl
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        # Session 1 quits: the sweep it will run belongs to this generation.
+        pl.mark_process_shutting_down()
+
+        # Session 2 opens and adopts a child while that shutdown is still in flight.
+        pl.begin_process_lifecycle()
+        pl.adopt_pid(child.pid)
+
+        # The old shutdown finally reaches its sweep.
+        pl.terminate_all(timeout = 0.5)
+
+        assert child.poll() is None, (
+            "the previous session's sweep killed a child this session adopted"
+        )
+        with pl._record_lock:
+            assert child.pid in pl._tracked_pids, (
+                "the child was dropped from the record, so its own session has no "
+                "handle on it either"
+            )
+    finally:
+        with pl._record_lock:
+            pl._tracked_pids.pop(child.pid, None)
+            pl._adoption_generation.pop(child.pid, None)
+            pl._tracked_pgids.pop(child.pid, None)
+        pl.begin_process_lifecycle()
+        child.kill()
+        child.wait()

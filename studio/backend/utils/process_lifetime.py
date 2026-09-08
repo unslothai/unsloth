@@ -965,8 +965,11 @@ def adopt_pid(pid: Optional[int]) -> None:
     _adopt_fork_reset()
     identity = _identity_for_record(pid)
     pgid = _own_process_group(pid)
+    with _generation_lock:
+        adopted_in = _lifecycle_generation
     with _record_lock:
         _tracked_pids[pid] = identity
+        _adoption_generation[pid] = adopted_in
         if pgid is not None:
             _tracked_pgids[pid] = pgid
         _write_breadcrumb()
@@ -994,6 +997,13 @@ _shutdown_latch = threading.Event()
 # reading a boolean that has since been reset under it.
 _lifecycle_generation = 0
 _generation_lock = threading.Lock()
+# Which lifecycle adopted each pid, and which one a running shutdown belongs to. A
+# shutdown can legitimately outlast any bound a restart is willing to wait (steps 2 and
+# 3 alone allow five seconds each), so the restart cannot be made to wait it out.
+# Instead the old sweep is scoped: it never signals a child a LATER lifecycle adopted.
+# None means no shutdown has been marked, so a sweep filters nothing.
+_adoption_generation: "dict[int, int]" = {}
+_shutdown_generation: "Optional[int]" = None
 
 
 def process_lifecycle_generation() -> int:
@@ -1013,8 +1023,10 @@ def mark_process_shutting_down() -> None:
     Under the generation lock, so that a set racing begin_process_lifecycle's clear
     cannot be erased by it: whichever transition happens second is the one that stands.
     """
+    global _shutdown_generation
     with _generation_lock:
         _shutdown_latch.set()
+        _shutdown_generation = _lifecycle_generation
 
 
 def is_process_shutting_down(admitted_generation: "Optional[int]" = None) -> bool:
@@ -1067,11 +1079,21 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     survivors: "list[int]" = []
     # Snapshot under the same lock the writes take: a request thread can still
     # reach adopt_pid while this runs.
+    with _generation_lock:
+        sweeping_for = _shutdown_generation
     with _record_lock:
         tracked = list(_tracked_pids.items())
     for pid, identity in tracked:
         with _record_lock:
+            adopted_in = _adoption_generation.get(pid)
+        # Belongs to a lifecycle that started after the shutdown running this sweep.
+        # Left tracked as well as unsignalled: it is a live child, and its own session
+        # still needs the handle on it.
+        if sweeping_for is not None and adopted_in is not None and adopted_in > sweeping_for:
+            continue
+        with _record_lock:
             _tracked_pids.pop(pid, None)
+            _adoption_generation.pop(pid, None)
             pgid = _tracked_pgids.pop(pid, None)
         if not _signalable(pid):
             continue

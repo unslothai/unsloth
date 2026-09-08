@@ -1697,6 +1697,11 @@ def _graceful_shutdown(server = None):
 # Bound the join so a stuck uvicorn shutdown cannot hang the terminal.
 _SERVER_SHUTDOWN_JOIN_TIMEOUT = 5.0
 
+# Longer than the join: this waits on the whole of _graceful_shutdown, whose own steps
+# already allow 5s + 5s before the final sweep. Still bounded, because correctness comes
+# from the sweep being lifecycle-scoped rather than from this wait.
+_SHUTDOWN_COMPLETE_WAIT = 30.0
+
 
 def _flush_standard_streams() -> None:
     for stream in (sys.stdout, sys.stderr):
@@ -2929,12 +2934,17 @@ def run_server(
         # 5s timeout as the normal exit path, which logs and proceeds.
         if is_process_shutting_down():
             _wait_for_server_shutdown()
-            # And for the shutdown itself to finish. The join covers the uvicorn
-            # thread; this covers the rest of _graceful_shutdown, whose final sweep
-            # would otherwise terminate a child this session adopts. Same bound, and
-            # it logs rather than hanging a restart behind a stuck teardown.
-            if not _shutdown_complete.wait(timeout = _SERVER_SHUTDOWN_JOIN_TIMEOUT):
-                logger.warning("Previous shutdown still running; reopening the lifecycle anyway")
+            # And for the shutdown itself to finish, so the common case reopens onto a
+            # quiet process. This CANNOT be the guarantee: a legitimate shutdown runs
+            # longer than any bound a restart should wait for, since steps 2 and 3 each
+            # allow five seconds on their own. What makes reopening safe regardless is
+            # that terminate_all only signals pids adopted by its own lifecycle or an
+            # earlier one, so the old sweep cannot reach this session's children.
+            if not _shutdown_complete.wait(timeout = _SHUTDOWN_COMPLETE_WAIT):
+                logger.warning(
+                    "Previous shutdown still running; reopening the lifecycle anyway "
+                    "(its sweep cannot reach this session's children)"
+                )
 
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
