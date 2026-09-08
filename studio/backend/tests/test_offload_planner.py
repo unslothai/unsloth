@@ -1215,8 +1215,11 @@ def test_the_context_reserve_matches_what_was_measured_on_hardware():
     opts = PlanOptions()
     mib = 1024 * 1024
 
-    # Unchanged where the flat term was calibrated and is known to work.
+    # Unchanged where the flat term was calibrated and is known to work. That includes a
+    # 32K context: the requirement is flat from 9216 to 33792, and charging the slope from
+    # 16384 spilled 0.2 GiB on a 27B where the fitter had slack, a measured loss.
     assert _device_reserve(opts, 8192) == opts.overhead_bytes_per_device
+    assert _device_reserve(opts, 32768) == opts.overhead_bytes_per_device
     assert _device_reserve(opts, opts.overhead_free_ctx) == opts.overhead_bytes_per_device
 
     # Above every measured requirement, at every measured context.
@@ -1238,30 +1241,30 @@ def test_the_context_reserve_matches_what_was_measured_on_hardware():
 def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
     """The behaviour change, stated once and directly.
 
-    A 9 GiB card at 64K context: the flat reserve leaves room for a q8_0 cache and the load is
-    planned, while the context-aware one charges ~1 GiB more and correctly finds it does not
-    fit. This is the pair test_kv_quantisation_rescues_a_load_f16_cannot_fit pins the reserve
+    An 8.5 GiB card at 64K context: the flat reserve leaves room for a q8_0 cache and the load
+    is planned, while the context-aware one charges ~750 MiB more and correctly finds it does
+    not fit. This is the pair test_kv_quantisation_rescues_a_load_f16_cannot_fit pins the reserve
     out of, so the two do not have to disagree.
     """
     layout = q4_layout()
     flat = plan_placement(
         layout,
-        [9 * GIB],
+        [8704 * 1024 * 1024],
         64 * GIB,
         65536,
         opts = PlanOptions(allow_kv_quant = True, overhead_bytes_per_token = 0),
     )
     aware = plan_placement(
-        layout, [9 * GIB], 64 * GIB, 65536, opts = PlanOptions(allow_kv_quant = True)
+        layout, [8704 * 1024 * 1024], 64 * GIB, 65536, opts = PlanOptions(allow_kv_quant = True)
     )
     assert flat.insufficient is False, "the flat reserve accepted this cell"
     assert aware.insufficient is True, "the context reserve must not"
 
     # Same card, short context: identical answers, so nothing below the free context moves.
     a = plan_placement(
-        layout, [9 * GIB], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0)
+        layout, [8704 * 1024 * 1024], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0)
     )
-    b = plan_placement(layout, [9 * GIB], 64 * GIB, 8192)
+    b = plan_placement(layout, [8704 * 1024 * 1024], 64 * GIB, 8192)
     assert a.ot_patterns == b.ot_patterns and a.n_ctx == b.n_ctx
 
 

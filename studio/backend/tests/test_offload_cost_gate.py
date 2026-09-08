@@ -171,14 +171,13 @@ def test_the_margin_is_what_decides_a_near_tie():
     more expensive: a zero margin would decline there too and the test would go
     green while asserting nothing.
     ---
-    RE-ANCHORED again, +343 MiB, when the per-device reserve gained its context-linear term:
-    at n_ctx 32768 that term is (32768 - 16384) * 21924 B = 342.6 MiB, so every budget in this
-    file now means 343 MiB less to the planner than it did. Shifting the card by exactly that
-    keeps the cell at the same distance from the band's edge, which is what the test is about;
-    leaving it would have tested the reserve instead of the gate.
+    The per-device reserve's context-linear term once started at 16384 and charged 343 MiB at
+    n_ctx 32768, and every budget in this file was shifted by exactly that to keep its cell at
+    the same distance from the band's edge. The term now starts at 32768, where the measured
+    requirement stops being flat, so the budgets are back at their original values.
     """
     layout = dense_layout()
-    card = [17927 * 1024 * 1024]
+    card = [17584 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     lenient = plan_placement(
         layout,
@@ -486,7 +485,7 @@ def test_the_draft_drop_penalty_can_turn_a_win_into_a_decline():
     cell is refused."""
     layout = dense_layout()
     draft = GIB
-    card = [15191 * 1024 * 1024 + draft]
+    card = [14848 * 1024 * 1024 + draft]
     base = dict(
         host = HostProfile(threads = 6),
         min_penalty_reduction = 0.0,
@@ -505,7 +504,7 @@ def test_fit_only_shrinks_to_the_largest_context_the_gate_accepts():
     """The near-tie cell is refused at 32768. FIT_ONLY walks down and accepts a
     smaller context; the step above it is still refused, so it is the largest."""
     layout = dense_layout()
-    card = [15191 * 1024 * 1024]
+    card = [14848 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     assert strict.declined_by_gate and not strict.spills_anything
     shrunk = plan_placement(
@@ -564,14 +563,12 @@ def test_a_spill_the_real_fitter_beats_is_declined_at_the_margin():
     the gate took the spill; without that charge the fallback wins and the
     planner correctly stands down.
     ---
-    RE-ANCHORED, +343 MiB, when the per-device reserve gained its context-linear term:
-    at n_ctx 32768 that term is (32768 - 16384) * 21924 B = 342.6 MiB, so every budget in this
-    file now means 343 MiB less to the planner than it did. Shifting the card by exactly that
-    keeps the cell at the same distance from the band's edge, which is what the test is about.
+    The reserve's context term once started at 16384 and this budget carried +343 MiB for
+    it; the term now starts at 32768 and the budget is back at its original value.
     """
     layout = dense_layout()
     plan = plan_placement(
-        layout, [19143 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
+        layout, [18800 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
     )
     assert not plan.spills_anything
     assert "not worth it" in plan.reason

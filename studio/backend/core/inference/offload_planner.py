@@ -230,10 +230,15 @@ class PlanOptions:
     # their brackets still overlapped. Budget independent: the 12 and 16 GiB ladders agree at
     # every context. And invisible in the buffer report, where the cache read 1200.0 MiB and the
     # compute buffer 366.0 MiB across a 14x span of context.
-    overhead_bytes_per_token: int = 21924
+    # 23.4 KiB per token, the TOP of the measured bracket, so that starting the term later
+    # (below) costs no margin at 66560 or 132096 against the curve that was validated there.
+    overhead_bytes_per_token: int = 23961
     # Below this the term is zero, so the flat reserve is unchanged and no existing placement
-    # moves. 1536 MiB is ample at every context measured at or below it and short above it.
-    overhead_free_ctx: int = 16384
+    # moves. The measured requirement is FLAT up to here (<= 1184 MiB at n_ctx 9216 and ~1184
+    # at 33792), so starting the slope at 16384 charged 343 MiB at a 32K context for nothing:
+    # on a 27B at 32K that produced a 0.2 GiB deficit, a spill, and a measured loss where
+    # llama.cpp's own fitter, which targets a flat 1 GiB, had slack and moved nothing.
+    overhead_free_ctx: int = 32768
     # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft
     # reserve), charged once against the pooled budget: the layout only knows the
     # target GGUF's tensor table. Subtracting from the budget also reaches
