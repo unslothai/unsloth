@@ -415,27 +415,32 @@ def _kernel_stack_hint_runs(closed_nodes: str) -> bool:
     # extraction finding anything, and "the text changed" would read as "the
     # behaviour changed".
     end = next(
-        i for i, line in enumerate(lines)
+        i
+        for i, line in enumerate(lines)
         if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
     )
     start = end
     while not lines[start].lstrip().startswith("if "):
         start -= 1
-    guard = "\n".join(line.strip() for line in lines[start:end + 1])
-    script = "\n".join([
-        "_has_amd_rocm_gpu() { return 1; }",   # ROCm cannot see the card
-        "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
-        guard,
-        "    echo FIRED",
-        "fi",
-    ])
+    guard = "\n".join(line.strip() for line in lines[start : end + 1])
+    script = "\n".join(
+        [
+            "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
+            "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+            guard,
+            "    echo FIRED",
+            "fi",
+        ]
+    )
     # The set arrives as an exported variable rather than a generated assignment: a
     # repr() inside shell single quotes turns the newline separating two nodes into a
     # literal backslash-n, which reads as one unmatched line and looks exactly like the
     # suppression failing.
     out = subprocess.run(
         ["bash", "-c", script],
-        capture_output = True, text = True, check = True,
+        capture_output = True,
+        text = True,
+        check = True,
         env = {**os.environ, "_closed_amd_nodes": closed_nodes},
     )
     return "FIRED" in out.stdout
