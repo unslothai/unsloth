@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import contextlib
 import json
 import os
 import sys
@@ -3313,3 +3314,69 @@ def test_boolean_eval_steps_is_rejected_by_the_request_model(value):
 @pytest.mark.parametrize("value", [0, 0.0, 0.25, 1, 2, "0.1"])
 def test_numeric_eval_steps_still_accepted(value):
     assert _request(eval_steps = value).eval_steps == float(value)
+
+
+def test_a_json_number_too_large_for_a_float_arrives_as_infinity():
+    """Pins the behaviour the route gate exists for. `1e309` is a plain JSON number, not one of
+    the non-standard `Infinity` / `NaN` literals, so a spec-conformant client can send it and
+    pydantic's non-strict `float` coerces it to inf."""
+    request = TrainingStartRequest.model_validate_json(
+        json.dumps(
+            {
+                "model_name": "unsloth/test",
+                "training_type": "LoRA/QLoRA",
+                "format_type": "alpaca",
+                "hf_dataset": "org/dataset",
+            }
+        ).replace("}", ', "eval_steps": 1e309}')
+    )
+    assert request.eval_steps == float("inf")
+
+
+@pytest.mark.parametrize("cadence", [float("inf"), float("nan")])
+def test_a_disabled_cadence_does_not_validate_the_local_eval_paths(cadence):
+    """The trainer reads a non-finite cadence as evaluation off, so the route must not 400 a
+    run over eval paths it is never going to read."""
+    route = _load_route_module("training_route_disabled_cadence_skips_eval_paths")
+    request = _request(eval_steps = cadence, local_eval_datasets = [""])
+
+    labels: list[str] = []
+
+    with patch.object(
+        route,
+        "_validate_local_dataset_paths",
+        side_effect = lambda paths, label: labels.append(label) or paths,
+    ):
+        with contextlib.suppress(Exception):
+            _start(route, request)
+
+    assert labels == [], f"eval paths were validated for eval_steps={cadence}"
+
+
+def test_a_disabled_cadence_does_not_demand_a_separate_streaming_eval_split():
+    """`eval_steps > 0` let inf through, so a streaming run was rejected outright for lacking an
+    eval split it did not need."""
+    route = _load_route_module("training_route_disabled_cadence_streaming_eval_split")
+    request = _request(
+        dataset_streaming = True, max_steps = 10, eval_steps = float("inf"), eval_split = None
+    )
+
+    detail = None
+    try:
+        _start(route, request)
+    except HTTPException as exc:
+        detail = exc.detail
+
+    assert detail != "dataset_streaming with evaluation requires a separate eval_split."
+
+
+def test_a_usable_cadence_still_demands_a_separate_streaming_eval_split():
+    route = _load_route_module("training_route_usable_cadence_streaming_eval_split")
+    request = _request(dataset_streaming = True, max_steps = 10, eval_steps = 0.25, eval_split = None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _start(route, request)
+
+    assert (
+        exc_info.value.detail == "dataset_streaming with evaluation requires a separate eval_split."
+    )

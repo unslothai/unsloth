@@ -38,6 +38,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.training import get_training_backend
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
+    from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -59,6 +60,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
+    from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -1332,7 +1334,10 @@ async def start_training(
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
             )
-        if request.local_eval_datasets and request.eval_steps > 0:
+        # Not `eval_steps > 0`: `1e309` is a valid JSON number that pydantic coerces to inf, which
+        # passes that but reads as disabled everywhere in the trainer. The route has to agree, or
+        # it validates eval paths for a run that will not evaluate.
+        if request.local_eval_datasets and evaluation_enabled(request.eval_steps):
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
@@ -1374,7 +1379,7 @@ async def start_training(
                     status_code = 422,
                     detail = "dataset_streaming is not supported with train_on_completions yet.",
                 )
-            if request.eval_steps > 0:
+            if evaluation_enabled(request.eval_steps):
                 train_split = request.train_split or "train"
                 if not request.eval_split or request.eval_split == train_split:
                     raise HTTPException(
