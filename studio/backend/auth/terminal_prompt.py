@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Interactive terminal prompt that forces a bootstrap password change before
-Unsloth is put where others can reach it: a public Cloudflare URL (``--secure``
-/ ``--cloudflare``) or a raw non-loopback bind such as ``-H 0.0.0.0``.
+Unsloth becomes reachable: a public Cloudflare URL (``--secure`` / ``--cloudflare``)
+or a raw non-loopback bind such as ``-H 0.0.0.0``.
 
 Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
 Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
@@ -146,21 +146,20 @@ _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
 class PromptUnattended(Exception):
-    """A terminal is attached but nobody answered the prompt before the deadline.
+    """A terminal is attached but nobody answered before the deadline.
 
-    A pty is not a person. ``tmux new -d``, ``screen -dmS`` and ``docker run -dt``
-    all allocate a real, foreground pty that no one is reading, so isatty() is
-    True on both streams and the read simply never returns. Callers that must
-    never block a launch pass a deadline and treat this as a refusal.
+    A pty is not a person: ``tmux new -d`` / ``docker run -dt`` allocate a real
+    foreground pty nobody reads, so isatty() is True on both streams and the read
+    never returns. Callers that must not block a launch treat this as a refusal.
     """
 
 
 def _wait_for_first_key(timeout: float) -> bool:
     """Whether a keystroke arrived within ``timeout`` seconds.
 
-    Must be called with the terminal already in cbreak mode: in canonical mode
-    the driver holds input until a newline, so the fd would not become readable
-    on the first character. True on any doubt, which is the blocking behaviour.
+    Requires cbreak mode already set: canonical mode holds input until a newline,
+    so the fd would not become readable on the first character. True on any doubt
+    (the blocking behaviour).
     """
     if os.name == "nt":
         import time
@@ -195,8 +194,8 @@ def _read_password(
 
     Raises KeyboardInterrupt on Ctrl-C and EOFError on Ctrl-D/Ctrl-Z with an
     empty buffer; the terminal is restored on every exit path. With
-    ``first_key_timeout`` set, raises PromptUnattended when the FIRST keystroke
-    never arrives; once someone starts typing there is no deadline.
+    ``first_key_timeout``, raises PromptUnattended when the FIRST keystroke never
+    arrives; once someone starts typing there is no deadline.
     """
     if out is None:
         out = sys.stderr
@@ -256,12 +255,11 @@ def should_prompt_password_change(
     still has the seeded password, and both stdin and stderr are real terminals
     (headless launches keep the bootstrap-timeout protection instead of hanging).
 
-    Two ways to be reachable, not one. ``tunnel_will_start`` is the public
-    Cloudflare URL. ``bind_is_exposed`` is a raw non-loopback bind such as
-    ``-H 0.0.0.0``, which is reachable by every host on the network, and by the
-    internet when the machine has a public address, yet starts no tunnel. That
-    second case previously got no prompt at all, so the seeded password stayed
-    live and was served in the page to anyone who loaded it.
+    Two ways to be reachable: ``tunnel_will_start`` (public Cloudflare URL) and
+    ``bind_is_exposed`` (a raw non-loopback bind like ``-H 0.0.0.0``, reachable by
+    the whole network yet starting no tunnel). The second used to get no prompt at
+    all, so the seeded password stayed live and was served to anyone who loaded
+    the page.
     """
     if not (tunnel_will_start or bind_is_exposed):
         return False
@@ -282,22 +280,20 @@ def prompt_for_password_change(
     """Force a new admin password before exposure; True on success.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF returns False. What that means is the caller's decision, and
-    ``refusal_aborts`` says which one it made so the banner can say the same
-    thing: True for a tunnel, where the caller aborts the launch, False for a raw
-    bind, where the launch proceeds because it worked before this prompt existed.
-    Promising an abort that will not happen is worse than not asking at all.
+    Ctrl-C / EOF returns False; ``refusal_aborts`` tells the banner what the
+    caller does with that, so it never promises an abort that will not happen:
+    True for a tunnel (caller aborts), False for a raw bind (launch proceeds,
+    because it worked before this prompt existed).
 
-    ``exposure`` names where this launch will be reachable. A tunnel really is
-    the public internet; a raw ``-H 0.0.0.0`` bind is every network interface,
-    which is the LAN behind a NAT router and the internet on a cloud box with a
-    public address. Claiming the wrong one trains people to ignore the message.
+    ``exposure`` names where this launch is reachable: a tunnel really is the
+    public internet, a raw bind is every interface (LAN behind NAT, or the
+    internet on a cloud box). Claiming the wrong one trains people to ignore it.
 
-    ``first_key_timeout`` bounds the wait for the FIRST keystroke and returns
+    ``first_key_timeout`` bounds the wait for the FIRST keystroke, returning
     False if it never comes. Only a caller that must not block a launch passes
     it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
-    an attended terminal, so without a deadline such a launch waits forever and
-    never binds its socket. Unset (the tunnel) keeps blocking indefinitely.
+    an attended terminal, so undeadlined it waits forever and never binds its
+    socket. Unset (the tunnel) blocks indefinitely.
     """
     if out is None:
         out = sys.stderr
@@ -312,7 +308,7 @@ def prompt_for_password_change(
         f"password now. {refusal}\n\n"
     )
     out.flush()
-    # Only the first read is deadlined; once a key arrives someone is there.
+    # Only the first read is deadlined; a key arriving proves someone is there.
     pending_timeout = first_key_timeout
     try:
         while True:

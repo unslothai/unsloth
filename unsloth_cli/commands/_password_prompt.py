@@ -31,20 +31,19 @@ _SUBMIT_CHARS = ("\r", "\n")
 class PromptUnattended(Exception):
     """A terminal is attached but nobody answered before the deadline.
 
-    A pty is not a person: ``tmux new -d``, ``screen -dmS`` and ``docker run -dt``
-    allocate a real, foreground pty nobody reads, so isatty() is True on both
-    streams and the read never returns. Callers that must not block a launch pass
-    a deadline and treat this as a refusal. Mirror of
-    studio/backend/auth/terminal_prompt.py -- keep the two in sync.
+    A pty is not a person: ``tmux new -d`` / ``docker run -dt`` allocate a real
+    foreground pty nobody reads, so isatty() is True on both streams and the read
+    never returns. Callers that must not block a launch treat this as a refusal.
+    Mirror of studio/backend/auth/terminal_prompt.py -- keep the two in sync.
     """
 
 
 def _wait_for_first_key(timeout: float) -> bool:
     """Whether a keystroke arrived within ``timeout`` seconds.
 
-    Must be called with the terminal already in cbreak mode: in canonical mode
-    the driver holds input until a newline, so the fd would not become readable
-    on the first character. True on any doubt, which is the blocking behaviour.
+    Requires cbreak mode already set: canonical mode holds input until a newline,
+    so the fd would not become readable on the first character. True on any doubt
+    (the blocking behaviour).
     """
     if os.name == "nt":
         import time
@@ -132,8 +131,8 @@ def _read_masked_posix(
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # Deadline the FIRST keystroke only: a detached pty is a terminal that
-            # nobody will ever type into, and blocking there never binds the socket.
+            # FIRST keystroke only: a detached pty is a terminal nobody will type
+            # into, and blocking there means the socket never binds.
             if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
                 raise PromptUnattended
             # os.read + incremental decoder with errors="replace": text-mode read(1) can raise or yield a lone
@@ -246,7 +245,7 @@ def prompt_new_password(
 
     ``first_key_timeout`` bounds the wait for the FIRST keystroke and raises
     PromptUnattended if it never comes; once someone types there is no deadline.
-    Only a caller that must not block a launch passes it -- a detached pty
+    Only a caller that must not block a launch passes it: a detached pty
     (``tmux new -d``, ``docker run -dt``) is a terminal nobody will answer.
     """
     if out is None:

@@ -341,12 +341,9 @@ def test_resolve_supplied_password_off_by_default(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# A raw non-loopback bind is exposure too.
-#
-# `-H 0.0.0.0` starts no tunnel, so it used to return False here and skip the
-# gate entirely, leaving the seeded admin password live and served in the page
-# to every host on the network. The gate's own docstring in run.py described
-# that hazard while the code returned early on `if not tunnel_will_start`.
+# A raw non-loopback bind is exposure too. `-H 0.0.0.0` starts no tunnel, so it
+# used to return False here and skip the gate, leaving the seeded admin password
+# live and served in the page to every host on the network.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -367,11 +364,10 @@ def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
 def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
     """Headless raw binds keep today's behaviour, deliberately.
 
-    Everything downstream of a True here is calibrated to publishing a public
-    URL: it refuses to launch when the deadline is disabled, and it deletes
-    .bootstrap_password. Long-running headless containers are the common use of
-    -H 0.0.0.0 and are often logged into by reading exactly that file, so they
-    keep the bootstrap deadline as their protection instead.
+    Everything downstream of a True here is calibrated to publishing a public URL:
+    it refuses to launch when the deadline is disabled, and it deletes
+    .bootstrap_password, which long-running headless containers (the common use of
+    -H 0.0.0.0) are often logged into by reading. They keep the deadline instead.
     """
     from auth.terminal_prompt import should_prompt_password_change
     for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
@@ -433,8 +429,8 @@ def test_the_default_keeps_old_callers_tunnel_only():
 def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatch):
     """`-H 0.0.0.0` behind a NAT router is the LAN, not the public internet.
 
-    Saying "public internet" there is false often enough to train people to
-    ignore the message, which is the one thing this prompt cannot afford.
+    Saying "public internet" is false often enough to train people to ignore the
+    message, which is the one thing this prompt cannot afford.
     """
     import io
 
@@ -446,8 +442,7 @@ def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatc
     monkeypatch.setattr(terminal_prompt, "_read_password", _no_input)
 
     out = io.StringIO()
-    # The read aborts immediately and returns False, which is fine: the banner
-    # is written before any read.
+    # The read aborts immediately; fine, the banner is written before any read.
     terminal_prompt.prompt_for_password_change(
         min_length = 8,
         is_current_password = lambda _c: False,

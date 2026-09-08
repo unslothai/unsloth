@@ -2141,18 +2141,13 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
-# How long a raw-bind prompt waits for the FIRST keystroke before giving up and
-# launching anyway. Only the first: once someone is typing there is no deadline.
-#
-# 30s, not longer. The launches that reach this with nobody watching are the ones
-# that allocate a pty and then never read it -- `docker run -dt`, `tmux new -d`,
-# `screen -dmS`, some CI runners -- and they want to bind promptly. A container
-# that takes two minutes to answer a healthcheck can be killed and restarted by
-# the orchestrator, which would turn "delayed" into a restart loop; 30s stays
-# inside a default Docker HEALTHCHECK start period. Someone who is actually
-# looking at the prompt starts typing well inside that, and someone who is not
-# gets the refusal path, which warns and launches with the bootstrap deadline
-# armed. Mirrored in the CLI.
+# How long a raw-bind prompt waits for the FIRST keystroke before launching
+# anyway; once someone is typing there is no deadline. 30s because the launches
+# that reach here unwatched allocate a pty and never read it (`docker run -dt`,
+# `tmux new -d`, CI runners) and need to bind promptly: a longer stall can trip a
+# healthcheck into a restart loop, while 30s stays inside a default Docker
+# HEALTHCHECK start period and is ample for anyone actually watching. Mirrored in
+# the CLI.
 _UNATTENDED_PROMPT_SECONDS = 30.0
 
 
@@ -2160,14 +2155,13 @@ def _prompt_owns_the_terminal() -> bool:
     """Whether this process may DRIVE the terminal, not merely see one.
 
     A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
-    terminal, so isatty() is True, but the masked prompt calls termios.tcsetattr,
-    and POSIX sends SIGTTOU to a background process group that does; the default
-    action stops the process. The launch would freeze before the socket binds
-    instead of starting, which is exactly the "never block a launch that worked"
-    case this gate is careful about everywhere else. Treat it as no terminal.
+    terminal so isatty() is True, but the masked prompt calls termios.tcsetattr
+    and POSIX SIGTTOUs a background process group that does; the default action
+    stops the process, freezing the launch before the socket binds. Treat it as
+    no terminal.
 
-    True on any doubt: no job control (Windows), no controlling terminal, or a
-    stream with no fileno. Nothing can stop us there, so the isatty answer stands.
+    True on any doubt (no job control, no controlling terminal, no fileno):
+    nothing can stop us there, so the isatty answer stands.
     """
     try:
         return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
@@ -2178,10 +2172,9 @@ def _prompt_owns_the_terminal() -> bool:
 def _exposure_phrase(*, tunnel_will_start: bool, host: str) -> str:
     """Name where this launch will actually be reachable.
 
-    A tunnel really is the public internet. A wildcard bind really is every
-    interface. A CONCRETE bind such as `-H 192.168.1.50` is neither: uvicorn
-    listens on that one address, so claiming every interface is untrue, and the
-    operator is more likely to act on the address they typed than on a category.
+    A tunnel is the public internet; a wildcard bind is every interface. A
+    CONCRETE bind (`-H 192.168.1.50`) is neither, since uvicorn listens on that
+    one address, and the operator acts on the address they typed anyway.
     """
     if tunnel_will_start:
         return "on the public internet"
@@ -2224,16 +2217,12 @@ def _terminal_password_gate(
     from auth.bootstrap_timeout import _is_exposed_bind
 
     # A raw non-loopback bind (-H 0.0.0.0) starts no tunnel, so it used to skip
-    # this gate entirely even though the docstring above describes exactly its
-    # hazard: the served HTML injects the bootstrap credential, and every host on
-    # the network can load it. Scoped like the bootstrap deadline: web UI only,
-    # never api-only (authenticates by API key, not the admin password) and never
-    # Colab (sandboxed, no inbound).
-    # secure = False deliberately. _is_exposed_bind counts --secure as exposed
-    # because for a tunnel launch the tunnel IS the exposure, but --secure forces
-    # a loopback bind, so asking it with secure = True would conflate "the tunnel
-    # publishes this" with "the socket itself is reachable". Here only the second
-    # question matters; the first is already tunnel_will_start.
+    # this gate even though the served HTML injects the bootstrap credential for
+    # every host on the network. Scoped like the bootstrap deadline: web UI only,
+    # never api-only (API key, not the admin password) and never Colab (no inbound).
+    # secure = False deliberately: _is_exposed_bind counts --secure as exposed
+    # (for a tunnel the tunnel IS the exposure) but --secure forces a loopback
+    # bind, and the only question here is whether the socket itself is reachable.
     bind_is_exposed = (
         _is_exposed_bind(host, False) and frontend_served and not api_only and not is_colab
     )
@@ -2241,19 +2230,18 @@ def _terminal_password_gate(
         return True, False
 
     # The parent already held this terminal open and got nothing. Repeating the
-    # wait would double the fallback (and triple it on the `studio run` path,
-    # which re-enters the CLI gate after re-exec), which is exactly the startup
-    # stall the deadline was chosen to stay under. Consumed, not just read, so it
-    # cannot leak into a later launch from the same environment.
+    # wait would double the fallback (triple on the `studio run` path, which
+    # re-enters the CLI gate after re-exec) -- the startup stall the deadline was
+    # chosen to stay under. Consumed, not peeked, so it cannot leak into a later
+    # launch from the same environment.
     if os.environ.pop("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "") and not tunnel_will_start:
         return True, False
 
     # A raw-bind-only launch decides promptability BEFORE opening auth storage.
-    # Before this gate learned about non-tunnel exposure it returned above, so a
-    # headless container never reached ensure_default_admin() from here. Doing so
-    # now would move first seeding earlier, open the SQLite file sooner and give a
-    # read-only or locked home a new place to fail, none of which a container
-    # operator asked for. Tunnel launches are unaffected: they always came here.
+    # Such a launch used to return above, so a headless container never reached
+    # ensure_default_admin() from here; doing so now would seed earlier, open the
+    # SQLite file sooner and give a read-only or locked home a new place to fail.
+    # Tunnel launches are unaffected: they always came here.
     if not tunnel_will_start and not (
         _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr) and _prompt_owns_the_terminal()
     ):
@@ -2284,12 +2272,11 @@ def _terminal_password_gate(
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
-        # Headless raw bind: leave it EXACTLY as it behaved before this gate
-        # learned about non-tunnel exposure. The refuse-and-strip handling below
-        # is calibrated to publishing a public URL; applying it here would break
-        # long-running headless containers, which are the common use of
-        # -H 0.0.0.0, and would delete the .bootstrap_password file such a
-        # deployment is often read from. The bootstrap deadline still arms.
+        # Headless raw bind: leave it EXACTLY as it behaved before. The
+        # refuse-and-strip handling below is calibrated to publishing a public
+        # URL; here it would break long-running headless containers (the common
+        # use of -H 0.0.0.0) and delete the .bootstrap_password they are read
+        # from. The bootstrap deadline still arms.
         if not tunnel_will_start:
             return True, False
         # No terminal: only proceed if the bootstrap deadline will arm; api-only
@@ -2352,39 +2339,36 @@ def _terminal_password_gate(
         apply_change = _apply_change,
         out = sys.stderr,
         exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
-        # Ctrl+C aborts a tunnel launch and only a tunnel launch. On a raw bind it
+        # Ctrl+C aborts a tunnel launch and only a tunnel launch; on a raw bind it
         # declines the prompt and the launch continues, so the banner must not
         # promise an abort that will not happen.
         refusal_aborts = tunnel_will_start,
         # A raw bind must never block a launch that used to start. A detached pty
-        # (`tmux new -d`, `screen -dmS`, `docker run -dt`) passes every isatty and
-        # process-group test yet nobody will ever type, so an undeadlined read
-        # waits forever and the socket never binds. No answer is handled below as
-        # a refusal: proceed on the bootstrap deadline, exactly as before. The
-        # tunnel keeps waiting indefinitely; it fails closed rather than proceed.
+        # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
+        # test yet nobody will ever type, so an undeadlined read waits forever and
+        # the socket never binds; no answer is handled below as a refusal and
+        # proceeds on the bootstrap deadline. The tunnel waits forever instead,
+        # failing closed.
         first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
     if changed:
         return True, True
     if tunnel_will_start:
-        # Refusing to secure a launch that is about to publish a public URL
-        # aborts it, exactly as before.
+        # Refusing to secure a launch about to publish a public URL aborts it,
+        # exactly as before.
         return False, False
-    # A raw bind is different: this launch worked before the prompt existed, and
-    # aborting it would turn Ctrl+C into "no Studio" for anyone who just wanted
-    # the old behaviour. `docker run -it` on a fresh volume is precisely that
-    # case (docker/studio_run.sh execs `unsloth studio -H 0.0.0.0` and only
-    # supplies a password when the initial-password file is non-empty), so
-    # aborting would stop a container that starts today. Warn and proceed at the
-    # protection level this launch already had.
+    # A raw bind is different: it worked before the prompt existed, and aborting
+    # would turn Ctrl+C into "no Studio". docker/studio_run.sh execs
+    # `unsloth studio -H 0.0.0.0` and only supplies a password when the
+    # initial-password file is non-empty, so `docker run -it` on a fresh volume
+    # meets this prompt and aborting would stop a container that starts today.
+    # Warn and proceed at the protection level this launch already had.
     #
-    # Which is sometimes NO protection: with UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0
-    # the deadline never arms, so promising a shutdown would be false, and it is
-    # the one sentence an operator would act on. Say what will actually happen.
-    # Still proceed rather than fail closed: this launch worked before the prompt
-    # existed, the operator disabled the deadline deliberately and cancelled the
-    # prompt deliberately, and refusing to start would break the very case the
-    # paragraph above exists to protect.
+    # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
+    # arms the deadline, so say what will actually happen rather than promise a
+    # shutdown -- that is the one sentence an operator acts on. Still proceed: the
+    # operator disabled the deadline and cancelled the prompt deliberately, and
+    # refusing to start would break the case above.
     deadline_arms = should_arm_bootstrap_timeout(
         host = host,
         secure = secure,

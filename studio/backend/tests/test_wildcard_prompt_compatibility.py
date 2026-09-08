@@ -4,9 +4,8 @@
 """Compatibility surface of the raw-bind password prompt.
 
 The prompt itself is covered by test_password_prompt.py and the gate wiring by
-test_password_prompt_backstop.py. This file covers the things that only break
-somewhere else: other platforms, old installs, and the claim that none of this
-touches hardware.
+test_password_prompt_backstop.py. This file covers what only breaks somewhere
+else: other platforms, old installs, and the no-hardware-coupling claim.
 """
 
 from __future__ import annotations
@@ -31,9 +30,9 @@ from auth import terminal_prompt  # noqa: E402
 def test_the_windows_getch_path_decodes_a_password(monkeypatch):
     """`_getch` is selected by os.name at import; exercise the Windows half.
 
-    This box is Linux, so the msvcrt branch is otherwise never executed. A stub
-    stands in for the module so the two-wchar arrow-key sequence and ordinary
-    characters both go through the real handler.
+    CI is Linux, so the msvcrt branch is otherwise never executed. A stub module
+    puts the two-wchar arrow-key sequence and ordinary characters through the
+    real handler.
     """
     import types
 
@@ -62,7 +61,7 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
             pass
 
     assert terminal_prompt._read_password("pw: ", out = _Out()) == "pw1"
-    # The arrow key is swallowed, not masked, so exactly one star per character.
+    # The arrow key is swallowed, not masked: one star per character.
     assert "".join(out).count("*") == 3
 
 
@@ -77,9 +76,8 @@ class _NullCtx:
 def test_a_stream_with_no_fileno_is_not_interactive():
     """pythonw / a Windows service has no console; isatty must not raise.
 
-    _prompt_raw_mode swallows the resulting error, and the gate's own isatty
-    helpers treat a broken stream as non-interactive, so such a launch takes the
-    headless path rather than crashing.
+    The gate's isatty helpers treat a broken stream as non-interactive, so such a
+    launch takes the headless path rather than crashing.
     """
 
     class _Broken:
@@ -114,7 +112,7 @@ def test_a_split_terminal_never_prompts(stdin_tty, stderr_tty):
 
 
 def test_an_old_caller_that_omits_bind_is_exposed_behaves_as_before():
-    """Forwards compatibility: the new kwarg is optional and defaults off.
+    """The new kwarg is optional and defaults off.
 
     A studio venv can hold an older backend than the CLI that launched it, so a
     caller predating this change must keep tunnel-only semantics.
@@ -153,11 +151,11 @@ def test_the_prompt_signature_stays_keyword_compatible():
 
 
 def test_the_password_gate_imports_no_gpu_or_torch_module():
-    """The claim that this change is hardware-independent, checked not asserted.
+    """The hardware-independence claim, checked not asserted.
 
-    Run in a subprocess: importing torch in THIS interpreter would poison the
-    rest of the session, and a sys.modules probe after the fact proves nothing
-    about what the import graph actually pulls in.
+    In a subprocess: importing torch in THIS interpreter would poison the rest of
+    the session, and a sys.modules probe after the fact proves nothing about what
+    the import graph pulls in.
     """
     probe = (
         "import sys;"

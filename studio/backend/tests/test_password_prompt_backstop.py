@@ -428,10 +428,10 @@ _RAW_BIND_KWARGS = dict(
 def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
     """The compatibility promise of this change.
 
-    Headless `-H 0.0.0.0` is the long-running container case. It must still
-    proceed, still keep serving the bootstrap credential, and above all must not
-    reach the strip-and-refuse handling that a public tunnel launch uses; that
-    would delete the .bootstrap_password such deployments are logged into with.
+    Headless `-H 0.0.0.0` is the long-running container case: it must still
+    proceed, keep serving the bootstrap credential, and above all not reach the
+    strip-and-refuse handling a public tunnel launch uses, which would delete the
+    .bootstrap_password such deployments are logged into with.
     """
     _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
@@ -441,12 +441,11 @@ def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
 def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
     """ "Unchanged" has to mean it does not touch the database either.
 
-    Before this gate learned about non-tunnel exposure, a headless raw bind
-    returned at `if not tunnel_will_start` without importing auth storage. If it
-    now calls ensure_default_admin() first, first seeding moves earlier and the
-    SQLite file is opened sooner, which gives a read-only or locked STUDIO_HOME a
-    brand new place to fail on a launch that used to work. So the promptability
-    decision has to happen before storage is consulted.
+    A headless raw bind used to return at `if not tunnel_will_start` without
+    importing auth storage. Calling ensure_default_admin() first would move
+    seeding earlier and open the SQLite file sooner, giving a read-only or locked
+    STUDIO_HOME a new place to fail on a launch that used to work, so
+    promptability must be decided before storage is consulted.
     """
     _patch_streams(monkeypatch, tty = False)
 
@@ -469,9 +468,8 @@ def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
 
     `docker/studio_run.sh` execs `unsloth studio -H 0.0.0.0` and only supplies a
     password when the initial-password file is non-empty, so a fresh
-    `docker run -it` meets this prompt. Aborting there would stop a container
-    that starts today. The launch proceeds at the protection level it already
-    had, which is the bootstrap deadline.
+    `docker run -it` meets this prompt and aborting would stop a container that
+    starts today. It proceeds on the bootstrap deadline it already had.
     """
     _patch_streams(monkeypatch, tty = True)
     _patch_seeded_admin(monkeypatch, requires_change = True)
@@ -484,8 +482,7 @@ def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
         lambda **_kw: False,  # Ctrl+C / EOF
     )
 
-    # proceed = True, and the bootstrap credential keeps being injected exactly
-    # as it was before this prompt existed.
+    # proceed = True, and the bootstrap credential is still injected as before.
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
@@ -587,11 +584,10 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
 
     A background job inherits the terminal, so isatty() is True on both streams,
-    but the masked prompt calls termios.tcsetattr; POSIX sends SIGTTOU to a
-    background process group that does, and the default action STOPS the process.
-    The launch would freeze before the socket binds, so it takes the headless
-    path it took before this gate learned about non-tunnel exposure: proceed,
-    protected by the bootstrap deadline, without consulting auth storage.
+    but the masked prompt calls termios.tcsetattr; POSIX SIGTTOUs a background
+    process group that does, and the default action STOPS the process. The launch
+    would freeze before the socket binds, so it takes the old headless path:
+    proceed on the bootstrap deadline, without consulting auth storage.
     """
     monkeypatch.setattr(sys, "stdin", _FdStream())
     monkeypatch.setattr(sys, "stderr", _FdStream())
@@ -615,8 +611,8 @@ def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
-    # The process group check is scoped to the raw-bind branch, so a tunnel
-    # launch still reaches the prompt and still aborts when it is refused.
+    # The process group check is scoped to the raw-bind branch, so a tunnel still
+    # reaches the prompt and still aborts when it is refused.
     assert run._prompt_owns_the_terminal() is False
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
 
@@ -667,11 +663,10 @@ class _PtyStdin:
 def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
     """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still bind its socket.
 
-    A detached pty is a real, foreground terminal that nobody will ever type
-    into: isatty() is True on both streams and the process owns the terminal, so
-    every interactivity test says "prompt". The read then never returns, and
-    because the gate runs BEFORE uvicorn binds, the launch hangs forever instead
-    of starting - a launch that worked before this gate widened to raw binds.
+    A detached pty is a real, foreground terminal nobody will ever type into:
+    isatty() is True on both streams and the process owns the terminal, so every
+    interactivity test says "prompt". The read never returns, and the gate runs
+    BEFORE uvicorn binds, so the launch hangs forever instead of starting.
     """
     import io
     import pty
@@ -680,7 +675,7 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
     try:
         monkeypatch.setattr(sys, "stdin", _PtyStdin(slave))
         out = io.StringIO()
-        # Nothing is ever written to `master`: the pty exists, the human does not.
+        # Nothing is written to `master`: the pty exists, the human does not.
         changed = terminal_prompt.prompt_for_password_change(
             min_length = 8,
             is_current_password = lambda _c: False,
@@ -751,10 +746,10 @@ def test_the_gate_deadlines_a_raw_bind_prompt_and_never_the_tunnel(monkeypatch):
 def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
     """With TIMEOUT=0 nothing will shut this instance down; do not say otherwise.
 
-    The refusal path proceeds on purpose, because the launch worked before the
-    prompt existed. What it must not do is tell the operator a deadline will
-    rescue them when `should_arm_bootstrap_timeout` will not arm one: that is the
-    single sentence they would act on.
+    The refusal path proceeds on purpose (the launch worked before the prompt
+    existed), but must not tell the operator a deadline will rescue them when
+    `should_arm_bootstrap_timeout` will not arm one: that is the single sentence
+    they would act on.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
     stderr = _patch_streams(monkeypatch, tty = True)
@@ -789,9 +784,9 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
     """A 30s fallback must not become 60s across the re-exec.
 
     The CLI parent holds the terminal for its deadline, gets nothing, warns and
-    launches. The child gate then sees the SAME unattended pty. Without a handoff
-    it waits the whole deadline again, and on the `studio run` path a third time,
-    which is exactly the startup stall the 30s value was chosen to stay under.
+    launches. The child gate then sees the SAME unattended pty; without a handoff
+    it waits the whole deadline again, and a third time on the `studio run` path,
+    which is the startup stall the 30s value was chosen to stay under.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
     _patch_streams(monkeypatch, tty = True)
@@ -804,8 +799,7 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
 
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
-    # Consumed, so a later launch from the same environment is not silently
-    # stripped of its own prompt.
+    # Consumed, so a later launch from the same environment keeps its own prompt.
     import os as _os
 
     assert _os.environ.get("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE") is None

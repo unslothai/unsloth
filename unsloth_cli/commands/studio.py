@@ -1179,11 +1179,10 @@ def _launch_publishes_tunnel(
     (Colab launches never come through this CLI path). --secure implies the
     tunnel; --cloudflare only tunnels non-api-only wildcard binds.
 
-    Kept separate from _should_prompt_password_change, which is deliberately
-    wider. The guards that key off THIS one exist because a headless tunnel
-    launch strips .bootstrap_password and could lock the admin out; a raw
-    wildcard bind never strips, so widening them would add failure modes that
-    protect nothing.
+    Kept separate from the deliberately wider _should_prompt_password_change: the
+    guards keyed off THIS one exist because a headless tunnel launch strips
+    .bootstrap_password and could lock the admin out, and a raw wildcard bind
+    never strips, so widening them would add failure modes that protect nothing.
     """
     if secure:
         return True
@@ -1197,9 +1196,9 @@ def _launch_publishes_tunnel(
 def _bind_is_wildcard(host: str) -> bool:
     """Whether this bind really is every interface, rather than one address.
 
-    Only used to word the prompt. `_launch_publishes_tunnel` above has already
-    called `is_wildcard_host` on this same launch, so the getaddrinfo it does for
-    a non-literal host is not a new cost on the path.
+    Only used to word the prompt. `_launch_publishes_tunnel` already called
+    `is_wildcard_host` on this launch, so its getaddrinfo for a non-literal host
+    is not a new cost here.
     """
     from unsloth_cli._tool_policy import is_wildcard_host
 
@@ -1215,30 +1214,26 @@ def _should_prompt_password_change(
     through this CLI path). --secure implies the tunnel; --cloudflare only
     tunnels non-api-only wildcard binds.
 
-    A raw non-loopback bind counts too, and only when a terminal is attached. It
-    is reachable by every host on the network, and by the internet on a machine
-    with a public address, while starting no tunnel, so it previously got no
-    prompt, no warning and no strip: the seeded admin password stayed live and
-    was served in the page to anyone who loaded it.
+    A raw non-loopback bind counts too, but only with a terminal attached. It is
+    reachable by the whole network (and the internet on a machine with a public
+    address) while starting no tunnel, so it previously got no prompt, no warning
+    and no strip: the seeded admin password stayed live and was served in the page.
 
-    is_external_host, NOT is_wildcard_host. The backend gate classifies exposure
-    with auth/bootstrap_timeout._is_exposed_bind, which counts anything that is
-    not one of the three loopback aliases; wildcard is a strict subset of that.
-    Using the narrower test here meant `unsloth studio -H 192.168.1.50`, an
-    ordinary LAN bind, skipped the parent prompt and prompted in the re-exec'd
-    child instead, and against an OLDER studio-venv child, which the mixed-version
-    path explicitly supports and which has no backend gate, it prompted nowhere at
-    all and served the seeded password. It is also cheaper: is_wildcard_host runs
-    socket.getaddrinfo for any non-literal host, while is_external_host is a
-    frozenset membership test.
+    is_external_host, NOT is_wildcard_host. The backend classifies exposure with
+    auth/bootstrap_timeout._is_exposed_bind, which counts anything that is not one
+    of the three loopback aliases; wildcard is a strict subset. The narrower test
+    meant `unsloth studio -H 192.168.1.50`, an ordinary LAN bind, skipped the
+    parent prompt and prompted in the re-exec'd child instead, and against an
+    OLDER studio-venv child (supported by the mixed-version path, and with no
+    backend gate) it prompted nowhere at all and served the seeded password. It is
+    also cheaper: a frozenset lookup rather than getaddrinfo.
 
-    The interactivity condition is deliberate and is what keeps this safe to
-    ship. Everything downstream of here is calibrated to publishing a public
-    URL: it refuses to launch when the deadline is disabled and it deletes
-    .bootstrap_password. Applying that to headless -H 0.0.0.0 would break
-    long-running containers, which are the common use of the flag. Headless raw
-    binds therefore keep exactly today's behaviour, protected by the bootstrap
-    deadline; only a launch with a human present is asked to set a password.
+    The interactivity condition is what keeps this safe to ship. Everything
+    downstream is calibrated to publishing a public URL: it refuses to launch when
+    the deadline is disabled and it deletes .bootstrap_password, which would break
+    the long-running containers that are the common use of -H 0.0.0.0. Headless
+    raw binds therefore keep today's behaviour on the bootstrap deadline; only a
+    launch with a human present is asked to set a password.
     """
     if secure:
         return True
@@ -1247,8 +1242,7 @@ def _should_prompt_password_change(
     from unsloth_cli._tool_policy import is_external_host, is_wildcard_host
 
     if cloudflare is True and is_wildcard_host(host):
-        # A tunnel launch prompts regardless of the terminal; the headless
-        # fallback is handled downstream.
+        # A tunnel prompts regardless of the terminal; headless is handled downstream.
         return True
     return is_external_host(host) and _prompt_streams_interactive() and _prompt_owns_the_terminal()
 
@@ -1261,21 +1255,12 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
-# How long a raw-bind prompt waits for the first keystroke before giving up and
-# launching anyway. Long enough for someone watching the terminal to react, short
-# enough that an unattended pty is not held hostage. Mirrors run.py.
-# How long a raw-bind prompt waits for the FIRST keystroke before giving up and
-# launching anyway. Only the first: once someone is typing there is no deadline.
-#
-# 30s, not longer. The launches that reach this with nobody watching are the ones
-# that allocate a pty and then never read it -- `docker run -dt`, `tmux new -d`,
-# `screen -dmS`, some CI runners -- and they want to bind promptly. A container
-# that takes two minutes to answer a healthcheck can be killed and restarted by
-# the orchestrator, which would turn "delayed" into a restart loop; 30s stays
-# inside a default Docker HEALTHCHECK start period. Someone who is actually
-# looking at the prompt starts typing well inside that, and someone who is not
-# gets the refusal path, which warns and launches with the bootstrap deadline
-# armed. Mirrored in the CLI.
+# How long a raw-bind prompt waits for the FIRST keystroke before launching
+# anyway; once someone is typing there is no deadline. 30s because the launches
+# that reach here unwatched allocate a pty and never read it (`docker run -dt`,
+# `tmux new -d`, CI runners) and need to bind promptly: a longer stall can trip a
+# healthcheck into a restart loop, while 30s stays inside a default Docker
+# HEALTHCHECK start period and is ample for anyone actually watching. Mirrors run.py.
 _UNATTENDED_PROMPT_SECONDS = 30.0
 
 
@@ -1283,17 +1268,15 @@ def _prompt_owns_the_terminal() -> bool:
     """Whether this process may DRIVE the terminal, not merely see one.
 
     A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
-    terminal, so isatty() is True, but read_masked calls termios.tcsetattr, and
-    POSIX sends SIGTTOU to a background process group that does; the default
-    action stops the process. The launch would freeze at the prompt instead of
-    starting, which is the one thing widening this gate to raw binds must not do
-    -- such a launch started fine before, protected by the bootstrap deadline.
-    Only the raw-bind branch consults this: a tunnel launch is published on the
-    public internet and keeps failing closed rather than quietly proceeding.
+    terminal so isatty() is True, but read_masked calls termios.tcsetattr and
+    POSIX SIGTTOUs a background process group that does; the default action stops
+    the process, freezing the launch instead of starting it -- the one thing
+    widening this gate to raw binds must not do. Only the raw-bind branch
+    consults this; a tunnel keeps failing closed rather than quietly proceeding.
 
-    True on any doubt: no job control (Windows), no controlling terminal, or a
-    stream with no fileno. Nothing can stop us there, so the isatty answer stands.
-    Mirror of run.py's _prompt_owns_the_terminal -- keep the two in sync.
+    True on any doubt (no job control, no controlling terminal, no fileno):
+    nothing can stop us there, so the isatty answer stands. Mirror of run.py's
+    _prompt_owns_the_terminal -- keep the two in sync.
     """
     try:
         return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
@@ -1317,17 +1300,17 @@ def _bootstrap_deadline_active() -> bool:
         return True
 
 
-# Set by the parent when it has already put the prompt in front of this terminal
-# and got nothing, so the re-exec'd child does not repeat the wait.
+# Set by the parent once it has put the prompt in front of this terminal and got
+# nothing, so the re-exec'd child does not repeat the wait.
 _UNATTENDED_PROMPT_DONE_ENV = "UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE"
 
 
 def _deadline_sentence() -> str:
     """Say what will actually happen, not what usually happens.
 
-    UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the shutdown entirely, and this
-    is the sentence an operator acts on, so promising a deadline that will never
-    arm is worse than saying nothing.
+    UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the shutdown entirely, and this is
+    the sentence an operator acts on, so promising a deadline that will never arm
+    is worse than saying nothing.
     """
     if _bootstrap_deadline_active():
         return (
@@ -1673,15 +1656,12 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
-    # Only a tunnel launch is genuinely "a public Cloudflare URL". A raw wildcard
-    # bind is every network interface, which is the LAN behind a NAT router and
-    # the internet on a cloud box. Naming the wrong one in an error trains people
-    # to ignore it, and would be plainly wrong for `unsloth studio -H 0.0.0.0`.
-    # The real predicate, not `cloudflare is True`. A non-secure tunnel only
-    # starts for a wildcard host, so `--cloudflare -H 192.168.1.50` starts no
-    # tunnel and is reachable through the raw bind instead. Naming the wrong one
-    # here would tell the operator their credential is about to go on a public
-    # Cloudflare URL when it is not, in the one message they are meant to act on.
+    # Only a tunnel launch is genuinely "a public Cloudflare URL"; a raw bind is
+    # the LAN behind a NAT router, or the internet on a cloud box. Use the real
+    # predicate, not `cloudflare is True`: a non-secure tunnel only starts for a
+    # wildcard host, so `--cloudflare -H 192.168.1.50` starts none and is reached
+    # through the raw bind instead. Naming the wrong one in the one message the
+    # operator is meant to act on trains people to ignore it.
     tunnel_will_start = _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     )
@@ -1690,23 +1670,20 @@ def _enforce_password_change_before_exposure(
         # nobody typed. `unsloth studio run` re-execs into the studio venv and
         # re-enters this gate, so without this the SAME unattended pty is waited
         # on again: 30s becomes 60s before the backend gate even gets its turn,
-        # which is long enough to trip a startup watchdog. The default admin was
-        # committed by the parent before it set this, so there is nothing left to
-        # do here. Peeked, never popped: run.py pops it, and consuming it here
-        # would hand the backend a fresh 30s wait instead.
-        #
-        # Never for a tunnel. That launch fails closed, and a marker set by some
-        # earlier raw-bind attempt must not buy a public URL a free pass.
+        # long enough to trip a startup watchdog. The parent committed the default
+        # admin before setting this, so there is nothing left to do. Peeked, never
+        # popped: run.py consumes it, and popping here would hand the backend a
+        # fresh 30s wait. Never for a tunnel, which fails closed -- a marker from
+        # an earlier raw-bind attempt must not buy a public URL a free pass.
         return
     if tunnel_will_start:
         exposure = "on a public Cloudflare URL"
     elif _bind_is_wildcard(host):
         exposure = "on every network interface"
     else:
-        # A concrete bind such as `-H 192.168.1.50` or `-H myhost.local` listens on
-        # that address ONLY, so "every network interface" is simply untrue. The gate
-        # widened to is_external_host and routes these here too; naming what the
-        # operator actually typed is both accurate and more useful than a category.
+        # A concrete bind (`-H 192.168.1.50`, `-H myhost.local`) listens on that
+        # address ONLY, so "every network interface" is untrue; the gate widened to
+        # is_external_host and routes these here too. Name what the operator typed.
         exposure = f"at {host}, which other machines on the network can reach"
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
@@ -1856,11 +1833,11 @@ def _enforce_password_change_before_exposure(
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
-        # Ctrl+C aborts a TUNNEL launch and only a tunnel launch. On a raw bind it
+        # Ctrl+C aborts a TUNNEL launch and only a tunnel launch; on a raw bind it
         # declines the prompt and the launch continues, because that launch worked
-        # before this gate existed and must not start failing now. Saying "abort"
-        # there would leave an operator believing they had stopped a server that is
-        # in fact up on the network with the auto-generated password.
+        # before this gate existed. Saying "abort" there would leave an operator
+        # believing they stopped a server that is in fact up on the network with
+        # the auto-generated password.
         refusal = (
             "Ctrl+C to abort."
             if tunnel_will_start
@@ -1874,12 +1851,11 @@ def _enforce_password_change_before_exposure(
             new_password = _password_prompt.prompt_new_password(
                 _is_current_password,
                 # A raw bind must never block a launch that used to start. A
-                # detached pty (`tmux new -d`, `screen -dmS`, `docker run -dt`)
-                # passes every isatty and process-group test yet nobody will ever
-                # type, so an undeadlined read waits forever and no server is ever
-                # started. Fall back to the protection that launch already had,
-                # the bootstrap deadline. A tunnel keeps waiting: it publishes a
-                # public URL, so it fails closed rather than proceeding.
+                # detached pty (`tmux new -d`, `docker run -dt`) passes every
+                # isatty and process-group test yet nobody will ever type, so an
+                # undeadlined read waits forever and no server starts; fall back
+                # to the bootstrap deadline it already had. A tunnel keeps waiting
+                # and fails closed rather than publish a public URL unprompted.
                 first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
             )
         except _password_prompt.PromptUnattended:
@@ -1891,12 +1867,11 @@ def _enforce_password_change_before_exposure(
                 err = True,
             )
             # The child gate sees the SAME unattended terminal and would wait its
-            # own deadline over again, so a 30s fallback becomes 60s, or 90 on the
-            # `studio run` path that re-enters this gate after re-exec. That is
-            # long enough to trip a startup watchdog, which is the restart loop
-            # the deadline exists to avoid. Tell the child the terminal has
-            # already been tried. A direct `python run.py` sets nothing, so it
-            # keeps its own backstop.
+            # own deadline again: 30s becomes 60s, or 90 on the `studio run` path
+            # that re-enters this gate after re-exec, long enough to trip a startup
+            # watchdog into the restart loop the deadline exists to avoid. Tell the
+            # child the terminal has been tried. A direct `python run.py` sets
+            # nothing, so it keeps its own backstop.
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
@@ -1908,11 +1883,11 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # A raw bind is not a publication. This launch worked before the
-            # prompt existed, so Ctrl+C returns it to what it did then rather
-            # than refusing to start; run.py's gate makes the same choice, and
-            # this mirror is the one that actually runs for `unsloth studio
-            # -H 0.0.0.0`, so disagreeing here would make that unreachable.
+            # A raw bind is not a publication: it worked before the prompt
+            # existed, so Ctrl+C returns it to that rather than refusing to start.
+            # run.py's gate makes the same choice, and this mirror is what actually
+            # runs for `unsloth studio -H 0.0.0.0`, so disagreeing here would make
+            # run.py's warn-and-proceed unreachable.
             typer.echo(
                 "\nWarning: password change aborted, so Unsloth is starting with "
                 "the auto-generated admin password on a bind that is reachable "
