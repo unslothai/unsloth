@@ -22,6 +22,11 @@ on:
     paths:
       - 'pyproject.toml'
       - 'MANIFEST.in'
+      # The "Publishing path uploads the wheel only" step reads build.sh. A guard
+      # that does not run when its own subject changes cannot guard it: without
+      # this entry, a PR that only reverts the upload glob to dist/* skips the
+      # workflow entirely.
+      - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -31,6 +36,7 @@ on:
     paths:
       - 'pyproject.toml'
       - 'MANIFEST.in'
+      - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
@@ -133,10 +139,53 @@ jobs:
         # regress is the upload glob, so that is what this asserts.
         run: |
           python - <<'PY'
-          import re, sys
+          import re, shlex, sys
+
+          # `twine upload` takes `dist [dist ...]`, so every positional counts:
+          # checking only the first would pass `twine upload dist/*.whl dist/*.tar.gz`,
+          # which publishes the sdist. Flags that consume a value are skipped by
+          # name rather than by position, so `-r pypi dist/*.whl` stays a PASS.
+          VALUED_FLAGS = {
+              "-r", "--repository", "--repository-url", "-s", "--sign-with",
+              "-i", "--identity", "-u", "--username", "-p", "--password",
+              "-c", "--comment", "--config-file", "--cert", "--client-cert",
+          }
+
+          def positionals(argstr):
+              try:
+                  toks = shlex.split(argstr, comments=True)
+              except ValueError:
+                  # Unbalanced quoting: not something this guard can read, so
+                  # refuse rather than wave it through.
+                  return None
+              out, skip = [], False
+              for t in toks:
+                  if skip:
+                      skip = False
+                      continue
+                  if t.startswith("-"):
+                      skip = t in VALUED_FLAGS
+                      continue
+                  out.append(t)
+              return out
+
           src = open("build.sh").read()
-          uploads = re.findall(r"twine upload\s+(\S+)", src)
+          lines = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+          uploads = []
+          unreadable = False
+          for line in lines:
+              m = re.search(r"twine upload\b(.*)$", line)
+              if not m:
+                  continue
+              args = positionals(m.group(1))
+              if args is None:
+                  unreadable = True
+                  continue
+              uploads.extend(args)
           print(f"twine upload targets in build.sh: {uploads}")
+          if unreadable:
+              print("FAIL: could not parse a twine upload line in build.sh")
+              sys.exit(1)
           if not uploads:
               print("FAIL: build.sh has no twine upload line; has the release path moved?")
               sys.exit(1)
