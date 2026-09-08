@@ -2376,6 +2376,12 @@ def _runtime_gfx_target(
                 f"   cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
+            # A REJECTION, not a detection miss, and the two are told apart only by this
+            # flag: callers that fall back to the physical inventory when no target
+            # resolves would otherwise re-read the very arch this just declined to index,
+            # approve the swap, and stand a working CUDA install down for a replacement
+            # _ensure_rocm_torch then refuses on the same mask.
+            _LAST_HIP_MASK_RESOLVED = False
             return None, [], None, []
         gfx_devices = [inferred_linux_gfx]
     # The machine as the probes saw it, before the ROCr layer reduces it to a lone survivor.

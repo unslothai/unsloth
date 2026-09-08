@@ -1419,6 +1419,7 @@ def _viable_masked(
     *,
     devices: list,
     masked: "list | None" = None,
+    inferred: "str | None" = None,
     **mask: str,
 ) -> bool:
     """_forced_rocm_route_is_viable on a masked host, with the resolution left live.
@@ -1433,13 +1434,20 @@ def _viable_masked(
     monkeypatch.setattr(stack, "_is_wsl", lambda: False)
     monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
-    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: None)
+    # The runtime-less host: no probe enumerates a device, and the product name is the
+    # only thing that names an arch. Both are stubbed together, since a host with an
+    # inferred arch and an enumerated device list is a different case entirely.
+    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: inferred)
     monkeypatch.setattr(
         stack,
         "_detect_amd_gfx_codes",
         lambda **k: list(devices if masked is None or k.get("ignore_visible_masks") else masked),
     )
-    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: list(devices))
+    monkeypatch.setattr(
+        stack,
+        "_physical_amd_gfx_archs",
+        lambda: list(devices) or ([inferred] if inferred else []),
+    )
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     for var, value in mask.items():
@@ -2086,3 +2094,65 @@ def test_the_installer_does_not_apply_the_repeat_rule_to_the_hip_layer():
         )
         is True
     )
+
+
+
+def test_an_unresolvable_mask_on_an_inferred_host_is_not_a_detection_miss(stack, monkeypatch):
+    """Nothing enumerates a device here, so the product name is the only arch on offer and
+    HIP_VISIBLE_DEVICES=1 indexes past it. _runtime_gfx_target declines outright, and the
+    fallback for "no target resolved" then re-read the same inferred arch off the physical
+    inventory and approved the swap -- so _ensure_cuda_torch stood down while
+    _ensure_rocm_torch refused the identical mask and installed nothing, leaving the venv on
+    a CPU or stale HIP build with a usable NVIDIA card beside it."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = [],
+            inferred = "gfx1100",
+            HIP_VISIBLE_DEVICES = "1",
+        )
+        is False
+    )
+
+
+def test_the_same_inferred_host_without_a_mask_is_still_a_route(stack, monkeypatch):
+    """The control that keeps the feature: a runtime-less but inferable AMD card is
+    deliberately served per-arch wheels, so the rule must be about the mask and not about
+    the host having no runtime."""
+    assert (
+        _viable_masked(stack, monkeypatch, devices = [], inferred = "gfx1100") is True
+    )
+
+
+def test_the_same_inferred_host_selecting_its_only_card_is_still_a_route(stack, monkeypatch):
+    """The other control, and the one that pins WHICH ordinals decline: 0 names the single
+    card the name inferred, so it resolves and the route stands. Without it the rule reads
+    as "any mask on an inferred host declines"."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = [],
+            inferred = "gfx1100",
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is True
+    )
+
+
+def test_the_installer_already_declines_that_mask():
+    """The installer twin of the case above, and the reason it is a Python-only fix: with one
+    arch and no per-device list, _amd_request_has_a_wheel_route resolves the mask against the
+    single row and takes `[ -n "$_arwr_sel" ] || return 1`, so it has always failed closed
+    where the Python half fell through to its inventory fallback. Pinned so the two halves
+    cannot drift apart again."""
+    assert (
+        _route_shell_masked(["gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "1") is False
+    )
+
+
+def test_the_installer_still_routes_that_host_unmasked():
+    """The control: the same one-arch host with no mask is exactly what the request exists to
+    serve, so the decline above must belong to the mask and not to the host shape."""
+    assert _route_shell_masked(["gfx1100"], devices = []) is True
