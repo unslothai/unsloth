@@ -396,6 +396,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             .json()
             .catch(() => null)) as { detail?: string } | null;
           if (errorPayload?.detail) message = errorPayload.detail;
+          if (response.status === 401 || response.status === 403) {
+            // The setup session is redeemed when the page loads, and its access
+            // token expires on the ordinary schedule, which can be shorter than
+            // the window the setup token itself is good for. Someone who opened
+            // this page and came back later would otherwise get a bare "could
+            // not validate credentials" and no way forward: the token in this
+            // HTML is already spent, so retrying cannot help and only a reload,
+            // which mints a fresh one, will.
+            message =
+              "This setup session expired. Reload the page and set the password again.";
+          }
           throw new Error(message);
         }
         token = (await response.json()) as TokenResponse;
