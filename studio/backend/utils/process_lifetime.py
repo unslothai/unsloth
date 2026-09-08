@@ -362,6 +362,7 @@ def _reset_after_fork() -> None:
     # A different pid here.
     _owner_identity = None
     _tracked_pids.clear()
+    _adoption_generation.clear()
     _tracked_pgids.clear()
     # A fork while another thread was inside adopt_pid / forget_pid leaves this held here with nobody to release it, and
     # the first adoption blocks forever.
@@ -566,6 +567,9 @@ def forget_pid(pid: Optional[int]) -> None:
         if _group_has_members(_tracked_pgids.get(pid)):
             return
         _tracked_pids.pop(pid, None)
+        # Alongside the other per-pid records, or a long-lived Studio grows this by one
+        # entry for every update, download, sidecar and inference child it ever forgets.
+        _adoption_generation.pop(pid, None)
         _tracked_pgids.pop(pid, None)
         _write_breadcrumb()
 

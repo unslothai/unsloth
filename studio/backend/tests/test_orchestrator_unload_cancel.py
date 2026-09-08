@@ -3694,3 +3694,39 @@ def test_reopening_a_lifecycle_re_arms_the_backstop_sweep():
         if child.poll() is None:
             child.kill()
         child.wait()
+
+
+def test_forgetting_a_pid_drops_its_adoption_record_too():
+    """A long-lived Studio forgets a child on every normal reap: update, download,
+    sidecar, inference. If only some of the per-pid maps are cleared, the remaining one
+    grows by an entry per unique pid for the life of the host.
+    """
+    import subprocess
+    import sys
+
+    from utils import process_lifetime as pl
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    try:
+        pl.adopt_pid(child.pid)
+        with pl._record_lock:
+            assert child.pid in pl._adoption_generation
+
+        pl.forget_pid(child.pid)
+        with pl._record_lock:
+            leaked = {
+                name
+                for name, mapping in (
+                    ("_tracked_pids", pl._tracked_pids),
+                    ("_tracked_pgids", pl._tracked_pgids),
+                    ("_adoption_generation", pl._adoption_generation),
+                )
+                if child.pid in mapping
+            }
+        assert not leaked, f"forget_pid left the pid in {sorted(leaked)}"
+    finally:
+        with pl._record_lock:
+            pl._tracked_pids.pop(child.pid, None)
+            pl._tracked_pgids.pop(child.pid, None)
+            pl._adoption_generation.pop(child.pid, None)
