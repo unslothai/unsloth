@@ -4261,7 +4261,9 @@ def blocked_replace_cause(winerror: object) -> str:
             "holding a handle"
         )
     if winerror == 145:
-        return "the directory is not empty yet -- an earlier copy is still being removed"
+        # Only what 145 establishes. The rename line above already names both paths,
+        # and nothing here knows why the destination is occupied.
+        return "the destination directory is not empty"
     return "a scanner is likely still holding the install open"
 
 
@@ -4701,9 +4703,16 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # install; it must not be moved or cleaned up.
             log("existing install could not be moved aside; leaving it in place")
             if is_busy_lock_error(exc):
+                # The summary is what the desktop app surfaces, so it must not put the
+                # held-handle theory back after the retry lines named ACLs as the other
+                # half of a WinError 5. Still BusyInstallConflict: the classification
+                # drives the caller's backoff and is right either way.
+                blocked = "appears to still be in use"
+                if getattr(exc, "winerror", None) == 5:
+                    blocked += " or has broken permissions"
                 raise BusyInstallConflict(
                     "staged prebuilt validation passed but the existing install could not be "
-                    "moved aside because llama.cpp appears to still be in use; previous install "
+                    f"moved aside because llama.cpp {blocked}; previous install "
                     f"left in place ({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                 ) from exc
             raise PrebuiltFallback(

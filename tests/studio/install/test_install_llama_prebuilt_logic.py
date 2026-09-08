@@ -1080,6 +1080,10 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
     assert "scanner" not in not_empty
     assert "takeown" not in not_empty
     assert "not empty" in not_empty
+    # 145 says the destination is occupied and nothing more: on the aside-move the
+    # destination is a fresh path nothing ever wrote to, so "an earlier copy is still
+    # being removed" would have users waiting on an operation that never ran.
+    assert "being removed" not in not_empty
 
 
 def test_blocked_replace_hint_does_not_send_acl_repair_through_a_linked_root(tmp_path: Path):
@@ -1852,6 +1856,43 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_summary_keeps_permissions_open_for_winerror_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The summary the desktop app shows must not re-assert the held-handle theory.
+
+    The retry lines name ACLs as the other half of a WinError 5; a terminal
+    "still in use" would send the user straight back to hunting a scanner.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def denied_replace(src, dst):
+        if Path(src) == install_dir:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    # No os.name patch: the summary keys on the winerror the exception carries, and
+    # leaving os.name alone keeps the retry loop (and pytest's reporting) on POSIX.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    with pytest.raises(
+        BusyInstallConflict,
+        match = "appears to still be in use or has broken permissions",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
 
 
 def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
