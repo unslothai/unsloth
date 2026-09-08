@@ -858,8 +858,7 @@ class TestNormaliseResponsesInputWithTools:
         assert "file_id" in str(exc.value.detail)
 
     def test_unmodelled_message_part_is_named_not_dropped(self):
-        # Matches _reject_unsupported_content_parts on /chat/completions; a part dropped
-        # here is one the caller sent and the model never saw.
+        # Matches _reject_unsupported_content_parts on /chat/completions.
         payload = ResponsesRequest(
             input = [
                 {
@@ -895,8 +894,7 @@ class TestNormaliseResponsesInputWithTools:
         assert "require an image_url string" in str(exc.value.detail)
 
     def test_image_message_part_with_unknown_detail_rejected_clearly(self):
-        # An out-of-set detail fails the Literal, so the whole part degrades to the
-        # catch-all and dropping it loses a url the adapter could have served.
+        # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -940,8 +938,7 @@ class TestNormaliseResponsesInputWithTools:
 
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachment_refused_on_the_roles_that_exit_early(self, role):
-        # Both branches return via `continue`, so a refusal in the user parts loop
-        # never sees their attachments.
+        # Both return via `continue`, so a refusal in the user parts loop never sees them.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1010,8 +1007,7 @@ class TestNormaliseResponsesInputWithTools:
         assert error["type"] == "invalid_request_error"
 
 
-# Every part shape and the one answer it is owed. A table because the failures are the
-# combinations: refused on a user turn but dropped on a system turn, and the like.
+# Every part shape and the answer it is owed; the failures live in the combinations.
 _IMG = "https://example.com/a.png"
 _RESPONSES_PART_MATRIX = [
     # (part, refused, needle in the message)
@@ -1097,9 +1093,8 @@ class TestResponsesMessagePartMatrix:
 
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
-        # The role branches flatten content through _responses_message_text, which keeps only
-        # text, so an image that passed every shape check still vanished. Forwarding it is not
-        # an option: Chat Completions wants a plain string on system and assistant.
+        # Passed every shape check and vanished in the flatten anyway. Nowhere to forward
+        # it to: Chat Completions wants a plain string on system and assistant.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1134,8 +1129,7 @@ class TestResponsesMessagePartMatrix:
         ids = ["input_audio", "computer_screenshot", "future"],
     )
     def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
-        # The flatten keeps text and drops the rest, so anything else on these roles is
-        # caller content that vanishes. A user turn already refused these by name.
+        # Anything the flatten does not keep is caller content that vanishes.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1165,9 +1159,7 @@ class TestResponsesMessagePartMatrix:
         ids = ["no_text", "null_text", "int_text", "output_no_text"],
     )
     def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
-        # It fails its typed variant and becomes a ResponsesUnknownContentPart wearing a known
-        # type name, so a name-only allowlist waves it through and both the flatten and the
-        # parts loop then drop it. "type 'input_text' is not supported" would also be untrue.
+        # A known type name on an untyped part: waved through, then dropped by the flatten.
         payload = ResponsesRequest(
             input = [
                 {"role": role, "content": [part]},
@@ -1181,8 +1173,7 @@ class TestResponsesMessagePartMatrix:
         assert part["type"] in str(exc.value.detail)
 
     def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
-        # The turn still had servable text, so before this the request succeeded and only the
-        # broken part went missing.
+        # Servable text beside it, so the request succeeded and only the broken part went.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1199,9 +1190,7 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     @pytest.mark.parametrize("role", ["system", "developer"])
     def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
-        # refusal and summary_text are only the model's own output on a replay turn. On system
-        # or developer they are content the caller wrote, and the flatten dropped them: with
-        # text beside them the turn still answered, and alone the turn vanished whole.
+        # Only the model's own output on a replay turn; elsewhere someone wrote it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1221,9 +1210,7 @@ class TestResponsesMessagePartMatrix:
 
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     def test_assistant_output_metadata_survives_the_flatten(self, part_type):
-        # refusal and summary_text are the model's own output, which clients round-trip.
-        # They carry nothing the prompt needs, so the flatten may drop them in silence and
-        # a replay turn must not start failing.
+        # Clients round-trip these, and the prompt needs nothing from them.
         payload = ResponsesRequest(
             input = [
                 {

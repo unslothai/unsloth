@@ -27754,21 +27754,18 @@ def _responses_reasoning_output_item(
 def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
     """Refuse an attachment the local adapter cannot serve, instead of dropping it.
 
-    Same four rules and same wording as ``_responses_tool_output_content``, which already
-    answers these shapes as a tool result; two vocabularies for one question is the bug.
-    A part reaches here only after failing its typed variant, so an ``input_image`` here has
-    no ``image_url``, or a ``detail`` outside the documented set, or both. One with both
-    ``image_url`` and ``file_id`` never arrives: ``file_id`` means instead of a URL, not
-    as well as, so it validates and is served from the URL on this path and on that one.
+    Same rules and wording as ``_responses_tool_output_content``; two vocabularies for one
+    question is the bug. A part only reaches here by failing its typed variant, so an
+    ``input_image`` here lacks ``image_url``, or carries an undocumented ``detail``, or both.
+    One with ``image_url`` and ``file_id`` both never arrives: ``file_id`` means instead of
+    a URL, so it validates and is served from the URL, here and on the tool-result path.
     """
     part_type = getattr(part, "type", None)
     if part_type in ("input_text", "output_text") and not isinstance(
         part, (ResponsesInputTextPart, ResponsesOutputTextPart)
     ):
-        # A text part that lost its `text` field is a ResponsesUnknownContentPart wearing a
-        # known type name, so it passes a name-only allowlist and is then dropped by both the
-        # flatten and the parts loop. Say what is wrong with it, the way the tool-result path
-        # does, rather than "parts of type 'input_text' are not supported", which is untrue.
+        # Wearing a known type name, so a name-only allowlist waves it through and the
+        # flatten drops it. "type 'input_text' is not supported" would also be untrue.
         _raise_unsupported_openai_parameter(
             "input",
             f"Responses {part_type} message parts require a text field.",
@@ -27807,14 +27804,11 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
             )
 
 
-# The only part types a flatten may discard without losing something the caller sent, per
-# role. Text survives the flatten as text anywhere. ``refusal`` and ``summary_text`` are the
-# model's own output metadata that clients round-trip, so they are free to drop on a replay
-# turn -- but only there: on system or developer they are caller content like any other, and
-# a metadata-only turn would vanish whole.
-# An allowlist, not an ``input_`` prefix test: OpenAI's enumeration is input_text,
-# input_image, output_text, refusal, input_file, computer_screenshot, summary_text, so a
-# prefix test would wave ``computer_screenshot`` through.
+# What a flatten may discard without losing caller content. Metadata is the model's own
+# output, free to drop on a replay turn and only there; on system or developer it is content
+# someone wrote. An allowlist, not an ``input_`` prefix test, which misses
+# ``computer_screenshot`` (OpenAI's set: input_text, input_image, output_text, refusal,
+# input_file, computer_screenshot, summary_text).
 _RESPONSES_TEXT_PART_TYPES = frozenset({"input_text", "output_text"})
 _RESPONSES_ASSISTANT_METADATA_PART_TYPES = frozenset({"refusal", "summary_text"})
 
@@ -27828,10 +27822,10 @@ def _responses_part_survives_flatten(part_type, role) -> bool:
 def _reject_unserviceable_responses_attachments(item) -> None:
     """Run the attachment refusal over one input message's content parts.
 
-    Role matters: only a user turn keeps its parts. Every other role is flattened by
-    ``_responses_message_text``, which keeps text and silently dropped everything else,
-    because Chat Completions wants a plain string on system and assistant and strict
-    templates reject an array there. Nothing can be forwarded there, only refused.
+    Only a user turn keeps its parts. ``_responses_message_text`` flattens the rest to text
+    and silently dropped everything else, and nothing can be forwarded there instead:
+    Chat Completions wants a plain string on system and assistant, and the strict templates
+    this normaliser exists for reject an array.
     """
     if isinstance(item.content, str):
         return
