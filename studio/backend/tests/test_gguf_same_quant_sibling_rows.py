@@ -418,12 +418,15 @@ def test_a_lone_tagged_build_still_loads_under_its_legacy_bare_pin(tmp_path):
 def test_a_foreign_provider_tag_is_not_one_of_our_rows():
     """``looks_like_quant`` gates a Hub 404 between a refusal and falling through to another
     server. An Ollama tag mints the same shape as a lone tagged build's key, so the root-stem
-    test is only offered where the caller actually holds the repo's listing."""
+    test is switched OFF on the three paths where the Hub returned no listing -- and stays on
+    everywhere else, since a caller holding the listing (or the loaded model's own identity) has
+    to keep reading a qualified root stem as a real quant."""
     from core.inference.openai_auto_download import looks_like_quant
 
     for tag in ("8b-instruct-q4_0", "8b-instruct-q4_0-fp16", "70b-instruct-q8_0-f16"):
-        assert looks_like_quant(tag) is False
-    assert looks_like_quant("gemma-4-31B_q4_0-it", allow_root_stem = True) is True
-    # The shapes that never needed the listing are unaffected.
-    assert looks_like_quant("Q4_K_M") is True
-    assert looks_like_quant("distilled/model-Q6_K") is True
+        assert looks_like_quant(tag, allow_root_stem = False) is False
+    assert looks_like_quant("gemma-4-31B_q4_0-it") is True
+    # Neither the plain nor the path-qualified shape ever depended on the root-stem test.
+    for shape in ("Q4_K_M", "distilled/model-Q6_K"):
+        assert looks_like_quant(shape) is True
+        assert looks_like_quant(shape, allow_root_stem = False) is True
