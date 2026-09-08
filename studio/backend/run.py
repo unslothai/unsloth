@@ -2277,6 +2277,19 @@ def run_server(
     emit_tauri_port: bool = True,
     abort_if_own_studio: "Optional[bool]" = None,
 ):
+    """Start the FastAPI server. Public entry point: colab.py and other embedders import it.
+
+    ``port`` auto-increments when the given one is in use. ``cloudflare`` is tri-state: None and
+    False both mean off, True opts the public HTTPS tunnel in for a wildcard bind, and ``secure``
+    implies True and rejects an explicit False. ``api_only`` still serves the packaged frontend
+    when a Tauri-owned backend has a live tunnel. ``emit_tauri_port`` prints the machine-readable
+    TAURI_PORT line the desktop app parses; ``run --api-only`` turns it off so it does not pollute
+    the URL and API-key banner. ``enable_tools`` of None leaves the default on, honouring a
+    request's own ``enable_tools: false``.
+
+    Signal handlers are NOT registered here, so embedders keep their own interrupt semantics;
+    standalone callers register them afterwards.
+    """
     global _server, _server_thread, _shutdown_event
 
     if not isinstance(host, str) or not host.strip():
