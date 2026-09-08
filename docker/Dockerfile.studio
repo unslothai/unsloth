@@ -79,6 +79,7 @@ RUN apt-get update \
 # The llama.cpp symlink BEFORE install.sh points Studio's prebuilt dir at the
 # base's baked bundle so the installer skips a second ~400MB download; the
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1 keeps it: no GPU is visible here, so setup.sh's detection would install the CPU bundle over it.
 #
 # UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
@@ -105,6 +106,7 @@ RUN set -eux \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
+    UNSLOTH_LLAMA_KEEP_PREBUILT=1 \
     UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base (version AND
@@ -115,6 +117,15 @@ RUN set -eux \
     # setup.sh may relink llama-quantize into build/bin; prove it still resolves its
     # libraries. Content check, not rc: --help exits nonzero but prints usage.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
+    # The base baked a CUDA llama.cpp; fail the build if install.sh left a CPU-only tree behind.
+ && for CUDA_SO in /opt/unsloth/llama.cpp/libggml-cuda.so /opt/unsloth/llama.cpp/build/bin/libggml-cuda.so; do \
+        [ -f "$CUDA_SO" ] || { \
+            echo "ERROR: $CUDA_SO is missing after install.sh; GGUF inference would silently run on the CPU"; \
+            cat /opt/unsloth/llama.cpp/UNSLOTH_PREBUILT_INFO.json || true; \
+            exit 1; \
+        }; \
+    done \
+ && echo "OK: Studio kept the base image's CUDA llama.cpp bundle" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           /root/.cache \
