@@ -2096,7 +2096,6 @@ def test_the_installer_does_not_apply_the_repeat_rule_to_the_hip_layer():
     )
 
 
-
 def test_an_unresolvable_mask_on_an_inferred_host_is_not_a_detection_miss(stack, monkeypatch):
     """Nothing enumerates a device here, so the product name is the only arch on offer and
     HIP_VISIBLE_DEVICES=1 indexes past it. _runtime_gfx_target declines outright, and the
@@ -2120,9 +2119,7 @@ def test_the_same_inferred_host_without_a_mask_is_still_a_route(stack, monkeypat
     """The control that keeps the feature: a runtime-less but inferable AMD card is
     deliberately served per-arch wheels, so the rule must be about the mask and not about
     the host having no runtime."""
-    assert (
-        _viable_masked(stack, monkeypatch, devices = [], inferred = "gfx1100") is True
-    )
+    assert _viable_masked(stack, monkeypatch, devices = [], inferred = "gfx1100") is True
 
 
 def test_the_same_inferred_host_selecting_its_only_card_is_still_a_route(stack, monkeypatch):
@@ -2147,9 +2144,7 @@ def test_the_installer_already_declines_that_mask():
     single row and takes `[ -n "$_arwr_sel" ] || return 1`, so it has always failed closed
     where the Python half fell through to its inventory fallback. Pinned so the two halves
     cannot drift apart again."""
-    assert (
-        _route_shell_masked(["gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "1") is False
-    )
+    assert _route_shell_masked(["gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "1") is False
 
 
 def test_the_installer_still_routes_that_host_unmasked():
