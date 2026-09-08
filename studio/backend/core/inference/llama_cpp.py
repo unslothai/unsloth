@@ -407,7 +407,6 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 from core.tool_healing import (
-    EXECUTION_CLASS_TOOL_NAMES,
     _markerless_promotable,
 )
 
@@ -2138,9 +2137,10 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
-        # Active by construction, so only the class is left; O(1) because this loop runs
-        # per streamed chunk over the whole catalog.
-        if name in EXECUTION_CLASS_TOOL_NAMES:
+        # Active by construction, so only the class is left. Use the shared gate, not the
+        # built-in three: an mcp__* name is refused too, and holding its suffix withheld
+        # visible text that a cancel before the next chunk would have lost.
+        if not _markerless_promotable(name, None):
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True

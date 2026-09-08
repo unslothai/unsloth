@@ -634,7 +634,10 @@ def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> 
             if end is not None and _markerless_blocked_execution(name, enabled_tool_names):
                 cursor = end + 1
                 continue
-        return cursor
+        # Consume the inter-call separator too. ``_parse_llama3_bare_json`` treats ``;`` as one
+        # and promotes the peer behind it, but the anchor check does not, so a floor left just
+        # before the ``;`` made that peer unanchored and its raw text survived the strip.
+        return cursor + len(text[cursor:]) - len(text[cursor:].lstrip(" \t\n\r;"))
 
 
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
@@ -675,13 +678,17 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not closed:
             out.append(text[cursor:] if keep_as_prose else text[cursor : m.start()])
             break
+        # Both branches carry the anchor forward the same way: past whatever blocked markerless
+        # run and separators follow. Advancing only in the blocked branch made the strip
+        # non-idempotent, because a blocked call the first pass merely stepped over led the
+        # text on the second pass and anchored a peer the first pass had kept.
         if keep_as_prose:
             out.append(text[cursor:next_index])
             if blocked:
-                floor = next_index
+                floor = blocked_markerless_prefix_end(text, next_index, enabled_tool_names)
         else:
             out.append(text[cursor : m.start()])
-            floor = next_index
+            floor = blocked_markerless_prefix_end(text, next_index, enabled_tool_names)
         cursor = next_index
     return "".join(out)
 

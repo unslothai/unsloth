@@ -51,7 +51,6 @@ from core.inference.tool_call_parser import (
 )
 
 from core.tool_healing import (
-    EXECUTION_CLASS_TOOL_NAMES,
     _markerless_promotable,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
@@ -134,9 +133,10 @@ def _is_rehearsal_prefix(
         # ``terminal_logs``, which IS promotable. Decide once the shape settles.
         return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
-        # Active by construction, so only the class is left; O(1) because this loop runs
-        # per streamed chunk over the whole catalog.
-        if name in EXECUTION_CLASS_TOOL_NAMES:
+        # Active by construction, so only the class is left. Use the shared gate, not the
+        # built-in three: an mcp__* name is refused too, and holding its suffix withheld
+        # visible text that a cancel before the next chunk would have lost.
+        if not _markerless_promotable(name, None):
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True

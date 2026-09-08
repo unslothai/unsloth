@@ -324,23 +324,24 @@ def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
         {"type": "function", "function": {"name": f"mcp__srv__tool_{i}"}} for i in range(500)
     ] + [{"type": "function", "function": {"name": "web_search"}}]
 
-    for module, call in (
-        (
-            safetensors_agentic,
-            lambda: safetensors_agentic._held_rehearsal_tail_len("x web_sea", tools),
-        ),
-        (llama_cpp, lambda: llama_cpp._held_rehearsal_tail_len("x web_sea", tools)),
+    # Both scans now go through the shared gate, so count lookups where it reads the set.
+    from core import tool_healing
+
+    for name, call in (
+        ("safetensors",
+         lambda: safetensors_agentic._held_rehearsal_tail_len("x web_sea", tools)),
+        ("gguf", lambda: llama_cpp._held_rehearsal_tail_len("x web_sea", tools)),
     ):
-        counting = _CountingSet(module.EXECUTION_CLASS_TOOL_NAMES)
-        original = module.EXECUTION_CLASS_TOOL_NAMES
-        module.EXECUTION_CLASS_TOOL_NAMES = counting
+        counting = _CountingSet(tool_healing.EXECUTION_CLASS_TOOL_NAMES)
+        original = tool_healing.EXECUTION_CLASS_TOOL_NAMES
+        tool_healing.EXECUTION_CLASS_TOOL_NAMES = counting
         try:
             _CountingSet.lookups = 0
             call()
             # One lookup per tool scanned, never one scan of the catalog per tool.
-            assert _CountingSet.lookups <= len(tools), (module.__name__, _CountingSet.lookups)
+            assert _CountingSet.lookups <= len(tools), (name, _CountingSet.lookups)
         finally:
-            module.EXECUTION_CLASS_TOOL_NAMES = original
+            tool_healing.EXECUTION_CLASS_TOOL_NAMES = original
 
 
 def test_blocked_object_does_not_drop_later_calls_in_a_bare_json_chain():
@@ -1259,3 +1260,54 @@ def test_the_tool_catalogue_is_not_rebuilt_for_every_streamed_delta():
     # It is still consulted once a real candidate appears.
     _earliest_tool_signal('call:mcp__s1__t1{q:<|"|>x<|"|>}', (), tools, start = 0)
     assert built, "a real candidate must still resolve the catalogue"
+
+
+# --- round 3: separators and the shared gate ------------------------------------------
+
+
+def test_a_chain_separator_does_not_unanchor_the_peer_behind_a_blocked_call():
+    """``_parse_llama3_bare_json`` treats ``;`` as an inter-call separator and promotes the
+    peer behind it. The anchor check does not, so a floor left just before the ``;`` made the
+    peer unanchored and its raw serialization survived the strip, putting the executed call
+    in the content a second time."""
+    gate = {"terminal", "web_search"}
+    for prefix in (
+        'terminal[ARGS]{"command":"x"}',
+        '{"name":"terminal","arguments":{"c":"x"}}',
+        'call:terminal{c:<|"|>x<|"|>}',
+    ):
+        for sep in (" ", ";", "; ", " ; ", ";;  ", "\n"):
+            text = f'{prefix}{sep}call:web_search{{q:<|"|>y<|"|>}}'
+            calls = parse_tool_calls_from_text(text, enabled_tool_names = gate)
+            assert [c["function"]["name"] for c in calls] == ["web_search"], (prefix, sep)
+            shown = strip_tool_markup(text, final = True, enabled_tool_names = gate)
+            assert "call:web_search" not in shown, f"peer left after {prefix!r}{sep!r}"
+
+    # A separator does not turn ordinary prose into an anchor.
+    prose = 'Here is prose; call:web_search{q:<|"|>1<|"|>}'
+    assert "call:web_search" in strip_tool_markup(
+        prose, final = True, enabled_tool_names = gate)
+
+
+def test_an_mcp_name_is_not_held_as_a_rehearsal_prefix():
+    """The hold used the built-in three rather than the shared gate, so prose ending in an
+    active ``mcp__*`` name was withheld from the snapshot for a call that can never be
+    promoted, and a cancel before the next chunk dropped that text."""
+    from core.inference.safetensors_agentic import (
+        _is_rehearsal_prefix as sft_prefix, _held_rehearsal_tail_len as sft_held,
+    )
+    from core.inference.llama_cpp import (
+        _is_rehearsal_prefix as gguf_prefix, _held_rehearsal_tail_len as gguf_held,
+    )
+
+    mcp = "mcp__github__create_issue"
+    tools = [{"function": {"name": n}} for n in ("web_search", "terminal", mcp)]
+
+    for is_prefix, held in ((sft_prefix, sft_held), (gguf_prefix, gguf_held)):
+        for fragment in (mcp, mcp[:12], f"{mcp}[ARG", "terminal", "terminal[ARG"):
+            assert not is_prefix(fragment, tools), fragment
+        assert held(f"the tool is called {mcp}", tools) == 0
+        # A promotable name is still held, or its split rehearsal leaks.
+        assert is_prefix("web_search", tools)
+        assert is_prefix("web_sea", tools)
+        assert held("the tool is called web_search", tools) == len("web_search")
