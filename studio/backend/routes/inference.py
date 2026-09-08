@@ -27807,15 +27807,22 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
             )
 
 
-# The only part types a flatten may discard without losing something the caller sent.
-# ``input_text`` / ``output_text`` survive the flatten as text; ``refusal`` and
-# ``summary_text`` are the model's own output metadata, which clients round-trip and the
-# prompt does not need. OpenAI's part enumeration is input_text, input_image, output_text,
-# refusal, input_file, computer_screenshot, summary_text -- so an allowlist, not an
-# ``input_`` prefix test, which would miss ``computer_screenshot``.
-_RESPONSES_FLATTENABLE_PART_TYPES = frozenset(
-    {"input_text", "output_text", "refusal", "summary_text"}
-)
+# The only part types a flatten may discard without losing something the caller sent, per
+# role. Text survives the flatten as text anywhere. ``refusal`` and ``summary_text`` are the
+# model's own output metadata that clients round-trip, so they are free to drop on a replay
+# turn -- but only there: on system or developer they are caller content like any other, and
+# a metadata-only turn would vanish whole.
+# An allowlist, not an ``input_`` prefix test: OpenAI's enumeration is input_text,
+# input_image, output_text, refusal, input_file, computer_screenshot, summary_text, so a
+# prefix test would wave ``computer_screenshot`` through.
+_RESPONSES_TEXT_PART_TYPES = frozenset({"input_text", "output_text"})
+_RESPONSES_ASSISTANT_METADATA_PART_TYPES = frozenset({"refusal", "summary_text"})
+
+
+def _responses_part_survives_flatten(part_type, role) -> bool:
+    if part_type in _RESPONSES_TEXT_PART_TYPES:
+        return True
+    return role == "assistant" and part_type in _RESPONSES_ASSISTANT_METADATA_PART_TYPES
 
 
 def _reject_unserviceable_responses_attachments(item) -> None:
@@ -27831,7 +27838,7 @@ def _reject_unserviceable_responses_attachments(item) -> None:
     for part in item.content or []:
         _reject_unserviceable_responses_attachment(part, role = item.role)
         part_type = getattr(part, "type", None)
-        if item.role != "user" and part_type not in _RESPONSES_FLATTENABLE_PART_TYPES:
+        if item.role != "user" and not _responses_part_survives_flatten(part_type, item.role):
             _raise_unsupported_openai_parameter(
                 "input",
                 f"Responses message content parts of type '{part_type}' are not supported on "

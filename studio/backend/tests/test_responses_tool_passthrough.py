@@ -1080,7 +1080,10 @@ class TestResponsesMessagePartMatrix:
                 {"role": "user", "content": "go on"},
             ],
         )
-        if part["type"] in ("input_text", "output_text", "refusal", "summary_text"):
+        survives = part["type"] in ("input_text", "output_text") or (
+            role == "assistant" and part["type"] in ("refusal", "summary_text")
+        )
+        if survives:
             assert _normalise_responses_input(payload)
             return
         if part["type"] == "input_file":
@@ -1194,6 +1197,29 @@ class TestResponsesMessagePartMatrix:
         with pytest.raises(HTTPException) as exc:
             _normalise_responses_input(payload)
         assert "require a text field" in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    @pytest.mark.parametrize("role", ["system", "developer"])
+    def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
+        # refusal and summary_text are only the model's own output on a replay turn. On system
+        # or developer they are content the caller wrote, and the flatten dropped them: with
+        # text beside them the turn still answered, and alone the turn vanished whole.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part_type in str(exc.value.detail)
 
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     def test_assistant_output_metadata_survives_the_flatten(self, part_type):
