@@ -365,3 +365,16 @@ def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
 
     assert detect_mmproj_file(str(weight)) == str(whole.resolve())
+
+
+def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
+    weights = tmp_path / "weights"
+    sibling = tmp_path / "companion"
+    weights.mkdir()
+    (sibling / "vision").mkdir(parents = True)
+    weight = _touch(weights / "Model-Q4_K_M.gguf")
+    projector = _touch(sibling / "vision" / "mmproj-Model-F16.gguf")
+    assert detect_mmproj_file(str(weight), search_root = str(sibling)) is None
+    assert detect_mmproj_file(
+        str(weight), search_root = str(sibling), allow_disjoint_search_root = True
+    ) == str(projector.resolve())

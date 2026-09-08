@@ -937,7 +937,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Restore the apt archive cache (webkit's .deb set)
         id: apt-cache
@@ -1115,7 +1115,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Cross-browser loaded-models indicator
         # The three engines are independent runs of the same suite, and running

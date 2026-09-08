@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 QUANT_4BIT_FACTOR = 16 / 5
-DOUBLE_QUANT_4BIT_FACTOR = 3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION.md section 1
-CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
+DOUBLE_QUANT_4BIT_FACTOR = 3.6
+CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)
 NON_FLASH_ATTENTION_FACTOR = (
     12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
 )
@@ -47,18 +47,18 @@ DEFAULT_TARGET_MODULES = [
 ATTENTION_TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj"}
 MLP_TARGET_MODULES = {"gate_proj", "up_proj", "down_proj"}
 
-# Empirically calibrated bytes/param — see VRAM_ESTIMATION.md for rationale.
+# Empirically calibrated bytes/param - see VRAM_ESTIMATION.md for rationale.
 OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
-    "adamw_8bit": 4,  # BNB upcasts to fp32 during step
+    "adamw_8bit": 4,
     "paged_adamw_8bit": 4,
     "adamw_bnb_8bit": 4,
     "paged_adamw_32bit": 8,
-    "adamw_torch": 6,  # fused, no master copy
+    "adamw_torch": 6,
     "adamw_torch_fused": 6,
     "sgd": 4,
 }
 
-# (full_ft_multiplier, lora_multiplier) — fraction of num_layers.
+# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
 # LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
@@ -298,7 +298,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
     # DBRX moe_top_k; Hunyuan-V1-MoE moe_topk (may be a per-layer list).
-    # _max_scalar normalizes lists to the worst case so int(...) can't crash.
+    # _max_scalar normalizes lists to the worst case so int(...) cannot crash.
     num_experts_per_tok = (
         _max_scalar(_moe_attr("num_experts_per_tok"))
         or _max_scalar(_moe_attr("top_k_experts"))
@@ -388,8 +388,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
 
 
 def _targets_all_linear(target_modules) -> bool:
-    # peft LoraConfig accepts target_modules="all-linear" as a bare string;
-    # iterating a string yields chars and never matches the set.
+    # peft LoraConfig accepts target_modules="all-linear" as a bare string
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     normalized = {str(module).lower().replace("_", "-") for module in target_modules}
@@ -407,9 +406,8 @@ def _layer_types(arch: ModelArchConfig) -> list:
 
 
 def _uses_structured_layer_shapes(arch: ModelArchConfig) -> bool:
-    # MLA configs have their own q/kv low-rank projection shape formulas in
-    # _compute_attn_elements / _lora_attn_elements; do not let head_dim or
-    # other structured fields override that path.
+    # MLA configs have their own q/kv low-rank projection shape formulas
+    # Do not let head_dim or other structured fields override that path.
     if arch.q_lora_rank is not None:
         return False
     return bool(
@@ -427,9 +425,9 @@ def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
     if arch.num_kv_shared_layers <= 0:
         return False
     first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
-    # Gemma4 (modeling_gemma4.py:1031, modular_gemma4.py:863) uses the same
-    # `> 0` guard so a fully-shared config raises at model construction;
+    # Gemma4 uses the same `> 0` guard, so a fully-shared config raises at model construction:
     # matching upstream avoids estimating a shape the model code rejects.
+    # Gemma4's guard is at modeling_gemma4.py:1031 / modular_gemma4.py:863.
     return layer_idx >= first_shared > 0
 
 
@@ -590,8 +588,8 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
     prefix_parts = skip_parts[: len(skip_parts) - len(alias_parts)]
     if not prefix_parts:
         return True
-    # Bound the prefix to text-tower roots so VLM skips like
-    # vision_tower.model.layers... don't shadow the text alias.
+    # Bound the prefix to text-tower roots so VLM keys like vision_tower.model.layers do not shadow
+    # the text alias.
     return ".".join(prefix_parts) in _SKIP_MODULE_TEXT_PREFIXES
 
 
@@ -1016,10 +1014,9 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            # peft "all-linear" attaches LoRA to nn.Linear only; routed experts
-            # are nn.Parameter and need explicit gate_proj/up_proj/down_proj
-            # naming via Unsloth's get_moe_target_parameters. Shared experts are
-            # nn.Linear, picked up by get_peft_regex.
+            # peft "all-linear" attaches LoRA to nn.Linear only; routed experts are nn.Parameter and need explicit
+            # naming, while shared experts are nn.Linear and get_peft_regex picks them up.
+            # Routed experts need explicit gate_proj/up_proj/down_proj naming via Unsloth's get_moe_target_parameters.
             routed_moe = (
                 0
                 if all_linear
@@ -1061,10 +1058,10 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        # Routed and shared experts may use different intermediate sizes
-        # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
-        # See structured branch for the all-linear exclusion rationale; only
-        # routed (nn.Parameter) experts are excluded under all-linear.
+        # Routed and shared experts may use different intermediate sizes (Qwen3.5-MoE), and only routed nn.Parameter
+        # experts are excluded under all-linear.
+        # Qwen3.5-MoE has routed mlp_size != shared_expert_intermediate_size; see the structured branch for the all-
+        # linear exclusion rationale.
         routed_moe = (
             0
             if all_linear

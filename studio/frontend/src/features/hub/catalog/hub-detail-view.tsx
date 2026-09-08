@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
 import { type ComponentProps, useEffect, useRef, useState } from "react";
 import { ModelInspector } from "./model-inspector";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 
 type InspectorProps = ComponentProps<typeof ModelInspector>;
 
@@ -71,8 +72,7 @@ export function HubDetailView({
               onClick={onBack}
               className="-ml-1.5 inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full pl-1.5 pr-2.5 text-ui-12p5 font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
-              <HugeiconsIcon
-                icon={ArrowLeft01Icon}
+              <ChevronLeftIcon
                 strokeWidth={1.75}
                 className="size-3.5"
               />

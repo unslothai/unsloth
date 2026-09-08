@@ -22,7 +22,9 @@ from core.inference.offload_layout import (
     BlockLayout,
     ModelLayout,
     _layout_from_reader,
+    _layout_from_readers,
     layout_from_gguf,
+    split_shard_paths,
     spill_pattern_for,
 )
 from core.inference.offload_cost_model import HostProfile
@@ -399,6 +401,137 @@ def test_a_partial_spill_across_two_gpus_abstains():
     assert two_cards.changed is False
 
 
+def test_a_safe_partial_spill_across_two_gpus_is_planned():
+    sizes = [GIB // 2, GIB // 2, GIB // 2, 2 * GIB]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 4,
+        n_attention_layers = 4,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = GIB // 10)
+            for i, size in enumerate(sizes)
+        ),
+        lm_head_bytes = GIB // 10,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        pipeline_overhead_bytes = GIB,
+        host_ram_headroom_bytes = 0,
+    )
+
+    plan = plan_placement(
+        layout,
+        [23 * GIB // 10, 22 * GIB // 10],
+        64 * GIB,
+        4096,
+        opts = opts,
+    )
+
+    assert plan.changed is True
+    assert plan.spilled_blocks == (0, 3)
+
+
+def test_partial_spill_selection_covers_each_device_shortfall():
+    sizes = [1200 * MIB, 0, 0, 600 * MIB, 600 * MIB]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 5,
+        n_attention_layers = 5,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate(sizes)
+        ),
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [1300 * MIB, 100 * MIB],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (3, 4)
+
+
+def test_per_device_selection_cannot_drop_cache_remainder_from_the_pool():
+    spillable = [17, 4, 14, 20, 3, 5, 17, 17]
+    resident = [1, 5, 5, 1, 6, 6, 5, 0]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 8,
+        n_attention_layers = 8,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = spill, resident_bytes = keep)
+            for i, (spill, keep) in enumerate(zip(spillable, resident))
+        ),
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        other_resident_bytes = 8,
+        kv_bytes_per_token_f16 = 3,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    opts = PlanOptions(
+        overhead_bytes_per_device = 8,
+        pipeline_overhead_bytes = 5,
+        extra_resident_bytes = 4,
+        host_ram_headroom_bytes = 0,
+    )
+    plan = plan_placement(
+        layout,
+        [90, 25],
+        1024,
+        5,
+        opts = opts,
+        split_weights_per_device = [56, 27],
+    )
+
+    assert not plan.changed or plan.vram_bytes <= 90
+
+
+def test_output_device_shortfall_can_reach_the_lm_head_rung():
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 3,
+        n_attention_layers = 3,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate([100, 100, 10])
+        ),
+        lm_head_bytes = 100,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [100, 20],
+        1024,
+        1,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (0,)
+    assert plan.spilled_lm_head is True
+    assert plan.vram_bytes <= 120
+
+
 def test_a_full_spill_is_checked_per_device_not_assumed():
     """A full spill used to be waved through on the theory that "every device
     keeps its layer share". It does keep its ROW share -- llama.cpp splits rows
@@ -453,6 +586,46 @@ def test_the_row_split_matches_llama_cpp():
     assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
 
 
+def test_the_row_split_uses_llama_cpp_float32_boundaries():
+    rows = _device_slots(353, [39407 * MIB, 12114 * MIB])
+    assert len(rows[0]) == 270
+    assert 270 in rows[1]
+
+
+def test_a_float32_split_boundary_cannot_approve_an_oom():
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = 2 * GIB,
+            resident_bytes = 2 * GIB if i == 270 else 0,
+        )
+        for i in range(352)
+    )
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 352,
+        n_attention_layers = 352,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [2 * GIB, GIB],
+        1024 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [39407 * MIB, 12114 * MIB],
+    )
+
+    assert plan.changed is False
+    assert "device 1" in plan.reason
+
+
 def test_the_per_device_check_passes_when_the_shares_really_fit():
     """The check must not be a disguised "never plan on two GPUs". Cards sized so
     that each one's row share fits with room to spare return None -- no abstain
@@ -487,6 +660,87 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
         )
         is None
     )
+
+
+def test_the_per_device_check_charges_each_secondary_pipeline_reserve():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    cache_per_layer = layout.kv_bytes(4096, 2) // layout.n_layers
+    device_one_used = layout.blocks[3].resident_bytes + cache_per_layer + layout.lm_head_bytes
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    above = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve + 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+
+    assert below is not None and "device 1" in below
+    assert exact is None
+    assert above is None
+
+
+def test_an_empty_secondary_still_has_to_fit_its_fixed_reserves():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+
+    assert _device_slots(layout.n_layers + 1, [1000, 1])[1] == []
+    assert below is not None and "device 1" in below
+    assert exact is None
 
 
 def test_multi_gpu_credit_sums():
@@ -1238,3 +1492,60 @@ def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
         kv_layer_weights = [1, 2, 3],
     )
     assert got is not None and "sliding-window" in got
+
+
+def test_every_shard_handed_over_prices_the_whole_split():
+    """Two readers summing to one layout, token_embd in its bucket whichever shard holds it."""
+    first = _StubReader(
+        _shard_fields(**{"split.count": 2, "split.no": 0}),
+        _shard_tensors(range(32)) + [_StubTensor("output.weight", GIB)],
+    )
+    second = _StubReader(
+        _shard_fields(**{"split.count": 2, "split.no": 1}),
+        _shard_tensors(range(32, 64)) + [_StubTensor("token_embd.weight", 3 * GIB)],
+    )
+    layout = _layout_from_readers([first, second])
+    assert layout.complete
+    assert len(layout.blocks) == 64
+    assert layout.token_embd_bytes == 3 * GIB
+    assert layout.lm_head_bytes == GIB
+
+
+def test_a_partial_shard_set_still_abstains():
+    readers = [
+        _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32))),
+        _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32, 64))),
+    ]
+    assert not _layout_from_readers(readers).complete
+
+
+def test_split_shard_paths_follow_llama_cpp_naming():
+    paths = split_shard_paths("/m/model-Q4-00002-of-00003.gguf")
+    assert paths == [
+        "/m/model-Q4-00001-of-00003.gguf",
+        "/m/model-Q4-00002-of-00003.gguf",
+        "/m/model-Q4-00003-of-00003.gguf",
+    ]
+    assert split_shard_paths("/m/model-Q4.gguf") is None
+
+
+def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, monkeypatch):
+    import gguf
+
+    shards = [tmp_path / f"m-{i:05d}-of-00002.gguf" for i in (1, 2)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF")
+    by_path = {
+        str(shards[0]): _StubReader(_shard_fields(**{"split.count": 2}), _shard_tensors(range(32))),
+        str(shards[1]): _StubReader(
+            _shard_fields(**{"split.count": 2}), _shard_tensors(range(32, 64))
+        ),
+    }
+    monkeypatch.setattr(gguf, "GGUFReader", lambda path: by_path[str(path)])
+
+    assert not layout_from_gguf(str(shards[0])).complete
+    whole = layout_from_gguf(str(shards[0]), all_shards = True)
+    assert whole.complete and len(whole.blocks) == 64
+
+    shards[1].unlink()
+    assert not layout_from_gguf(str(shards[0]), all_shards = True).complete

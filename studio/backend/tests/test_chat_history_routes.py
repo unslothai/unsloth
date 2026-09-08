@@ -11,6 +11,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from typing import Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -404,6 +405,40 @@ def test_chat_settings_payload_rejects_junk_per_model_params():
     with pytest.raises(ValidationError):
         chat_history.ChatSettingsPayload.model_validate(
             {"inferenceParamsByModel": {"openai:gpt-x": {"notAParam": 1}}}
+        )
+
+
+def test_conditional_chat_settings_payload_validates_both_sides():
+    payload = chat_history.ConditionalChatSettingsPayload.model_validate(
+        {
+            "expected": {"inferenceParams": {"presencePenalty": 0.0}},
+            "expectedAbsent": ["reasoningEnabled"],
+            "expectedAbsentPaths": [["inferenceParams", "topK"]],
+            "patch": {"inferenceParams": {"presencePenalty": 1.5}},
+        }
+    )
+
+    assert payload.expected.inferenceParams.presencePenalty == 0.0
+    assert payload.expectedAbsent == ["reasoningEnabled"]
+    assert payload.expectedAbsentPaths == [["inferenceParams", "topK"]]
+    assert payload.patch.inferenceParams.presencePenalty == 1.5
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsent": ["unknownSetting"],
+                "patch": {},
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsentPaths": [["unknownSetting", "topK"]],
+                "patch": {},
+            }
         )
 
 
@@ -1295,3 +1330,70 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
     assert len(reaps) == 1
     clear()
     assert len(reaps) == 1, "a replay behind a completed reap must not touch the registry"
+
+
+def _conflict_kind(exc_info) -> Optional[str]:
+    return (exc_info.value.headers or {}).get(chat_history.CONFLICT_KIND_HEADER)
+
+
+@pytest.mark.parametrize(
+    "error, kind",
+    [
+        (
+            lambda: chat_history.ChatMessageProtectedError(
+                "server-managed generation messages cannot be edited"
+            ),
+            "protected",
+        ),
+        (
+            lambda: chat_history.ChatMessageConflictError(
+                "Message id already belongs to another thread: m1"
+            ),
+            "thread-collision",
+        ),
+    ],
+)
+def test_the_two_conflicts_are_distinguishable_on_the_wire(monkeypatch, error, kind):
+    """Both are 409, and they mean opposite things to the client.
+
+    A protected message is the server refusing an edit it owns, so the autosave stops. A
+    thread collision is an ordinary failure the caller has to see; answering both the same
+    way let the frontend swallow a collision as success and lose the message.
+    """
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "t1"})
+
+    def reject(*_args, **_kwargs):
+        raise error()
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", reject)
+
+    message = chat_history.ChatMessage(
+        id = "m1", threadId = "t1", role = "assistant", content = [], createdAt = 1
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        chat_history.save_thread_message("t1", "m1", message, current_subject = "u")
+
+    assert exc_info.value.status_code == 409
+    assert _conflict_kind(exc_info) == kind
+
+
+def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
+    # json.loads accepts a bare NaN, so it reaches validation; echoing it back
+    # would then hit Starlette's allow_nan = False and turn a refused request
+    # into a 500 during rendering.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[chat_history.get_current_subject] = lambda: "admin"
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/settings/compare-and-set",
+        content = '{"expected": {"inferenceParams": {"temperature": NaN}}, "patch": {}}',
+        headers = {"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "NaN" not in response.text
