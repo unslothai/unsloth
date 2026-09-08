@@ -22373,9 +22373,8 @@ class LlamaCppBackend:
                             _np_at = cmd.index("--parallel")
                             self._spill_plan_restore["--parallel"] = cmd[_np_at + 1]
                             cmd[_np_at + 1] = str(_spill.n_parallel)
-                            n_parallel = (
-                                _spill.n_parallel
-                            )  # allow-slot-clamp: the plan priced the cache at fewer slots
+                            # the plan priced the cache at fewer slots (rung 1)
+                            n_parallel = _spill.n_parallel  # allow-slot-clamp: planner rung 1
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
                         if _spill.n_ctx and _spill.n_ctx != effective_ctx and "-c" in cmd:
                             _c_at = cmd.index("-c")
