@@ -46,6 +46,7 @@ from .os_sandbox import (
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
+    scan_workdir_for_host_channels,
 )
 
 BACKEND_NAME = "macos-seatbelt"
@@ -62,8 +63,8 @@ LIMITATIONS = (
     # No /proc and no pidfds, so a setsid/double-fork descendant that outlives
     # the leader cannot be swept the way the Linux backend sweeps one.
     "detached_descendant_cleanup_unverified",
-    # POSIX shared memory has one namespace per host, and torch's segments are
-    # allowed by name pattern rather than isolated.
+    # POSIX shared memory has one namespace per host, and torch's segments and
+    # the standard library's are allowed by name pattern rather than isolated.
     "pytorch_posix_shm_namespace_shared",
 )
 
@@ -427,20 +428,27 @@ def runtime_read_paths() -> tuple[str, ...]:
     on sys.path because the parent process put it there.
     """
     candidates: list[str] = [
-        sys.prefix,
-        sys.base_prefix,
-        # The exec pair is not the same two paths under another name. A
-        # uv-managed base interpreter reports base_prefix as
-        # ``cpython-3.12.12-macos-aarch64-none`` and base_exec_prefix as the
-        # ``cpython-3.12-...`` alias symlink beside it, and lib-dynload -- every
-        # C extension in the standard library -- hangs off the alias spelling.
-        sys.exec_prefix,
-        sys.base_exec_prefix,
         os.path.dirname(os.path.realpath(sys.executable)),
         # The code-interpreter path shim, loaded via PYTHONPATH in every
         # sandboxed launch; unreadable means every tool call dies at startup.
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
+    # The subdirectories a Python installation lives in, never the prefix itself
+    # -- same rule as the Linux backend, for the same reason. ``python -m venv .``
+    # at a project root makes sys.prefix the project root, so granting file-read*
+    # on the prefix would hand the sandbox the whole tree: sources, .git and .env,
+    # to reach one lib directory. That is the read side this backend exists to
+    # keep closed, and the network is open, so a readable .env is an exportable one.
+    #
+    # All four prefixes, because they are not two paths under two names. A
+    # uv-managed base interpreter reports base_prefix as
+    # ``cpython-3.12.12-macos-aarch64-none`` and base_exec_prefix as the
+    # ``cpython-3.12-...`` alias symlink beside it, and lib-dynload -- every C
+    # extension in the standard library -- hangs off the alias spelling.
+    for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        candidates.extend(
+            posixpath.join(prefix, name) for name in ("bin", "lib", "lib64", "pyvenv.cfg")
+        )
     try:
         paths = sysconfig.get_paths()
         candidates.extend(
@@ -519,7 +527,16 @@ def build_profile(
     )
     write_filters = _path_filters((workdir, private_tmp))
     device_filters = _path_filters(_DEVICES)
-    tmp_subpaths = " ".join(f"(subpath {json.dumps(s)})" for s in _sbpl_spellings(private_tmp))
+    # The workdir as well as the private tmp: TMPDIR points into the workdir (see
+    # prepare), so multiprocessing's listener socket is created there, and an
+    # AF_UNIX bind is network-bind in Seatbelt rather than a file operation. It
+    # grants nothing new -- the process can already create that socket, because
+    # the whole workdir is writable.
+    tmp_subpaths = " ".join(
+        f"(subpath {json.dumps(spelling)})"
+        for path in (private_tmp, workdir)
+        for spelling in _sbpl_spellings(path)
+    )
     mdns_filters = " ".join(_literal_filters((_MDNSRESPONDER_SOCKET,)))
     # resolve = False: a host that symlinks /etc/gitconfig into the user's home
     # must not turn a read allowance for a config file into one for a home path.
@@ -555,6 +572,15 @@ def build_profile(
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/torch_[0-9]+_[0-9]+_[0-9]+$"))',
+        # multiprocessing.shared_memory.SharedMemory names its segment
+        # "/psm_" + token_hex(4) (CPython's _SHM_NAME_PREFIX), so without this
+        # the standard library's own shared memory raises on a backend the probe
+        # advertised as usable -- its multiprocessing control only exercises
+        # descriptor passing. Same host-wide namespace the torch rule already
+        # accepts, and named in LIMITATIONS as such.
+        "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
+        "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
+        '(ipc-posix-name-regex #"^/psm_[0-9a-f]+$"))',
         # The network is NOT confined here -- see the module docstring, and the
         # "unrestricted_network" limitation the record carries. Unfiltered on
         # purpose: an unfiltered operation is the one spelling of "unrestricted"
@@ -589,6 +615,22 @@ def build_profile(
     return "\n".join(lines) + "\n"
 
 
+def _tmpdir(env: dict[str, str], workdir: str, private_tmp: str) -> str:
+    """Where the sandbox's TMPDIR points: the caller's, when it is inside the workdir.
+
+    tools.py puts TMPDIR at ``<workdir>/unsloth-tmp`` so a file a tool call
+    writes through ``tempfile`` is still there when the call returns and is
+    offered to the user as a download. ``private_tmp`` is deleted by
+    ``PreparedSandboxLaunch.cleanup`` the moment the call ends, so pinning TMPDIR
+    at it would silently drop every one of those files. It stays the fallback for
+    a caller that named no temp directory, or one outside the writable set.
+    """
+    requested = env.get("TMPDIR") or ""
+    if requested and _within(posixpath.abspath(requested), workdir):
+        return requested
+    return private_tmp
+
+
 def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) -> dict[str, str]:
     """HOME and TMPDIR must point inside the sandbox, or the first write fails.
 
@@ -610,12 +652,13 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
             "PULSE_SERVER",
         }
     }
+    tmpdir = _tmpdir(env, workdir, private_tmp)
     sanitized.update(
         {
             "HOME": workdir,
-            "TMPDIR": private_tmp,
-            "TMP": private_tmp,
-            "TEMP": private_tmp,
+            "TMPDIR": tmpdir,
+            "TMP": tmpdir,
+            "TEMP": tmpdir,
             "XDG_RUNTIME_DIR": private_tmp,
         }
     )
@@ -645,6 +688,12 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # "/" as the session workdir would make the entire filesystem the
         # writable set, which is the opposite of what this backend claims.
         raise SandboxUnavailableError(f"the session workdir cannot be a filesystem root: {workdir}")
+    # The same scan the Linux backend runs, and for the same reason: this profile
+    # grants file-write* over the workdir subpath, so a regular file in here that
+    # is hard-linked to one outside writes through to the host inode and the
+    # advertised write boundary is not the boundary. A device or IPC node in here
+    # is a channel no path rule closes either.
+    scan_workdir_for_host_channels(workdir)
     # /tmp, not the per-user /var/folders tmp: the profile has to name this
     # directory, and /tmp keeps it out of the confidential per-user container.
     private_tmp = tempfile.mkdtemp(

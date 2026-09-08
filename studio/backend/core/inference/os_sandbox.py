@@ -29,8 +29,10 @@ import os
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Callable, Literal
 from loggers import get_logger
@@ -259,6 +261,71 @@ def descendant_sweep_supported() -> bool:
         except (OSError, AttributeError, TypeError):
             _pidfd_support = False
     return _pidfd_support
+
+
+# ── the session workdir ──────────────────────────────────────────────
+
+# The scan runs before every launch, so it is bounded in both directions. A
+# checkpoint tree under the workdir must fail the launch honestly rather than
+# stall it, or be waved through unchecked.
+WORKDIR_SCAN_ENTRIES = 50_000
+WORKDIR_SCAN_SECONDS = 5.0
+
+
+def scan_workdir_for_host_channels(workdir: str) -> None:
+    """Refuse a session workdir that carries a way out of itself.
+
+    Both backends make this one directory the whole writable set, so a socket or
+    device node under it is a channel neither a mount namespace nor a Seatbelt
+    path rule closes, and a hard link whose inode also has a name outside the
+    workdir is a writable path out of it. Backend-agnostic on purpose: the
+    invariant is the boundary both profiles claim, not a bubblewrap detail.
+
+    Raises ``SandboxUnavailableError``. In ``auto`` the caller turns that into a
+    software-safeguards launch rather than a refusal.
+    """
+    deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
+    entries = 0
+    # (device, inode) -> [names found in here, st_nlink, first name]. Counting is
+    # the whole point: refusing every st_nlink > 1 would refuse the workdir of any
+    # session that ran `cp -al`, `git clone --local` or a pip install, all of
+    # which hard-link within a tree, and would then keep refusing for the rest of
+    # the session. Only a link the workdir cannot account for leads outside it.
+    links: dict[tuple[int, int], list] = {}
+
+    def stop(exc: OSError) -> None:
+        raise SandboxUnavailableError(
+            f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
+        ) from exc
+
+    for base, dirs, names in os.walk(workdir, followlinks = False, onerror = stop):
+        for name in (*dirs, *names):
+            entries += 1
+            if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
+                raise SandboxUnavailableError(
+                    "the session workdir is too large to check for host channels before a launch"
+                )
+            path = os.path.join(base, name)
+            try:
+                info = os.lstat(path)
+            except OSError as exc:
+                raise SandboxUnavailableError(
+                    f"the session workdir changed during its safety scan: {path}"
+                ) from exc
+            if stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise SandboxUnavailableError(
+                    f"the session workdir contains a device or IPC node: {path}"
+                )
+            if info.st_nlink > 1:
+                found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
+                found[0] += 1
+    for found, total, path in links.values():
+        if found < total:
+            raise SandboxUnavailableError(
+                f"the session workdir contains a file hard-linked from outside it: {path}"
+            )
 
 
 # ── host diagnosis ───────────────────────────────────────────────────

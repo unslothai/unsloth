@@ -190,7 +190,12 @@ def test_optional_read_literals_never_follow_a_symlink(tmp_path):
     target.write_text("")
     link = tmp_path / "link"
     link.symlink_to(target)
-    assert backend._literal_filters((str(link),), resolve = False) == [f'(literal "{link}")']
+    # The target's absence is the assertion, not an exact list: tmp_path is under
+    # /tmp on Linux and under /private/var on macOS, and _sbpl_spellings emits the
+    # /private pair for both, so the unresolved spelling is never alone.
+    unresolved = backend._literal_filters((str(link),), resolve = False)
+    assert f'(literal "{link}")' in unresolved
+    assert not any(str(target) in filter_ for filter_ in unresolved), unresolved
     assert f'(literal "{target}")' in backend._literal_filters((str(link),))
 
 
@@ -283,10 +288,11 @@ def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
     # be dropped rather than to appear here.
     assert "/" not in paths and "/usr" not in paths
     for prefix in (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix):
-        if prefix in ("/", "/usr"):
-            continue
-        # Either the prefix itself, or a root already covering it.
-        assert any(backend._within(prefix, root) for root in paths), prefix
+        for name in ("bin", "lib"):
+            member = os.path.join(prefix, name)
+            if not os.path.isdir(member):
+                continue
+            assert any(backend._within(member, root) for root in paths), member
     # lib-dynload hangs off the exec pair; a uv interpreter spells it through an
     # alias symlink that base_prefix alone never names.
     dynload = os.path.join(
@@ -297,6 +303,30 @@ def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
     )
     if os.path.isdir(dynload):
         assert any(backend._within(dynload, root) for root in paths), dynload
+
+
+def test_a_venv_at_a_project_root_does_not_put_the_project_in_the_read_set(monkeypatch, tmp_path):
+    """`python -m venv .` at a project root makes sys.prefix the project root.
+    Granting file-read* on the prefix would hand the sandbox the sources, .git and
+    .env to reach one lib directory -- and the network is open, so a readable .env
+    is an exportable one. The Linux backend has always taken the subdirectories
+    only; this is the same rule."""
+    project = tmp_path / "project"
+    (project / "bin").mkdir(parents = True)
+    (project / "lib").mkdir()
+    (project / ".git").mkdir()
+    (project / ".env").write_text("OPENAI_API_KEY=sk-real")
+    (project / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, name, str(project))
+
+    paths = backend.runtime_read_paths()
+    assert str(project) not in paths
+    assert not any(backend._within(str(project / ".env"), root) for root in paths)
+    assert not any(backend._within(str(project / ".git"), root) for root in paths)
+    # The interpreter still gets what it needs out of that same tree.
+    assert str(project / "bin") in paths
+    assert str(project / "lib") in paths
 
 
 def test_prepare_wraps_argv_and_preserves_the_preexec(tmp_path, launchable):

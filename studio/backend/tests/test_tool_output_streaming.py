@@ -71,6 +71,22 @@ def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
     return f"while [ ! -f '{gate}' ]; do sleep {_GATE_POLL_S}; done; touch '{sentinel}'"
 
 
+def _os_isolated_tools() -> bool:
+    """Whether a tool launch on this host really gets its own PID namespace.
+
+    The grandchild tests below all reproduce the same pathology: the foreground
+    leader exits while a detached descendant still holds stdout, and tools.py has
+    to kill the process group it captured or that descendant runs on. Inside a
+    PID namespace the kernel does that teardown itself, the moment the leader
+    exits, so the pathology cannot be staged and the call returns with the
+    leader's output instead of a timeout or a cancellation. The invariant is the
+    same on both paths and is asserted on both: nothing of the tool call outlives
+    it. Only the mechanism, and therefore the result string, differs.
+    """
+    from core.inference import os_sandbox
+    return os_sandbox.capability_snapshot().available
+
+
 def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
     """Open the gate, then require the sentinel to stay absent for the whole window."""
     gate.write_text("go")
@@ -560,6 +576,10 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
     assert "".join(chunks) == "ok�bad\n"
 
 
+@pytest.mark.skipif(
+    _os_isolated_tools(),
+    reason = "a PID namespace kills the background job with the leader; see the isolated case below",
+)
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # A background grandchild holds the pipe open past the shell's exit and writes
     # ~7s later. With timeout=None the drain must wait for EOF like
@@ -572,6 +592,19 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     assert "late-grandchild-output" in "".join(chunks)
 
 
+@pytest.mark.skipif(not _os_isolated_tools(), reason = "this host cannot isolate")
+def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
+    # The isolated counterpart, and the reason "detached_processes_die_with_the
+    # _call" is in the backend's LIMITATIONS: the background job goes down with
+    # the leader, so the call returns at once with the leader's output rather than
+    # blocking on a pipe nothing will write to again.
+    command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
+    started = time.monotonic()
+    result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
+    assert "parent-done" in result
+    assert time.monotonic() - started < 5
+
+
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     # A backgrounded grandchild holds the pipe open past the finite timeout, then
     # would write a sentinel. The parent shell has already exited, so killing only
@@ -581,7 +614,8 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
-    assert "timed out" in result
+    if not _os_isolated_tools():
+        assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -595,7 +629,8 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
-    assert "timed out" in result
+    if not _os_isolated_tools():
+        assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -1257,7 +1292,13 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
+    # The cancellation string only when tools.py is the one doing the teardown: in
+    # a PID namespace the leader and its grandchild are already gone before the
+    # cancel fires, so the call completes with the leader's output. Both paths owe
+    # the same two things, and both are asserted: it did not block on the
+    # grandchild, and the grandchild did not survive.
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -1279,5 +1320,11 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
+    # The cancellation string only when tools.py is the one doing the teardown: in
+    # a PID namespace the leader and its grandchild are already gone before the
+    # cancel fires, so the call completes with the leader's output. Both paths owe
+    # the same two things, and both are asserted: it did not block on the
+    # grandchild, and the grandchild did not survive.
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)

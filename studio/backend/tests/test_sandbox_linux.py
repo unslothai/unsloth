@@ -31,7 +31,7 @@ import pytest
 if sys.platform != "linux":
     pytest.skip("the bubblewrap backend is Linux only", allow_module_level = True)
 
-from core.inference import sandbox_linux, sandbox_seccomp  # noqa: E402
+from core.inference import os_sandbox, sandbox_linux, sandbox_seccomp  # noqa: E402
 from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan  # noqa: E402
 
 
@@ -186,15 +186,76 @@ def test_a_launch_with_no_command_is_refused_rather_than_handed_to_bwrap(tmp_pat
         sandbox_linux.prepare(_plan(tmp_path, argv = ()))
 
 
-def test_the_model_cache_is_the_only_writable_bind_outside_the_workdir(prepared, tmp_path):
+def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     workdir = os.path.realpath(tmp_path)
-    for source, destination in _pairs(prepared.argv, "--bind"):
-        if source == workdir:
-            continue
-        assert source == os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
-        # Mounted at the sandbox's own HOME so the default cache location finds it.
-        assert destination == os.path.join(workdir, ".cache", "huggingface")
-        assert prepared.argv[prepared.argv.index("HF_HOME") + 1] == destination
+    assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]
+
+
+def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_path, monkeypatch):
+    """The cache ROOT is never bound. huggingface_hub keeps the access token at
+    $HF_HOME/token and $HF_HOME/stored_tokens, and this sandbox's network is open
+    by design, so binding the root and pointing HF_HOME at it would put a live
+    credential at the first path a model-authored script reads."""
+    cache = tmp_path / "hostcache"
+    for name in ("hub", "datasets", "modules", "xet", "assets"):
+        (cache / name).mkdir(parents = True)
+    (cache / "token").write_text("hf_A_REAL_LOOKING_TOKEN")
+    (cache / "stored_tokens").write_text("{}")
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        workdir = os.path.realpath(tmp_path)
+        inner = os.path.join(workdir, ".cache", "huggingface")
+        shared = _pairs(launch.argv, "--bind-try")
+        assert sorted(shared) == sorted(
+            (os.path.join(str(cache), name), os.path.join(inner, name))
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+        )
+        # HF_HOME still resolves so the default cache location finds the weights.
+        assert launch.argv[launch.argv.index("HF_HOME") + 1] == inner
+        # The credentials are named by no bind of any kind, so inside the jail
+        # HF_HOME/token is a path in the writable session workdir and empty.
+        for credential in ("token", "stored_tokens"):
+            host_path = os.path.join(str(cache), credential)
+            assert not any(host_path in token for token in launch.argv), credential
+    finally:
+        launch.cleanup()
+
+
+def test_the_cache_mount_points_are_made_here_and_taken_back(tmp_path, monkeypatch):
+    """bwrap would create a missing bind destination itself, and these sit under
+    the workdir bind, so it would create them ON THE HOST and leave every chat
+    holding a .cache tree the user never made. Made here so cleanup can remove
+    exactly the ones this launch added."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
+    launch.cleanup()
+    assert not (workdir / ".cache").exists()
+    assert sorted(p.name for p in workdir.iterdir()) == []
+
+
+def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypatch):
+    """Only what this launch created comes back out. A .cache the user's own code
+    put in the workdir is content, and removing it would be data loss."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    workdir = tmp_path / "session"
+    (workdir / ".cache" / "huggingface").mkdir(parents = True)
+    (workdir / ".cache" / "notes.txt").write_text("the user's")
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    launch.cleanup()
+    assert (workdir / ".cache" / "notes.txt").read_text() == "the user's"
+    # The one level this launch did add is gone again.
+    assert not (workdir / ".cache" / "huggingface" / "hub").exists()
 
 
 def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, monkeypatch):
@@ -202,8 +263,7 @@ def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, mon
     launch = sandbox_linux.prepare(_plan(tmp_path))
     try:
         assert "HF_HOME" not in launch.argv
-        workdir = os.path.realpath(tmp_path)
-        assert _pairs(launch.argv, "--bind") == [(workdir, workdir)]
+        assert _pairs(launch.argv, "--bind-try") == []
     finally:
         launch.cleanup()
 
@@ -211,10 +271,45 @@ def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, mon
 def test_the_inner_home_and_tmpdir_are_set_by_bwrap_not_by_the_caller_environment(prepared):
     argv = prepared.argv
     assert argv[argv.index("HOME") + 1] == prepared.workdir
+    # No TMPDIR in the plan's env, so the private tmpfs is the fallback.
     assert argv[argv.index("TMPDIR") + 1] == "/tmp"
     # The caller's environment is handed through untouched: bwrap --setenv owns
     # the inner values, and rewriting them here would desynchronise the two.
     assert prepared.env == {"PATH": "/usr/bin"}
+
+
+def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(tmp_path):
+    """tools.py points TMPDIR at <workdir>/unsloth-tmp so a file a tool call
+    writes through tempfile is still there when the call returns and is offered as
+    a download. The private /tmp dies with the mount namespace, so overriding
+    TMPDIR with it loses every one of those files."""
+    scratch = tmp_path / "unsloth-tmp"
+    scratch.mkdir()
+    plan = ToolLaunchPlan(
+        argv = ("/bin/true",),
+        workdir = str(tmp_path),
+        env = {"PATH": "/usr/bin", "TMPDIR": str(scratch)},
+    )
+    launch = sandbox_linux.prepare(plan)
+    try:
+        assert launch.argv[launch.argv.index("TMPDIR") + 1] == str(scratch)
+    finally:
+        launch.cleanup()
+
+
+def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(tmp_path):
+    """A host temp directory is not in the jail at all, so honouring it would
+    break every tempfile call rather than preserve an artifact."""
+    plan = ToolLaunchPlan(
+        argv = ("/bin/true",),
+        workdir = str(tmp_path),
+        env = {"PATH": "/usr/bin", "TMPDIR": "/var/tmp/somewhere-else"},
+    )
+    launch = sandbox_linux.prepare(plan)
+    try:
+        assert launch.argv[launch.argv.index("TMPDIR") + 1] == "/tmp"
+    finally:
+        launch.cleanup()
 
 
 def test_the_outer_setsid_preexec_is_preserved(tmp_path):
@@ -322,7 +417,7 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
 
 
 def test_a_workdir_too_large_to_check_is_refused_rather_than_scanned_forever(tmp_path, monkeypatch):
-    monkeypatch.setattr(sandbox_linux, "_WORKDIR_SCAN_ENTRIES", 2)
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
     with pytest.raises(SandboxUnavailableError, match = "too large"):

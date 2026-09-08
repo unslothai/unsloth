@@ -7222,19 +7222,83 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
     ``disable_sandbox`` keeps exactly the meaning it has always had and wins
     outright: Full access is the operator having already decided, so a stale
     "required" carried down some other path must not turn it into a refusal.
+
+    It is also the ONLY way to reach "full". The safe environment, the safety
+    analysis and the resource-limited pre-exec are all selected from
+    ``disable_sandbox`` before this is consulted, so a caller-supplied "full"
+    would skip the OS sandbox while every software safeguard stayed on and then
+    label the run "security restrictions disabled" -- a launch weaker than
+    ``auto`` wearing the badge of the mode that was not granted. Refused rather
+    than quietly downgraded to ``auto``: the caller asked for something this
+    argument cannot give.
     """
-    return "full" if disable_sandbox else tool_execution_mode
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """The launch ``auto`` falls back to when no OS boundary can be built.
+
+    Byte-identical to what main runs: the plan's own argv, cwd, env and pre-exec,
+    with nothing added. *fault* is the one limitation that says why, so the
+    record still states what the run got rather than implying isolation.
+    """
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # Full access keeps its own label even here. The plan it carries is
+            # the bypass one, and a record saying "software safeguards" about a
+            # launch that skipped the analysis and the rlimits would be a badge
+            # claiming more than the run got.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            limitations = (
+                ("security_restrictions_disabled", fault) if full else ("no_os_isolation", fault)
+            ),
+        ),
+    )
 
 
 def _prepare_tool_launch(plan):
     """``os_sandbox.prepare_tool_launch``, except that ``auto`` cannot fail.
 
     ``auto`` promises that nothing which ran yesterday stops running, and that
-    promise has to survive the sandbox machinery itself breaking -- a backend
+    promise has to survive both the sandbox machinery breaking -- a backend
     module that is not importable on this build, a probe that raises something
-    nobody anticipated. Those become a software-safeguards launch identical to
-    what main does, with the fault named in the record. ``required`` asked to be
-    refused rather than run unisolated, so it still is.
+    nobody anticipated -- and a backend declining this particular launch. The
+    Linux backend refuses a workdir holding a socket, a nested mount, an
+    external hard link or more than 50,000 entries, and an ML project workdir
+    reaches that last one routinely; in ``auto`` none of those may take Python
+    and Terminal away. All of them become a software-safeguards launch identical
+    to what main does, with the fault named in the record. ``required`` asked to
+    be refused rather than run unisolated, so it still is.
     """
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
@@ -7251,7 +7315,16 @@ def _prepare_tool_launch(plan):
             prepared.preexec_fn = plan.preexec_fn
         return prepared
     except os_sandbox.SandboxUnavailableError:
-        raise  # required on a host without a sandbox, or an unknown mode
+        # An unknown mode is a caller error rather than a host that cannot
+        # isolate, so it is never swallowed into a fallback launch.
+        known = plan.requested_mode in os_sandbox.TOOL_EXECUTION_MODES
+        if plan.requested_mode == "required" or not known:
+            raise
+        logger.warning(
+            "The sandbox backend declined this launch, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_declined_this_launch")
     except Exception as exc:  # noqa: BLE001 - auto never refuses; see the docstring
         logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
         if plan.requested_mode == "required":
@@ -7261,45 +7334,7 @@ def _prepare_tool_launch(plan):
                 if sys.platform == "linux"
                 else "This host cannot start an OS sandbox.",
             ) from exc
-        return os_sandbox.PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "software-safeguards",
-            timeout_seconds = plan.timeout_seconds,
-            close_fds = plan.close_fds,
-            terminate_descendants = plan.terminate_descendants,
-            execution_record = os_sandbox.ToolExecutionRecord(
-                requested_mode = plan.requested_mode,
-                # Full access keeps its own label even here. The plan it carries is
-                # the bypass one, and a record saying "software safeguards" about a
-                # launch that skipped the analysis and the rlimits would be a badge
-                # claiming more than the run got.
-                effective_mode = "full" if plan.requested_mode == "full" else "software_safeguards",
-                environment = sys.platform,
-                backend = "software-safeguards",
-                profile_id = (
-                    "full-access" if plan.requested_mode == "full" else "software-safeguards-v1"
-                ),
-                probe_generation = "",
-                os_isolation = False,
-                retained_safeguards = tuple(
-                    item
-                    for item in (
-                        os_sandbox._FULL_SAFEGUARDS
-                        if plan.requested_mode == "full"
-                        else os_sandbox._SOFTWARE_SAFEGUARDS
-                    )
-                    if item != "timeout" or plan.timeout_seconds is not None
-                ),
-                limitations = (
-                    ("security_restrictions_disabled", "sandbox_planner_error")
-                    if plan.requested_mode == "full"
-                    else ("no_os_isolation", "sandbox_planner_error")
-                ),
-            ),
-        )
+        return _software_safeguards_launch(plan, "sandbox_planner_error")
 
 
 def _sandbox_refusal(exc) -> str:
@@ -10583,8 +10618,8 @@ def execute_tool(
     ``tool_execution_mode``: OS isolation for python/terminal. ``"auto"`` (the
     default, and what every caller written before this got) isolates when the
     host can and otherwise runs exactly as it always did; ``"required"`` refuses
-    rather than run unisolated; ``"full"`` is the existing bypass.
-    ``disable_sandbox`` still means Full access and overrides this.
+    rather than run unisolated. Full access stays ``disable_sandbox``, which
+    overrides this; ``"full"`` here is refused rather than granted.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     # Set unconditionally, so a value from an earlier call on this thread can never be
@@ -16197,9 +16232,10 @@ def _python_exec(
     output_callback: optional callable(str) streamed each stdout line as it is
     produced; the returned result is unchanged.
     tool_execution_mode: "auto" (isolate when the host can, otherwise run exactly
-    as before), "required" (refuse rather than run unisolated) or "full". Ignored
-    when disable_sandbox is set, which already means "full". Keyword-only and
-    defaulted, so every existing caller keeps today's behaviour.
+    as before) or "required" (refuse rather than run unisolated). Ignored when
+    disable_sandbox is set, which already means "full"; "full" on its own is
+    refused, since disable_sandbox is what selects the safeguards. Keyword-only
+    and defaulted, so every existing caller keeps today's behaviour.
     """
     if not code or not code.strip():
         return "No code provided."

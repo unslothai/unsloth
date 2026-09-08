@@ -8,19 +8,21 @@ call ``subprocess.Popen``. They now build a ``ToolLaunchPlan`` and spawn what th
 planner hands back, which on a host that can isolate is a bubblewrap or Seatbelt
 command and on every other host is the same argv main always ran.
 
-That "every other host" clause is the whole claim, and this machine is the right
-place to test it: bubblewrap 0.9.0 is installed and
-``kernel.apparmor_restrict_unprivileged_userns=1`` denies it the user namespace,
-so ``auto`` falls back here on every run. What the tests below pin is that the
-fallback is not merely close to main's behaviour but the same three things that
-would break silently if it were not:
+That "every other host" clause is the whole claim. These tests must therefore
+hold on BOTH paths, and they are written so they do: a host with a working
+bubblewrap runs them through the jail, a host that denies the user namespace
+runs the same assertions through the fallback. An assertion that only passes
+when the sandbox is unavailable is not a check on this PR, it is a check on the
+machine it happened to run on. What they pin is the three things that would
+break silently:
 
-1. the child still lands in its own session, because every kill path in tools.py
-   is ``killpg`` based and a child sharing Unsloth's group would take the server
-   down with it on a timeout;
+1. the process tools.py holds still leads its own session, because every kill
+   path there is ``killpg`` based and a launch sharing Unsloth's group would take
+   the server down with it on a timeout;
 2. ``_sandbox_preexec`` still runs no imports after the fork;
 3. ``PYTHONPATH``/``HOME``/``TMPDIR`` still point where ``sitecustomize.py`` and
-   the download-card flow expect them.
+   the download-card flow expect them -- ``TMPDIR`` included, because a temp file
+   a tool call writes is served to the user out of the workdir.
 
 Plus the compatibility surface: every parameter added is keyword-only and
 defaulted, and ``disable_sandbox`` keeps exactly the meaning it had.
@@ -31,9 +33,11 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import socket
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -222,17 +226,41 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
 # ── the three invariants ──────────────────────────────────────────────
 
 
-def test_the_child_still_lands_in_its_own_session():
+def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Invariant 1. _capture_process_group / _kill_process_tree / _killpg_captured
-    are all killpg based, so a child sharing Unsloth's group would mean a timeout
-    signalling the server."""
-    out = tools._python_exec(
-        "import os; print('SID_MATCHES', os.getsid(0) == os.getpid())", None, 60, _SESSION
-    )
-    assert "SID_MATCHES True" in out
-    out = tools._bash_exec("ps -o sid=,pid= -p $$", None, 60, _SESSION)
-    sid, pid = out.split()[:2]
-    assert sid == pid, out
+    are all killpg based, so a launch sharing Unsloth's group would mean a timeout
+    signalling the server.
+
+    Asserted about the process tools.py actually holds and signals, which is the
+    OUTER one. Under bubblewrap the payload runs in a fresh PID namespace where
+    bwrap is pid 1 and the interpreter is not a session leader, so asking the
+    payload about its own sid only ever passes on a host that fell back.
+    """
+    seen = []
+    real = subprocess.Popen
+
+    def capture(argv, **kwargs):
+        seen.append(kwargs.get("preexec_fn"))
+        return real(argv, **kwargs)
+
+    subprocess.Popen = capture
+    try:
+        assert "5" in tools._python_exec("print(2 + 3)", None, 60, _SESSION)
+        assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
+    finally:
+        subprocess.Popen = real
+    assert seen == [tools._sandbox_preexec, tools._sandbox_preexec]
+
+
+def test_a_timeout_kills_the_tool_and_leaves_the_server_running():
+    """The visible consequence of invariant 1, and the one that holds on the
+    isolated path too: a tool outliving its timeout is torn down, and the process
+    that launched it is still there to run the next call."""
+    start = time.monotonic()
+    out = tools._python_exec("import time; time.sleep(120)", None, 5, _SESSION)
+    assert "timed out" in out.lower(), out
+    assert time.monotonic() - start < 60
+    assert "9" in tools._python_exec("print(4 + 5)", None, 60, _SESSION)
 
 
 def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
@@ -531,3 +559,122 @@ def test_the_tool_descriptions_are_untouched_by_this_change():
     )
     assert "in a sandbox" not in full
     assert "sandbox is disabled" in full
+
+
+# ── auto never fails closed on the backend's own refusal either ────────
+
+# The planner's OTHER refusal path, and the one that reaches a real user first.
+# A backend can decline a specific launch long after the capability probe said
+# yes: the Linux one refuses a workdir holding a socket, a nested mount, an
+# external hard link or more than 50,000 entries, and an ML project workdir hits
+# that last one as a matter of course. In auto that must be a fallback, not the
+# end of Python and Terminal for the session.
+
+
+def _declining_backend(monkeypatch, reason: str) -> None:
+    def decline(plan):
+        raise SandboxUnavailableError(reason)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", decline)
+
+
+@pytest.mark.parametrize(
+    "run,expected",
+    [
+        (lambda: tools._python_exec("print(6 * 7)", None, 60, _SESSION), "42"),
+        (lambda: tools._bash_exec("echo 42", None, 60, _SESSION), "42"),
+    ],
+    ids = ["python", "terminal"],
+)
+def test_auto_falls_back_when_the_backend_declines_this_launch(monkeypatch, run, expected):
+    _declining_backend(monkeypatch, "the session workdir is too large to check for host channels")
+    tools._last_tool_execution_record = None
+    out = run()
+    assert expected in out
+    assert "Execution error" not in out
+    record = tools._last_tool_execution_record
+    assert record.effective_mode == "software_safeguards"
+    assert record.os_isolation is False
+    assert record.limitations == ("no_os_isolation", "sandbox_declined_this_launch")
+
+
+def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatch):
+    _declining_backend(monkeypatch, "the session workdir contains a device or IPC node")
+    out = tools._python_exec(
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+    )
+    assert "SHOULD_NOT_RUN" not in out
+    assert "device or IPC node" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
+@pytest.mark.parametrize("kind", ["socket", "hardlink"])
+def test_a_workdir_the_backend_refuses_does_not_take_the_tools_away(kind):
+    """End to end, through the real planner: the conditions the Linux backend
+    refuses are ordinary things to find in a project directory, and in auto none
+    of them may cost the user Python and Terminal."""
+    workdir = tools._get_workdir(_SESSION)
+    # Beside the workdir, not in tmp_path: a hard link cannot cross a filesystem,
+    # and /tmp is a separate one on most hosts.
+    outside = os.path.join(os.path.dirname(workdir), "sandbox-wiring-outside.txt")
+    holder = None
+    if kind == "socket":
+        planted = os.path.join(workdir, "declining.sock")
+        holder = socket.socket(socket.AF_UNIX)
+        holder.bind(planted)
+    else:
+        with open(outside, "w", encoding = "utf-8") as handle:
+            handle.write("host file")
+        planted = os.path.join(workdir, "declining.txt")
+        os.link(outside, planted)
+    try:
+        tools._last_tool_execution_record = None
+        out = tools._python_exec("print(6 * 7)", None, 60, _SESSION)
+        assert "42" in out, out
+        assert tools._last_tool_execution_record.os_isolation is False
+    finally:
+        if holder is not None:
+            holder.close()
+        os.unlink(planted)
+        if os.path.exists(outside):
+            os.unlink(outside)
+
+
+# ── full access has exactly one door ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "function,payload",
+    [(tools._python_exec, "print('SHOULD_NOT_RUN')"), (tools._bash_exec, "echo SHOULD_NOT_RUN")],
+    ids = ["python", "terminal"],
+)
+def test_full_is_not_requestable_through_the_mode(function, payload):
+    """The safe environment, the safety analysis and the resource-limited pre-exec
+    are all chosen from disable_sandbox before the mode is read, so an accepted
+    tool_execution_mode="full" would skip the OS sandbox with every software
+    safeguard still on and then label the run "security restrictions disabled".
+    Refused rather than silently downgraded."""
+    tools._last_tool_execution_record = None
+    out = function(payload, None, 60, _SESSION, tool_execution_mode = "full")
+    assert "SHOULD_NOT_RUN" not in out
+    assert "TOOL_EXECUTION_MODE_INVALID" in out
+    assert "disable_sandbox" in out
+    assert tools._last_tool_execution_record is None
+
+
+def test_disable_sandbox_is_still_the_way_to_full_access():
+    tools._last_tool_execution_record = None
+    assert "7" in tools._python_exec(
+        "print(7)", None, 60, _SESSION, disable_sandbox = True, tool_execution_mode = "full"
+    )
+    assert tools._last_tool_execution_record.effective_mode == "full"
+
+
+def test_an_unknown_mode_is_still_refused_rather_than_run_unisolated():
+    """The one SandboxUnavailableError that must never become a fallback launch:
+    it is a caller error, not a host that cannot isolate."""
+    out = tools._python_exec(
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "nonsense"
+    )
+    assert "SHOULD_NOT_RUN" not in out
+    assert "nonsense" in out

@@ -11,9 +11,10 @@ whole, read-only, and the boundary that matters is the write side.
 
 Two things are deliberately not confined, and both are named in ``LIMITATIONS``
 rather than left for someone to discover. The network is open, because tool
-calls pip-install and download models. And ``~/.cache/huggingface`` is bound
-read-write, because re-downloading gigabytes of weights on every tool call is
-not a sandbox anyone would leave switched on.
+calls pip-install and download models. And the model-data subdirectories of
+``~/.cache/huggingface`` are bound read-write, because re-downloading gigabytes
+of weights on every tool call is not a sandbox anyone would leave switched on.
+The cache ROOT is not bound: the access token lives directly in it.
 
 The bind list is built from parent directories, never from individual shared
 objects. Enumerating an interpreter's ``.so`` files produces hundreds of binds
@@ -26,12 +27,10 @@ from __future__ import annotations
 import os
 import shutil
 import site
-import stat
 import subprocess
 import sys
 import sysconfig
 import tempfile
-import time
 from functools import lru_cache
 
 from . import sandbox_seccomp
@@ -40,6 +39,7 @@ from .os_sandbox import (
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
+    scan_workdir_for_host_channels,
 )
 
 BACKEND_NAME = "bubblewrap"
@@ -55,6 +55,12 @@ LIMITATIONS = (
     # --dev builds a fresh /dev, so /dev/nvidia*, /dev/kfd and /dev/dri are gone.
     # A sandboxed tool call is CPU-only.
     "gpu_devices_hidden",
+    # --unshare-pid puts the launch in its own PID namespace, so a backgrounded
+    # process dies with the foreground command instead of outliving the call. It
+    # is what "process_isolation" means and it is stricter than the unisolated
+    # path, where tools.py sweeps such a descendant afterwards: output the
+    # background job would have written after the leader exited is not collected.
+    "detached_processes_die_with_the_call",
     "shared_kernel",
 )
 
@@ -111,15 +117,18 @@ _NETWORK_FILES = (
 # A dot directory on purpose: tools.py's _snapshot_workdir_files skips those, so
 # the cache never presents as an artifact the model created.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
+# The DATA subdirectories only, never the cache root. huggingface_hub keeps the
+# access token at $HF_HOME/token and $HF_HOME/stored_tokens, which tools.py
+# already treats as credentials (_BYPASS_ENV_CRED_LOCATION_NAMES drops HF_HOME
+# for exactly this reason). Binding the root and then pointing HF_HOME at it
+# would put a live token at the first path a script looks in, inside a sandbox
+# whose network is open by design. Anything not named here resolves to the
+# session workdir, so a new cache file is written per-session instead of leaking
+# a credential the next release happens to add.
+_MODEL_CACHE_SUBDIRS = ("hub", "datasets", "modules", "xet", "assets")
 # NixOS keeps glibc and every interpreter dependency here, so an interpreter from
 # the store cannot dynamically link anything without it.
 _NIX_STORE = "/nix/store"
-
-# The workdir scan runs before every launch, so it is bounded in both directions.
-# A checkpoint tree under the workdir must fail the launch honestly rather than
-# stall it, or be waved through unchecked.
-_WORKDIR_SCAN_ENTRIES = 50_000
-_WORKDIR_SCAN_SECONDS = 5.0
 
 
 def _within(path: str, root: str) -> bool:
@@ -201,10 +210,9 @@ def _host_mount_points() -> tuple[str, ...]:
 def _validate_workdir(workdir: str) -> str:
     """Canonicalise the session workdir, and refuse one that would carry the host in with it.
 
-    The workdir bind is recursive, so a nested mount comes along with it. A
-    socket or device node under it is a channel no namespace here closes. And a
-    hard link whose inode also has a name outside the workdir is a writable path
-    out of the one directory this sandbox lets the tool call write to.
+    The nested-mount leg is the bubblewrap-specific half: the workdir bind is
+    recursive, so a mount under it comes along. The device-node and hard-link
+    legs are the boundary both backends claim, so they live in ``os_sandbox``.
     """
     resolved = os.path.realpath(workdir)
     if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
@@ -214,49 +222,7 @@ def _validate_workdir(workdir: str) -> str:
             raise SandboxUnavailableError(
                 f"the session workdir contains a nested host mount: {mount}"
             )
-
-    deadline = time.monotonic() + _WORKDIR_SCAN_SECONDS
-    entries = 0
-    # (device, inode) -> [names found in here, st_nlink, first name]. Counting is
-    # the whole point: refusing every st_nlink > 1 would refuse the workdir of any
-    # session that ran `cp -al`, `git clone --local` or a pip install, all of
-    # which hard-link within a tree, and would then keep refusing for the rest of
-    # the session. Only a link the workdir cannot account for leads outside it.
-    links: dict[tuple[int, int], list] = {}
-
-    def stop(exc: OSError) -> None:
-        raise SandboxUnavailableError(
-            f"the session workdir cannot be fully inspected: {exc.filename or resolved}"
-        ) from exc
-
-    for base, dirs, names in os.walk(resolved, followlinks = False, onerror = stop):
-        for name in (*dirs, *names):
-            entries += 1
-            if entries > _WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                raise SandboxUnavailableError(
-                    "the session workdir is too large to check for host channels before a launch"
-                )
-            path = os.path.join(base, name)
-            try:
-                info = os.lstat(path)
-            except OSError as exc:
-                raise SandboxUnavailableError(
-                    f"the session workdir changed during its safety scan: {path}"
-                ) from exc
-            if stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-                continue
-            if not stat.S_ISREG(info.st_mode):
-                raise SandboxUnavailableError(
-                    f"the session workdir contains a device or IPC node: {path}"
-                )
-            if info.st_nlink > 1:
-                found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
-                found[0] += 1
-    for found, total, path in links.values():
-        if found < total:
-            raise SandboxUnavailableError(
-                f"the session workdir contains a file hard-linked from outside it: {path}"
-            )
+    scan_workdir_for_host_channels(resolved)
     return resolved
 
 
@@ -343,6 +309,27 @@ def _identity_files() -> tuple[str, str, str]:
     return directory, passwd, group
 
 
+def _tmpdir(plan: ToolLaunchPlan, workdir: str) -> str:
+    """Where the jail's TMPDIR points: the caller's, when it is inside the workdir.
+
+    tools.py puts TMPDIR at ``<workdir>/unsloth-tmp`` so a file a tool call
+    writes through ``tempfile`` is still there when the call returns and is
+    offered to the user as a download. The private /tmp here is a tmpfs that
+    dies with the mount namespace, so pinning TMPDIR at it would silently drop
+    every one of those files. It stays the fallback for a caller that named no
+    temp directory, or one outside the only writable path in here.
+
+    Canonicalised first, because the workdir is bound inside the jail under its
+    realpath and only that spelling exists in there: a TMPDIR reached through a
+    symlinked home would otherwise be set to a name nothing can open.
+    """
+    requested = plan.env.get("TMPDIR") or ""
+    if not requested:
+        return "/tmp"
+    resolved = os.path.realpath(requested)
+    return resolved if _within(resolved, workdir) else "/tmp"
+
+
 def _model_cache_path(workdir: str) -> str | None:
     home = os.path.expanduser("~")
     if not os.path.isabs(home):
@@ -351,6 +338,39 @@ def _model_cache_path(workdir: str) -> str | None:
     if not os.path.isdir(path) or _within(path, workdir):
         return None
     return path
+
+
+def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> list[str]:
+    """Create the cache mount points, and report exactly the ones this call made.
+
+    bwrap creates a missing bind destination itself, but these sit under the
+    workdir bind, so it creates them ON THE HOST and every chat is then left
+    holding a .cache tree the user never made. Making them here instead means the
+    launch knows which directories are its own and can take back precisely those,
+    leaving a real ``.cache`` a tool call wrote alone.
+    """
+    levels = _MODEL_CACHE_RELPATH.split(os.sep)
+    wanted = [os.path.join(workdir, *levels[: index + 1]) for index in range(len(levels))]
+    wanted += [os.path.join(workdir, _MODEL_CACHE_RELPATH, name) for name in names]
+    created: list[str] = []
+    for path in wanted:
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        except OSError:
+            break
+        created.append(path)
+    return created
+
+
+def _reclaim_cache_mountpoints(created: list[str]) -> None:
+    """Remove the mount points this launch made, innermost first, only while empty."""
+    for path in reversed(created):
+        try:
+            os.rmdir(path)
+        except OSError:
+            return
 
 
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -384,6 +404,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise
     # Everything from here on is owned by a PreparedSandboxLaunch that does not
     # exist yet, so this frame has to release it if the assembly raises.
+    mountpoints: list[str] = []
     try:
         argv: list[str] = [
             bwrap,
@@ -430,8 +451,15 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--bind", workdir, workdir, "--chdir", workdir]
         if model_cache is not None:
             inner_cache = os.path.join(workdir, _MODEL_CACHE_RELPATH)
-            argv += ["--bind", model_cache, inner_cache, "--setenv", "HF_HOME", inner_cache]
-        argv += ["--setenv", "HOME", workdir, "--setenv", "TMPDIR", "/tmp", "--"]
+            mountpoints = _make_cache_mountpoints(workdir, _MODEL_CACHE_SUBDIRS)
+            for name in _MODEL_CACHE_SUBDIRS:
+                argv += [
+                    "--bind-try",
+                    os.path.join(model_cache, name),
+                    os.path.join(inner_cache, name),
+                ]
+            argv += ["--setenv", "HF_HOME", inner_cache]
+        argv += ["--setenv", "HOME", workdir, "--setenv", "TMPDIR", _tmpdir(plan, workdir), "--"]
         argv += list(plan.argv)
 
         return PreparedSandboxLaunch(
@@ -445,6 +473,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],
             cleanup_paths = [identity_dir],
+            cleanup_callbacks = [lambda: _reclaim_cache_mountpoints(mountpoints)],
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
@@ -452,6 +481,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except Exception:
         seccomp.close()
         shutil.rmtree(identity_dir, ignore_errors = True)
+        _reclaim_cache_mountpoints(mountpoints)
         raise
 
 
