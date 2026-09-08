@@ -4756,29 +4756,30 @@ export function createOpenAIStreamAdapter(
         throw new Error("Image generation edit unavailable.");
       }
 
-      const survivingMessages = pruneOutboundHistory(
-        messages,
-        !isExternalRequest,
-      );
-      // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
-      // translator rebuilds the functionCall/functionResponse parts.
-      // A target KNOWN to read no images gets no envelopes at all: the backend strips them
-      // without sending a pixel, so bounding them only re-uploaded megabytes of base64 on
-      // every text turn after a switch. Unknown (null) keeps them, and so does a vision target.
+      // Resolved ahead of the outbound build, which tests/studio runs as a standalone slice
+      // with only messages and isExternalRequest in scope: a target KNOWN to read no images
+      // gets no envelopes at all, since the backend strips them without sending a pixel and
+      // bounding them only re-uploaded megabytes of base64 on every text turn after a switch.
+      // Unknown (null) keeps them, and so does a vision target.
       const targetReadsImages = isExternalRequest
         ? providerModelSupportsVision(
             externalProvider?.providerType,
             externalSelection?.modelId,
           ) !== false
         : runtime.loadedIsMultimodal !== false;
-      const openaiMessages = survivingMessages
-        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
-        .filter((message): message is NonNullable<typeof message> =>
-          Boolean(message),
-        );
-      const outboundMessages = targetReadsImages
-        ? boundMcpImageEnvelopes(openaiMessages)
-        : stripMcpImageEnvelopes(openaiMessages);
+      const survivingMessages = pruneOutboundHistory(
+        messages,
+        !isExternalRequest,
+      );
+      // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
+      // translator rebuilds the functionCall/functionResponse parts.
+      let outboundMessages = boundMcpImageEnvelopes(
+        survivingMessages
+          .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+          .filter((message): message is NonNullable<typeof message> =>
+            Boolean(message),
+          ),
+      );
       if (selectedImageEditReference) {
         const referenceMessage = toOpenAIImageEditReferenceMessage(
           selectedImageEditReference,
@@ -4805,6 +4806,9 @@ export function createOpenAIStreamAdapter(
           0,
           referenceMessage as unknown as SerializedMessage,
         );
+      }
+      if (!targetReadsImages) {
+        outboundMessages = stripMcpImageEnvelopes(outboundMessages);
       }
 
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
