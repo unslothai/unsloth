@@ -1494,26 +1494,7 @@ class TestChatCompletionRequestToolFields:
         request. The audio branch cannot forward it, so refuse rather than drop."""
         calls = []
 
-        class _OmniBackend:
-            active_model_name = "omni-sf"
-            models = {
-                "omni-sf": {
-                    "is_vision": True,
-                    "has_audio_input": True,
-                    "chat_template_info": {"template": "chatml"},
-                    "context_length": 4096,
-                }
-            }
-
-            def resize_image(self, image):
-                return image
-
-            def generate_audio_input_response(self, **kwargs):
-                calls.append(kwargs)
-                yield "answered from the audio"
-
-            def reset_generation_state(self, cancel_event = None):
-                pass
+        omni = _omni_backend(calls)
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1527,7 +1508,7 @@ class TestChatCompletionRequestToolFields:
             "_decode_audio_base64",
             lambda *a, **k: np.zeros(16000, dtype = "float32"),
         )
-        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
 
         resp = client.post(
             "/v1/chat/completions",
@@ -1549,26 +1530,7 @@ class TestChatCompletionRequestToolFields:
         and the voice follow-up must still be answered."""
         calls = []
 
-        class _OmniBackend:
-            active_model_name = "omni-sf"
-            models = {
-                "omni-sf": {
-                    "is_vision": True,
-                    "has_audio_input": True,
-                    "chat_template_info": {"template": "chatml"},
-                    "context_length": 4096,
-                }
-            }
-
-            def resize_image(self, image):
-                return image
-
-            def generate_audio_input_response(self, **kwargs):
-                calls.append(kwargs)
-                yield "answered from the audio"
-
-            def reset_generation_state(self, cancel_event = None):
-                pass
+        omni = _omni_backend(calls)
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1582,7 +1544,7 @@ class TestChatCompletionRequestToolFields:
             "_decode_audio_base64",
             lambda *a, **k: np.zeros(16000, dtype = "float32"),
         )
-        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
 
         resp = client.post(
@@ -1611,26 +1573,7 @@ class TestChatCompletionRequestToolFields:
         and byte-matches a part; one matching nothing came with this request."""
         calls = []
 
-        class _OmniBackend:
-            active_model_name = "omni-sf"
-            models = {
-                "omni-sf": {
-                    "is_vision": True,
-                    "has_audio_input": True,
-                    "chat_template_info": {"template": "chatml"},
-                    "context_length": 4096,
-                }
-            }
-
-            def resize_image(self, image):
-                return image
-
-            def generate_audio_input_response(self, **kwargs):
-                calls.append(kwargs)
-                yield "answered from the audio"
-
-            def reset_generation_state(self, cancel_event = None):
-                pass
+        omni = _omni_backend(calls)
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1644,7 +1587,7 @@ class TestChatCompletionRequestToolFields:
             "_decode_audio_base64",
             lambda *a, **k: np.zeros(16000, dtype = "float32"),
         )
-        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
         old = {"type": "image_url", "image_url": {"url": "data:image/png;base64,T0xE"}}
 
         resp = client.post(
@@ -1671,26 +1614,7 @@ class TestChatCompletionRequestToolFields:
         Matching any role let an explicitly attached image be discarded here."""
         calls = []
 
-        class _OmniBackend:
-            active_model_name = "omni-sf"
-            models = {
-                "omni-sf": {
-                    "is_vision": True,
-                    "has_audio_input": True,
-                    "chat_template_info": {"template": "chatml"},
-                    "context_length": 4096,
-                }
-            }
-
-            def resize_image(self, image):
-                return image
-
-            def generate_audio_input_response(self, **kwargs):
-                calls.append(kwargs)
-                yield "answered from the audio"
-
-            def reset_generation_state(self, cancel_event = None):
-                pass
+        omni = _omni_backend(calls)
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1704,7 +1628,7 @@ class TestChatCompletionRequestToolFields:
             "_decode_audio_base64",
             lambda *a, **k: np.zeros(16000, dtype = "float32"),
         )
-        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
         generated = {
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{_BLUE_PNG_B64}"},
@@ -1733,26 +1657,7 @@ class TestChatCompletionRequestToolFields:
         picture attached on an earlier turn keeps working."""
         calls = []
 
-        class _OmniBackend:
-            active_model_name = "omni-sf"
-            models = {
-                "omni-sf": {
-                    "is_vision": True,
-                    "has_audio_input": True,
-                    "chat_template_info": {"template": "chatml"},
-                    "context_length": 4096,
-                }
-            }
-
-            def resize_image(self, image):
-                return image
-
-            def generate_audio_input_response(self, **kwargs):
-                calls.append(kwargs)
-                yield "answered from the audio"
-
-            def reset_generation_state(self, cancel_event = None):
-                pass
+        omni = _omni_backend(calls)
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1766,7 +1671,7 @@ class TestChatCompletionRequestToolFields:
             "_decode_audio_base64",
             lambda *a, **k: np.zeros(16000, dtype = "float32"),
         )
-        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
 
         resp = client.post(
@@ -3371,6 +3276,71 @@ from routes.inference import (  # noqa: E402
 )
 
 
+def _omni_backend(calls):
+    """The audio-capable multimodal backend the audio-input tests drive, recording into `calls`."""
+
+    class _OmniBackend:
+        active_model_name = "omni-sf"
+        models = {
+            "omni-sf": {
+                "is_vision": True,
+                "has_audio_input": True,
+                "chat_template_info": {"template": "chatml"},
+                "context_length": 4096,
+            }
+        }
+
+        def resize_image(self, image):
+            return image
+
+        def generate_audio_input_response(self, **kwargs):
+            calls.append(kwargs)
+            yield "answered from the audio"
+
+        def reset_generation_state(self, cancel_event = None):
+            pass
+
+    return _OmniBackend()
+
+
+
+def _pin_loaded_backend(monkeypatch, **overrides):
+    """Pin get_llama_cpp_backend to a loaded gguf backend at the test base_url."""
+    fields = {
+        "is_loaded": True,
+        "base_url": "http://llama.test",
+        "context_length": 4096,
+        "model_identifier": "gguf",
+    }
+    fields.update(overrides)
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace(**fields))
+
+
+def _hi_stream_payload(**overrides):
+    """The one-user-message streaming request the passthrough tests send."""
+    fields = {
+        "model": "default",
+        "messages": [ChatMessage(role = "user", content = "hi")],
+        "stream": True,
+    }
+    fields.update(overrides)
+    return ChatCompletionRequest(**fields)
+
+
+def _drive_passthrough(backend, payload, monitor_id):
+    """_openai_passthrough_stream with the connected request and fixed completion id."""
+    return _openai_passthrough_stream(
+        _ConnectedRequest(),
+        threading.Event(),
+        backend,
+        payload,
+        "chatcmpl-test",
+        "chatcmpl-test",
+        monitor_id = monitor_id,
+    )
+
+
+
 class _UnusedBackend:
     is_loaded = False
 
@@ -4160,11 +4130,7 @@ class TestGgufVisionToolRouting:
 
         with pytest.raises(HTTPException) as exc:
             self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
 
         assert exc.value.status_code == 400
@@ -4211,11 +4177,7 @@ class TestGgufVisionToolRouting:
 
         with pytest.raises(HTTPException) as exc:
             self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
@@ -4780,11 +4742,7 @@ class TestGgufVisionToolRouting:
                 response_format = {"type": "json_object"},
             )
             response = self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
 
             assert json.loads(response.body)["ok"] is True
@@ -4851,11 +4809,7 @@ class TestGgufVisionToolRouting:
                 tools = client_tools,
             )
             response = self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
 
             assert json.loads(response.body)["ok"] is True
@@ -4909,11 +4863,7 @@ class TestGgufVisionToolRouting:
                 tool_choice = "none",
             )
             response = self._drive(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
 
             assert json.loads(response.body)["choices"][0]["message"]["content"] == "plain response"
@@ -4969,11 +4919,7 @@ class TestGgufVisionToolRouting:
             response_format = {"type": "json_object"},
         )
         response = self._drive(
-            openai_chat_completions(
-                payload,
-                request = self._Request(),
-                current_subject = "test",
-            )
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
 
         assert json.loads(response.body)["ok"] is True
@@ -5031,11 +4977,7 @@ class TestGgufVisionToolRouting:
             tools = client_tools,
         )
         response = self._drive(
-            openai_chat_completions(
-                payload,
-                request = self._Request(),
-                current_subject = "test",
-            )
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
 
         assert json.loads(response.body)["ok"] is True
@@ -5422,11 +5364,7 @@ class TestGgufVisionToolRouting:
                 enable_tools = True,
             )
             task = asyncio.create_task(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
             # Generous budgets. What this test asserts is that cancelling the
             # request drains the worker, and none of the numbers below are part
@@ -5501,11 +5439,7 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(
-                payload,
-                request = self._Request(),
-                current_subject = "test",
-            )
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
         body = json.loads(response.body)
 
@@ -5592,11 +5526,7 @@ class TestGgufVisionToolRouting:
                 messages = [{"role": "user", "content": "hi"}],
             )
             task = asyncio.create_task(
-                openai_chat_completions(
-                    payload,
-                    request = self._Request(),
-                    current_subject = "test",
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
             assert await asyncio.to_thread(started.wait, 1.0)
 
@@ -5854,22 +5784,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
 
             response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id),
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
@@ -5936,22 +5854,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                 0.01,
             )
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
 
             response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id),
                 timeout = 5.0,
             )
 
@@ -5976,11 +5882,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
             with pytest.raises(HTTPException) as exc:
                 await _openai_passthrough_stream(
                     _ConnectedRequest(),
@@ -6003,11 +5905,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
             with pytest.raises(HTTPException) as exc:
                 await _openai_passthrough_stream(
                     _ConnectedRequest(),
@@ -6033,21 +5931,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
             response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id),
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
@@ -6080,11 +5966,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
                     _ConnectedRequest(),
@@ -6297,15 +6179,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 cancel_id = cancel_id,
             )
             response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id),
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
@@ -6350,15 +6224,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 cancel_id = cancel_id,
             )
             task = asyncio.create_task(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                )
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id)
             )
             await asyncio.wait_for(entered.wait(), timeout = 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
@@ -6400,15 +6266,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 cancel_id = cancel_id,
             )
             response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    _ConnectedRequest(),
-                    threading.Event(),
-                    _passthrough_backend(),
-                    payload,
-                    "chatcmpl-test",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
+                _drive_passthrough(_passthrough_backend(), payload, monitor_id),
                 timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
@@ -6575,16 +6433,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             response = await openai_completions(Request(), current_subject = "test")
@@ -6618,16 +6467,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
 
@@ -6678,16 +6518,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
 
@@ -6737,16 +6568,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_cancelable_nonstreaming_client",
                 lambda: FailingAsyncClient(),
             )
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
 
             with pytest.raises(httpx.ConnectError):
                 await openai_completions(Request(), current_subject = "test")
@@ -6799,16 +6621,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(
                 inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
             )
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
 
             await openai_completions(Request(), current_subject = "test")
 
@@ -6856,16 +6669,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(
                 inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
             )
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
 
             await openai_completions(Request(), current_subject = "test")
 
@@ -6892,16 +6696,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
 
             with pytest.raises(HTTPException) as exc:
                 await openai_completions(Request(), current_subject = "test")
@@ -7615,16 +7410,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_cancelable_nonstreaming_client",
                 lambda: FakeAsyncClient(),
             )
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
+            _pin_loaded_backend(monkeypatch)
 
             response = await openai_embeddings(Request(), current_subject = "test")
 
@@ -8082,11 +7868,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
             assert blocker is not None
 
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
+            payload = _hi_stream_payload()
             response = await _openai_passthrough_stream(
                 Request(),
                 threading.Event(),
