@@ -208,8 +208,10 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch):
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     # The request stands down only for a card that is actually there, so the mixed
-    # host this describes has to say so.
+    # host this describes has to say so. Stubbed rather than left to the host, since
+    # otherwise this asserts about whatever silicon the test runner happens to have.
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     probed = {"ran": False}
     monkeypatch.setattr(
@@ -429,6 +431,11 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),
+            # Taken from install.sh rather than restated: a classifier restated
+            # here would agree with itself, and the mirror case below is exactly
+            # where it must not.
+            _shell_function("_torch_index_url_leaf"),
+            _shell_function("_torch_index_url_is_rocm"),
             "_has_usable_nvidia_gpu() { return 0; }",
             f"get_torch_index_url() {{ echo {cuda_answer!r}; }}",
             "_torch_index_pinned=false",
@@ -486,3 +493,156 @@ def test_a_deliberate_cpu_install_without_the_request_is_untouched():
     this must not reverse."""
     cpu = "https://download.pytorch.org/whl/cpu"
     assert _index_after_the_guard("", resolved = cpu, cuda_answer = _CUDA) == cpu
+
+
+def test_a_mirror_whose_base_path_says_rocm_is_not_a_rocm_index():
+    """The whole-URL form this guard first used matched a mirror's BASE path, so
+    https://mirror.local/rocm-cache/cpu read as ROCm wheels and the guard stood down --
+    leaving CPU torch on a working NVIDIA card, which is the one outcome it exists to
+    prevent. install.sh already carries a comment warning about this exact leaf, three
+    lines below the block that got it wrong."""
+    assert _index_after_the_guard(
+        "UNSLOTH_FORCE_ROCM_TORCH=1",
+        resolved = "https://mirror.local/rocm-cache/cpu",
+        cuda_answer = _CUDA,
+    ) == _CUDA
+
+
+def test_a_mirrored_rocm_index_is_still_left_alone():
+    """The control for the case above, one path segment apart: the same mirror serving
+    an actual ROCm leaf must keep it. Without this the fix could be "call every mirror
+    CPU", which passes the test above and breaks every mirrored ROCm install."""
+    rocm = "https://mirror.local/rocm-cache/rocm7.2"
+    assert _index_after_the_guard(
+        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = rocm, cuda_answer = _CUDA,
+    ) == rocm
+
+
+def test_the_radeon_repo_leaf_counts_as_a_rocm_index():
+    """repo.radeon.com ends in rocm-rel-X.Y, which _is_pip_rocm_family_leaf declines --
+    correctly, since it answers the narrower "is this a pip ROCm FAMILY index". Reusing
+    that helper here would have called a working Radeon install a dead end and replaced
+    it with CUDA wheels, so the classifier is deliberately the broader one."""
+    radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/"
+    assert _index_after_the_guard(
+        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = radeon, cuda_answer = _CUDA,
+    ) == radeon
+
+
+def test_a_miscomputing_arch_host_keeps_the_cuda_repair(stack, monkeypatch):
+    """A card is necessary and not sufficient. _ensure_rocm_torch bails on an arch
+    measured to compute incorrectly under ROCm and keeps CPU torch, so a gfx1033-style
+    host has a ROCm GPU and no ROCm route -- and standing down for it leaves the CUDA
+    repair silenced while nothing installs ROCm, so _ensure_cpu_torch demotes the HIP
+    build and the NVIDIA card ends up on CPU torch. The same downgrade install.sh's
+    guard exists to prevent, on the other side of the installer.
+
+    Fails on the pre-fix condition, which asked only whether a card was present."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: True)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    probed = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
+    )
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
+    stack._ensure_cuda_torch()
+    assert probed["ran"] is True
+
+
+def test_the_rocm_installer_bails_on_the_same_arch(stack, monkeypatch):
+    """The other half of the pair, and the reason the test above is not arbitrary: the
+    helper the repair now consults is the one _ensure_rocm_torch itself returns on, so
+    the two sides of the installer cannot disagree about whether a route exists."""
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: True)
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    installed = {"ran": False}
+    monkeypatch.setattr(
+        stack, "pip_install",
+        lambda *a, **k: installed.__setitem__("ran", True),
+    )
+    stack._ensure_rocm_torch()
+    assert installed["ran"] is False
+
+
+def _gpu_summary_branch(resolved: str, request: str) -> str:
+    """Which arm the GPU detection summary takes, given the index the resolution left.
+
+    Only the two condition lines are lifted -- the arms themselves probe rocminfo and
+    call step() -- and a summary whose conditions cannot be found yields the PRE-FIX
+    pair rather than raising, so removing the fix describes the old behaviour instead
+    of breaking the extraction.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    head = next(
+        (l for l in lines if l.startswith("if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm")),
+        "if _nvidia_gpu_wins_over_amd; then",
+    )
+    tail = next(
+        (l for l in lines if l.startswith("elif _torch_index_url_is_rocm")),
+        'elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then',
+    )
+    script = "\n".join([
+        _shell_function("_rocm_torch_explicitly_requested"),
+        _shell_function("_torch_index_url_leaf"),
+        _shell_function("_torch_index_url_is_rocm"),
+        _shell_function("_nvidia_gpu_wins_over_amd"),
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_has_amd_rocm_gpu() { return 0; }",
+        f"TORCH_INDEX_URL={resolved!r}",
+        # export, not a VAR=VAL command prefix: a prefix applies to that one command and
+        # leaves the variable unset for everything after it, so the request would never
+        # be in effect and the first case below would pass without the fix.
+        f"export {request}" if request else ":",
+        head, "echo nvidia",
+        tail, "echo amd",
+        "else", "echo amd-cpu-fallback", "fi",
+    ])
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+def test_the_summary_reports_cuda_after_the_cuda_restore():
+    """The mixed host whose request found no ROCm route: the guard put the CUDA index
+    back, but the request is still set and the AMD card is still there, so the reroute
+    predicate still answers "AMD wins". Asked of the predicate, the summary announced
+    an AMD CPU fallback one line after warning that the CUDA build was being kept.
+
+    Fails before the fix, which is the whole of the item."""
+    assert _gpu_summary_branch(_CUDA, "UNSLOTH_FORCE_ROCM_TORCH=1") == "nvidia"
+
+
+def test_the_summary_still_reports_amd_when_the_request_won():
+    """The control: when the request DID reach ROCm wheels, the summary must report the
+    card those wheels are for, which is what the predicate was introduced to fix."""
+    assert _gpu_summary_branch(
+        "https://repo.amd.com/rocm/whl/gfx1151", "UNSLOTH_FORCE_ROCM_TORCH=1",
+    ) == "amd"
+
+
+def test_the_summary_on_a_pure_cuda_install_is_unchanged():
+    """And the control for the control: no request, CUDA wheels, NVIDIA reported, which
+    is what every automatic install on an NVIDIA host must keep seeing."""
+    assert _gpu_summary_branch(_CUDA, "") == "nvidia"

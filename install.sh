@@ -4198,6 +4198,20 @@ _torch_index_url_leaf() {
     printf '%s' "${_tl_u##*/}" | tr '[:upper:]' '[:lower:]'
 }
 
+# Did the resolution land on a ROCm index? The FINAL leaf only, so a mirror whose BASE path
+# contains rocm or gfx (https://mirror.local/rocm-cache/cpu) cannot read as one -- the same
+# trap the backend classifier below is already commented against.
+#
+# Deliberately broader than _is_pip_rocm_family_leaf, which answers the narrower "is this a
+# pip ROCm FAMILY index" and so declines the Radeon repo leaf rocm-rel-6.4. That leaf is a
+# ROCm index, and a caller asking "did the request find a ROCm route" must not be told no.
+_torch_index_url_is_rocm() {
+    case "$(_torch_index_url_leaf "${1:-}")" in
+        rocm*|gfx*) return 0 ;;
+        *)          return 1 ;;
+    esac
+}
+
 # True for an EXACT ROCm family leaf; one that merely starts with rocm/gfx is a custom pin.
 _is_pip_rocm_family_leaf() {
     case "$1" in
@@ -4848,18 +4862,15 @@ fi
 # request suppressed rather than by a second copy of the CUDA logic.
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    _rocm_torch_explicitly_requested && _has_usable_nvidia_gpu; then
-    case "$TORCH_INDEX_URL" in
-        */rocm*|*/gfx*) : ;;
-        *)
-            _cuda_fallback_index=$(UNSLOTH_FORCE_ROCM_TORCH=0 get_torch_index_url)
-            if [ -n "$_cuda_fallback_index" ] && \
-               [ "$_cuda_fallback_index" != "$TORCH_INDEX_URL" ]; then
-                echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host." >&2
-                echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." >&2
-                TORCH_INDEX_URL="$_cuda_fallback_index"
-            fi
-            ;;
-    esac
+    if ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
+        _cuda_fallback_index=$(UNSLOTH_FORCE_ROCM_TORCH=0 get_torch_index_url)
+        if [ -n "$_cuda_fallback_index" ] && \
+           [ "$_cuda_fallback_index" != "$TORCH_INDEX_URL" ]; then
+            echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host." >&2
+            echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." >&2
+            TORCH_INDEX_URL="$_cuda_fallback_index"
+        fi
+    fi
 fi
 
 # Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
@@ -5281,9 +5292,13 @@ _amd_smi_gpu_records() {
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 # The same question the index answered: under the request this host is being served as
 # an AMD one, so reporting the NVIDIA card here would contradict the wheels just chosen.
-if _nvidia_gpu_wins_over_amd; then
+# Asked of the RESOLVED index rather than of the predicate that chose it. The two agree
+# everywhere except after the CUDA restore above, where the request is still set and an AMD
+# card is still present -- so the predicate still answers "AMD wins" while the wheels being
+# installed are CUDA. Reporting the fallback the host actually got is the whole point of it.
+if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
     step "gpu" "NVIDIA GPU detected"
-elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
+elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""

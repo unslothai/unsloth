@@ -3073,10 +3073,18 @@ def _ensure_cuda_torch() -> None:
     # _ensure_rocm_torch also finds no target, and a stale HIP build is left on a
     # working NVIDIA GPU with nothing to fix it. The probe runs only under the
     # request, so an ordinary install pays nothing for it.
+    #
+    # A card is necessary and not sufficient: _ensure_rocm_torch declines an arch measured
+    # to compute incorrectly under ROCm and keeps CPU torch, and _ensure_cpu_torch then
+    # demotes the HIP build that is there. So a gfx1033-style host has a ROCm GPU, no ROCm
+    # route, and needs this repair -- standing down for it would leave CPU torch on a
+    # working NVIDIA card, which is the same downgrade the shell guard exists to prevent.
+    # Asked with the same helper _ensure_rocm_torch bails on, so the two cannot disagree.
     if (
         _rocm_torch_explicitly_requested()
         and _explicit_cuda_torch_index_url() is None
         and _has_rocm_gpu()
+        and not _miscomputing_arch_host()
     ):
         return
     # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
