@@ -365,6 +365,9 @@ _ADMISSION_DONE_MARKER = ": admission-done"
 # frontend's own `_admissionStatus` field, which is what its comment parser produces.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
+# Every two seconds of a pause. The lease is renewed on it: a pause longer than the lease is
+# a chat waiting its turn, not a wedged run.
+_PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
 def _admission_status_chunks(text: str) -> list[dict]:
@@ -763,7 +766,7 @@ class ChatGenerationSupervisor:
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif _ADMISSION_WAIT_MARKER in text or _PREEMPT_KEEPALIVE_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s

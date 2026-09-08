@@ -247,7 +247,9 @@ class TestTheResumeClearsItsSignalBeforeItIsSelectable:
 
     def test_the_tool_loop_clears_before_calling_on_resumed(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
-        block = source[source.index("_resumed = preempt_policy.await_resume()") :]
+        block = source[
+            source.index("_resumed = yield from _await_resume(preempt_policy, cancel_event)") :
+        ]
         block = block[: block.index("if not _resumed:")]
         assert block.index("preempt_event.clear()") < block.index(
             "preempt_policy.on_resumed()"

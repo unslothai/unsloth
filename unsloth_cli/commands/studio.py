@@ -1521,6 +1521,55 @@ def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
     return prefix == target or target in prefix.parents
 
 
+def _hand_off_landed() -> None:
+    """This process is the venv's launcher: the hand-off worked, and the marker has done
+    its job. Left in place it reached the Studio server and every subprocess it starts, so
+    a fresh `unsloth studio` from an integrated terminal was refused as a second hand-off
+    of a command it was never part of."""
+    os.environ.pop(_REEXEC_DEPTH_ENV, None)
+
+
+def _child_launcher_predates_the_guard(studio_venv_dir: Path) -> bool:
+    """Whether handing off would loop anyway: the venv is reached through a symlink, and
+    the `unsloth` installed in it predates the symlink-aware check, so it neither resolves
+    the path nor reads the marker, and re-executes itself forever as before.
+
+    The marker only works in a child that carries this code. An old child cannot be
+    guarded from here, so the parent refuses instead of starting the loop. A venv that is
+    not symlinked passes the old check as it always did, and a venv whose launcher cannot
+    be found is given the benefit of the doubt.
+    """
+    try:
+        given = Path(studio_venv_dir)
+        real = given.resolve()
+    except OSError:
+        return False
+    if real == given:
+        return False
+    candidates = list(real.glob("lib/python*/site-packages/unsloth_cli/commands/studio.py"))
+    candidates += list(real.glob("Lib/site-packages/unsloth_cli/commands/studio.py"))
+    for launcher in candidates:
+        try:
+            if _REEXEC_DEPTH_ENV not in launcher.read_text(encoding = "utf-8", errors = "replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir: Path, studio_python) -> None:
+    if not _child_launcher_predates_the_guard(studio_venv_dir):
+        return
+    typer.echo(
+        f"Error: the Studio venv at {studio_venv_dir} is reached through a symlink, and "
+        "the unsloth CLI installed in it predates the symlink-aware hand-off, so it would "
+        f"hand off to itself forever. Upgrade it ({studio_python} -m pip install -U unsloth) "
+        "or point UNSLOTH_STUDIO_HOME at the venv's real home.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
 def _guard_reexec_loop(target: str) -> None:
     """Refuse the second hand-off rather than loop.
 
@@ -2052,6 +2101,8 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
+    if in_studio_venv:
+        _hand_off_landed()
     # Before any of the three launch paths below, and before the environment is handed
     # to a child: an override contradicting single-arch wheels makes every kernel launch
     # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
@@ -2189,14 +2240,10 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
-                _guard_reexec_loop(str(studio_venv_dir))
-                try:
-                    os.execvp(str(studio_python), args)
-                finally:
-                    # exec does not return on success. On a failed launch, or under a
-                    # test double, this process continues and must not carry the
-                    # child's marker into its own next hand-off.
-                    os.environ.pop(_REEXEC_DEPTH_ENV, None)
+                # The child here is run.py, the server itself, which never hands off
+                # again; a marker it inherited reached every subprocess it starts.
+                os.environ.pop(_REEXEC_DEPTH_ENV, None)
+                os.execvp(str(studio_python), args)
         else:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
@@ -2750,6 +2797,8 @@ def run(
     # leave must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
+    if in_studio_venv:
+        _hand_off_landed()
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2907,6 +2956,7 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
+                _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)
                 _guard_reexec_loop(str(studio_venv_dir))
                 os.execvp(str(studio_bin), args)
         finally:

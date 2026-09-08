@@ -460,6 +460,11 @@ class ParticipantState:
     # keeping its cells. Counted and unpreemptable is the truth about them.
     STREAMING_RAW = "streaming_raw"
     PAUSED = "paused"
+    # Granted room for its resume and waiting for a serving slot to prefill into. It
+    # holds KV (the room is booked) and is not a victim: a sweep that chose it would
+    # count cells as freed that its prefill is about to fill, and the admission wait
+    # cannot see the signal.
+    RESUMING = "resuming"
     DONE = "done"
 
 
@@ -471,6 +476,7 @@ _HOLDS_KV = frozenset(
         ParticipantState.TOOLS_RUNNING,
         ParticipantState.PREEMPTING,
         ParticipantState.STREAMING_RAW,
+        ParticipantState.RESUMING,
     }
 )
 
@@ -491,6 +497,7 @@ _DECODES_WHEN_TOKENS_ARRIVE = frozenset(
     {
         ParticipantState.TOOLS_RUNNING,
         ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.RESUMING,
     }
 )
 
@@ -937,11 +944,18 @@ class PreemptionController:
         had never been told the room was spoken for. The run before it, with fewer
         simultaneous waiters, was completely clean.
 
-        So book it here. The grant marks the participant DECODING and charges it `want`
+        So book it here. The grant marks the participant RESUMING and charges it `want`
         immediately, which is what makes the next caller see the room as taken. It is
         marked unmeasured on purpose: its cells were freed when it paused and its prefill
         has not happened yet, so `want` must be ADDED to the resident figure rather than
         compared with it, exactly like any other chat that has not prefilled.
+
+        RESUMING rather than DECODING: the lease's slot is reacquired after this, and that
+        wait can be long when the freed slot went to a queued request. A sweep in between
+        could choose a DECODING participant, count its reservation as freed and set a
+        signal the admission wait never reads; `note_resumed` then cleared it and the
+        chat prefilled into room the planner had handed out. RESUMING holds KV and is not
+        preemptable; `note_resumed` moves it to DECODING once it is really decoding.
 
         Roll back with `note_resume_failed` if the resume does not go through, or the
         booking becomes room nobody is using.
@@ -957,7 +971,7 @@ class PreemptionController:
                 participant.tokens = max(participant.tokens, need)
                 participant.base_tokens = max(participant.base_tokens, need)
                 participant.measured = False
-                participant.state = ParticipantState.DECODING
+                participant.state = ParticipantState.RESUMING
                 # And it is about to replay all of it as prompt, in chunks. Announced
                 # under the same lock that booked the room, so no other participant can
                 # observe the booking without also observing the batch it needs.
@@ -968,7 +982,10 @@ class PreemptionController:
         """Give back a grant whose resume never happened."""
         with self._lock:
             participant = self._participants.get(gen_id)
-            if participant is not None and participant.state == ParticipantState.DECODING:
+            if participant is not None and participant.state in (
+                ParticipantState.RESUMING,
+                ParticipantState.DECODING,
+            ):
                 participant.state = ParticipantState.PAUSED
                 # Nothing is going to be submitted, so nothing needs a batch held for it.
                 participant.prefill_done()
@@ -1258,6 +1275,25 @@ class PreemptionController:
                 participant.prefill_done()
             if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
                 self._epoch_winner = None
+
+    def note_measured(self, gen_id: str) -> None:
+        """A holder that never reports tokens has prefilled: its cells are in the resident
+        figure now, so its charge stops being a reservation on top of it.
+
+        The raw passthroughs and the Responses surface relay upstream bytes and never call
+        `observe` or `note_tokens`, so they stayed unmeasured for their whole life and
+        `_committed_locked` counted them twice once `/slots` reported them: their residency
+        and their whole lease again as pending, which pushed the watermark over a ceiling
+        the cache was well below and paused every Studio chat for a holder that is never a
+        victim. Idempotent; the state is left alone.
+        """
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            participant.measured = True
+            participant.cells_reclaimed = False
+            participant.prefill_done()
 
     def note_resumed(self, gen_id: str) -> None:
         """A preempted generation is decoding again."""

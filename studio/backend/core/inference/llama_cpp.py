@@ -6015,6 +6015,50 @@ def _usage_with_earlier_attempts(usage, earlier_completion_tokens: int):
 PREEMPT_GAVE_UP_REASON = "preempt_gave_up"
 
 
+# How often a Studio-side pause says it is still waiting.
+_PREEMPT_KEEPALIVE_S = 2.0
+
+
+def _await_resume(policy, cancel_event):
+    """Wait for the room to come back, saying so while it waits.
+
+    A generator: ``resumed = yield from _await_resume(...)``. The wait runs in a helper
+    thread and every ``_PREEMPT_KEEPALIVE_S`` a keepalive event is yielded, which the routes
+    forward as ``: preempt-keepalive``. A durable run's lease is renewed on it: the run
+    loop renewed once on the pause and ignores plain keep-alives, so a pause longer than
+    the lease (a queue of chats, each taking its turn, up to the wait's own hard ceiling)
+    was reaped as a wedged run while it was waiting exactly as designed.
+
+    A policy that takes ``cancel_event`` returns early when it is set; one written against
+    the older protocol is called as before.
+    """
+    outcome: list = []
+
+    def wait() -> None:
+        try:
+            if cancel_event is not None:
+                try:
+                    outcome.append(bool(policy.await_resume(cancel_event = cancel_event)))
+                    return
+                except TypeError:
+                    pass
+            outcome.append(bool(policy.await_resume()))
+        except BaseException as exc:  # re-raised on the generator's thread
+            outcome.append(exc)
+
+    worker = threading.Thread(target = wait, name = "preempt-await-resume", daemon = True)
+    worker.start()
+    while True:
+        worker.join(_PREEMPT_KEEPALIVE_S)
+        if not worker.is_alive():
+            break
+        yield {"type": "preempt", "state": "keepalive"}
+    result = outcome[0] if outcome else False
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 def _preempt_gave_up_event(context_length, max_tokens) -> dict:
     """What a client is owed when a paused chat stops waiting for KV room.
 
@@ -29414,7 +29458,8 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
-            if not preempt_policy.await_resume():
+            resumed_p = yield from _await_resume(preempt_policy, cancel_event)
+            if not resumed_p:
                 # The room never came back. Ending here leaves the client with the partial
                 # it has already been streamed, which the length-continuation path can pick
                 # up, rather than an error -- but it must SAY so. It did not, and a chat
@@ -33315,7 +33360,7 @@ class LlamaCppBackend:
                 # arrive before the lease it describes has gone back.
                 yield {"type": "preempt", "state": "paused"}
                 try:
-                    _resumed = preempt_policy.await_resume()
+                    _resumed = yield from _await_resume(preempt_policy, cancel_event)
                     # Cleared BEFORE `on_resumed`, not after it. The clear stays because
                     # the policy protocol does not promise one -- `NullPreemptionPolicy`
                     # and any injected double leave the signal alone, and a signal still
@@ -33331,9 +33376,15 @@ class LlamaCppBackend:
                     # still PAUSED, which no sweep can select, so nothing can issue a pause
                     # for this clear to lose. `on_resumed` then clears and moves it to
                     # DECODING under the controller's own lock, in one step.
+                    #
                     if preempt_event is not None:
                         preempt_event.clear()
-                    preempt_policy.on_resumed()
+                    # Only a granted resume is a resume. A refused one ends the turn below
+                    # with its lease still preempted, and `on_resumed` there made the
+                    # ledger carry a DECODING holder with its whole charge until the
+                    # disarm, during which room was refused to chats that could have had it.
+                    if _resumed:
+                        preempt_policy.on_resumed()
                 except Exception:
                     logger.debug("preemption policy raised; resuming anyway", exc_info = True)
                     _resumed = True
@@ -34437,13 +34488,15 @@ class LlamaCppBackend:
                 # can last minutes.
                 yield {"type": "preempt", "state": "paused"}
                 try:
-                    _resumed_f = preempt_policy.await_resume()
+                    _resumed_f = yield from _await_resume(preempt_policy, cancel_event)
                     # Cleared BEFORE `on_resumed`, for the reason the round loop gives at
                     # length: afterwards it races the sweep and can erase a pause that has
                     # already been counted as room.
                     if preempt_event is not None:
                         preempt_event.clear()
-                    preempt_policy.on_resumed()
+                    # Only a granted resume is a resume, as there.
+                    if _resumed_f:
+                        preempt_policy.on_resumed()
                 except Exception:
                     logger.debug("preemption policy raised; resuming anyway", exc_info = True)
                     _resumed_f = True

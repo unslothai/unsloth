@@ -87,3 +87,86 @@ class TestTheSecondHandOffIsRefused:
         monkeypatch.setenv(studio._REEXEC_DEPTH_ENV, "not-a-number")
         studio._guard_reexec_loop("/some/home/unsloth_studio")
         assert os.environ.get(studio._REEXEC_DEPTH_ENV) == "1"
+
+
+class TestTheMarkerIsClearedWhereTheHandOffLanded:
+    def test_the_recognised_child_drops_the_marker(self, monkeypatch):
+        """Left in place it reached the server and every subprocess, and a fresh
+        `unsloth studio` from an integrated terminal was refused as a second hand-off."""
+        monkeypatch.setenv(_studio()._REEXEC_DEPTH_ENV, "1")
+        _studio()._hand_off_landed()
+        assert _studio()._REEXEC_DEPTH_ENV not in os.environ
+
+    def test_both_commands_drop_it_on_the_in_venv_path(self):
+        import inspect
+
+        for command in (_studio().studio_default, _studio().run):
+            source = inspect.getsource(command)
+            landed = source.index("_hand_off_landed()")
+            check = source.index("in_studio_venv = _running_inside_studio_venv(studio_venv_dir)")
+            assert check < landed < check + 200
+
+    def test_the_server_child_is_not_handed_the_marker(self):
+        """`unsloth studio` execs run.py, the server itself, which never hands off again."""
+        import inspect
+
+        source = inspect.getsource(_studio().studio_default)
+        pop = source.index("os.environ.pop(_REEXEC_DEPTH_ENV, None)")
+        exec_at = source.index("os.execvp(str(studio_python), args)")
+        assert pop < exec_at < pop + 200
+
+
+class TestAnOldLauncherBehindASymlinkIsRefusedNotLooped:
+    def _venv(self, tmp_path, *, symlinked, launcher_text):
+        real = tmp_path / "real_venv"
+        site = real / "lib" / "python3.12" / "site-packages" / "unsloth_cli" / "commands"
+        site.mkdir(parents = True)
+        (site / "studio.py").write_text(launcher_text, encoding = "utf-8")
+        if not symlinked:
+            return real
+        link = tmp_path / "home" / "unsloth_studio"
+        link.parent.mkdir(parents = True)
+        link.symlink_to(real, target_is_directory = True)
+        return link
+
+    def test_an_old_launcher_behind_a_symlink_is_detected(self, tmp_path):
+        venv = self._venv(tmp_path, symlinked = True, launcher_text = "def run(): pass\n")
+        assert _studio()._child_launcher_predates_the_guard(venv) is True
+
+    def test_a_launcher_that_reads_the_marker_is_fine(self, tmp_path):
+        venv = self._venv(
+            tmp_path,
+            symlinked = True,
+            launcher_text = f'{_studio()._REEXEC_DEPTH_ENV} = "x"\n',
+        )
+        assert _studio()._child_launcher_predates_the_guard(venv) is False
+
+    def test_a_real_venv_is_never_refused(self, tmp_path):
+        """Without a symlink the old prefix check passes as it always did."""
+        venv = self._venv(tmp_path, symlinked = False, launcher_text = "def run(): pass\n")
+        assert _studio()._child_launcher_predates_the_guard(venv) is False
+
+    def test_a_venv_whose_launcher_cannot_be_found_is_given_the_benefit_of_the_doubt(
+        self, tmp_path
+    ):
+        real = tmp_path / "real_venv"
+        real.mkdir()
+        link = tmp_path / "unsloth_studio"
+        link.symlink_to(real, target_is_directory = True)
+        assert _studio()._child_launcher_predates_the_guard(link) is False
+
+    def test_the_refusal_names_the_venv_and_exits_2(self, tmp_path, capsys):
+        venv = self._venv(tmp_path, symlinked = True, launcher_text = "def run(): pass\n")
+        with pytest.raises(typer.Exit) as raised:
+            _studio()._refuse_an_old_launcher_behind_a_symlink(venv, "/x/bin/python")
+        assert raised.value.exit_code == 2
+        err = capsys.readouterr().err
+        assert "symlink" in err and str(venv) in err
+
+    def test_run_asks_before_it_hands_off(self):
+        import inspect
+
+        source = inspect.getsource(_studio().run)
+        ask = source.index("_refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)")
+        guard = source.index("_guard_reexec_loop(str(studio_venv_dir))")
+        assert ask < guard
