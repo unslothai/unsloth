@@ -10,9 +10,11 @@ tell them apart, so a version check here would pass while proving nothing.
 
 **Read AFTER the model load, not before.** Measured on kernel
 `unsloth-probe-vision-recon-c76ea3`: `fla` is not importable before
-`from_pretrained` and IS importable after, because unsloth reaches for it lazily
-when it sees the model. A probe that read provenance only up front reported it
-absent, which is the opposite of the truth.
+`from_pretrained` and IS importable after. `fla` now comes from unsloth_zoo's
+vendored copy, injected at `import unsloth`, so the answer is the vendored path
+rather than a pip install; the other kernels still resolve late. A probe that
+read provenance only up front reported them absent, which is the opposite of
+the truth.
 
 Nothing here raises. A payload that dies collecting a diagnostic reports nothing
 at all, which is the one outcome worse than a missing field.
