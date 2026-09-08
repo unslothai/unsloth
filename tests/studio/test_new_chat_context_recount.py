@@ -622,9 +622,7 @@ def _harness_source() -> str:
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
-    status_poll = HARNESS_STATUS_POLL.replace(
-        "__STATUS_POLL_TAIL__", _status_poll_adoption_tail()
-    )
+    status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
     return (
         prelude
