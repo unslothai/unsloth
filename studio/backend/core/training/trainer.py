@@ -3859,6 +3859,10 @@ class UnslothTrainer:
                 if eval_dataset:
                     extra["eval_strategy"] = "steps"
                     extra["eval_steps"] = training_args.get("eval_steps", 5)
+                    # Avoid HF's default of 8, which can OOM audio runs. The codec branches
+                    # already do this; Whisper never did, and it only stayed harmless while
+                    # the uploaded eval split was being dropped before it got here.
+                    extra["per_device_eval_batch_size"] = training_args.get("batch_size") or 2
 
                 config = self._build_audio_training_args(
                     training_args, output_dir, extra_args = extra

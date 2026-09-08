@@ -435,3 +435,93 @@ def test_audio_vlm_matching_eval_split_leaves_the_column_alone(
 
     assert evaluation is not None
     assert audio_trainer._audio_vlm_audio_col == "audio"
+
+
+def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
+    """Run the real Whisper branch of _train_worker against a real Seq2SeqTrainer.
+
+    Only train() is stubbed, so the TrainingArguments and the eval dataset are the genuine
+    objects transformers ends up holding.
+    """
+    transformers = pytest.importorskip("transformers")
+    torch = pytest.importorskip("torch")
+
+    monkeypatch.setattr(transformers.Seq2SeqTrainer, "train", lambda self, **kw: None)
+    monkeypatch.setattr(tmod, "_drop_hf_stdout_callbacks", lambda trainer: None)
+    monkeypatch.setattr(
+        tmod.UnslothTrainer, "_finalize_training", lambda self, *a, **k: None, raising = True
+    )
+    monkeypatch.setattr(tmod, "resolve_output_dir", lambda p: tmp_path, raising = True)
+    monkeypatch.setattr(tmod, "ensure_dir", lambda p: p, raising = True)
+    monkeypatch.setattr(tmod, "is_bfloat16_supported", lambda: False, raising = False)
+
+    class _TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = transformers.PretrainedConfig()
+            self.lin = torch.nn.Linear(1, 1)
+
+        def forward(self, **kwargs):
+            return {"loss": self.lin(torch.zeros(1, 1)).sum()}
+
+    class _FakeProcessor:
+        feature_extractor = object()
+        tokenizer = object()
+
+    audio_trainer._audio_type = "whisper"
+    audio_trainer.model = _TinyModel()
+    audio_trainer.tokenizer = _FakeProcessor()
+
+    monkeypatch.setattr(
+        tmod, "DataCollatorSpeechSeq2SeqWithPadding", lambda processor: (lambda f: f),
+        raising = False,
+    )
+
+    audio_trainer._train_worker(
+        [{"input_features": [0.0], "labels": [1]}] * 4,
+        eval_dataset = eval_rows,
+        eval_steps = 0.25,
+        batch_size = 2,
+        gradient_accumulation_steps = 1,
+        max_steps = 8,
+        warmup_steps = 0,
+        num_epochs = 1,
+        output_dir = str(tmp_path),
+        fp16 = False,
+        bf16 = False,
+    )
+    return audio_trainer.trainer
+
+
+def test_whisper_trainer_branch_wires_eval(audio_trainer, tmp_path, monkeypatch):
+    """HF defaults per_device_eval_batch_size to 8, which can OOM an audio eval pass. The
+    codec branches already avoid it; Whisper never did, and it only stayed harmless while
+    the uploaded eval split was being dropped before it reached here."""
+    eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = eval_rows)
+
+    assert trainer is not None, "the Whisper branch did not build a trainer"
+    assert trainer.eval_dataset is eval_rows
+    assert trainer.args.eval_strategy == "steps"
+    assert trainer.args.per_device_eval_batch_size == 2, (
+        "Whisper eval falls back to HF's default batch size of 8"
+    )
+    assert trainer.args.per_device_train_batch_size == 2
+    assert trainer.args.remove_unused_columns is False
+
+
+def test_whisper_trainer_branch_omits_eval_when_there_is_none(audio_trainer, tmp_path, monkeypatch):
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = None)
+
+    assert trainer is not None
+    assert trainer.eval_dataset is None
+    assert trainer.args.eval_strategy == "no"
+
+
+def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp_path, monkeypatch):
+    """A cancel or an all-skipped eval split leaves an empty list, which must read as no eval."""
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = [])
+
+    assert trainer is not None
+    assert not trainer.eval_dataset
+    assert trainer.args.eval_strategy == "no"
