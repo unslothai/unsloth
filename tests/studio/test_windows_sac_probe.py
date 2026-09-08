@@ -813,7 +813,7 @@ def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_emp
     # The event scoping in collect must resolve the venv the same way the
     # inventory does, or a custom-home venv is counted as somebody else's.
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert "$venvTail = " in collect and "((Resolve-VenvDir) -replace" in collect
+    assert "$venvTail = " in collect and "Get-ScopeTail (Resolve-VenvDir)" in collect
     assert "$VENV_DIR -replace" not in collect
 
 
@@ -881,7 +881,8 @@ def test_event_scoping_matches_path_tails_literally():
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     for name in ("$tail = ", "$venvTail = "):
         line = collect[collect.index(name) : collect.index(name) + 200]
-        assert "WildcardPattern]::Escape" in line, name
+        assert "Get-ScopeTail" in line, name
+    assert "WildcardPattern]::Escape($trimmed) + '\\'" in ps1
     workflow = WORKFLOW.read_text(encoding = "utf-8")
     verdict = workflow[workflow.index("$dir = $env:RUNTIME_DIR") :]
     assert "WildcardPattern]::Escape" in verdict
@@ -991,10 +992,10 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     raw evtx or a core artifact read as a complete evidence package."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    # evtx export, staging, redaction failure, no-interpreter, and an
-    # unverified empty window: every path that would let the archive be read
-    # as more than it is records itself.
-    assert collect.count("$collectionProblems += ") == 5
+    # evtx export, staging, redaction failure, no-interpreter, an unverified
+    # empty window and one that no policy could have filled: every path that
+    # would let the archive be read as more than it is records itself.
+    assert collect.count("$collectionProblems += ") == 6
     redact = collect[collect.index("$redactor = Join-Path") :]
     assert redact.index('$collectionProblems += "log redaction failed') < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
@@ -1178,3 +1179,32 @@ def test_a_custom_studio_home_is_normalized_the_way_studio_normalizes_it(monkeyp
     assert "$override = if ($env:UNSLOTH_STUDIO_HOME)" not in ps1
     home = ps1[ps1.index("function Get-StudioHome {") : ps1.index("function Get-LlamaDir")]
     assert "$override = Get-StudioHomeOverride" in home
+
+
+def test_a_prefix_colliding_sibling_is_not_scoped_as_the_selected_runtime():
+    """The channel is machine-wide and the matrix runs two builds side by side,
+    so ...\\llama.cpp-b10830 sitting beside the selected ...\\llama.cpp had its
+    3076/3077 counted as a verdict on the build the scenario actually drove."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[ps1.index("function Get-ScopeTail") : ps1.index("function Get-EventDataMap")]
+    assert "TrimEnd('\\', '/')" in fn
+    assert "WildcardPattern]::Escape($trimmed) + '\\'" in fn
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("$dir = $env:RUNTIME_DIR") :]
+    assert "($dir -replace '^[A-Za-z]:', '').TrimEnd('\\')) + '\\'" in verdict
+
+
+def test_a_window_with_no_audit_policy_is_a_null_result_unless_sac_enforces():
+    """-AuditPolicy is optional. Without it, an off machine evaluates nothing
+    and the policy Smart App Control runs in evaluation mode does not log audit
+    events to this channel, so only genuine enforcement can produce a verdict
+    and every other empty window is inconclusive rather than an allow."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$sacMode = [string]$b.Sac.Mode" in collect
+    assert "} elseif ($sacMode -ne 'enforcement') {" in collect
+    guard = collect[collect.index("} elseif ($sacMode -ne 'enforcement') {") :]
+    guard = guard[: guard.index("} else {")]
+    # In the zip, not only on a console the reader never sees.
+    assert "$collectionProblems +=" in guard
+    assert "NULL result, not an allow" in guard

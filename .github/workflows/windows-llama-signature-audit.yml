@@ -421,8 +421,11 @@ jobs:
           # otherwise be scoped out into a clean verdict. Escaped because -like
           # reads [ and ] as pattern syntax. Same normalisation the probe applies.
           $dir = $env:RUNTIME_DIR
+          # Ends at a separator so a prefix-colliding sibling directory is not
+          # read as the shipped runtime, the same boundary the probe applies.
           $tail = if ($dir) {
-            [Management.Automation.WildcardPattern]::Escape(($dir -replace '^[A-Za-z]:', ''))
+            [Management.Automation.WildcardPattern]::Escape(
+              ($dir -replace '^[A-Za-z]:', '').TrimEnd('\')) + '\'
           } else { $null }
 
           # Polled on the same bounded interval as the positive control, and for

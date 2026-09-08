@@ -356,6 +356,19 @@ function Test-StudioResponding([int] $port) {
 
 # Every named field of an event's EventData, as an ordered hashtable. Events
 # with an unnamed payload fall back to Data1, Data2, ... so nothing is dropped.
+# The -like pattern that scopes an event message to one of our trees: the path
+# with any drive letter dropped (device paths carry no letter), escaped so [ and
+# ] read as the literal characters they are, and ending at a separator. Without
+# that separator the pattern is a bare prefix, so a sibling like
+# ...\llama.cpp-b10830 beside the selected ...\llama.cpp matched too, and since
+# the channel is machine-wide - and running two builds side by side is what the
+# matrix asks for - its 3076/3077 was counted as a verdict on the build the
+# scenario actually drove.
+function Get-ScopeTail([string] $root) {
+    $trimmed = ($root -replace '^[A-Za-z]:', '').TrimEnd('\', '/')
+    return ([Management.Automation.WildcardPattern]::Escape($trimmed) + '\')
+}
+
 function Get-EventDataMap($record) {
     $map = [ordered]@{}
     try {
@@ -1111,10 +1124,8 @@ function Invoke-Collect {
     # is legal and supported (tests/test_installer_system32_guard.py), and an
     # unescaped tail matched none of its events, filing its 3076/3077 records
     # under 'other' and dropping them out of the Unsloth headline.
-    $tail = [Management.Automation.WildcardPattern]::Escape(
-        ((Resolve-LlamaDir $dir) -replace '^[A-Za-z]:', ''))
-    $venvTail = [Management.Automation.WildcardPattern]::Escape(
-        ((Resolve-VenvDir) -replace '^[A-Za-z]:', ''))
+    $tail = Get-ScopeTail (Resolve-LlamaDir $dir)
+    $venvTail = Get-ScopeTail (Resolve-VenvDir)
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $scope =
@@ -1203,11 +1214,25 @@ function Invoke-Collect {
     $baselineForControl = Join-Path $dir 'baseline.json'
     if ($verdicts -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
         $b = Get-Content -LiteralPath $baselineForControl -Raw | ConvertFrom-Json
+        $sacMode = [string]$b.Sac.Mode
         if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
             $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so a window with no 3076 or 3077 here is a NULL result, not an allow'
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
         } elseif ($b.AuditPolicyApplied) {
             Write-Host 'no Unsloth path raised a 3076 or 3077, and the positive control confirmed the policy was evaluating loads'
+        } elseif ($sacMode -ne 'enforcement') {
+            # -AuditPolicy is optional, and without it nothing on this machine
+            # can produce a verdict unless Smart App Control is genuinely
+            # enforcing: enforcement logs 3077 by itself, but the policy Smart
+            # App Control runs in evaluation mode does not log audit events to
+            # this channel at all, and an off machine evaluates nothing
+            # (Microsoft, "Test your app with Smart App Control"). So an empty
+            # window on any other machine says nothing, and shipping it without
+            # a marker is how it gets read as an allow.
+            $collectionProblems += "no audit policy was applied and Smart App Control is '$sacMode' here, so nothing on this machine could log a 3076 and nothing could enforce a 3077: a window with no verdict is a NULL result, not an allow. Re-run prepare with -AuditPolicy."
+            Write-Warning "No Unsloth path raised a 3076 or 3077, but this cell ran with no audit policy and Smart App Control '$sacMode', so no verdict could have been logged either way. Do NOT report this cell as `"not blocked`"; re-run prepare with -AuditPolicy."
+        } else {
+            Write-Host 'no Unsloth path raised a 3077, and Smart App Control is enforcing, so this window is a real allow'
         }
     }
 
