@@ -867,7 +867,7 @@ def test_the_handoff_is_published_only_around_the_setup_child():
         "        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
         "the child invocation",
     )
-    opened = _locate(source, '\n    try {\n        $env:SKIP_STUDIO_BASE', "the handoff try")
+    opened = _locate(source, "\n    try {\n        $env:SKIP_STUDIO_BASE", "the handoff try")
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
     # ...and both saves stay above the try, or the finally reads an unassigned
     # $hadPrevious* as "there was nothing here" and clears a value it did not set.
@@ -1535,9 +1535,7 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
     ]
     # The publish moved inside the try, so the slice runs to the child invocation. It must
     # still stop before the finally, which legitimately does remove the variable.
-    handoff = handoff[
-        : handoff.index("        Invoke-ManagedUnslothCli -Python $VenvPython")
-    ]
+    handoff = handoff[: handoff.index("        Invoke-ManagedUnslothCli -Python $VenvPython")]
     assert (
         "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
     ), "the installer must publish an explicit empty handoff, not remove the variable"
