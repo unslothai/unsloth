@@ -18,16 +18,14 @@ import ipaddress
 import os
 import socket
 
-# Loopback aliases; any other bind address is treated as network-reachable. Only
-# the exact aliases the rest of the stack assumes for loopback (health checks,
-# banner URLs, run.py all hard-code 127.0.0.1), so other 127.0.0.0/8 addresses
-# are deliberately left out -- they are not supported launch hosts.
+# Only the exact aliases the rest of the stack hard-codes for loopback: other 127.0.0.0/8 addresses are deliberately
+# left out, since they are not supported launch hosts.
+# Health checks, banner URLs and run.py all hard-code 127.0.0.1.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Whether a loopback launch in THIS process auto-enabled the gate. run_server
-# normally runs once per process, but if it is reused with a different host
-# (embedders, tests) a stale loopback default must not carry into a later
-# public bind, so we only ever take back a value we set ourselves.
+# Whether a loopback launch in THIS process auto-enabled the gate.
+# run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever
+# take back a value we set ourselves.
 _auto_enabled = False
 _remote_connector_active = False
 _lan_connector_active = False
@@ -179,14 +177,67 @@ def wildcard_loopback_host(host: str) -> "str | None":
     return "::1" if 6 in versions else None
 
 
+def published_url_host(host: str) -> str:
+    """Authority host for a URL Studio hands out - a banner line, `server_url`, a tunnel origin."""
+    escaped = host.replace("%", "%25")
+    if ":" not in escaped or (escaped.startswith("[") and escaped.endswith("]")):
+        return escaped
+    return f"[{escaped}]"
+
+
+def dial_host(host: str) -> str:
+    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx
+    hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
+    return f"[{host}]" if ":" in host else host
+
+
+# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so
+# loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
+LOOPBACK_FALLBACK_HOST = "127.0.0.1"
+
+
+def is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def scope_request_host(server) -> "str | None":
+    """Accepting address from an ASGI `scope["server"]`. Never carries an IPv6 zone id."""
+    if not isinstance(server, (tuple, list)) or len(server) < 2:
+        return None
+    host = server[0]
+    if not isinstance(host, str) or not host:
+        return None
+    return wildcard_loopback_host(host) or host
+
+
+def prefer_loopback(current: "str | None", candidate: str) -> str:
+    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived
+    on, and that address can change while the loopback it also serves stays valid."""
+    if current is not None and is_loopback_host(current):
+        return current
+    return candidate
+
+
+def self_request_host(app_state, server = None) -> str:
+    """`server_request_host` is authoritative - run_server publishes it from the live listener
+    sockets; the scope pair covers running outside run_server."""
+    published = getattr(app_state, "server_request_host", None)
+    if isinstance(published, str) and published:
+        return published
+    return scope_request_host(server) or LOOPBACK_FALLBACK_HOST
+
+
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
 # local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
-    "tauri://localhost",  # Linux/macOS Tauri webview
-    "http://tauri.localhost",  # Windows Tauri webview
-    "http://localhost",  # dev fallback
-    "http://localhost:5173",  # Tauri dev/Vite
-    "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "http://localhost",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 )
 
 
@@ -213,10 +264,8 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     """
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
-    # If our prior auto-default was changed out from under us (in-process reuse),
-    # relinquish ownership: an explicit =0 is then honored below as a sticky
-    # force-disable, while a cleared var falls back to the host default like a
-    # fresh process.
+    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky
+    # force-disable, while a cleared var falls back to the host default.
     if _auto_enabled and current != "1":
         _auto_enabled = False
     # An explicit operator value is one we did not set; never touch it.

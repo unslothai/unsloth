@@ -134,12 +134,16 @@ const DOC_LINKS = [
     label: "Hermes Agent",
     href: "https://unsloth.ai/docs/integrations/hermes-agent",
   },
+  {
+    label: "DeepSeek Harness",
+    href: "https://github.com/deepseek-ai/deepseek-harness",
+  },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
+const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -150,6 +154,7 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
+  dsh: "DeepSeek Harness",
 };
 
 const j = (s: string): string => JSON.stringify(s);
@@ -169,6 +174,10 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
+    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do
+    // not take, so say the tools run unprompted rather than hand out a request the server
+    // refuses.
+    lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;
 }
@@ -200,6 +209,7 @@ function winBody(model: string, variant: Variant): string {
   if (variant !== "plain") {
     body.enable_tools = true;
     body.enabled_tools = TOOLS;
+    body.permission_mode = "off";
   }
   body.stream = true;
   return JSON.stringify(body, null, 2);
@@ -254,6 +264,8 @@ function pythonSnippet(
   if (variant !== "plain") {
     extra.push(`        "enable_tools": True,`);
     extra.push(`        "enabled_tools": [${toolsJson}],`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
+    extra.push(`        "permission_mode": "off",`);
   }
   const extraBody = extra.length
     ? `
@@ -309,6 +321,8 @@ function javascriptSnippet(
     // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
     options.push(`  enable_tools: true,`);
     options.push(`  enabled_tools: [${toolsJson}],`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
+    options.push(`  permission_mode: "off",`);
   }
 
   const trailingOptions = options.length ? `\n${options.join("\n")}` : "";

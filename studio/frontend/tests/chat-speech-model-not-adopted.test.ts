@@ -92,13 +92,16 @@ test("the mount-time status sync treats a speech model as an empty slot", () => 
   );
   assert.match(
     hook,
-    /const chatActiveModel =\s*\n?\s*statusRes\.active_model && !isSpeechOnlyStatus\(statusRes\);/,
+    /const chatActiveModel =\s*statusRes\.active_model &&\s*!isSpeechOnlyStatus\(statusRes\) &&\s*!\(statusLoading && options\?\.externalChatSlotLoad\);/,
   );
   // Both edges, or the eviction branch would stop clearing a stale pick.
-  assert.match(hook, /if \(chatActiveModel && !isExternalSelectionActive\)/);
   assert.match(
     hook,
-    /\} else if \(!chatActiveModel && !isExternalSelectionActive\)/,
+    /if \(\s*chatActiveModel &&\s*!isExternalSelectionActive &&\s*!selectionChanged\s*\)/,
+  );
+  assert.match(
+    hook,
+    /\} else if \(\s*!chatActiveModel &&\s*!isExternalSelectionActive &&\s*!selectionChanged\s*\)/,
   );
   assert.match(
     hook,
@@ -123,6 +126,16 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
     /if \(runtime === "chat" \|\| runtime === "stt"\) return;/,
   );
   assert.doesNotMatch(hook, /runtime === "tts"\) return;/);
+  assert.match(
+    hook,
+    /externalChatSlotLoad: runtime === "tts"/,
+    "the shared loading lease must not hide TTS eviction from Chat",
+  );
+  assert.match(
+    hook,
+    /\(!modelLoading \|\| options\?\.externalChatSlotLoad\)/,
+    "the TTS settle event runs before Audio releases the shared loading lease",
+  );
 });
 
 test("chat re-reads status when a different tab returns to the foreground", () => {

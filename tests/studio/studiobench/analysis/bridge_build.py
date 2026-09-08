@@ -29,9 +29,8 @@ from typing import Any, Callable, Sequence
 from . import CellFailure
 from .symbols import FAILED, Bridge, build_bridge
 
-# A `RungRunner` puts the page into the state for one rung and returns when the
-# work for that rung is finished. It must be deterministic: the same rung must
-# do the same amount of work every time, or the count vectors are noise.
+# A `RungRunner` puts the page into the state for one rung and returns when that rung's work is
+# finished. It must be deterministic, or the count vectors are noise.
 RungRunner = Callable[[Any, str], None]
 
 DEFAULT_BRIDGE_RUNGS: tuple[str, ...] = ("bridge_s", "bridge_m", "bridge_l")
@@ -177,38 +176,23 @@ PROFILER_RECORDER_JS = """
 """
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Build provenance: is the thing under measurement the thing we think it is?
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# The worst output this layer can produce is a real number from the wrong
-# bundle under the right label. A dev server inflates React's own work several
-# fold and would MANUFACTURE the symptom we are hunting; a stale shipping dist
-# left in the output directory would silently measure code without the
-# profiling renderer. Both look like a clean run.
-#
-# Three independent checks, because each catches something the others cannot:
-#
-#   1. `/@vite/client` must not answer 200. That file exists only when a Vite
-#      dev server is serving, and it is a fact about the SERVER.
-#   2. React must report `bundleType: 0` in the same renderer entry as
-#      `rendererPackageName: "react-dom"`. That is a fact about the RENDERER
-#      THAT ACTUALLY LOADED, which is the only thing that matters and the only
-#      one of the three that a build-config mistake cannot fake.
-#   3. `__STUDIOBENCH_ATTRIBUTION_BUILD__` must be true. That is a fact about
-#      WHICH dist is mounted, and it is what catches a stale shipping build
-#      sitting in the directory passed to `--frontend`.
-#
-# DO NOT ADD A `jsxDEV` GREP. It false-positives: `hast-util-to-jsx-runtime`,
-# which Streamdown pulls in, references the dev JSX runtime in shipping code, so
-# a production bundle contains the string and the check condemns a correct
-# build.
-#
-# `bundleType` is read through the DevTools global hook. React only injects into
-# that hook if it already exists when the renderer initialises, so the stub must
-# be installed with `add_init_script` BEFORE the first `goto`, exactly like the
-# JWT seeding in `studio_test_kit.auth`. Installed after, the hook is empty and
-# the check reads as "React is missing" on a perfectly good page.
+# The worst output this layer can produce is a real number from the wrong bundle under the right
+# label: a dev server inflates React's own work several fold and would MANUFACTURE the symptom,
+# and a stale shipping dist would silently measure code without the profiling renderer. Both look
+# like a clean run.
+# Three independent checks: `/@vite/client` must not answer 200 (a fact about the SERVER); React
+# must report `bundleType: 0` in the same renderer entry as `rendererPackageName: "react-dom"` (a
+# fact about the RENDERER THAT ACTUALLY LOADED, the only one a build-config mistake cannot fake);
+# and `__STUDIOBENCH_ATTRIBUTION_BUILD__` must be true (which dist is mounted, catching a stale
+# shipping build in the `--frontend` directory).
+# DO NOT ADD A `jsxDEV` GREP: `hast-util-to-jsx-runtime`, which Streamdown pulls in, references
+# the dev JSX runtime in shipping code, so a production bundle contains the string and the check
+# condemns a correct build.
+# `bundleType` is read through the DevTools global hook, and React only injects into it if it
+# already exists when the renderer initialises, so the stub must be installed with
+# `add_init_script` BEFORE the first `goto`. Installed after, the hook is empty and the check
+# reads as 'React is missing' on a good page.
 
 DEVTOOLS_HOOK_STUB_JS = """
 (() => {
@@ -241,14 +225,10 @@ DEVTOOLS_HOOK_STUB_JS = """
 })();
 """
 
-# React's `bundleType`: 0 is a production build, 1 is development. Confirmed on
-# a real pair: the dev server reported 1 and the profiling build reported 0.
-#
-# NOTE THAT 0 DOES NOT MEAN "profiling renderer is loaded". React's profiling
-# build is a production build, so it also reports 0, and `bundleType` alone
-# cannot tell the two apart. That is why `assert_profiling_build_loaded` is a
-# separate check on `onRender` actually firing, and why neither one substitutes
-# for the other.
+# React's `bundleType`: 0 is production, 1 is development. Confirmed on a real pair. NOTE THAT 0
+# DOES NOT MEAN 'profiling renderer is loaded' (React's profiling build is a production build and
+# also reports 0) which is why `assert_profiling_build_loaded` separately checks `onRender`
+# actually firing.
 BUNDLE_TYPE_PRODUCTION = 0
 BUNDLE_TYPE_DEVELOPMENT = 1
 
@@ -270,10 +250,9 @@ def assert_production_bundle(page: Any, *, base_url: str | None = None) -> dict[
             "or DEVTOOLS_HOOK_STUB_JS was installed after the first navigation instead of "
             "through add_init_script before it, in which case React had nothing to inject into.",
         )
-    # Match on the SAME entry, not across entries. A page can host more than one
-    # renderer (react-dom plus react-reconciler in a canvas library, say), and
-    # checking `bundleType` from one against `rendererPackageName` from another
-    # is how a development react-dom passes behind a production sibling.
+    # Match on the SAME entry, not across entries: a page can host more than one renderer, and
+    # checking `bundleType` from one against `rendererPackageName` from another is how a development
+    # react-dom passes behind a production sibling.
     dom = [r for r in renderers if str(r.get("rendererPackageName") or "") == "react-dom"]
     if not dom:
         raise CellFailure(

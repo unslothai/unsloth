@@ -32,8 +32,8 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
-        # so include the /private variants to avoid bypasses.
+        # realpath() resolves /etc -> /private/etc and /tmp -> /private/tmp on macOS, so include the
+        # /private variants to avoid bypasses.
         return [
             "/System",
             "/Library",
@@ -127,8 +127,8 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
     if is_local_filesystem_root(normalized):
-        # A local fs root ("/", "C:\\") would expose denied system dirs via browse;
-        # a UNC share root (\\server\share) has none under it and stays registerable.
+        # A local fs root would expose denied system dirs via browse; a UNC share root has none under it and
+        # stays registerable.
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")

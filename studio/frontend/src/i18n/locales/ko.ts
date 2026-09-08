@@ -52,6 +52,13 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    find: {
+      label: "페이지에서 찾기",
+      previous: "이전 결과",
+      next: "다음 결과",
+      close: "찾기 닫기",
+      truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ko = {
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
+        findInPage: {
+          label: "페이지에서 찾기",
+          description: "이 페이지의 텍스트를 검색합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -481,6 +492,13 @@ export const ko = {
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttDeviceLabel: "로드 위치",
+        sttDeviceAuto: "GPU(사용 가능할 때)",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU가 있으면 GPU를, 없으면 CPU를 사용합니다.",
+        sttDeviceCpuDescription:
+          "모델을 시스템 RAM에 유지합니다. 변환은 느리지만 GPU 메모리를 쓰지 않습니다.",
         sttModelSearchPlaceholder: "모델 검색",
         sttModelSearching: "Hugging Face에서 검색 중…",
         sttModelValidating: "Whisper 호환성 확인 중…",
@@ -899,7 +917,11 @@ export const ko = {
         currentStreak: "현재 연속 기록",
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
-        activityDescription: "최근 {weeks} 동안 {total}",
+        activityDescription: {
+          daily: "최근 {weeks} 동안 {total}",
+          weekly: "최고 주 {total} · 최근 {weeks}",
+          cumulative: "최근 {weeks} 동안 누적 {total}",
+        },
         mode: {
           daily: "일별",
           weekly: "주별",
@@ -1228,7 +1250,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령은 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
@@ -2118,6 +2140,7 @@ export const ko = {
       memoryEfficient: "메모리 효율적",
       weightDecomposed: "가중치 분해",
       notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
+      doraNeedsVisionLayersOff: "DoRA를 사용하려면 비전 레이어 학습을 끄세요",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",

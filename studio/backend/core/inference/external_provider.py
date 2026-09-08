@@ -52,6 +52,9 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 
+# llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
+_REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -180,6 +183,13 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+
+
+def _anthropic_text_is_sendable(value: Any) -> bool:
+    """Anthropic rejects empty and whitespace-only text; the composer joins with "\\n"."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
 
 
 def _anthropic_sampling_params_removed(model: str) -> bool:
@@ -396,6 +406,56 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
+
+
+def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an OpenAI web_search_call action into card arguments.
+
+    gpt-5.x agentic search emits three action types, discriminated by
+    `action.type`: `search` carries queries, `open_page` a url, `find_in_page` a
+    url and a pattern. Reading only `action.query` renders the last two as an
+    empty `Searching ""` card. Shapes per WebSearchToolCall in
+    https://github.com/openai/openai-openapi (openapi.yaml).
+    """
+    if not isinstance(item, dict):
+        return {}
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    action_type = action.get("type") if isinstance(action.get("type"), str) else ""
+    # `queries` is the current field and holds every query the call ran; the
+    # singular `query` is deprecated in the spec, so it is only the fallback.
+    # Neither is required, so a search action can carry no query at all.
+    query = ""
+    for source in (action.get("queries"), item.get("queries")):
+        if isinstance(source, list):
+            joined = ", ".join(q for q in source if isinstance(q, str) and q)
+            if joined:
+                query = joined
+                break
+    if not query:
+        for legacy in (action.get("query"), item.get("query")):
+            if isinstance(legacy, str) and legacy:
+                query = legacy
+                break
+    url = action.get("url") if isinstance(action.get("url"), str) else ""
+    pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
+    arguments: dict[str, Any] = {}
+    if query:
+        arguments["query"] = query
+    if url:
+        arguments["url"] = url
+    if pattern:
+        arguments["pattern"] = pattern
+    if action_type:
+        arguments["action_type"] = action_type
+    return arguments
+
+
+# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s
+# with "prompt_cache_retention is not supported on this model" and the turn
+# dies (openai/codex#39397), while an unmatched model just falls back to
+# in-memory caching -- so guess narrow.
+# https://developers.openai.com/api/docs/guides/prompt-caching
+_OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -1061,6 +1121,8 @@ class ExternalProviderClient:
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
         top_k: Optional[int] = None,
+        min_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
@@ -1082,10 +1144,9 @@ class ExternalProviderClient:
         OpenAI-compatible providers forward lines verbatim. For Anthropic, the
         native Messages API SSE is translated to OpenAI format.
 
-        ``top_k`` and ``presence_penalty`` are forwarded only when the caller
-        supplies a value the provider accepts; the frontend's
-        provider-capability map already filters these per provider, so they're
-        opt-in here.
+        ``top_k``, ``min_p``, ``repetition_penalty`` and ``presence_penalty``
+        are opt-in: forwarded only when supplied, since the frontend's
+        capability map already filters them per provider.
 
         ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
@@ -1237,6 +1298,14 @@ class ExternalProviderClient:
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
+        if top_k is not None:
+            body["top_k"] = top_k
+        if min_p is not None:
+            body["min_p"] = min_p
+        if repetition_penalty is not None:
+            body[_REPETITION_PENALTY_BODY_KEY.get(self.provider_type, "repetition_penalty")] = (
+                repetition_penalty
+            )
 
         # Drop fields the registry flags as unusable so reasoning-class models
         # with fixed defaults (Kimi k2.6 etc) don't 400 on pydantic defaults
@@ -2034,7 +2103,7 @@ class ExternalProviderClient:
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
-                    if part.get("type") == "text":
+                    if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
                     elif part.get("type") == "compaction":
                         # Round-trip a prior turn's compaction block back onto this
@@ -2188,7 +2257,9 @@ class ExternalProviderClient:
                 ):
                     _text_content = msg.get("content")
                     _blocks: list[dict[str, Any]] = []
-                    if isinstance(_text_content, str) and _text_content:
+                    if isinstance(_text_content, str) and _anthropic_text_is_sendable(
+                        _text_content
+                    ):
                         _blocks.append({"type": "text", "text": _text_content})
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
@@ -2213,6 +2284,9 @@ class ExternalProviderClient:
                         )
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
+                    continue
+                # A plain string is one text block, so an empty one 400s too.
+                if isinstance(content, str) and not content.strip():
                     continue
                 filtered.append(msg)
 
@@ -5165,9 +5239,10 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # gpt-5.x / o3 / gpt-4.5 reject temperature/top_p (400 "Unsupported
-        # parameter"); the openai allowlist scopes the picker to these families,
-        # so never forward sampling knobs.
+        # Reasoning families reject temperature/top_p, and the UI hides both
+        # sliders for the rest (provider-capabilities.ts), so the only values
+        # arriving here are ChatCompletionRequest's 0.6/0.95 defaults, which
+        # would override OpenAI's own with a number the user never chose.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
         body: dict[str, Any] = {
@@ -5226,9 +5301,14 @@ class ExternalProviderClient:
                 }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
-        # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
-        # presets reach this path too and would 400 on the unknown field.
-        if is_openai_cloud and enable_prompt_caching is not False:
+        # Gated on the cloud host because ollama / llama.cpp / "custom" presets
+        # reach this path and 400 on the unknown field, and on the model
+        # because most cloud families reject the value itself.
+        if (
+            is_openai_cloud
+            and enable_prompt_caching is not False
+            and _OPENAI_EXTENDED_CACHE_FAMILY.match(model.strip().lower())
+        ):
             body["prompt_cache_retention"] = "24h"
 
         # Server-side context compaction (OpenAI cloud only).
@@ -5848,7 +5928,10 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if isinstance(item, dict) and item.get("type") == "web_search_call":
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    web_search_calls.setdefault(item_id, {"query": ""})
+                                    web_search_calls.setdefault(
+                                        item_id,
+                                        _extract_web_search_action(item),
+                                    )
                                 # Register shell_call eagerly so out-of-order
                                 # output links back. Probe env.container_id to
                                 # emit container_ready before response.completed.
@@ -5903,26 +5986,31 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # done carries the query; emit tool_start +
+                                    # done carries the action; emit tool_start +
                                     # tool_end here. Citations are aggregated and
                                     # the last call's result is overwritten at
                                     # response.completed.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    action = item.get("action")
-                                    query = (
-                                        action.get("query", "") if isinstance(action, dict) else ""
-                                    )
-                                    web_search_calls[item_id] = {"query": query}
+                                    # Overlay, don't replace: a partial done event
+                                    # would drop what the added event carried.
+                                    arguments = {
+                                        **web_search_calls.get(item_id, {}),
+                                        **_extract_web_search_action(item),
+                                    }
+                                    web_search_calls[item_id] = dict(arguments)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": ({"query": query} if query else {}),
+                                            "arguments": arguments,
                                         }
                                     )
                                     # Per-card text; last call gets overwritten
-                                    # with citations at response.completed.
+                                    # with citations at response.completed. The
+                                    # url variants have no query to echo, and the
+                                    # card names the page from `url` instead.
+                                    query = arguments.get("query") or ""
                                     per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
                                         {

@@ -22,6 +22,7 @@ from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import provider_runs_local_tools
+from models.providers import MAX_JSON_SAFE_INTEGER
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -215,6 +216,9 @@ def _sanitize_config(
         "temperature",
         "topP",
         "maxTokens",
+        "maxOutputTokens",
+        "maxOutputTokensFromSavedCap",
+        "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
     }
@@ -248,14 +252,10 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        # The saved row is the source of truth for routing, so validate against
-        # it rather than against the type the client sent. A self-hosted
-        # connection is stored under the backend "openai" type but surfaced to
-        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
-        # offers research for those aliases because their registry entries
-        # declare Unsloth tools. Comparing the two for equality therefore 400s
-        # exactly the connections this path exists to serve, while the ordinary
-        # inference route already overrides the type from the row.
+        # The saved row is the source of truth for routing, so validate against it rather than the type the client sent:
+        # a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
+        # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path exists to
+        # serve.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
@@ -285,6 +285,24 @@ def _sanitize_config(
         if "maxTokens" in request:
             request["maxTokens"] = int(request["maxTokens"])
             if not 1 <= request["maxTokens"] <= 8192:
+                raise ValueError
+        if "maxOutputTokens" in request:
+            # Strict like the saved-connection schema: bool is an int subclass, and int()
+            # would truncate a float or raise OverflowError, turning a 400 into a 500.
+            budget = request["maxOutputTokens"]
+            if isinstance(budget, bool) or not isinstance(budget, int):
+                raise ValueError
+            if not 1 <= budget <= MAX_JSON_SAFE_INTEGER:
+                raise ValueError
+        if "maxOutputTokensFromSavedCap" in request and not isinstance(
+            request["maxOutputTokensFromSavedCap"], bool
+        ):
+            raise ValueError
+        if "maxOutputTokensPublished" in request:
+            published = request["maxOutputTokensPublished"]
+            if isinstance(published, bool) or not isinstance(published, int):
+                raise ValueError
+            if not 1 <= published <= MAX_JSON_SAFE_INTEGER:
                 raise ValueError
         if "enableThinking" in request and not isinstance(request["enableThinking"], bool):
             raise ValueError
@@ -391,10 +409,9 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. An image-, audio- or video-only send is a
-    # normal composer turn, and a multimodal model that reads one and calls deep_research
-    # passes the question it wrote; the worker researches config.question, so refusing here
-    # on the message's own (empty) text ends an otherwise complete handoff in a toast.
+    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that reads
+    # an image and calls deep_research passes the question it wrote, and refusing on the message's own empty text ends a
+    # complete handoff in a toast.
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
@@ -435,7 +452,7 @@ def create_research_run(
         raise HTTPException(status_code = 404, detail = "Thread not found")
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
-        supervisor.note_request_port(request)
+        supervisor.note_request_address(request)
         supervisor.wake()
     return run
 
@@ -485,7 +502,7 @@ def approve_research_plan(
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
-        supervisor.note_request_port(request)
+        supervisor.note_request_address(request)
         supervisor.wake()
     run = _require_run(run_id)
     _sync_assistant(run)
@@ -521,7 +538,7 @@ def retry_research_run(
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
-        supervisor.note_request_port(request)
+        supervisor.note_request_address(request)
         supervisor.wake()
     run = _require_run(run_id)
     _sync_assistant(run)

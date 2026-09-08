@@ -405,7 +405,7 @@ def _install_kernel(
         "env": utf8_child_env(),
     }
     if is_hip:
-        run_kwargs["timeout"] = 1800  # ROCm builds can take 10-30 min
+        run_kwargs["timeout"] = 1800
         existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
         if "--gcc-install-dir" not in existing:
             gcc_dir = _hipcc_gcc_install_dir()

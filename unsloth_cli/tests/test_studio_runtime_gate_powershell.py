@@ -50,12 +50,11 @@ def test_returns_the_bare_name_as_a_last_resort(monkeypatch, tmp_path):
     assert resolve_windows_powershell() == "powershell.exe"
 
 
-# ── the callers ────────────────────────────────────────────────────────────────────
-#
-# Resolving in the gate alone does not fix #9440: setup() and update() both run the gate and
-# then hand off to PowerShell again, so every spawn on that path has to use the resolver or the
-# install dies at the next one with the same WinError 2.
+# The callers. Resolving in the gate alone does not fix #9440: setup() and update() both run the
+# gate and then hand off to PowerShell again, so every spawn on that path has to use the resolver
+# or the install dies at the next one with the same WinError 2.
 
+# ── the callers ────────────────────────────────────────────────────────────────────
 _RESOLVED = ntpath.join(r"C:\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 
@@ -89,7 +88,12 @@ def test_the_setup_handoff_spawns_the_resolved_interpreter(monkeypatch, tmp_path
 
     studio._run_setup_script(repo_root = repo_root)
 
-    assert spawned and spawned[0][0] == _RESOLVED, spawned
+    # The handoff, not merely the first spawn: _run_setup_script asks uv where its cache
+    # is before it hands over, and subprocess.run is built on Popen, so that probe lands
+    # here too. What this test is about is which interpreter the handoff itself uses.
+    handoffs = [argv for argv in spawned if argv and argv[-1].endswith("*>&1")]
+    assert len(handoffs) == 1, spawned
+    assert handoffs[0][0] == _RESOLVED, spawned
 
 
 def test_the_profile_probe_falls_back_to_the_resolved_interpreter(monkeypatch, tmp_path):

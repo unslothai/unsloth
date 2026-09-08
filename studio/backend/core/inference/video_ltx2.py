@@ -30,7 +30,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
+# Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official
+# Lightricks weights split out of the combined checkpoint. Keyed by variant.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 
 
@@ -44,6 +45,7 @@ def _live_cache_dir() -> str:
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
+
 
 # ── configs + rename tables, verbatim from scripts/convert_ltx2_to_diffusers.py ──
 
@@ -110,7 +112,6 @@ _CONNECTORS_CONFIG: dict[str, Any] = {
 }
 
 _VIDEO_VAE_RENAME = {
-    # Encoder
     "down_blocks.0": "down_blocks.0",
     "down_blocks.1": "down_blocks.0.downsamplers.0",
     "down_blocks.2": "down_blocks.1",
@@ -132,7 +133,6 @@ _VIDEO_VAE_RENAME = {
     "up_blocks.8": "up_blocks.3",
     "last_time_embedder": "time_embedder",
     "last_scale_shift_table": "scale_shift_table",
-    # Common
     "res_blocks": "resnets",
     "per_channel_statistics.mean-of-means": "latents_mean",
     "per_channel_statistics.std-of-means": "latents_std",
@@ -355,11 +355,10 @@ def _load_extras_file(
         LTX23_EXTRAS_REPO,
         filename,
         hf_token,
-        # The plan counts an extras file cached under EITHER root and stages neither, so this has to
-        # resolve both or it re-pulls what the planner skipped, inline and outside the manager.
+        # The plan counts an extras file cached under EITHER root and stages neither, so this has to resolve both or it
+        # re-pulls what the planner skipped, inline and outside the manager.
         reuse_other_cache_root = True,
-        # And a load nobody asked for takes the cached copy or fails: the switch's locality gate
-        # cleared these three artifacts by name, so a miss here is a promise it cannot keep.
+        # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
     )
     return load_file(path)
@@ -384,7 +383,8 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
 
 
 # Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step curve the 22B distilled DiT was trained against (the
-# scheduler appends the terminal 0). The base scheduler's shifted spacing never lands near it, so 8 steps pass this verbatim.
+# scheduler appends the terminal 0). The base scheduler's shifted spacing never lands near it, so 8 steps pass this
+# verbatim.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
     1.0,
     0.99375,
@@ -467,7 +467,8 @@ def load_ltx23_transformer(
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
-    # Pre-rename the 2.3-only keys the converter does not know; from_single_file then merges the config overrides into the base 2.0 config and runs the stock conversion.
+    # Pre-rename the 2.3-only keys the converter does not know; from_single_file then merges the config overrides into
+    # the base 2.0 config and runs the stock conversion.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
             dit_state[new + key[len(old) :]] = dit_state.pop(key)
@@ -495,7 +496,8 @@ def load_ltx23_connectors(
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
-    # Transformer-only checkpoints carry the connector stacks but not the per-modality text projections, so fetch those from the companion file.
+    # Transformer-only checkpoints carry the connector stacks but not the per-modality text projections, so fetch those
+    # from the companion file.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
@@ -562,7 +564,8 @@ def load_ltx23_audio_vae_and_vocoder(
         _AUDIO_VAE_RENAME,
         torch_dtype,
     )
-    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line up module-for-module after the renames.
+    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line up
+    # module-for-module after the renames.
     vocoder_state = _apply_rename(_to_plain_dtype(vocoder_state, torch_dtype), _VOCODER_RENAME)
     for key in [k for k in vocoder_state if ".ups." in k]:
         vocoder_state[key.replace(".ups.", ".upsamplers.")] = vocoder_state.pop(key)
@@ -616,8 +619,9 @@ def load_ltx23_pipeline(
     groups = _split_checkpoint(state)
     del state
 
-    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale companions), and casting without
-    # the scales corrupts every quantized layer, so refuse loudly and point at the GGUF quants (Q8_0 for highest fidelity).
+    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale companions), and casting
+    # without the scales corrupts every quantized layer, so refuse loudly and point at the GGUF quants (Q8_0 for highest
+    # fidelity).
     if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
         raise ValueError(
             "This LTX checkpoint stores scaled fp8 weights, which this loader does "
@@ -656,11 +660,11 @@ def load_ltx23_pipeline(
         local_files_only = local_files_only,
     )
 
-    # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
-    # Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache
-    # folder is a setting, and the locality gate that cleared this switch reads the live root. An
-    # unpinned lookup after a mid-session change searches the OTHER root, so under
-    # local_files_only it raises for a base that is fully downloaded, after eviction.
+    # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather
+    # than drift. Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache folder is a
+    # setting, and the locality gate that cleared this switch reads the live root. An unpinned lookup after a
+    # mid-session change searches the OTHER root, so under local_files_only it raises for a base that is fully
+    # downloaded, after eviction.
     cache_dir = _live_cache_dir()
     index = LTX2Pipeline.load_config(
         base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
@@ -673,8 +677,6 @@ def load_ltx23_pipeline(
             base_repo,
             subfolder = name,
             token = hf_token,
-            # The dense Gemma3 encoder below is the largest of these by far, and every one of them
-            # resolves the hub id: the flag is what keeps each a cache read.
             local_files_only = local_files_only,
             cache_dir = cache_dir,
             **extra,
