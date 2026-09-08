@@ -61,6 +61,16 @@ Check "the stop scan is given the gated roots, not every known one" `
 # _StopStudioProcesses selects victims from what it is given and also runs before the gates.
 Check "and so is the process sweep" `
     ($ps1Text -match '(?m)^\s*_StopStudioProcesses -KnownRoots \$ownedRoots\s*$')
+# ... and an EXPLICIT empty list has to mean "nothing qualifies". PowerShell reads @() as false,
+# so `if ($KnownRoots)` turned a run with nothing to delete into an unscoped machine-wide sweep.
+Check "an explicitly empty root list still scopes the sweep" `
+    ($ps1Text -match [regex]::Escape("`$scoped = `$PSBoundParameters.ContainsKey('KnownRoots')"))
+Check "and the sweep branches on that, not on the array's truthiness" `
+    ($ps1Text -match '(?m)^\s*if \(\$scoped\) \{\s*$')
+# The port-file stopper kills too: _PidUnderKnownRoot only asks whether the listener's exe sits
+# under one of these, and it deletes the port file, which writes inside the root.
+Check "the port-file stopper is gated as well" `
+    (-not ($ps1Text -match '_StopByPortFile -PortFile [^\r\n]*-KnownRoots \$knownRoots'))
 # ... which means the gated list has to exist before the stop step, not after it.
 Check "and that list is built before the stop step" `
     ([regex]::Match($ps1Text, '(?m)^\s*\$ownedRoots = @\(\)').Index -lt

@@ -705,6 +705,10 @@ Environment:
     # Anchoring on the venv path avoids matching unrelated python.exe / studio.exe.
     function _StopStudioProcesses {
         param([string[]]$KnownRoots)
+        # An EXPLICIT empty list means "no root qualifies", not "do not scope". PowerShell reads
+        # @() as false, so a plain `if ($KnownRoots)` turned a run with nothing to delete into an
+        # unscoped sweep that kills every matching process on the machine.
+        $scoped = $PSBoundParameters.ContainsKey('KnownRoots')
         try {
             $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
@@ -713,7 +717,7 @@ Environment:
                 }
             foreach ($p in $procs) {
                 # Optional scope: only kill if the exe is under a known root.
-                if ($KnownRoots) {
+                if ($scoped) {
                     $match = $false
                     foreach ($r in $KnownRoots) {
                         if ($p.ExecutablePath -and ($p.ExecutablePath -ilike "$r\*")) { $match = $true; break }
@@ -871,8 +875,9 @@ Environment:
     # The roots this run would actually delete. Everything that STOPS a process is given this
     # list rather than $knownRoots, because all of it runs before the gates below: a stale
     # studio.conf can name a directory another application has taken over, and _RootFromConf
-    # only started resolving one when Split-Path stopped throwing. _StopByPortFile keeps
-    # $knownRoots, which it uses to VERIFY a port file's owner rather than to select a victim.
+    # only started resolving one when Split-Path stopped throwing. _PidUnderKnownRoot only asks
+    # whether the listener's exe sits under one of these, so an unowned entry is a licence to
+    # kill there too, and it already answers false for an empty list.
     # _IsUnsafeRoot as well as _IsStudioRoot, because the removal loop refuses on either.
     $ownedRoots = @()
     if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
@@ -886,10 +891,12 @@ Environment:
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
     if ($defaultDataDir) {
-        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
+        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $ownedRoots
     }
-    foreach ($r in $customRoots) {
-        _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
+    # $ownedRoots, not $customRoots: _StopByPortFile deletes the port file on its way out, and
+    # writing inside a root this run has refused is the thing the gate exists to stop.
+    foreach ($r in $ownedRoots) {
+        _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $ownedRoots
     }
     _StopStudioProcesses -KnownRoots $ownedRoots
     # The app and the WebView2 helpers holding its profile open must both exit before the
@@ -1146,12 +1153,14 @@ Environment:
                     # Only remove PATH entries that live inside an Unsloth root we
                     # actually own (default or env-mode). A literal substring
                     # match on `unsloth_studio` would clobber unrelated user
-                    # virtualenvs that happen to share the name.
+                    # virtualenvs that happen to share the name. $ownedRoots, which
+                    # is what "actually own" means: a root this run refused keeps
+                    # its PATH entry, because it also keeps its files.
                     foreach ($e in $entries) {
                         if ([string]::IsNullOrWhiteSpace($e)) { continue }
                         $expanded = [Environment]::ExpandEnvironmentVariables($e).TrimEnd('\','/')
                         $isStudio = $false
-                        foreach ($r in $knownRoots) {
+                        foreach ($r in $ownedRoots) {
                             if (-not $r) { continue }
                             $rNorm = $r.TrimEnd('\','/')
                             if ($expanded -ieq $rNorm -or $expanded -ilike "$rNorm\*") {
