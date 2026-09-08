@@ -2533,3 +2533,36 @@ def test_only_a_priced_plan_says_the_load_fits():
         opts = PlanOptions(host = HostProfile(threads = 8, unified_memory = True)),
     )
     assert not abstained.priced and "unified memory" in abstained.reason
+
+
+def test_a_cache_already_quantised_at_launch_is_priced_as_one():
+    """A launch with --cache-type-kv q8_0 handed the planner only the measured
+    byte floor, and its first, normally only, mode was f16: cache_bytes took the
+    larger f16 product over the floor, and a model whose weights plus q8 cache
+    are fully resident was several GiB over budget and spilled for nothing."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    n_ctx = 65536
+    q8_floor = cache_bytes(layout, n_ctx, kv_quantised = True)
+    f16 = cache_bytes(layout, n_ctx)
+    assert q8_floor < f16
+    # A budget that holds the weights plus the q8 cache and not the f16 one.
+    budget = all_resident_bytes(layout, n_ctx, kv_quantised = True) + 1024 * MIB
+    assert all_resident_bytes(layout, n_ctx) > budget
+    flat = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+    as_floor_only = plan_placement(
+        layout, [budget], 64 * GIB, n_ctx, kv_bytes_floor = q8_floor, opts = PlanOptions(**flat)
+    )
+    assert as_floor_only.spills_anything
+    as_quantised = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        n_ctx,
+        kv_bytes_floor = q8_floor,
+        opts = PlanOptions(cache_quantised = True, kv_quant_type = "q8_0", **flat),
+    )
+    assert not as_quantised.spills_anything and as_quantised.priced, as_quantised.reason
+    # The type the launch already carries is not a change the plan makes.
+    assert as_quantised.cache_type_k is None and as_quantised.cache_type_v is None

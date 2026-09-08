@@ -2861,3 +2861,43 @@ def test_a_state_the_layout_cannot_model_stays_in_the_floor(monkeypatch):
         env = {"UNSLOTH_SMART_OFFLOAD": "1"},
     )
     assert seen["kv_bytes_floor"] == attention + state
+
+
+def test_the_launch_cache_type_reaches_the_planner_as_a_mode(monkeypatch):
+    """A quantised main cache is priced as one, with the type in force named, so
+    the f16 product cannot override the smaller measured floor; an f16 launch
+    leaves the planner's modes alone."""
+    opts, _ = _captured_opts(monkeypatch, _Stub(), cache_type_kv = "q8_0")
+    assert opts.cache_quantised is True and opts.kv_quant_type == "q8_0"
+    opts, _ = _captured_opts(monkeypatch, _Stub(), cache_type_kv = "f16")
+    assert opts.cache_quantised is False
+    # The extras win per axis and the heavier axis is what the reserve budgets.
+    opts, _ = _captured_opts(
+        monkeypatch, _Stub(), cache_type_kv = "q8_0", extra_args = ["--cache-type-k", "f16"]
+    )
+    assert opts.cache_quantised is False
+
+
+@pytest.mark.parametrize(
+    "load_mode, env, extra_args",
+    [
+        ("mmap", {}, None),
+        ("auto", {}, None),
+        ("mmap+mlock", {}, None),
+        (None, {"LLAMA_ARG_LOAD_MODE": "mmap"}, None),
+        (None, {"LLAMA_ARG_NO_MMAP": "1"}, None),
+        (None, {}, ["--load-mode", "mmap"]),
+        (None, {}, ["--no-mmap"]),
+    ],
+)
+def test_a_loader_mode_the_user_picked_stands_the_planner_down(load_mode, env, extra_args):
+    """The user's mode replaces the plan's --load-mode none at launch, and the
+    cost model priced the host side unmapped; the plan is not made at all."""
+    env = {"UNSLOTH_SMART_OFFLOAD": "1", **env}
+    assert LlamaCppBackend._planner_may_run(extra_args, env, load_mode = load_mode) is False
+    inputs = _inputs()
+    inputs["load_mode"] = load_mode
+    assert _Stub()._planned_tensor_spill(inputs, extra_args = extra_args, env = env) is None
+    # "none" is what the plan assumes, and an unset field is the default.
+    assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = "none")
+    assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = None)

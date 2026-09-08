@@ -922,3 +922,19 @@ def test_a_revoked_plan_restores_the_context_locals_with_the_argv(tmp_path, monk
     assert _flag(cmds[1], "-c") == "8192" and _flag(cmds[1], "--fit") == "on"
     assert backend._effective_context_length == 8192
     assert backend._max_context_length == 8192
+
+
+def test_a_per_model_loader_mode_keeps_the_planner_off_the_launch(tmp_path, monkeypatch):
+    """The per-model Mmap pick wins over the plan's --load-mode none, so the
+    launch does not hand the planner the pre-cap context or its rungs, and the
+    pick reaches the seam's own gate with the snapshot."""
+    plan = Plan(reason = "declined")
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, load_mode = "mmap")
+    assert seen["inputs"]["load_mode"] == "mmap"
+    # _planner_owns_fit is off: Auto's cap stands and the planner is not asked
+    # FIT_ONLY at the context Auto wanted.
+    assert seen["inputs"]["context_policy_fit_only"] is False
+    assert seen["inputs"]["n_ctx"] == 8192
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, load_mode = "none")
+    assert seen["inputs"]["context_policy_fit_only"] is True
+    assert seen["inputs"]["n_ctx"] == NATIVE_CTX

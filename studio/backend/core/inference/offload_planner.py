@@ -401,6 +401,13 @@ class PlanOptions:
     # to CPU and stalls). Off by default; matched pairs only when enabled.
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
+    # The launch's cache is ALREADY quantised (its element is under two bytes),
+    # so the first, and normally only, mode is priced as such and ``kv_quant_type``
+    # names the type in force. Handed over only as a byte floor, the f16 product
+    # overrode the smaller measured cache and spilled to cover a deficit that was
+    # arithmetic: a model whose weights plus q8 cache are fully resident read as
+    # several GiB over budget.
+    cache_quantised: bool = False
     # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts
     # the WHOLE cache on the host: offload is one scalar and the buffer type falls
     # back to the CPU one for every layer (llama-kv-cache.cpp:210-219), same branch
@@ -1750,7 +1757,10 @@ def plan_placement(
 
 
 def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
-    """f16 first, then q8_0 only if the caller opted in."""
+    """f16 first, then q8_0 only if the caller opted in; a cache already quantised
+    at launch is priced as quantised and never as f16."""
+    if opts.cache_quantised:
+        return (True,)
     return (False, True) if opts.allow_kv_quant else (False,)
 
 
@@ -2821,7 +2831,8 @@ def _finish(
             n_parallel = knobs.n_parallel
         mmproj_to_host = knobs.mmproj_to_host
         draft_dropped = knobs.draft_dropped
-    cache_type = opts.kv_quant_type if quantised else None
+    # A type the launch already carries is not a change the plan makes.
+    cache_type = opts.kv_quant_type if (quantised and not opts.cache_quantised) else None
     changed = (
         bool(patterns)
         or load_mode_none

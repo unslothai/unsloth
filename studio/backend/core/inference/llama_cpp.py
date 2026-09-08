@@ -19615,7 +19615,9 @@ class LlamaCppBackend:
                 # the planner the decisions it would otherwise make ahead of it. Bound
                 # before the try, like _spec_dropped_no_vram; off means every use below
                 # is dead and the argv is byte-identical to a launch without it.
-                _planner_owns_fit = self._planner_may_run(extra_args, os.environ)
+                _planner_owns_fit = self._planner_may_run(
+                    extra_args, os.environ, load_mode = load_mode
+                )
                 # The context Auto wanted BEFORE it settled for _AUTO_OFFLOAD_CTX, when
                 # the planner owns the fit: the planner is priced at this and reduces
                 # it only after every other rung, which is the owner's priority order.
@@ -21883,6 +21885,13 @@ class LlamaCppBackend:
                             // (1024 * 1024)
                         ),
                         "cache_ram_user_set": _cache_ram_in_force is not None,
+                        # The main cache type the child will run, so the planner
+                        # prices a quantised cache as one rather than as an f16
+                        # product with a smaller floor under it.
+                        "cache_type_kv": cache_type_kv,
+                        # The user's loader pick, if any: it replaces the plan's
+                        # --load-mode none at launch, so the planner stands aside.
+                        "load_mode": load_mode,
                         # Context is reduced LAST, and only when Auto owns it.
                         # A pass-through "-c 0" is the user's pin on the native window,
                         # and it is appended after the -c a plan rewrites, so a shrunk
@@ -27581,7 +27590,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _planner_may_run(
-        extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        load_mode: Optional[str] = None,
     ) -> bool:
         """Whether the spill planner may own this launch's placement at all.
 
@@ -27604,6 +27615,26 @@ class LlamaCppBackend:
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
+            return False
+
+        # A loader mode the USER picked (the per-model field, an inherited
+        # LLAMA_ARG_* twin, or a pass-through flag) replaces the plan's own
+        # --load-mode at launch: the policy below lets the user's mode win, and
+        # the fit-derived mode stands aside for an environment or extras pick.
+        # The cost model priced the spill with the host side unmapped (mapped
+        # weight reads measured 2 to 4.6x slower), and the prompt-cache clamp
+        # exists only under "none", so a plan taken under a mode it did not price
+        # can clear a gate it should not have. "none" is the mode the plan
+        # assumes and is compatible; anything else, an explicit "auto" included
+        # (the launch policy reads the raw field, and a truthy one drops the fit's
+        # mode), is declined. The environment is read as the launch reads it,
+        # after the Model Memory scrub.
+        _mode = str(load_mode).strip().lower() if load_mode else None
+        if _mode and _mode != "none":
+            return False
+        _env_view = dict(source_env)
+        scrub_memory_env(_env_view)
+        if memory_env_selects_load_mode(_env_view) or extra_args_select_load_mode(extra_args):
             return False
 
         # Someone else owns the placement -- decline. Each of these re-places the
@@ -27699,7 +27730,9 @@ class LlamaCppBackend:
         source_env = os.environ if env is None else env
         # Through the class, not self: the seam tests borrow this method onto a
         # bare stub, and the predicate has no state to read anyway.
-        if not inputs or not LlamaCppBackend._planner_may_run(extra_args, source_env):
+        if not inputs or not LlamaCppBackend._planner_may_run(
+            extra_args, source_env, load_mode = inputs.get("load_mode")
+        ):
             return None
 
         # An integrated CUDA SoC (Jetson, DGX Spark) is unified memory too, and
@@ -28019,6 +28052,10 @@ class LlamaCppBackend:
             logger.debug("Tensor spill: declined, decode CPU settings cannot be priced")
             return None
 
+        _planned_cache_type = max(
+            _planned_main_cache_types(inputs.get("cache_type_kv"), extra_args, source_env),
+            key = _kv_bytes_per_elem,
+        )
         return plan_placement(
             layout,
             vram_per_device,
@@ -28028,6 +28065,16 @@ class LlamaCppBackend:
             kv_layer_weights = list(inputs.get("kv_layer_weights") or ()),
             opts = PlanOptions(
                 overhead_bytes_per_device = max(0, overhead_per_device),
+                # The heavier planned axis, after the extras and the environment,
+                # the same type the KV reserve budgets. Under two bytes an element
+                # the cache is quantised and the planner prices it so; the f16
+                # product would otherwise override the smaller measured floor.
+                cache_quantised = _kv_bytes_per_elem(_planned_cache_type) < 2.0,
+                kv_quant_type = (
+                    _planned_cache_type
+                    if _kv_bytes_per_elem(_planned_cache_type) < 2.0
+                    else PlanOptions.kv_quant_type
+                ),
                 # Rungs 0 to 2, then the weight ladder, then the context: the
                 # owner's give-up order. Every term below is "not supplied" for a
                 # caller that did not price it, which leaves the planner's ladder
