@@ -1949,6 +1949,7 @@ def detect_mmproj_file(
     path: str,
     search_root: Optional[str] = None,
     allow_disjoint_search_root: bool = False,
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1956,6 +1957,7 @@ def detect_mmproj_file(
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). A trusted cache resolver may set
     ``allow_disjoint_search_root`` for another revision of the same repository.
+    ``accept`` applies caller authorization before candidate metadata is read.
     Returns the projector path or ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
@@ -2021,6 +2023,8 @@ def detect_mmproj_file(
         except OSError:
             continue
         for f in files:
+            if accept is not None and not accept(str(f)):
+                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -3983,6 +3987,7 @@ class ModelConfig:
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
         gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+        mmproj_accept: Optional[Callable[[str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -4006,6 +4011,8 @@ class ModelConfig:
             gguf_companion_roots: Trusted snapshot directories belonging to the
                 resolver-selected local cache entry. Used only to locate a
                 compatible mmproj without changing the selected main weights.
+            mmproj_accept: ``(candidate, gguf_file) -> bool`` admission rule
+                applied before reading projector metadata for native loads.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -4095,6 +4102,11 @@ class ModelConfig:
                                 gguf_file,
                                 search_root = root,
                                 allow_disjoint_search_root = gguf_companion_roots is not None,
+                                accept = (
+                                    (lambda candidate: mmproj_accept(candidate, gguf_file))
+                                    if mmproj_accept is not None
+                                    else None
+                                ),
                             )
                         )
                     ),

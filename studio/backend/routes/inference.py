@@ -6821,6 +6821,15 @@ def _drafter_for_path(
     return detected
 
 
+def _native_mmproj_accept(candidate: str, gguf_path: str) -> bool:
+    """Apply native projector authorization before discovery reads its header."""
+    try:
+        _validate_native_gguf_companion(candidate, gguf_path, "vision companion")
+    except HTTPException:
+        return False
+    return True
+
+
 def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_root: str) -> bool:
     """The native lease rule, in the shape ModelConfig.from_identifier takes.
 
@@ -14291,6 +14300,7 @@ async def _load_model_impl(
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
+                    mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
                     gguf_companion_roots = request._gguf_companion_roots or None,
                 )
 
@@ -15291,6 +15301,7 @@ async def validate_model(
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
+                    mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
                 )
 
         config = await asyncio.to_thread(_resolve_config)
@@ -16134,6 +16145,7 @@ def _cached_estimate_config(
             hf_token = hf_token,
             gguf_variant = gguf_variant,
             drafter_accept = _native_drafter_accept if native_grant_backed else None,
+            mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
         )
 
     # Offline FIRST, not only when the Hub is unreachable. The gate above established
