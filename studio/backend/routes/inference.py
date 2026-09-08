@@ -13391,6 +13391,16 @@ async def _load_model_impl(
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        # Admitted by a previous session. The join in run_server is bounded and only
+        # logs on timeout, so a request the old server accepted can still arrive here;
+        # the stamp is the one signal that predates the lifecycle reset. Absent (an
+        # internal call with no ASGI scope) means there is nothing to compare.
+        _admitted = getattr(fastapi_request, "scope", {}).get("unsloth_process_generation")
+        if _admitted is not None:
+            from utils.process_lifetime import process_lifecycle_generation
+            if _admitted != process_lifecycle_generation():
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
         # Auto-switch and preview call this impl directly, without a _ScopedLoadAttempt,
         # so the shutdown sweep has no event to set for them. Reading the latch here puts
         # both on the same footing as /load: the callers of this helper are the points of

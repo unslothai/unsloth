@@ -1009,8 +1009,12 @@ def mark_process_shutting_down() -> None:
     load, or the inference orchestrator, never sees it and can Popen a child after
     terminate_all has taken its snapshot. Set once here, read everywhere, so the
     answer does not depend on which object a spawn happens to belong to.
+
+    Under the generation lock, so that a set racing begin_process_lifecycle's clear
+    cannot be erased by it: whichever transition happens second is the one that stands.
     """
-    _shutdown_latch.set()
+    with _generation_lock:
+        _shutdown_latch.set()
 
 
 def is_process_shutting_down(admitted_generation: "Optional[int]" = None) -> bool:
@@ -1042,9 +1046,12 @@ def begin_process_lifecycle() -> None:
     would hand it permission to spawn into this session.
     """
     global _lifecycle_generation
+    # Bump and clear under one lock. Releasing between them let a shutdown that began
+    # in the gap be erased by the clear, leaving every spawner that reads only the
+    # latch free to start a child after that shutdown's sweep.
     with _generation_lock:
         _lifecycle_generation += 1
-    _shutdown_latch.clear()
+        _shutdown_latch.clear()
 
 
 def terminate_all(timeout: float = 5.0) -> "list[int]":

@@ -2915,16 +2915,37 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
         if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
     )
 
+    from utils import process_lifetime
+
+    class _Req:
+        def __init__(self, scope):
+            self.scope = scope
+
     ns = {
         "HTTPException": HTTPException,
         "_scoped_load_attempts_lock": threading.Lock(),
         "_loads_shutting_down": False,
         "load_cancel_event": None,
+        # No stamp: an internal call with no ASGI scope has no session to compare.
+        "fastapi_request": _Req({}),
     }
     exec(textwrap.dedent(ast.get_source_segment(src, helper) or ""), ns)
     check = ns["_raise_if_scoped_load_cancelled"]
 
     check()  # nothing set: a normal load must not be refused
+
+    # Stamped by THIS session: still not a cancel.
+    ns["fastapi_request"] = _Req(
+        {"unsloth_process_generation": process_lifetime.process_lifecycle_generation()}
+    )
+    check()
+
+    # Stamped by a previous one.
+    ns["fastapi_request"] = _Req({"unsloth_process_generation": -1})
+    with pytest.raises(HTTPException) as stale:
+        check()
+    assert stale.value.status_code == 409
+    ns["fastapi_request"] = _Req({})
 
     ns["_loads_shutting_down"] = True
     with pytest.raises(HTTPException) as excinfo:
@@ -3178,3 +3199,92 @@ def test_the_drain_is_skipped_when_no_shutdown_ever_happened():
     guard = src.index("if is_process_shutting_down():")
     join = src.index("\n            _wait_for_server_shutdown()")
     assert guard < join, "the drain is unconditional and would stall every first run"
+
+
+def test_the_latch_transitions_are_atomic():
+    """begin_process_lifecycle cleared the latch outside the generation lock, so a
+    shutdown starting in the gap was erased by that clear. Every spawner that reads
+    only the latch would then be free to start a child after that shutdown's sweep.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "utils" / "process_lifetime.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(src)
+
+    for name, call in (
+        ("begin_process_lifecycle", "_shutdown_latch.clear()"),
+        ("mark_process_shutting_down", "_shutdown_latch.set()"),
+    ):
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        # The statement must sit inside a `with _generation_lock:` block, not merely
+        # somewhere in a function that also takes the lock.
+        guarded = any(
+            call in textwrap.dedent(ast.get_source_segment(src, node) or "")
+            for node in ast.walk(fn)
+            if isinstance(node, ast.With)
+            and any(
+                isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_generation_lock"
+                for i in node.items
+            )
+        )
+        assert guarded, f"{name} changes the latch outside the generation lock"
+
+
+def test_a_request_admitted_by_the_previous_session_is_refused():
+    """The bounded join can time out and only logs, so an old request can still reach
+    the load. Everything else a load consults is captured when the LOAD starts, by
+    which time it is indistinguishable from a new one; the ASGI stamp is not.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    impl = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_load_model_impl"
+    )
+    helper = next(
+        n
+        for n in impl.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
+    )
+    body = textwrap.dedent(ast.get_source_segment(src, helper) or "")
+    assert "unsloth_process_generation" in body, (
+        "the load never consults the admission stamp, so a request the old server "
+        "accepted is released by the lifecycle reset"
+    )
+
+
+def test_every_http_request_is_stamped_at_admission():
+    """The stamp is only meaningful if it is taken in middleware. Reading it later
+    would capture the value after the reset, which is the bug it exists to prevent.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+
+    cls = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "ProcessLifecycleStampMiddleware"
+    )
+    assert any(isinstance(n, ast.AsyncFunctionDef) and n.name == "__call__" for n in cls.body), (
+        "the stamp middleware has no ASGI entry point"
+    )
+    assert any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "add_middleware"
+        and any(isinstance(a, ast.Name) and a.id == cls.name for a in n.args)
+        for n in ast.walk(tree)
+    ), "the stamp middleware is defined but never installed"

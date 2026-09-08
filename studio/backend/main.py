@@ -922,6 +922,29 @@ class ResearchPortMiddleware:
 app.add_middleware(ResearchPortMiddleware)
 
 
+class ProcessLifecycleStampMiddleware:
+    """Record which session admitted each request.
+
+    An embedded host's second run_server joins the old uvicorn thread first, but that
+    join is bounded and only logs on timeout, so a request the old server accepted can
+    still be in flight afterwards. Every other signal a load consults is captured when
+    the LOAD starts, by which point such a request looks exactly like a new one. Read
+    here instead, at the only moment the two are distinguishable.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            from utils.process_lifetime import process_lifecycle_generation
+            scope["unsloth_process_generation"] = process_lifecycle_generation()
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ProcessLifecycleStampMiddleware)
+
+
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.datastructures import MutableHeaders  # noqa: E402
