@@ -1354,8 +1354,7 @@ function resumePromptQueueRun(threadIds?: string[]) {
       continue;
     }
     run.paused = false;
-    // prevStoreRunning is recorded before the paused early-return, so a stale rising
-    // edge would let the next idle edge skip a prompt. The other two are defensive.
+    // prevStoreRunning outlives the paused early-return; a stale edge skips a prompt.
     run.waitingForTargetIdle = false;
     run.prevStoreRunning = false;
     clearPromptQueueRetryTimer(run);
