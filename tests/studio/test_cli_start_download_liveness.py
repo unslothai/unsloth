@@ -91,10 +91,13 @@ class Harness:
         tail = KEY_LINE,
         healthy = False,
         startup_key = None,
+        startup_key_at = None,
         marker_at = None,
         ready_tail = None,
+        flap_every = 0,
+        step = STEP_S,
     ):
-        self.clock = FakeClock(STEP_S)
+        self.clock = FakeClock(step)
         self.log_path = None
         self.chatter = chatter
         self.fail_every = fail_every
@@ -112,7 +115,9 @@ class Harness:
         self.tail = tail
         self.healthy = healthy
         self.startup_key = startup_key
+        self.startup_key_at = startup_key_at
         self.marker_at = marker_at
+        self.flap_every = flap_every
         self.ready_tail = ready_tail or f"{KEY_LINE}Model loaded: {MODEL}\n"
         self.mints = 0
         self.server = FakePopen()
@@ -221,6 +226,8 @@ class Harness:
         if self.chatter and self.log_path is not None:
             with open(self.log_path, "ab") as handle:
                 handle.write(self.chatter(self.iterations).encode())
+        if self.flap_every and self.iterations % self.flap_every == 0:
+            return False
         if self.marker_at is not None and self.iterations >= self.marker_at:
             self.tail = KEY_LINE
         if self.ready_at is not None and self.iterations >= self.ready_at:
@@ -230,6 +237,9 @@ class Harness:
 
     def startup_api_key(self, base):
         self.mints += 1
+        # Auth that only settles some way past the health gate.
+        if self.startup_key_at is not None and self.iterations < self.startup_key_at:
+            return None
         return self.startup_key
 
     def start(self):
@@ -446,7 +456,7 @@ def test_an_older_child_with_no_mintable_key_still_times_out(monkeypatch, capsys
     with pytest.raises(typer.Exit):
         harness.start()
 
-    assert 0 < harness.mints <= start_cli._KEY_MINT_ATTEMPTS
+    assert harness.mints > 0
     assert harness.polls == 0
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
@@ -504,3 +514,63 @@ def test_a_marker_one_poll_behind_health_does_not_mint(monkeypatch):
     assert server is harness.server
     assert harness.mints == 0
     assert harness.polls >= 38
+
+
+def test_minting_is_retried_at_a_slow_cadence_not_every_poll(monkeypatch, capsys):
+    # A server that never mints must not be asked once per sleep for 15 minutes, and
+    # a handful of early failures must not retire the attempt for the whole window.
+    harness = Harness(monkeypatch, tail = "starting\n", healthy = True, step = 2.0)
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    polls = harness.iterations
+    assert polls > 400, f"the loop only ran {polls} passes, so nothing was throttled"
+    # Spelled out rather than read off the module so an implementation without the
+    # cadence fails the rate assertion instead of erroring on a missing attribute.
+    ceiling = harness.clock.elapsed / 30.0 + 2
+    assert 3 < harness.mints <= ceiling, f"{harness.mints} mint attempts over {polls} passes"
+    assert start_cli._KEY_MINT_RETRY_S == 30.0
+
+
+def test_auth_that_settles_after_the_health_gate_still_starts_progress(monkeypatch):
+    # `/api/health` can open before `/api/auth` is usable. Minting fails until it
+    # settles; the download behind it must still be tracked instead of timing out.
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        startup_key_at = 100,
+        chunk_bytes = 1024**3,
+        ready_at = 500,
+        step = 2.0,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.polls > 0
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_health_probe_that_times_out_under_load_does_not_retire_minting(monkeypatch):
+    # Health is polled with a 3s timeout while the disk is saturated by the download,
+    # so it can miss a pass. A missed pass must not mean the loop never mints.
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        flap_every = 2,
+        ready_at = 41,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.mints == 1
+    assert harness.polls > 0
