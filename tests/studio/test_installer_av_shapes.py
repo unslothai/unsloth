@@ -125,7 +125,13 @@ ALLOWED_PINVOKES = {
     # Per-item Explorer icon refresh, standalone path only.
     # ie4uinit.exe -show is the global broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
-    # Closing the handle CreateFileW opened.
+    # Naming the image behind a pid, so a venv Unsloth still has open is not overwritten.
+    # PROCESS_QUERY_LIMITED_INFORMATION only, and it is the rung the others cannot replace: Process.Path goes through
+    # MainModule, which needs PROCESS_VM_READ and is refused across users and across bitness, and Win32_Process needs a
+    # working WMI service. Without this the scan can find nothing and let the install proceed over an open venv.
+    "OpenProcess",
+    "QueryFullProcessImageNameW",
+    # Closing the handles CreateFileW and OpenProcess opened.
     "CloseHandle",
 }
 
@@ -159,27 +165,31 @@ def test_no_new_native_imports(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
-def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: str) -> None:
-    """Add-Type runs the C# compiler, so the answer we already know must come first.
+def test_virtual_terminal_answers_a_redirected_stream_without_defining_a_type(name: str) -> None:
+    """The answer we already know must come first, before any native work at all.
 
     Only the redirected case is decided early, and it is decided FALSE. A redirected stdout is
-    not a console, GetConsoleMode fails on a non-console handle, and the compiled path could
+    not a console, GetConsoleMode fails on a non-console handle, and the native path could
     only have returned false too. Anything that claimed VT here would put raw escape sequences
     in the Unsloth log panel, which is a pipe.
+
+    This used to guard an Add-Type, back when the redirect check was the only thing keeping the
+    desktop app off csc.exe. Nothing here compiles now, so the ordering is no longer load-bearing
+    against a scanner; it is still the cheaper answer, and getting it wrong still corrupts the
+    log panel.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
-    # The call, not the comment above it.
-    call = re.compile(r"(?m)^[ \t]*Add-Type\b").search(text, start)
-    assert call, f"{name} no longer compiles the console thunk; update this guard"
-    compile_at = call.start()
+    call = re.compile(r"(?m)^[ \t]*\$null = New-StudioEmittedNativeType\b").search(text, start)
+    assert call, f"{name} no longer emits the console thunk; update this guard"
+    define_at = call.start()
     fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
-    assert fast_path < compile_at, (
-        f"{name} compiles C# for colour before checking the stream: move the redirect guard "
-        f"above Add-Type, or every install spawns csc.exe again."
+    assert fast_path < define_at, (
+        f"{name} builds the native console thunk before checking the stream: move the redirect "
+        f"guard above it, since a redirected stream can never render VT anyway."
     )
-    assert "$true" not in text[fast_path:compile_at], (
-        f"{name} returns something other than $false before the compile. The early answer is "
+    assert "$true" not in text[fast_path:define_at], (
+        f"{name} returns something other than $false before the native work. The early answer is "
         f"only sound because a redirected stream can never render VT."
     )
 
@@ -220,29 +230,39 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
 
 
-def test_the_installer_never_runs_the_c_sharp_compiler() -> None:
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     """The desktop app spawns Windows PowerShell 5.1, which compiles Add-Type by writing C# to
     %TEMP% and running csc.exe. A GUI binary launching a windowless PowerShell that launches a
     compiler and drops a DLL in %TEMP% is a dropper's shape whatever the code says, and it was
     blocked in the field. Reflection emit builds the same stub in memory: no compiler process,
     no source on disk, no DLL, nothing in %TEMP%.
 
-    install.ps1 is the script the desktop bundles and runs, so it is the one that must never
-    compile. studio/setup.ps1 is reached through the already-installed CLI, not spawned by the
-    app, and still uses Add-Type for the console thunk.
+    Add-Type in full, not only -TypeDefinition: -MemberDefinition wraps its argument in a class
+    and compiles that, so it reaches csc.exe by the same road. -AssemblyName is the exception,
+    and the only one: it loads an assembly that already exists on disk and never reaches a
+    compiler. Both scripts, not only the bundled one: leaving a compile anywhere means the answer
+    to "does this run a compiler" depends on which entrypoint ran and whether an early return
+    happened to come first, and a guard that holds only conditionally is what let this reach the
+    field.
     """
-    text = _text("install.ps1")
-    assert "Add-Type -TypeDefinition" not in text, (
-        "install.ps1 compiles C# again. The desktop path must stay csc.exe-free; define native "
-        "methods with DefinePInvokeMethod instead."
+    text = _text(name)
+    hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
+    assert not hits, (
+        f"{name} compiles C# again ({len(hits)} Add-Type call(s), first: {hits[0].strip()!r}). "
+        "Declare native methods with New-StudioEmittedNativeType instead; -MemberDefinition runs "
+        "csc.exe just as -TypeDefinition does."
     )
     assert (
         "DefinePInvokeMethod" in text
-    ), "install.ps1 no longer emits its native imports; update this guard"
+    ), f"{name} no longer emits its native imports; update this guard"
     # The private-%TEMP% retry is gone with it. Redirecting TEMP to compile again after a block
     # cannot beat a filter driver, and "blocked writing an executable to TEMP, change TEMP, write
     # it again" is itself an evasion heuristic. Scoped to the resolver: Initialize-StudioTempEnvironment
     # legitimately redirects an unusable inherited TEMP, and that is a different thing.
+    # Only install.ps1 has the path resolver; setup.ps1 emits the console thunk and nothing else.
+    if "function Initialize-StudioFinalPathNativeType" not in text:
+        return
     start = text.index("function Initialize-StudioFinalPathNativeType")
     body = text[start : text.index("\n    function ", start + 1)]
     assert (

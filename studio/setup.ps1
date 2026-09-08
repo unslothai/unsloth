@@ -1591,24 +1591,92 @@ function Ensure-VCRedist {
 # ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
+# Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
+# in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
+# csc.exe to get a DLL back, and behavioural antivirus blocks the result, because a windowless
+# PowerShell launching a compiler and writing executable content to %TEMP% is a dropper's shape
+# whatever the code says. Reflection emit builds the same stub in memory: no compiler process, no
+# source on disk, no DLL, and an assembly whose Location is empty. install.ps1 carries the same
+# helper, and for the same reason.
+# See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
+# assemblies built with System.Reflection.Emit, and Microsoft documents the parent process as
+# usually stopped or crashing rather than raising, so this has to be a gate and not a catch.
+$script:StudioCanDefineNativeTypes = $null
+function Test-StudioCanDefineNativeTypes {
+    if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
+    $languageMode = "FullLanguage"
+    try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
+    if ($languageMode -ne "FullLanguage") {
+        $script:StudioCanDefineNativeTypes = $false
+        return $false
+    }
+    $enforced = $false
+    try {
+        $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
+            -ClassName "Win32_DeviceGuard" -ErrorAction Stop
+        # 0 off, 1 audit, 2 enforced.
+        if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -eq 2) {
+            $enforced = $true
+        }
+    } catch {}
+    $script:StudioCanDefineNativeTypes = -not $enforced
+    return $script:StudioCanDefineNativeTypes
+}
+
+function New-StudioEmittedNativeType {
+    param(
+        [Parameter(Mandatory = $true)][string]$TypeName,
+        [Parameter(Mandatory = $true)][object[]]$Imports
+    )
+    $assemblyName = New-Object System.Reflection.AssemblyName $TypeName
+    $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+        $assemblyName, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $module = $assembly.DefineDynamicModule($TypeName)
+    $builder = $module.DefineType(
+        $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
+
+    $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
+    # Matches the CharSet the C# this replaces declared. It selects name mangling as well as
+    # marshalling: the runtime probes <Name>W first and falls back to <Name>.
+    $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
+    $standard = [System.Reflection.CallingConventions]::Standard
+    $attributes = "Public, Static, HideBySig, PinvokeImpl"
+    $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
+
+    foreach ($import in $Imports) {
+        $method = $builder.DefinePInvokeMethod(
+            $import.Name, $import.Library, $import.Name, $attributes,
+            $standard, $import.Return, $import.Args, $winapi, $unicode)
+        $method.SetImplementationFlags(
+            $method.GetMethodImplementationFlags() -bor $preserveSig)
+    }
+    $null = $builder.CreateType()
+    return $null -ne ($TypeName -as [type])
+}
+
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
     # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle, so the
-    # block below could only return $false anyway. Answer without Add-Type, which runs csc.exe and
-    # drops source in %TEMP%. The CLI and the desktop app both pipe us, so this is the path the
-    # compile was on.
+    # block below could only return $false anyway. The CLI and the desktop app both pipe us, so
+    # that is the path they are on.
     if ($script:StudioStdoutRedirected) { return $false }
+    if (-not (Test-StudioCanDefineNativeTypes)) { return $false }
     try {
-        Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
-[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
-[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
-[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
-'@ -ErrorAction Stop
-        $h = [StudioVT.Native]::GetStdHandle(-11)
+        if (-not ("StudioVTNative" -as [type])) {
+            $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
+                @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
+                   Args = @([int]) },
+                @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
+                   Args = @([IntPtr], [uint32].MakeByRefType()) },
+                @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
+                   Args = @([IntPtr], [uint32]) }
+            )
+        }
+        $h = [StudioVTNative]::GetStdHandle(-11)
         [uint32]$mode = 0
-        if (-not [StudioVT.Native]::GetConsoleMode($h, [ref]$mode)) { return $false }
+        if (-not [StudioVTNative]::GetConsoleMode($h, [ref]$mode)) { return $false }
         $mode = $mode -bor 0x0004
-        return [StudioVT.Native]::SetConsoleMode($h, $mode)
+        return [StudioVTNative]::SetConsoleMode($h, $mode)
     } catch {
         return $false
     }
