@@ -2081,13 +2081,19 @@ def _gpu_present_but_unusable_message(
     # (#10466). Checked before both branches because either verdict can describe that
     # host -- an AMD probe that reads sysfs still finds the card, so the installer may
     # have chosen either a ROCm wheel that cannot open a device or a CPU one.
-    try:
-        from utils.hardware.amd import amd_node_permission_hint
-        node_hint = amd_node_permission_hint()
-    except Exception:
-        node_hint = None
-    if node_hint:
-        return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
+    #
+    # Only when AMD is the card the verdict is ABOUT. On a hybrid host an NVIDIA GPU
+    # can raise the same two reasons while an AMD node happens to be closed, and there
+    # the PyTorch advice below is right and joining the render group repairs nothing.
+    # The vendors are already recorded for the mismatch being reported right now.
+    if "amd" in {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}:
+        try:
+            from utils.hardware.amd import amd_node_permission_hint
+            node_hint = amd_node_permission_hint()
+        except Exception:
+            node_hint = None
+        if node_hint:
+            return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a
     # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
     # someone started from a terminal, was being sent to a control that is not on the page.

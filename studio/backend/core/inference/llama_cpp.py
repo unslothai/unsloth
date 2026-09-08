@@ -9848,15 +9848,18 @@ class LlamaCppBackend:
             # them: a render node this user cannot open leaves HIP with no device and
             # the Vulkan loader with nothing to enumerate, and "the Vulkan probe
             # reported no device" then sends the user after a driver that is fine
-            # (#10466).
+            # (#10466). A Vulkan binary is asked only about the render node, since it
+            # never opens /dev/kfd and a closed one is not why its probe came back
+            # empty; it keeps its own reason below.
+            _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
             try:
                 from utils.hardware.amd import amd_node_permission_hint
-                node_hint = amd_node_permission_hint()
+                node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
             except Exception:  # noqa: BLE001
                 node_hint = None
             if node_hint:
                 return node_hint
-            if LlamaCppBackend._is_vulkan_backend(binary):
+            if _is_vulkan:
                 return "the Vulkan probe reported no device"
 
             masks = []

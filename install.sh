@@ -4657,6 +4657,12 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 
 _amd_no_rocm_version_reroute=false
 _amd_probed_gfx_first=""
+# Read before the branches below and reported after them: a closed node is invisible
+# to every probe this installer runs, so the index gets chosen as if the account could
+# use the card. On a runtime-less host the reroute above then rewrites a */cpu index to
+# a per-arch */gfx* one -- which is exactly the #10466 host -- so answering inside one
+# arm would miss the case this was written for.
+_closed_amd_nodes="$(_amd_nodes_closed_to_this_user)"
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
@@ -5430,22 +5436,12 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
-                _closed_nodes="$(_amd_nodes_closed_to_this_user)"
-                # Before the kernel-stack hint, and instead of it: the driver is loaded
-                # and /dev/kfd exists on this host, so "install the ROCm kernel stack"
-                # is advice that cannot help. Nothing else in this installer looks at
-                # whether the account can OPEN a node it just found (#10466).
-                if [ -n "$_closed_nodes" ]; then
-                    substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
-                    printf '%s\n' "$_closed_nodes" | while IFS= read -r _n; do
-                        substep "  $_n"
-                    done
-                    substep "  Every backend needs them, ROCm and Vulkan alike. Add yourself to the"
-                    substep "  render and video groups, then log out and back in:"
-                    substep "  sudo usermod -a -G render,video ${USER:-\$USER}"
                 # Only when ROCm truly can't see the GPU: a detected-but-too-old
-                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
-                elif ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance. A
+                # closed node is answered after the whole case instead, because it
+                # reaches the gfx arm too.
+                if [ -z "$_closed_amd_nodes" ] && \
+                   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
                     substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
                     substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
                     substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
@@ -5463,6 +5459,23 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# The driver is loaded and the nodes exist, so neither a wheel nor a kernel stack
+# repairs this; only group membership does. Nothing else in this installer asks
+# whether the account can OPEN a node it just found (#10466). /dev/kfd alone stops
+# ROCm; a render node stops Vulkan as well, so the two are not claimed together.
+if [ -n "$_closed_amd_nodes" ]; then
+    substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
+    printf '%s\n' "$_closed_amd_nodes" | while IFS= read -r _n; do
+        substep "  $_n"
+    done
+    if printf '%s\n' "$_closed_amd_nodes" | grep -qv '^/dev/kfd$'; then
+        substep "  Every backend needs them, ROCm and Vulkan alike. Add yourself to the"
+    else
+        substep "  ROCm needs it; Vulkan does not. Add yourself to the"
+    fi
+    substep "  render and video groups, then log out and back in:"
+    substep "  sudo usermod -a -G render,video ${USER:-\$USER}"
+fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"

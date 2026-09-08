@@ -165,6 +165,7 @@ def test_the_capability_message_names_the_permission_not_a_torch_mismatch(monkey
     from utils.hardware import hardware
 
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
     monkeypatch.setenv("USER", "ada")
     message = hardware._gpu_present_but_unusable_message(
         "video generation",
@@ -213,9 +214,113 @@ def test_the_capability_message_is_unchanged_when_the_nodes_open(monkeypatch, li
     from utils.hardware import hardware
 
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
     message = hardware._gpu_present_but_unusable_message(
         "video generation",
         verdict = ("torch_cuda_unavailable", "2.11.0+rocm7.0"),
     )
     assert "Repair installation" in message
     assert "usermod" not in message
+
+
+def test_the_hint_is_rocm_specific_when_only_kfd_is_closed(monkeypatch, linux):
+    """Vulkan never opens /dev/kfd, so a closed one does not stop every backend.
+    Claiming it did sent a Vulkan user with an unrelated failure after ROCm groups."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    hint = amd.amd_node_permission_hint()
+    assert "ROCm cannot use" in hint
+    assert "no GPU backend" not in hint
+
+
+def test_the_hint_covers_every_backend_when_a_render_node_is_closed(monkeypatch, linux):
+    """The pair to the test above: HIP and the Vulkan loader both open this one."""
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
+    assert "no GPU backend can use" in amd.amd_node_permission_hint()
+
+
+def test_a_vulkan_only_caller_is_not_answered_with_a_closed_kfd_node(monkeypatch, linux):
+    """``needs_kfd = False`` is a Vulkan binary saying a closed KFD node is not its
+    problem. Without it the render-node-open case still returned a hint."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    assert amd.amd_node_permission_hint(needs_kfd = False) is None
+    assert amd.amd_node_permission_hint() is not None
+
+
+def test_a_vulkan_caller_is_still_answered_about_a_closed_render_node(monkeypatch, linux):
+    """The control for the one above, so the narrowing cannot silence the real case."""
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
+    assert amd.amd_node_permission_hint(needs_kfd = False) is not None
+
+
+def test_the_vulkan_probe_keeps_its_own_reason_when_only_kfd_is_closed(monkeypatch, linux):
+    """End to end through the caller: a Vulkan binary on a host whose render node
+    opens must not be told about ROCm's node."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/dri/renderD128"},
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_vulkan_backend",
+        staticmethod(lambda _b: True),
+    )
+    assert LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server") == (
+        "the Vulkan probe reported no device"
+    )
+
+
+def test_a_rocm_binary_is_still_told_about_the_closed_kfd_node(monkeypatch, linux):
+    """The control: the same host, a non-Vulkan binary, and the hint must survive."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/dri/renderD128"},
+    )
+    monkeypatch.setenv("USER", "ada")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_vulkan_backend",
+        staticmethod(lambda _b: False),
+    )
+    assert "usermod -a -G render,video ada" in (
+        LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    )
+
+
+def test_an_nvidia_mismatch_keeps_the_pytorch_message(monkeypatch, linux):
+    """A hybrid host whose NVIDIA card raised the verdict while an AMD node happens
+    to be closed. Joining the render group repairs nothing there, and reinstalling
+    the GPU build might, so the existing diagnosis has to survive."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"nvidia"}))
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0+cu130"),
+    )
+    assert "Repair installation" in message
+    assert "usermod" not in message
+
+
+def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(
+    monkeypatch, linux
+):
+    """The pair to the test above, differing only in the recorded vendor."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(
+        hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd", "nvidia"}),
+    )
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cpu_build", None),
+    )
+    assert "usermod -a -G render,video ada" in message

@@ -685,19 +685,30 @@ def amd_nodes_closed_to_this_user() -> list[str]:
     return closed
 
 
-def amd_node_permission_hint() -> Optional[str]:
+def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     """One sentence naming the closed nodes and the command that opens them, or None.
 
     Kept beside the probe so the capability message, the llama.cpp log and the
     installer all say the same thing, and so a caller that only needs the yes/no does
     not build a string.
+
+    The two nodes do not block the same backends. A closed render node stops every
+    one of them, since HIP and the Vulkan loader both open it. ``/dev/kfd`` stops only
+    HIP: Vulkan never opens it, so ``needs_kfd = False`` is how a Vulkan-only caller
+    says that a closed KFD node is not its problem, and answering otherwise would send
+    a Vulkan failure with some other cause after the wrong repair.
     """
     closed = amd_nodes_closed_to_this_user()
+    if not needs_kfd:
+        closed = [path for path in closed if path != _KFD_NODE]
     if not closed:
         return None
+    # Claim only what the closed set actually blocks.
+    blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else \
+              "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
     return (
-        f"This account cannot open {', '.join(closed)}, so no GPU backend can use the "
+        f"This account cannot open {', '.join(closed)}, so {blocked} the "
         f"AMD card even though the driver is loaded. Add the account to the render and "
         f"video groups and then log out and back in: "
         f"sudo usermod -a -G render,video {user}"
