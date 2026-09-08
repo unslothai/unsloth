@@ -194,6 +194,13 @@ function Invoke-Native([string] $Exe, [string[]] $Arguments) {
 # The audit policy lives in the EFI system partition. Mount it only if S: is
 # not already something, and hand back whether this call mounted it so the
 # caller's finally can unmount exactly what it mounted.
+# Written while the probe holds the EFI mount and removed once it is given
+# back. $script:EfiStillMounted only lives as long as one PowerShell process,
+# so a stage that could not unmount left the next one finding an EFI-backed S:,
+# calling it pre-existing and never retrying: the partition stayed exposed and
+# that later stage still reported success.
+$EFI_OWNED_MARKER = Join-Path $WorkDir '.efi-mounted-by-probe'
+
 function Mount-Efi {
     if (Test-Path -LiteralPath 'S:\') {
         # S: is already something. Only the EFI system partition may be used as
@@ -202,9 +209,17 @@ function Mount-Efi {
         if (-not (Test-Path -LiteralPath 'S:\EFI\Microsoft\Boot')) {
             throw 'S: is mapped to a volume that is not the EFI system partition; free the drive letter and run again'
         }
+        # Ours from an earlier stage that could not unmount: claim it, so this
+        # stage's Dismount-Efi retries rather than leaving it mounted again.
+        if (Test-Path -LiteralPath $EFI_OWNED_MARKER) {
+            Write-Warning 'S: is the EFI system partition left mounted by an earlier stage of this probe; this stage will unmount it'
+            return $true
+        }
         return $false
     }
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
     Invoke-Native 'mountvol.exe' @('S:', '/S')
+    (Get-Date).ToString('o') | Set-Content -LiteralPath $EFI_OWNED_MARKER -Encoding UTF8
     return $true
 }
 
@@ -220,6 +235,8 @@ function Dismount-Efi([bool] $Mounted) {
         if ($LASTEXITCODE -ne 0) {
             $script:EfiStillMounted = $true
             Write-Warning "could not unmount S: (mountvol exited $LASTEXITCODE)"
+        } else {
+            Remove-Item -LiteralPath $EFI_OWNED_MARKER -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -873,6 +890,13 @@ function Invoke-Prepare {
     if (-not $ciNow.Enabled) {
         throw "$CI_LOG is still disabled after wevtutil sl (policy-controlled?); the probe cannot collect evidence here"
     }
+    # The size as well as the switch, the check the CI job already makes. A
+    # channel that was already enabled reads back enabled even when the resize
+    # was refused, and the 1 MB default wraps while an audit policy logs every
+    # load in the venv: the dropped 3076s then read as a clean window.
+    if ($null -eq $ciNow.MaxSize -or $ciNow.MaxSize -lt 67108864) {
+        throw "$CI_LOG is $($ciNow.MaxSize) bytes after wevtutil sl asked for 64 MB (policy-controlled?); auditing every load would wrap the channel before collect reads it, so the probe cannot collect trustworthy evidence here"
+    }
     Write-Host ("CodeIntegrity/Operational enabled, max size {0} (was enabled={1}, maxSize={2})" -f $ciNow.MaxSize, $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
 
     if ($AuditPolicy) {
@@ -1024,6 +1048,45 @@ function Get-SignatureInventory([string] $root) {
 function Invoke-Run {
     Assert-Elevated
     $dir = Get-RunDir
+
+    # The policy is re-verified here rather than trusted from prepare. A reboot
+    # between the two stages is supported and is itself part of what is being
+    # reported, but a policy that did not load on the new boot leaves collect
+    # reading a control that fired on the previous one as proof this window was
+    # audited: the scenario then runs unaudited and its empty window reads as a
+    # clean allow. Only the file on the EFI partition survives a reboot; that it
+    # loaded and is evaluating has to be asked again.
+    $runBaselinePath = Join-Path $dir 'baseline.json'
+    if (Test-Path -LiteralPath $runBaselinePath) {
+        $runBaseline = Get-Content -LiteralPath $runBaselinePath -Raw | ConvertFrom-Json
+        if ($runBaseline.AuditPolicyApplied) {
+            Write-Section 'Audit policy still active'
+            $state = Get-SacState
+            if ($state.Policies.Count -eq 0) {
+                throw "CiTool listed no policies, so the audit policy applied by prepare cannot be verified as active; this run would measure nothing. Run revert and prepare again."
+            }
+            if (-not (Test-PolicyActive $NOISG_GUID)) {
+                throw "the audit policy $NOISG_GUID is no longer in the active policy set (a reboot since prepare?), so this run would not be audited and its empty window would read as an allow. Run revert and prepare again."
+            }
+            Write-Host "audit policy $NOISG_GUID is active"
+            $bootedAt = $null
+            try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
+            $preparedAt = $null
+            try { $preparedAt = [datetime]::Parse($runBaseline.CapturedAt) } catch { }
+            if ($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) {
+                # The control that fired belongs to the previous boot. Ask again
+                # on this one, and record the answer where collect reads it.
+                Write-Host 'the machine booted after this baseline was captured; re-running the positive control on this boot'
+                $controlFired = Test-AuditPolicyEvaluating
+                if ($false -eq $controlFired) {
+                    throw "the audit policy $NOISG_GUID is listed as active but an unsigned control raised no 3076 or 3077 on this boot, so it is not evaluating loads and this run would be meaningless. Run revert and prepare again."
+                }
+                $runBaseline.AuditPolicyControlFired = $controlFired
+                $runBaseline | ConvertTo-Json -Depth 6 |
+                    Set-Content -LiteralPath $runBaselinePath -Encoding UTF8
+            }
+        }
+    }
 
     # A machine that was prepared earlier may have been rebooted since, which is
     # itself part of the reported behaviour: Smart App Control re-evaluates from
@@ -1543,7 +1606,14 @@ function Invoke-Revert {
         $saved = $ROLLBACK_POLICY
         $mounted = Mount-Efi
         try {
-            if ($baseline.AuditPolicyPreexisting -and (Test-Path -LiteralPath $saved)) {
+            if ($baseline.AuditPolicyPreexisting -and -not (Test-Path -LiteralPath $saved)) {
+                # Falling through to the removal branch would delete an
+                # administrator's policy and then report a completed rollback.
+                # Nothing is touched here, so the copy is still recoverable if
+                # the file turns up; only the operator can decide the rest.
+                throw "the baseline says a policy with $NOISG_GUID was already installed, but the saved copy is missing from $saved, so it cannot be restored. Nothing was changed; restore that .cip by hand (or remove AuditPolicyPreexisting from baseline.json once you have) and run revert again."
+            }
+            if ($baseline.AuditPolicyPreexisting) {
                 # Not ours to delete: put back the policy prepare found.
                 Copy-Item -LiteralPath $saved -Destination $NOISG_DEST -Force
                 Write-Host 'pre-existing audit policy restored'

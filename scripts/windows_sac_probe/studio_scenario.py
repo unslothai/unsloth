@@ -206,8 +206,14 @@ def _stream_events(
 def discover_port(explicit: Optional[int]) -> int:
     ports = [explicit] if explicit else DEFAULT_PORTS
     for port in ports:
-        status, _ = _request(f"http://127.0.0.1:{port}", "GET", "/api/liveness", timeout = 5)
-        if status == 200:
+        status, body = _request(f"http://127.0.0.1:{port}", "GET", "/api/liveness", timeout = 5)
+        # The identity marker, not the status code. The next thing this script
+        # does with the port it picks is post the operator's Studio password to
+        # it, and these are default ports shared with other software (8888 is
+        # Jupyter's), so a catch-all server answering 200 would have been sent
+        # the credential. Same check as Test-StudioResponding in sac-probe.ps1;
+        # `service` has been in this route since the route existed.
+        if status == 200 and isinstance(body, dict) and body.get("service") == "Unsloth UI Backend":
             return port
     raise SystemExit(
         "no Studio backend answered /api/liveness on "

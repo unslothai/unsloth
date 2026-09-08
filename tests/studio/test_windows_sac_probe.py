@@ -114,7 +114,10 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
     ):
         calls.append((method, path, payload or {}))
         if path == "/api/liveness":
-            return 200, {}
+            # The identity marker the real route publishes: discover_port
+            # refuses a stranger answering this path, since the next thing it
+            # does with the port is post the Studio password to it.
+            return 200, {"status": "alive", "service": "Unsloth UI Backend"}
         if path == "/api/auth/login":
             return 200, {"access_token": "tok"}
         if path == "/v1/chat/completions":
@@ -261,7 +264,10 @@ def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(
     ):
         calls.append((method, path))
         if path == "/api/liveness":
-            return 200, {}
+            # The identity marker the real route publishes: discover_port
+            # refuses a stranger answering this path, since the next thing it
+            # does with the port is post the Studio password to it.
+            return 200, {"status": "alive", "service": "Unsloth UI Backend"}
         if path == "/api/auth/login":
             return 200, {"access_token": "tok"}
         if path == "/api/inference/load":
@@ -715,6 +721,8 @@ def test_the_inventory_is_of_the_runtime_studio_resolved(tmp_path, monkeypatch):
         timeout = 900,
     ):
         seen.append(path)
+        if path == "/api/liveness":
+            return 200, {"status": "alive", "service": "Unsloth UI Backend"}
         if path == "/api/auth/login":
             return 200, {"access_token": "tok"}
         if path == "/api/settings/llama-cpp-path":
@@ -1344,3 +1352,97 @@ def test_the_ci_verdict_needs_a_runtime_that_was_actually_extracted():
     assert "if (-not $dir) {" in verdict
     assert "::error::the shipped runtime was never extracted" in verdict
     assert verdict.index("if (-not $dir) {") < verdict.index("foreach ($attempt in 1..10) {")
+
+
+def test_the_scenario_will_not_hand_its_password_to_an_unidentified_server():
+    """discover_port picks the port the operator's Studio password is posted
+    to, and these defaults are shared (8888 is Jupyter's), so a catch-all 200
+    used to be enough to receive the credential."""
+    s = _load_scenario()
+    seen: list[str] = []
+
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
+        seen.append(base_url)
+        if base_url.endswith(":8888"):
+            return 200, {"status": "alive"}  # a stranger answering the path
+        if base_url.endswith(":8890"):
+            return 200, {"status": "alive", "service": "Unsloth UI Backend"}
+        return 0, "refused"
+
+    import pytest as _pytest
+
+    monkey = _pytest.MonkeyPatch()
+    try:
+        monkey.setattr(s, "_request", fake)
+        assert s.discover_port(None) == 8890
+        with _pytest.raises(SystemExit):
+            s.discover_port(8888)
+    finally:
+        monkey.undo()
+
+
+def test_an_efi_mount_this_probe_owns_is_retried_by_the_next_stage():
+    """$script:EfiStillMounted dies with the process, so the next stage found
+    an EFI-backed S:, called it pre-existing and never retried the unmount
+    while still reporting success."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "$EFI_OWNED_MARKER = Join-Path $WorkDir '.efi-mounted-by-probe'" in ps1
+    mount = ps1[ps1.index("function Mount-Efi") : ps1.index("$script:EfiStillMounted = $false")]
+    assert "if (Test-Path -LiteralPath $EFI_OWNED_MARKER) {" in mount
+    # Claimed before the pre-existing verdict, and written when we mount.
+    assert mount.index("Test-Path -LiteralPath $EFI_OWNED_MARKER") < mount.index("return $false")
+    assert "Set-Content -LiteralPath $EFI_OWNED_MARKER" in mount
+    dismount = ps1[ps1.index("function Dismount-Efi") : ps1.index("function Test-PolicyActive")]
+    assert "Remove-Item -LiteralPath $EFI_OWNED_MARKER" in dismount
+
+
+def test_a_lost_preexisting_policy_backup_is_a_revert_failure():
+    """Falling through to the removal branch deleted an administrator's policy
+    and then reported the rollback complete."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert (
+        "if ($baseline.AuditPolicyPreexisting -and -not (Test-Path -LiteralPath $saved)) {"
+        in revert
+    )
+    guard = revert[revert.index("$baseline.AuditPolicyPreexisting -and -not") :]
+    assert guard.index('throw "the baseline says a policy with $NOISG_GUID') < guard.index(
+        "Remove-Item -LiteralPath $NOISG_DEST"
+    )
+
+
+def test_prepare_requires_the_log_capacity_it_asked_for():
+    """A channel that was already enabled reads back enabled even when the
+    resize was refused, and the 1 MB default wraps while every venv load is
+    audited: the dropped records read as a clean window."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
+    assert "$ciNow.MaxSize -lt 67108864" in prepare
+    assert prepare.index("$ciNow.MaxSize -lt 67108864") < prepare.index(
+        "Initialize-Studio $dir $true"
+    )
+
+
+def test_run_revalidates_the_policy_and_the_control_after_a_reboot():
+    """Only the file on the EFI partition survives a reboot. A policy that did
+    not load on the new boot left collect reading the pre-reboot control as
+    proof that this window was audited."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "if (-not (Test-PolicyActive $NOISG_GUID)) {" in run
+    assert "LastBootUpTime" in run
+    assert "$controlFired = Test-AuditPolicyEvaluating" in run
+    assert "$runBaseline.AuditPolicyControlFired = $controlFired" in run
+    # Before anything is measured, not after.
+    assert run.index("Test-PolicyActive $NOISG_GUID") < run.index(
+        "Write-Section 'Venv signature inventory'"
+    )
