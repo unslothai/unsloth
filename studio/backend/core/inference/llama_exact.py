@@ -151,6 +151,18 @@ _BARE_CONTRADICTIONS = (
     "-nkvo",
     "--no-flash-attn",
 )
+# A later spelling of the same option replaces an earlier one, as llama-server applies argv,
+# so `--flash-attn off --flash-attn on` runs with flash attention and is no contradiction.
+_OPTION_FAMILY = {
+    "-ctk": "--cache-type-k",
+    "-ctv": "--cache-type-v",
+    "-fa": "--flash-attn",
+    "--no-flash-attn": "--flash-attn",
+    "--no-context-shift": "--context-shift",
+    "-nkvo": "--no-kv-offload",
+    "-kvo": "--no-kv-offload",
+    "--kv-offload": "--no-kv-offload",
+}
 
 
 def _flag_name(token: str) -> str:
@@ -166,29 +178,29 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
 def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
     """The tokens in ``args`` that exact mode cannot run with, in the order they appear. Flag
     names, not values. A zero ``--cache-reuse 0`` and an ``f16`` cache type are the flag spelled
-    as the default, not contradictions."""
+    as the default, not contradictions, and an option's LAST occurrence decides for it."""
     tokens = [str(a) for a in (args or ())]
-    found: list[str] = []
+    # family -> (name as last spelled, contradicts)
+    final: dict[str, tuple[str, bool]] = {}
     for index, token in enumerate(tokens):
         name = _flag_name(token)
         following = tokens[index + 1] if index + 1 < len(tokens) else None
         if name == "--cache-reuse":
-            if _flag_value(token, following) not in ("0", None):
-                found.append(name)
-            continue
-        if name in _CACHE_TYPE_FLAGS:
+            contradicts = _flag_value(token, following) not in ("0", None)
+        elif name in _CACHE_TYPE_FLAGS:
             value = (_flag_value(token, following) or "").strip().lower()
-            if value and value not in ("f16", "fp16", "float16"):
-                found.append(name)
-            continue
-        if name in ("--flash-attn", "-fa"):
+            contradicts = bool(value) and value not in ("f16", "fp16", "float16")
+        elif name in ("--flash-attn", "-fa"):
             value = (_flag_value(token, following) or "").strip().lower()
-            if value in ("off", "0", "false", "disabled"):
-                found.append(name)
+            contradicts = value in ("off", "0", "false", "disabled")
+        elif name in _BARE_CONTRADICTIONS:
+            contradicts = True
+        elif name in ("--no-context-shift", "-kvo", "--kv-offload"):
+            contradicts = False
+        else:
             continue
-        if name in _BARE_CONTRADICTIONS:
-            found.append(name)
-    return found
+        final[_OPTION_FAMILY.get(name, name)] = (name, contradicts)
+    return [name for name, contradicts in final.values() if contradicts]
 
 
 def apply_child_env(env: dict, *, on: bool) -> bool:

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   type ExactConcurrencyState,
   exactConcurrencyChip,
+  exactConcurrencyChipApplies,
   normalizeExactConcurrency,
 } from "../src/features/chat/lib/exact-concurrency.ts";
 
@@ -107,9 +108,36 @@ test("the chip reads the store and hangs the sentence off a title", () => {
   assert.match(CHIP, /if \(!chip\) return null;/);
 });
 
-test("the chat header renders it beside the model selector", () => {
+test("the chat header renders it beside the model selector, for the resident local model only", () => {
+  // The state is the local llama-server's, which stays resident when a hosted model is picked
+  // beside it, so unconditionally the chip put the local guarantee next to hosted output.
   assert.match(
     CHAT_PAGE,
-    /triggerDataTour="chat-model-selector"[\s\S]{0,400}<ExactConcurrencyChip \/>/,
+    /triggerDataTour="chat-model-selector"[\s\S]{0,600}exactConcurrencyChipApplies\(\{[\s\S]{0,120}\}\) && <ExactConcurrencyChip \/>/,
+  );
+});
+
+test("the chip applies to a resident local model and to nothing else", () => {
+  const resident = { isExternalModel: false, residentCheckpoint: "qwen" };
+  assert.equal(exactConcurrencyChipApplies(resident), true);
+  assert.equal(
+    exactConcurrencyChipApplies({ ...resident, isExternalModel: true }),
+    false,
+    "a hosted model selected beside the resident local one",
+  );
+  assert.equal(
+    exactConcurrencyChipApplies({ ...resident, residentCheckpoint: null }),
+    false,
+    "nothing resident",
+  );
+  assert.equal(
+    exactConcurrencyChipApplies({ ...resident, residentCheckpoint: undefined }),
+    false,
+    "residency unknown",
+  );
+  assert.equal(
+    exactConcurrencyChipApplies({ ...resident, modelLoading: true }),
+    false,
+    "a load in flight describes the next server, not this one",
   );
 });

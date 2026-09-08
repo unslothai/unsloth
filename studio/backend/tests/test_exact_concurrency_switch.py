@@ -150,6 +150,17 @@ class TestTheLaunchArgs:
             (["--cache-reuse", "512", "--ctk", "q8_0", "-nkvo"], ["--cache-reuse", "-nkvo"]),
             ([], []),
             (None, []),
+            # An option's last occurrence decides, as llama-server applies argv.
+            (["--flash-attn", "off", "--flash-attn", "on"], []),
+            (["-fa", "off", "--flash-attn=on"], []),
+            (["--no-flash-attn", "-fa", "on"], []),
+            (["--flash-attn", "on", "-fa", "off"], ["-fa"]),
+            (["-ctk", "q8_0", "--cache-type-k", "f16"], []),
+            (["--cache-type-v", "f16", "-ctv", "q4_0"], ["-ctv"]),
+            (["--cache-reuse", "512", "--cache-reuse", "0"], []),
+            (["--context-shift", "--no-context-shift"], []),
+            (["-nkvo", "--kv-offload"], []),
+            (["--kv-offload", "-nkvo"], ["-nkvo"]),
         ],
     )
     def test_what_the_mode_cannot_run_beside(self, args, expected):
@@ -294,3 +305,39 @@ class TestThePreemptionSnapshotReportsItAndNeverActsOnIt:
         controller.configure(budget = 4096)
         assert controller.snapshot().exact == "on", "configure without the argument keeps it"
 
+
+class TestTheParkingBudgetHoldsTheWholePool:
+    """A park that outgrows --preempt-ram is re-prefilled, and a re-prefill is not byte-identical
+    on CUDA, so an exact launch sizes the budget to the pool when the default would not hold it."""
+
+    def test_a_pool_past_the_default_gets_a_budget_that_holds_it(self):
+        from core.inference.llama_cpp import _PREEMPT_RAM_DEFAULT_MIB, _exact_parking_budget_mib
+
+        pool = 12 * 1024 * 1024 * 1024
+        budget = _exact_parking_budget_mib(pool, args = ["llama-server"], env = {})
+        assert budget is not None
+        assert budget * 1024 * 1024 >= pool
+        assert budget > _PREEMPT_RAM_DEFAULT_MIB
+
+    def test_a_pool_the_default_holds_needs_no_flag(self):
+        from core.inference.llama_cpp import _exact_parking_budget_mib
+
+        assert _exact_parking_budget_mib(2 * 1024 * 1024 * 1024, args = [], env = {}) is None
+
+    def test_an_unknown_pool_needs_no_flag(self):
+        from core.inference.llama_cpp import _exact_parking_budget_mib
+
+        assert _exact_parking_budget_mib(0, args = [], env = {}) is None
+
+    @pytest.mark.parametrize(
+        ("args", "env"),
+        [
+            (["llama-server", "--preempt-ram", "1024"], {}),
+            (["llama-server", "--preempt-ram=1024"], {}),
+            (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "0"}),
+        ],
+    )
+    def test_a_budget_someone_named_keeps_its_say(self, args, env):
+        from core.inference.llama_cpp import _exact_parking_budget_mib
+
+        assert _exact_parking_budget_mib(64 * 1024 * 1024 * 1024, args = args, env = env) is None

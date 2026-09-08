@@ -1566,18 +1566,25 @@ async def stream_with_studio_tools(
                 for item in calls
             )
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
-        # exactly two such dependencies, both written by `record_result`. Keyed on the arguments
-        # as they arrived rather than as healed, which is the one gap: two malformed calls healing
-        # to one key both run, costing a repeated result rather than a wrong answer.
+        # exactly two such dependencies, both written by `record_result`. Keyed as the ledger
+        # keys them, healed, so two spellings of one call run once.
         _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
-        _round_keys = [
-            round_call_key(
-                (item.get("function") or {}).get("name", ""),
-                (item.get("function") or {}).get("arguments"),
-            )
+        _round_keys = []
+        for item in calls:
+            try:
+                _round_keys.append(controller.call_key(item))
+            except Exception:
+                _round_keys.append(
+                    round_call_key(
+                        (item.get("function") or {}).get("name", ""),
+                        (item.get("function") or {}).get("arguments"),
+                    )
+                )
+        _round_one_shot = [
+            (item.get("function") or {}).get("name", "")
             for item in calls
+            if (item.get("function") or {}).get("name", "") in _one_shot
         ]
-        _round_one_shot = [name for name, _args in _round_keys if name in _one_shot]
         parallel_round = (
             parallel_tool_calls_enabled()
             and len(calls) > 1

@@ -3199,6 +3199,12 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        # The thought is one turn's work too: a continuation that went on thinking and then
+        # called a tool carried only its own part, and the earlier part left the context.
+        prev_reasoning = conversation[-1].get("reasoning_content")
+        new_reasoning = assistant_msg.get("reasoning_content")
+        if isinstance(prev_reasoning, str) and isinstance(new_reasoning, str):
+            merged_msg["reasoning_content"] = f"{prev_reasoning}{new_reasoning}"
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)

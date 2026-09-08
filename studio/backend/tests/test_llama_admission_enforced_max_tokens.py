@@ -221,11 +221,17 @@ class TestAStatedCapNoLongerSerialises:
     def test_the_cases_that_must_not_change(self):
         assert _charged(50, 200, active = True) == _charged(50, 200, active = False) == 50
         for prompt in (1, 200, 1000, 3000):
-            assert _charged(None, prompt, active = True) == _charged(None, prompt, active = False)
-        for cap in (BUDGET, BUDGET + 1):
-            assert _charged(cap, 3000, active = True) == _charged(None, 3000, active = False), (
-                "a cap at or above the window was already unstated"
+            # Pausable: the flat allowance. Unpausable: the rest of the share, which is the cap
+            # it is sent, so its reservation covers what it may generate.
+            assert _charged(None, prompt, active = True) == min(
+                _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, SHARE - prompt
             )
+            assert _charged(None, prompt, active = False) == SHARE - prompt
+        for cap in (BUDGET, BUDGET + 1):
+            for active in (True, False):
+                assert _charged(cap, 3000, active = active) == _charged(None, 3000, active = active), (
+                    "a cap at or above the window was already unstated"
+                )
         assert _charged(6000, BUDGET - 1, active = True) >= 1, "the charge is never zero"
         assert _charged(1, BUDGET - 1, active = True) >= 1
 

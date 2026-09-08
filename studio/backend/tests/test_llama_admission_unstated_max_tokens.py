@@ -196,12 +196,24 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_the_charge_does_not_scale_with_the_cache(self):
-        assert self._cost(262144, 4) == self._cost(
-            32768, 4
-        ), "a large cache must not be charged more for the same unstated request"
+    def test_the_charge_does_not_scale_with_the_cache_while_a_pause_can_reclaim_it(self):
+        # With nothing able to pause the request, the charge IS its share, which does scale:
+        # that is the cap it is sent, and charging less admitted more than the cache holds.
+        def _pausable(budget):
+            return _openai_llama_admission_tokens(
+                _chat(max_tokens = budget),
+                budget = budget,
+                capacity = 4,
+                context_window = budget,
+                preemption_active = True,
+            )
+
+        assert _pausable(262144) == _pausable(32768), (
+            "a large cache must not be charged more for the same unstated request"
+        )
         for budget in (32768, 262144):
-            assert self._cost(budget, 4) < budget // 4
+            assert _pausable(budget) < budget // 4
+            assert self._cost(budget, 4) == budget // 4, "unpausable: the share it may fill"
 
     def test_the_share_only_ever_lowers_the_allowance(self):
         base = _openai_llama_admission_output_allowance(

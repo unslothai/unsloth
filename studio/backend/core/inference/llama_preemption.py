@@ -228,7 +228,9 @@ class PreemptionPolicy(Protocol):
 
     def on_preempted(self, checkpoint: StreamCheckpoint) -> None: ...
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool: ...
+    def await_resume(
+        self, timeout: Optional[float] = None, *, cancel_event = None
+    ) -> bool: ...
 
     def on_resumed(self) -> None: ...
 
@@ -258,8 +260,20 @@ class DeferredPreemptionPolicy:
         if self._inner is not None:
             self._inner.on_preempted(checkpoint)
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
-        return False if self._inner is None else bool(self._inner.await_resume(timeout))
+    def await_resume(
+        self, timeout: Optional[float] = None, *, cancel_event = None
+    ) -> bool:
+        if self._inner is None:
+            return False
+        # Stop travels through, or every routed chat pauses without it: the caller's keyword
+        # raised TypeError here and its fallback retried the wait with no Stop at all.
+        if cancel_event is None:
+            return bool(self._inner.await_resume(timeout))
+        try:
+            return bool(self._inner.await_resume(timeout, cancel_event = cancel_event))
+        except TypeError:
+            # An inner policy written against the older protocol.
+            return bool(self._inner.await_resume(timeout))
 
     def on_resumed(self) -> None:
         if self._inner is not None:
@@ -287,7 +301,9 @@ class NullPreemptionPolicy:
     def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
         return None
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
+    def await_resume(
+        self, timeout: Optional[float] = None, *, cancel_event = None
+    ) -> bool:
         return True
 
     def on_resumed(self) -> None:

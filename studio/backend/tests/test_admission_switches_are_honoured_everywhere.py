@@ -335,14 +335,29 @@ class TestExactModeIsOnlyReportedOnEvidence:
             == exact.EXACT_STATE_UNAVAILABLE
         )
 
-    def test_the_load_reads_the_capability_off_the_binarys_help(self):
-        # `--preempt-ram` and exact concurrency ship in the same fork, and the server prints
-        # nothing at load when the mode is running, so this flag is the capability signal.
+    def test_the_load_reads_the_mode_off_the_running_server(self):
+        # Not off `--preempt-ram`: a build carrying the parking flag without the mode was
+        # reported `on`. The server says so itself on /props.
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        assert "supports_exact = bool(" in source
-        assert "supports_preempt_ram" in source
+        assert "supports_exact = self._server_reports_exact_concurrency()" in source
+        assert "supports_exact = bool(" not in source
+
+    @pytest.mark.parametrize(
+        ("props", "expected"),
+        [
+            ({"exact_concurrency": True}, True),
+            ({"exact_concurrency": False}, False),
+            ({"total_slots": 4}, False),  # a build that does not advertise the mode
+            (None, False),  # /props unreadable
+            ({"exact_concurrency": "1"}, False),  # only the boolean the server sends
+        ],
+    )
+    def test_what_the_server_says_on_props_is_the_evidence(self, monkeypatch, props, expected):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        monkeypatch.setattr(backend, "_query_server_props", lambda: props)
+        assert backend._server_reports_exact_concurrency() is expected
 
 
 # ── 4. Arming obeys the same eligibility gate as pricing ─────────────────────
@@ -507,3 +522,185 @@ class TestDisarmDoesNotEraseWhatItNeverArmed:
         controller.register("armed", tokens = 1000, state = ParticipantState.DECODING)
         inf._openai_llama_preemption_disarm(llama_backend = backend, gen_id = "armed")
         assert erases.erased == [0]
+
+
+# ── 7. The residency sweep answers to the same switches ──────────────────────
+
+
+class TestTheResidencySweepAnswersToTheSameSwitches:
+    @pytest.mark.parametrize(
+        ("env", "unified"),
+        [
+            ({PREEMPT_ENV: "0"}, True),
+            ({"UNSLOTH_LLAMA_ADMISSION_CONTROL": "0"}, True),
+            ({"UNSLOTH_LLAMA_ADMISSION_KV_BUDGET": "0"}, True),
+            ({}, False),
+        ],
+    )
+    def test_an_ineligible_generation_erases_no_idle_slot(self, monkeypatch, env, unified):
+        # A controller never configured has a budget of zero, so every resident token read as
+        # excess and the sweep erased another chat's idle prefix cache with preemption off.
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        erases = _Erases(monkeypatch)
+        slots = [
+            {"id": 0, "is_processing": False, "n_prompt_tokens": 1000},
+            {"id": 1, "is_processing": True, "n_prompt_tokens": 64},
+        ]
+        monkeypatch.setattr(inf, "fetch_llama_slots", lambda *a, **k: slots)
+        backend = _backend(_kv_cache_unified = unified)
+        assert not inf._openai_llama_preemption_will_apply(backend, _BUDGET)
+        _refresh, observe, _note = inf._openai_llama_residency_observer(
+            llama_backend = backend, completion_id = "active"
+        )
+        observe(32)
+        assert erases.erased == []
+
+    def test_an_eligible_generation_still_sweeps(self, monkeypatch):
+        erases = _Erases(monkeypatch)
+        slots = [
+            {"id": 0, "is_processing": False, "n_prompt_tokens": 1000},
+            {"id": 1, "is_processing": True, "n_prompt_tokens": 64},
+        ]
+        monkeypatch.setattr(inf, "fetch_llama_slots", lambda *a, **k: slots)
+        backend = _backend()
+        assert inf._openai_llama_preemption_will_apply(backend, _BUDGET)
+        controller = get_preemption_controller(_KEY)
+        controller.configure(budget = 512, kv_unified = True, slots = _SLOTS)
+        _refresh, observe, _note = inf._openai_llama_residency_observer(
+            llama_backend = backend, completion_id = "active"
+        )
+        observe(32)
+        assert erases.erased == [0]
+
+
+# ── 8. An unpausable request is charged what it is permitted ─────────────────
+
+
+class TestAnUnpausableRequestIsChargedWhatItIsPermitted:
+    def test_an_unstated_unpausable_request_reserves_the_rest_of_its_share(self):
+        # Two of these at the flat allowance beside one stated request reserved 16064 of a
+        # 16384 cache while being permitted 22192 cells, none of them choosable as a victim.
+        share = _BUDGET // _SLOTS
+        prompt = 8
+        charged = inf._openai_llama_admission_output_allowance(
+            None,
+            budget = _BUDGET,
+            prompt_tokens = prompt,
+            context_window = _BUDGET,
+            share = share,
+            preemption_active = False,
+        )
+        assert charged == share - prompt
+
+    def test_the_charge_matches_the_wire_cap_it_is_sent(self):
+        backend = _backend()
+        payload = _chat(None)
+        prompt = _prompt_tokens(payload, backend)
+        wire = inf._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, pausable = False
+        )
+
+        async def _run():
+            reservation, _ = inf._openai_llama_admission_reserve(
+                request = None, llama_backend = backend, payload = payload, pausable = False
+            )
+            try:
+                assert _charge(reservation) == prompt + wire
+            finally:
+                reservation.cancel()
+
+        asyncio.run(_run())
+
+    def test_a_pausable_unstated_request_keeps_the_flat_allowance(self):
+        share = _BUDGET // _SLOTS
+        charged = inf._openai_llama_admission_output_allowance(
+            None,
+            budget = _BUDGET,
+            prompt_tokens = 8,
+            context_window = _BUDGET,
+            share = share,
+            preemption_active = True,
+        )
+        assert charged == inf._OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
+
+# ── 9. The Anthropic passthrough is sent the cap it was charged for ──────────
+
+
+class TestTheAnthropicPassthroughIsSentTheCapItWasChargedFor:
+    @pytest.mark.parametrize("stream", [True, False])
+    def test_an_omitted_cap_is_held_to_the_share(self, monkeypatch, stream):
+        backend = _backend()
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+        sent: dict = {}
+
+        async def _stream(request, cancel_event, llama_backend, messages, tools, temperature, top_p, top_k, max_tokens, *a, **k):
+            sent["max_tokens"] = max_tokens
+            raise HTTPException(status_code = 418)
+
+        async def _non_streaming(llama_backend, messages, tools, temperature, top_p, top_k, max_tokens, *a, **k):
+            sent["max_tokens"] = max_tokens
+            raise HTTPException(status_code = 418)
+
+        monkeypatch.setattr(inf, "_anthropic_passthrough_stream", _stream)
+        monkeypatch.setattr(inf, "_anthropic_passthrough_non_streaming", _non_streaming)
+        payload = AnthropicMessagesRequest(
+            max_tokens = _BUDGET,  # at the window, which is unstated
+            stream = stream,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [
+                {
+                    "name": "web_search",
+                    "description": "search",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(
+                inf.anthropic_messages(payload, request = _AnthropicRequest(), current_subject = "t")
+            )
+        assert raised.value.status_code == 418
+        expected = inf._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, pausable = False
+        )
+        assert expected is not None and expected < _BUDGET
+        assert sent["max_tokens"] == expected
+
+
+# ── 10. One switch stands the server's own parking down as well ──────────────
+
+
+class TestOneSwitchStandsTheChildsParkingDown:
+    def test_preemption_off_puts_a_zero_budget_in_the_child_environment(self, monkeypatch):
+        from core.inference.llama_cpp import _stand_down_child_parking
+
+        monkeypatch.setenv(PREEMPT_ENV, "0")
+        env: dict = {}
+        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) is True
+        assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
+        assert _preempt_ram_disabled_in(["llama-server", "--kv-unified"], env = env)
+
+    def test_preemption_on_leaves_the_child_alone(self):
+        from core.inference.llama_cpp import _stand_down_child_parking
+
+        env: dict = {}
+        assert _stand_down_child_parking(env, ["llama-server"]) is False
+        assert env == {}
+
+    @pytest.mark.parametrize(
+        ("env", "args"),
+        [
+            ({"LLAMA_ARG_PREEMPT_RAM": "4096"}, ["llama-server"]),
+            ({}, ["llama-server", "--preempt-ram", "4096"]),
+            ({}, ["llama-server", "--preempt-ram=4096"]),
+        ],
+    )
+    def test_a_budget_someone_named_keeps_its_say(self, monkeypatch, env, args):
+        from core.inference.llama_cpp import _stand_down_child_parking
+
+        monkeypatch.setenv(PREEMPT_ENV, "0")
+        before = dict(env)
+        assert _stand_down_child_parking(env, args) is False
+        assert env == before

@@ -466,7 +466,15 @@ class TestTheResidencySweep:
     """Reclaiming only once a victim had been chosen made the erase almost useless."""
 
     def _observer(self, monkeypatch, slots, *, controller, gen_id = "chat"):
-        backend = SimpleNamespace(base_url = BASE, _auth_headers = None)
+        # An eligible backend: the sweep answers to the same switches arming does, so a
+        # private cache or a missing budget would rightly sweep nothing.
+        backend = SimpleNamespace(
+            base_url = BASE,
+            _auth_headers = None,
+            _kv_cache_unified = True,
+            _kv_cache_context_total = 16384,
+            effective_parallel_slots = 4,
+        )
         monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
         monkeypatch.setattr(inference, "fetch_llama_slots", lambda base, headers = None: slots)
         erased: list[int] = []

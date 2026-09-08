@@ -45,3 +45,18 @@ export function exactConcurrencyChip(
   }
   return null;
 }
+
+/** Whether the chip describes the model the user is looking at. The state is the local
+ *  llama-server's, and it stays resident when a hosted model is selected beside it, so
+ *  unconditionally the chip put the local server's guarantee next to a hosted model's output. */
+export function exactConcurrencyChipApplies({
+  isExternalModel,
+  residentCheckpoint,
+  modelLoading = false,
+}: {
+  isExternalModel: boolean;
+  residentCheckpoint: string | null | undefined;
+  modelLoading?: boolean;
+}): boolean {
+  return !isExternalModel && !modelLoading && residentCheckpoint != null;
+}

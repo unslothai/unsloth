@@ -23,6 +23,7 @@ from .preempt_fakes import (
     run_plain,
     run_tool_loop,
     tool_call,
+    tool_call_chunk,
     web_search_tool,
 )
 
@@ -197,3 +198,241 @@ def test_a_policy_that_raises_during_the_wait_raises_on_the_caller():
 
     with pytest.raises(RuntimeError, match = "boom"):
         list(llama_cpp._await_resume(Raising(), threading.Event()))
+
+
+# ── Round 23: what the routed wrapper, a spent cap, a declined pass and a rollback do ────────
+
+
+def test_stop_reaches_the_controller_through_the_deferred_wrapper():
+    # Every route hands the stream a DeferredPreemptionPolicy. Its await_resume took only a
+    # timeout, so the caller's keyword raised TypeError and the fallback waited without Stop.
+    cancel = threading.Event()
+    cancel.set()
+    seen: list = []
+
+    class Inner:
+        def await_resume(self, timeout = None, *, cancel_event = None):
+            seen.append(cancel_event)
+            return not (cancel_event is not None and cancel_event.is_set())
+
+    wrapper = p.DeferredPreemptionPolicy(Inner())
+    with pytest.raises(StopIteration) as stopped:
+        next(llama_cpp._await_resume(wrapper, cancel))
+    assert seen == [cancel]
+    assert stopped.value.value is False
+
+
+def test_the_deferred_wrapper_still_serves_an_inner_policy_without_the_keyword():
+    class Older:
+        def await_resume(self, timeout = None):
+            return True
+
+    wrapper = p.DeferredPreemptionPolicy(Older())
+    assert wrapper.await_resume(1.0, cancel_event = threading.Event()) is True
+
+
+@pytest.mark.parametrize("site", ["round", "final"])
+def test_a_policy_that_raises_during_the_wait_is_not_a_grant(monkeypatch, site):
+    # The lease went back with on_preempted, so decoding on after an exception ran on room
+    # nobody booked. The turn ends with its partial, as a refused resume does.
+    class FailedResume(RecordingPolicy):
+        def await_resume(self, timeout = None, *, cancel_event = None):
+            self.events.append("resume-failed")
+            raise RuntimeError("resume bookkeeping unavailable")
+
+    final = site == "final"
+    signal, policy = p.PreemptSignal(), FailedResume()
+    offset = 1 if final else 0
+    streams = ([[*tool_call()]] if final else []) + [
+        [delta("Partial answer"), finish(), done()],
+        [delta(" kept decoding without a grant"), finish(), done()],
+    ]
+    rec = PreemptRecorder(
+        monkeypatch, streams, signal = signal, pause_after = {offset: 1}, execute_tool = final
+    )
+    events = run_tool_loop(
+        rec.backend,
+        signal = signal,
+        policy = policy,
+        tools = [web_search_tool()],
+        max_tool_iterations = 1 if final else 5,
+        permission_mode = "off",
+    )
+    states = [e["state"] for e in events if isinstance(e, dict) and e.get("type") == "preempt"]
+    assert "resume-failed" in policy.events
+    assert "resumed" not in policy.events
+    assert len(rec.payloads) == offset + 1, "no second upstream request"
+    assert states == ["paused"]
+    assert [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"][-1][
+        "finish_reason"
+    ] == "length"
+
+
+def test_a_rollback_closes_the_tool_card_it_abandons(monkeypatch):
+    # A provisional tool_start went out while the arguments streamed; the pause rolled the
+    # attempt back to before the call and the resumed attempt answered in prose, so the card
+    # had no result and no run.
+    signal = p.PreemptSignal()
+    rec = PreemptRecorder(
+        monkeypatch,
+        [
+            [
+                tool_call_chunk("call_before_pause", arguments = {"query": "x" * 300}),
+                finish("tool_calls"),
+                done(),
+            ],
+            [delta("The resumed answer."), finish(), done()],
+        ],
+        signal = signal,
+        pause_after = {0: 1},
+    )
+    events = run_tool_loop(
+        rec.backend,
+        signal = signal,
+        policy = RecordingPolicy(),
+        tools = [web_search_tool()],
+        max_tool_iterations = 5,
+        permission_mode = "off",
+    )
+    kinds = [(e["type"], e.get("tool_call_id")) for e in events if isinstance(e, dict) and e["type"] in ("tool_start", "tool_end", "preempt")]
+    assert kinds == [
+        ("tool_start", "call_before_pause"),
+        ("tool_end", "call_before_pause"),
+        ("preempt", None),
+        ("preempt", None),
+    ]
+
+
+@pytest.mark.parametrize("site", ["plain", "round", "final"])
+def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
+    # Four one-token deltas spend a cap of four. Reopening the stream for one floored token
+    # went past the cap by that token at all three sites; now the turn ends with `length`.
+    signal = p.PreemptSignal()
+    streams = [
+        [delta("a") for _ in range(4)] + [finish("length"), done()],
+        [delta("b"), finish("length"), done()],
+    ]
+    rec = PreemptRecorder(monkeypatch, streams, signal = signal, pause_after = {0: 4})
+    if site == "plain":
+        events = run_plain(rec.backend, signal = signal, policy = RecordingPolicy(), max_tokens = 4)
+    else:
+        events = run_tool_loop(
+            rec.backend,
+            signal = signal,
+            policy = RecordingPolicy(),
+            tools = [web_search_tool()],
+            max_tokens = 4,
+            max_tool_iterations = 0 if site == "final" else 5,
+            permission_mode = "off",
+        )
+    assert [p["max_tokens"] for p in rec.payloads] == [4]
+    metadata = [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"]
+    assert metadata and metadata[-1]["finish_reason"] == "length"
+    assert not any(
+        isinstance(e, dict) and e.get("reason") == llama_cpp.PREEMPT_GAVE_UP_REASON for e in events
+    ), "nothing was given up: the caller's own cap ended it"
+
+
+def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_charge(monkeypatch):
+    # The final pass extends the declined partial in the prompt, so its snapshots carry it (a
+    # non-streaming drain keeps only the last one) and its cap deducts every token that call
+    # spent, the granted pause's six as well as the declined seven.
+    monkeypatch.setattr(p, "DEFAULT_MAX_PREEMPT_RESUMES", 1)
+    signal = p.PreemptSignal()
+    rec = PreemptRecorder(
+        monkeypatch,
+        [
+            [delta("First preserved sentence. "), finish(), done()],
+            [delta("Second sentence with new work. "), finish(), done()],
+            [delta("A finished answer."), finish(), done()],
+        ],
+        signal = signal,
+        pause_after = {0: 1, 1: 1},
+    )
+    events = run_tool_loop(
+        rec.backend,
+        signal = signal,
+        policy = DecliningPolicy(),
+        tools = [web_search_tool()],
+        max_tool_iterations = 5,
+        max_tokens = 100,
+        permission_mode = "off",
+    )
+    snapshots = [e["text"] for e in events if isinstance(e, dict) and e.get("type") == "content"]
+    assert snapshots[-1] == "First preserved sentence. Second sentence with new work. A finished answer."
+    assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
+    assert [p["max_tokens"] for p in rec.payloads] == [100, 94, 87]
+    # No turn boundary between the partial and the pass that extends it.
+    kinds = [e.get("type") for e in events if isinstance(e, dict)]
+    assert "status" not in kinds[kinds.index("content") :]
+
+
+def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(monkeypatch):
+    # The resumed attempt went on thinking and then called a tool. Its assistant message
+    # carried only the later thought, and the merge replaced the earlier one.
+    signal = p.PreemptSignal()
+    rec = PreemptRecorder(
+        monkeypatch,
+        [
+            [reasoning("EARLIER_THOUGHT"), finish(), done()],
+            [reasoning("LATER_THOUGHT"), tool_call_chunk(), finish("tool_calls"), done()],
+            [delta("The answer."), finish(), done()],
+        ],
+        signal = signal,
+        pause_after = {0: 1},
+        execute_tool = True,
+        _supports_reasoning = True,
+    )
+    monkeypatch.setattr(rec.backend, "count_chat_tokens", lambda *a, **k: 20)
+    run_tool_loop(
+        rec.backend,
+        signal = signal,
+        policy = RecordingPolicy(),
+        tools = [web_search_tool()],
+        max_tool_iterations = 1,
+        permission_mode = "off",
+    )
+    replay = next(m for m in rec.payloads[-1]["messages"] if m.get("tool_calls"))
+    assert replay["reasoning_content"] == "EARLIER_THOUGHTLATER_THOUGHT"
+
+
+@pytest.mark.parametrize("parallel", ["0", "1"])
+def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, parallel):
+    # `kernel` heals to {"query": "kernel"}. The ledger keys on the healed call; the parallel
+    # gate keyed on the arguments as they arrived, so both ran.
+    import json as _json
+
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", parallel)
+    raw_calls = [
+        {
+            "index": i,
+            "id": f"c{i}",
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "arguments": args if isinstance(args, str) else _json.dumps(args),
+            },
+        }
+        for i, args in enumerate(["kernel", {"query": "kernel"}])
+    ]
+    frame = "data: " + _json.dumps({"choices": [{"index": 0, "delta": {"tool_calls": raw_calls}}]}) + "\n"
+    rec = PreemptRecorder(
+        monkeypatch, [[frame, finish("tool_calls"), done()], [delta("Answer."), finish(), done()]]
+    )
+    monkeypatch.setattr(rec.backend, "count_chat_tokens", lambda *a, **k: 20)
+    ran: list = []
+
+    def execute(name, arguments, **kwargs):
+        ran.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    run_tool_loop(
+        rec.backend,
+        signal = None,
+        policy = None,
+        tools = [web_search_tool()],
+        max_tool_iterations = 1,
+        permission_mode = "off",
+    )
+    assert ran == [("web_search", {"query": "kernel"})]
