@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from routes import auth as auth_routes
+from routes.auth import _client_ip
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
@@ -25,8 +27,6 @@ if str(_BACKEND_ROOT) not in sys.path:
 @pytest.fixture(autouse = True)
 def _reset_buckets():
     """Clear the in-memory bucket dicts between tests."""
-    from routes import auth as auth_routes
-
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
     for _shard in auth_routes._LOGIN_IP_OVERFLOW:
@@ -66,11 +66,9 @@ class _FakeRequest:
 
 class TestClientIp:
     def test_uses_request_client_host_by_default(self, env_no_proxy):
-        from routes.auth import _client_ip
         assert _client_ip(_FakeRequest("203.0.113.5")) == "203.0.113.5"
 
     def test_ignores_xff_when_trust_off(self, env_no_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
@@ -79,7 +77,6 @@ class TestClientIp:
         assert _client_ip(req) == "127.0.0.1"
 
     def test_honours_first_xff_when_trust_on(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
@@ -87,11 +84,9 @@ class TestClientIp:
         assert _client_ip(req) == "198.51.100.7"
 
     def test_falls_back_to_client_host_when_xff_missing(self, env_trust_proxy):
-        from routes.auth import _client_ip
         assert _client_ip(_FakeRequest("203.0.113.9")) == "203.0.113.9"
 
     def test_honours_forwarded_header_when_trust_on(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": 'for="198.51.100.42";proto=https'},
@@ -99,35 +94,27 @@ class TestClientIp:
         assert _client_ip(req) == "198.51.100.42"
 
     def test_unknown_when_no_client(self, env_no_proxy):
-        from routes.auth import _client_ip
-
         req = _FakeRequest()
         req.client = None
         assert _client_ip(req) == "_unknown"
 
     def test_xff_strips_ipv4_port(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_xff_strips_bracketed_ipv6_port(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"})
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_strips_ipv4_port(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest("127.0.0.1", {"forwarded": 'for="198.51.100.7:50001";proto=https'})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_forwarded_strips_bracketed_ipv6_port(self, env_trust_proxy):
-        from routes.auth import _client_ip
         req = _FakeRequest("127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'})
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
-        from routes.auth import _client_ip
-
         # Pick the first Forwarded element only, else suffix variations create
         # attacker-controlled buckets.
         req = _FakeRequest(
@@ -137,8 +124,6 @@ class TestClientIp:
         assert _client_ip(req) == "198.51.100.42"
 
     def test_xff_invalid_ip_falls_back_to_client_host(self, env_trust_proxy):
-        from routes.auth import _client_ip
-
         # A garbage XFF must not propagate into the bucket key.
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "not-an-ip"})
         assert _client_ip(req) == "127.0.0.1"
@@ -188,8 +173,6 @@ class TestBucketKeyAndBlocking:
 
     def test_rotating_usernames_hit_ip_aggregate_cap(self, env_no_proxy, monkeypatch):
         """Spraying nonexistent usernames from one IP must still be throttled."""
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         req = _FakeRequest("203.0.113.10")
         for idx in range(5):
@@ -199,8 +182,6 @@ class TestBucketKeyAndBlocking:
 
     def test_unknown_user_bucket_is_single_sentinel(self, env_no_proxy):
         """Random unknown usernames from one IP collapse to one bucket."""
-        from routes import auth as auth_routes
-
         req = _FakeRequest("203.0.113.11")
         unknown_key = auth_routes._unknown_user_key(req)
         for _ in range(20):
@@ -212,8 +193,6 @@ class TestBucketKeyAndBlocking:
 
     def test_account_bucket_cap_bounded(self, env_no_proxy, monkeypatch):
         """The per-account bucket dict cannot grow without bound."""
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         req = _FakeRequest("203.0.113.12")
         for idx in range(50):
@@ -225,8 +204,6 @@ class TestBucketKeyAndBlocking:
         """The per-IP dict is bounded, but saturating it must NOT disable
         throttling: a new IP that keeps failing after the cap is hit is still
         blocked (now via the shared overflow counter)."""
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         # Saturate the per-IP dict with distinct source IPs.
@@ -248,8 +225,6 @@ class TestBucketKeyAndBlocking:
         blocked -- was popped once enough fresh IPs arrived, letting the attacker
         retry as first-seen. The overflow counter must keep it throttled.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         # Neutralize account-bucket blocking so this isolates the per-IP path.
@@ -273,8 +248,6 @@ class TestBucketKeyAndBlocking:
         """A saturating spray must not globally deny login: a hot overflow shard
         throttles only the IPs that hash to it, not every new unbucketed client.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         # Neutralize account-bucket blocking so this isolates the per-IP path.
@@ -304,8 +277,6 @@ class TestBucketKeyAndBlocking:
         """A source throttled via overflow must stay throttled even if a bucket
         frees up before the window expires; otherwise a fresh bucket resets it.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         # Neutralize account-bucket blocking so this isolates the per-IP path.
@@ -335,8 +306,6 @@ class TestBucketKeyAndBlocking:
         """A high-cardinality spray must not grow overflow memory without bound:
         each shard tracks at most _LOGIN_IP_OVERFLOW_MAX distinct IPs.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 8)
 
@@ -352,8 +321,6 @@ class TestBucketKeyAndBlocking:
         """Evicting a hot entry to make room must not hand its failure count to the
         new source; one attempt from an unrelated IP must not 429 it.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 2)
@@ -381,8 +348,6 @@ class TestBucketKeyAndBlocking:
         """Straddling the overflow -> bucket transition must not double the per-IP
         limit: the overflow count carries into the freshly created bucket.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
@@ -409,8 +374,6 @@ class TestBucketKeyAndBlocking:
         not one deque entry per recorded failure (which would let a single later
         attempt allocate an arbitrarily large deque under the login lock).
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100000)
@@ -439,8 +402,6 @@ class TestBucketKeyAndBlocking:
         """A successful login resets the IP's throttle, including overflow, so a
         single later typo is not immediately blocked.
         """
-        from routes import auth as auth_routes
-
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)

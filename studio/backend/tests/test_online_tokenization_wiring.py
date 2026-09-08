@@ -26,6 +26,7 @@ datasets = pytest.importorskip("datasets")
 pytest.importorskip("torch")
 
 from utils.datasets.online_tokenization import MIN_ROWS_FOR_ONLINE  # noqa: E402
+import torch
 
 
 _STUBBED: list = []
@@ -641,8 +642,6 @@ def _preflight_self(loader_calls, batches):
 
 def test_the_eager_path_still_pulls_exactly_one_batch():
     """No prewarm depth means today's behaviour, unchanged."""
-    import torch
-
     batch = {"input_ids": torch.ones(1, 4, dtype = torch.long)}
     calls: list = []
     trainer = _preflight_self(calls, [batch, batch, batch])
@@ -652,8 +651,6 @@ def test_the_eager_path_still_pulls_exactly_one_batch():
 
 
 def test_the_prewarm_drains_the_requested_depth_and_keeps_the_loader():
-    import torch
-
     batch = {"input_ids": torch.ones(1, 4, dtype = torch.long)}
     calls: list = []
     trainer = _preflight_self(calls, [batch] * 32)
@@ -667,8 +664,6 @@ def test_the_prewarm_drains_the_requested_depth_and_keeps_the_loader():
 
 
 def test_a_short_split_prewarms_fewer_batches_rather_than_failing():
-    import torch
-
     batch = {"input_ids": torch.ones(1, 4, dtype = torch.long)}
     trainer = _preflight_self([], [batch, batch])
     trainer._online_prewarm_batches = 16

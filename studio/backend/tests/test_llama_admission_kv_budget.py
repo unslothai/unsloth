@@ -29,6 +29,8 @@ from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionQueue,
 )
+from types import SimpleNamespace
+import routes.inference as routes_inference
 
 
 def _config(**overrides):
@@ -182,26 +184,15 @@ class TestBackwardsCompatibility:
 
 class TestTheRouteHelpers:
     def test_the_budget_is_the_backends_own_context_length(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         backend = SimpleNamespace(context_length = 2048)
         assert routes_inference._openai_llama_admission_budget(backend) == 2048
 
     def test_an_unreadable_context_length_means_no_budget(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
         for value in (None, 0, -1, "nonsense"):
             backend = SimpleNamespace(context_length = value)
             assert routes_inference._openai_llama_admission_budget(backend) is None
 
     def test_the_cost_is_the_prompt_plus_the_output_allowance(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "x" * 4000}],
             max_tokens = 256,
@@ -214,10 +205,6 @@ class TestTheRouteHelpers:
         assert cost is not None and cost > 256, "the prompt must be counted, not just the output"
 
     def test_the_cost_is_clamped_to_the_budget(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "x" * 100_000}],
             max_tokens = 4096,
@@ -231,10 +218,6 @@ class TestTheRouteHelpers:
         assert cost == 2048
 
     def test_a_shape_with_no_messages_reserves_a_fair_share(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         payload = SimpleNamespace(prompt = "raw completion text", max_tokens = 128)
         cost = routes_inference._openai_llama_admission_tokens(
             payload,
@@ -246,10 +229,6 @@ class TestTheRouteHelpers:
         assert cost == 512
 
     def test_no_budget_means_no_cost(self):
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         payload = SimpleNamespace(messages = [{"role": "user", "content": "hi"}], max_tokens = 8)
         assert (
             routes_inference._openai_llama_admission_tokens(
@@ -301,10 +280,6 @@ class TestTheOutputAllowanceIsCounted:
     def test_max_completion_tokens_is_reserved_like_max_tokens(self):
         """Generation honours max_completion_tokens through
         _effective_openai_max_tokens; admission must reserve the same allowance."""
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         messages = [{"role": "user", "content": "x" * 400}]
         with_deprecated = routes_inference._openai_llama_admission_tokens(
             SimpleNamespace(messages = messages, max_tokens = 512),
@@ -321,10 +296,6 @@ class TestTheOutputAllowanceIsCounted:
     def test_a_responses_shape_would_have_fallen_back_to_a_fair_share(self):
         """Why the /v1/responses site now reserves against the translated chat_req: the
         raw model has `input` and `max_output_tokens`, so nothing here can size it."""
-        from types import SimpleNamespace
-
-        import routes.inference as routes_inference
-
         raw = SimpleNamespace(input = "x" * 100_000, max_output_tokens = 4096)
         assert (
             routes_inference._openai_llama_admission_tokens(
@@ -355,7 +326,6 @@ class TestTheWholeRenderedPromptIsCounted:
         budget = 8192,
         capacity = 4,
     ):
-        import routes.inference as routes_inference
         return routes_inference._openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -365,8 +335,6 @@ class TestTheWholeRenderedPromptIsCounted:
     def test_an_uncapped_request_reserves_a_bounded_allowance(self):
         """It reserved the whole window because generation MAY run that long, which cost
         the default chat the entire cache before it wrote a token."""
-        from types import SimpleNamespace
-
         from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
 
         payload = SimpleNamespace(
@@ -384,8 +352,6 @@ class TestTheWholeRenderedPromptIsCounted:
         Four fit and a fifth does not, on a cache small enough that the flat allowance would
         not have left room for four. A prompt-only charge would admit any number.
         """
-        from types import SimpleNamespace
-
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -403,7 +369,6 @@ class TestTheWholeRenderedPromptIsCounted:
         assert _run(scenario()) is None
 
     def test_a_capped_request_is_unaffected(self):
-        from types import SimpleNamespace
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 128,
@@ -412,8 +377,6 @@ class TestTheWholeRenderedPromptIsCounted:
         assert self._cost(payload, budget = 2048) < 2048
 
     def test_tool_schemas_are_counted(self):
-        from types import SimpleNamespace
-
         messages = [{"role": "user", "content": "hi"}]
         bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
         with_tools = self._cost(
@@ -435,8 +398,6 @@ class TestTheWholeRenderedPromptIsCounted:
         assert with_tools > bare
 
     def test_an_anthropic_system_block_is_counted(self):
-        from types import SimpleNamespace
-
         messages = [{"role": "user", "content": "hi"}]
         bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
         with_system = self._cost(
@@ -449,7 +410,6 @@ class TestTheWholeRenderedPromptIsCounted:
         assert with_system > bare
 
     def test_an_unserialisable_extra_does_not_break_admission(self):
-        from types import SimpleNamespace
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -482,7 +442,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
         capacity = 4,
         tool_loop = False,
     ):
-        import routes.inference as routes_inference
         return routes_inference._openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -498,8 +457,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
         The share is a FLOOR, not a cap: a larger estimate is charged in full, and the
         floor only spares a small opening request a re-cost on its first round.
         """
-        from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -510,8 +467,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
 
     def test_four_tool_requests_run_together(self):
         """The behaviour this change exists for. Under #9392 the second one waited."""
-        from types import SimpleNamespace
-
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -532,8 +487,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
     def test_growth_past_the_share_is_still_accounted(self):
         """The overcommit #9392 fixed stays fixed: loops holding a share each cannot all
         grow into the same cache, and a refused growth leaves the pool as it was."""
-        from types import SimpleNamespace
-
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -557,8 +510,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
 
     def test_a_request_without_tools_is_unaffected(self):
         """The serialisation is the price of a tool loop, not of every request."""
-        from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -567,7 +518,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
         assert self._cost(payload) < 2048
 
     def test_an_empty_tool_list_is_not_a_tool_loop(self):
-        from types import SimpleNamespace
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -578,8 +528,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
     def test_a_forwarded_catalogue_is_not_a_tool_loop(self):
         """The passthrough and streaming /v1/responses run ONE generation per HTTP
         call; the client sends the next round itself, with its own reservation."""
-        from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,

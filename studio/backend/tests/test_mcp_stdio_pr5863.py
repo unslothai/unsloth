@@ -16,6 +16,10 @@ from fastapi import HTTPException
 from core.inference import mcp_client
 from storage import mcp_servers_db
 from utils import host_policy
+from routes.mcp_servers import _validate_url
+from state import tool_policy
+import asyncio
+import routes.mcp_servers as routes_mcp
 
 
 def _reset_db(tmp_path, monkeypatch):
@@ -40,7 +44,6 @@ def _isolate_stdio_env():
     # apply_stdio_mcp_loopback_default() mutates os.environ and a module flag that
     # monkeypatch can't roll back, and stdio_mcp_enabled() reads the process tool
     # policy; snapshot/restore all three so nothing leaks between tests or files.
-    from state import tool_policy
 
     saved = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
     saved_policy = tool_policy.get_tool_policy()
@@ -223,8 +226,6 @@ def test_disabled_reason_remote_access(monkeypatch):
 
 
 def test_disabled_reason_tools_disabled(monkeypatch):
-    from state import tool_policy
-
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     tool_policy.set_tool_policy(False)
@@ -350,7 +351,6 @@ def test_cleared_env_after_auto_default_falls_back_to_host_default(monkeypatch):
 def test_disable_tools_overrides_loopback_default(monkeypatch):
     # When stdio is on only via the loopback auto-default, --disable-tools (the
     # only way tool policy is False on a loopback bind) turns it back off.
-    from state import tool_policy
 
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
@@ -363,7 +363,6 @@ def test_explicit_env_opt_in_survives_external_default_policy(monkeypatch):
     # `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 unsloth studio run -H 0.0.0.0` with no
     # --enable-tools: tool policy is False by the external-host default, not by
     # --disable-tools, so the explicit env opt-in must still win.
-    from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")  # no-op: value is explicit
@@ -374,7 +373,6 @@ def test_explicit_env_opt_in_survives_external_default_policy(monkeypatch):
 def test_explicit_env_opt_in_beats_disable_tools_on_loopback(monkeypatch):
     # An operator who hand-sets =1 before launch outranks --disable-tools even on
     # loopback: apply_ leaves the auto-default inactive, so the veto doesn't apply.
-    from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")  # no-op: value is explicit
@@ -386,7 +384,6 @@ def test_explicit_env_opt_in_beats_disable_tools_on_loopback(monkeypatch):
 def test_non_false_tool_policy_defers_to_env(monkeypatch, policy):
     # Only an explicit --disable-tools (False) gates stdio; None/True fall through
     # to the env var so the gate keeps its normal meaning.
-    from state import tool_policy
 
     tool_policy.set_tool_policy(policy)
     _disable(monkeypatch)
@@ -411,7 +408,6 @@ def test_probe_timeout_matrix():
 
 def test_validate_url_gate_off_rejects_stdio(monkeypatch):
     _disable(monkeypatch)
-    from routes.mcp_servers import _validate_url
 
     assert _validate_url("https://example.com/mcp") == "https://example.com/mcp"
     # urlparse reads "localhost:8000" scheme as "localhost", so it lands here too.
@@ -432,7 +428,6 @@ def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
     # The message names a command only when the value has whitespace, and
     # never says "desktop app only" (self-hosted can opt in via the env var).
     _disable(monkeypatch)
-    from routes.mcp_servers import _validate_url
 
     with pytest.raises(HTTPException) as exc:
         _validate_url("npx -y @modelcontextprotocol/server-filesystem /tmp")
@@ -450,7 +445,6 @@ def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
 
 def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     _enable(monkeypatch)
-    from routes.mcp_servers import _validate_url
 
     assert _validate_url("npx -y server /tmp") == "npx -y server /tmp"
     # http still works when stdio is on
@@ -472,10 +466,7 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
 
 
 def test_create_route_gate(tmp_path, monkeypatch, transport):
-    import asyncio
-
     from models.mcp_servers import McpServerCreate
-    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     payload = McpServerCreate(display_name = "FS", url = "npx -y server /tmp")
@@ -491,10 +482,7 @@ def test_create_route_gate(tmp_path, monkeypatch, transport):
 
 
 def test_update_http_to_stdio_blocked_when_off(tmp_path, monkeypatch):
-    import asyncio
-
     from models.mcp_servers import McpServerUpdate
-    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     _disable(monkeypatch)
@@ -510,10 +498,7 @@ def test_update_http_to_stdio_blocked_when_off(tmp_path, monkeypatch):
 
 
 def test_test_route_gate(tmp_path, monkeypatch, transport):
-    import asyncio
-
     from models.mcp_servers import McpServerTestRequest
-    import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
     req = McpServerTestRequest(url = "npx -y server /tmp")
@@ -531,10 +516,6 @@ def test_test_route_gate(tmp_path, monkeypatch, transport):
 
 
 def test_refresh_route_gate(tmp_path, monkeypatch, transport):
-    import asyncio
-
-    import routes.mcp_servers as routes_mcp
-
     _reset_db(tmp_path, monkeypatch)
     # a stdio row, as if carried over from a desktop DB
     mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server")
@@ -552,8 +533,6 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
 
 
 def test_discovery_gate(tmp_path, monkeypatch, transport):
-    import asyncio
-
     from core.inference.tools import get_enabled_mcp_tools
 
     _reset_db(tmp_path, monkeypatch)

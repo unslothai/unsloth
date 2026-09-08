@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
+from routes.models import _arch_to_task
 
 GGUF_MAGIC = 0x46554747
 
@@ -266,7 +267,6 @@ def test_a_placeholder_architecture_still_refuses(tmp_path, repo):
 def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
     # The placeholder carries no family, so both sides fall back to the repo id and filename
     # and have to agree, or the Images page is named for a file its picker drops.
-    from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("gguf-org/flux2-dev-gguf", "flux2-dev-iq4_nl.gguf", True),
         ("calcuis/cosmos-predict2-gguf", "cosmos-predict2-q4_0.gguf", False),
@@ -285,7 +285,6 @@ def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
     # ids resolve to no family, so _arch_to_task tags both image-diffusion-unsupported and
     # the Video picker never lists them. The header says "wan" for all three, so the refusal
     # has to consult the same family resolution rather than trusting the arch.
-    from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
@@ -302,7 +301,6 @@ def test_an_arch_that_names_its_own_family_still_gets_the_video_page(tmp_path):
     # _arch_to_task asks detect_video_family("", override = arch) FIRST, and "ltxv" resolves
     # LTX-2 with no name to go on, so a generically named LTX GGUF IS listed on the Video
     # page. Resolving by repo id and filename alone answered the opposite.
-    from routes.models import _arch_to_task
     for identifier, name in (
         ("someone/generic-gguf", "model-Q4_K_M.gguf"),
         (None, "checkpoint-q4_0.gguf"),
@@ -384,7 +382,6 @@ def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
     # A family that resolves is not enough for the arch branches, nor here: routes.models
     # drops an MoE the loader cannot assemble, so the Video page would not list Wan 2.2 A14B
     # however its GGUF is packaged.
-    from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),

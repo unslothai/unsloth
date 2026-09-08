@@ -4,6 +4,7 @@
 """Regression coverage for bootstrap password exposure to remote clients."""
 
 from types import SimpleNamespace
+from main import _is_local_bootstrap_request
 
 
 def _request(
@@ -21,7 +22,6 @@ def _request(
 
 
 def test_loopback_peers_are_local():
-    from main import _is_local_bootstrap_request
     cases = (
         ("127.0.0.1", "127.0.0.1"),
         ("::1", "::1"),
@@ -33,8 +33,6 @@ def test_loopback_peers_are_local():
 
 
 def test_non_loopback_peers_are_remote():
-    from main import _is_local_bootstrap_request
-
     # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on
     # 3.9+; it must not count as a direct local peer.
     for host in ("192.168.1.10", "::ffff:192.168.1.10", "::1%eth0"):
@@ -42,28 +40,23 @@ def test_non_loopback_peers_are_remote():
 
 
 def test_absent_or_unparseable_peer_fails_safe():
-    from main import _is_local_bootstrap_request
     for host in (None, "localhost"):
         assert _is_local_bootstrap_request(_request(host)) is False, host
 
 
 def test_cloudflare_tunnel_clients_are_remote_despite_loopback_peer():
-    from main import _is_local_bootstrap_request
     for client_ip in ("203.0.113.7", ""):
         request = _request("127.0.0.1", headers = {"cf-connecting-ip": client_ip})
         assert _is_local_bootstrap_request(request) is False, client_ip
 
 
 def test_dns_rebinding_host_is_remote_despite_loopback_peer():
-    from main import _is_local_bootstrap_request
     for host in ("attacker.example", "192.168.1.10", None):
         assert _is_local_bootstrap_request(_request("127.0.0.1", host)) is False, host
 
 
 def test_unparseable_request_host_fails_safe():
     """A Host that makes ``request.url.hostname`` raise must fall to remote."""
-    from main import _is_local_bootstrap_request
-
     class _RaisingURL:
         @property
         def hostname(self):
@@ -77,7 +70,6 @@ def test_unparseable_request_host_fails_safe():
 
 def test_reverse_proxy_forwarded_headers_are_remote():
     """A loopback proxy relaying a remote client (non-Cloudflare headers) is remote."""
-    from main import _is_local_bootstrap_request
     for header in ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip"):
         request = _request("127.0.0.1", "localhost", headers = {header: "203.0.113.7"})
         assert _is_local_bootstrap_request(request) is False, header
@@ -85,8 +77,6 @@ def test_reverse_proxy_forwarded_headers_are_remote():
 
 def test_malformed_or_absent_host_is_remote():
     """A malformed/absent/scope-id Host must not fall back to the loopback server address."""
-    from main import _is_local_bootstrap_request
-
     # incl. bracket smuggling: [::1]evil / unclosed [::1 must not reduce to ::1
     for host in (
         "e_vil",

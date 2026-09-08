@@ -462,6 +462,7 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
 
 # ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
+from hub.services.models import catalog_classification as classification
 
 
 def _local(
@@ -510,8 +511,6 @@ def test_windows_cloud_recall_attributes_are_not_local():
 
 def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
     """Fully present files retain architecture-based task detection."""
-    from hub.services.models import catalog_classification as classification
-
     gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
     reads = []
     monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: True)
@@ -534,8 +533,6 @@ def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
 
 def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
     """Cloud placeholders stay discoverable by name without opening their data."""
-    from hub.services.models import catalog_classification as classification
-
     def forbidden(*_args, **_kwargs):
         raise AssertionError("local GGUF listing touched placeholder contents")
 
@@ -560,7 +557,6 @@ def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypa
     comes back None, which for a placeholder is every time, and that probe reads an
     architecture of its own. Asserting on ``_local_model_task`` alone leaves the listing
     hydrating exactly the files it stopped classifying, a folder row once per sibling."""
-    from hub.services.models import catalog_classification as classification
     from utils.models import gguf_metadata
 
     single = _touch(tmp_path / "single" / "generic-Q4_K_M.gguf")
@@ -585,8 +581,6 @@ def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypa
 
 
 def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
-    from hub.services.models import catalog_classification as classification
-
     repo = tmp_path / "models--unsloth--csm-1b"
     snapshot = repo / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
@@ -635,8 +629,6 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
     """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
     is not reachable from the one page whose pick would pull it down, and lists in Chat
     instead. The filename carries the family, and it is read without opening the file."""
-    from hub.services.models import catalog_classification as classification
-
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
 
@@ -663,8 +655,6 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
     segment of it. With an architecture that mismatch only picks the wrong family; for a
     placeholder the name is the entire case, so a shelf named after a family would file every
     chat GGUF stored under it as an image or video model."""
-    from hub.services.models import catalog_classification as classification
-
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
 
@@ -873,7 +863,6 @@ def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
     from types import SimpleNamespace
 
     from core.inference.video_families import detect_video_family
-    from hub.services.models import catalog_classification as classification
 
     repo_id = "Lightricks/LTX-Video"
     assert detect_video_family(repo_id) is not None, "fixture assumes a known video family"

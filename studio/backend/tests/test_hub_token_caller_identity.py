@@ -33,6 +33,11 @@ from hub.utils.inventory_scan import token_fingerprint
 from routes import models as models_routes
 from utils.models.model_config import _token_fingerprint as capability_fingerprint
 from utils.transformers_version import _token_cache_key
+from routes.data_recipe import seed as seed_routes
+import asyncio
+import fastapi
+import inspect
+import utils.models.model_config as model_config_module
 
 
 def _models_client(via_api_key: bool) -> TestClient:
@@ -207,8 +212,6 @@ def test_gguf_variants_token_precedence_survives_the_conversion(header, query, e
 
 def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
     """A UI session on an ambient-token install keeps gated seed inspection."""
-    from routes.data_recipe import seed as seed_routes
-
     seen = {}
 
     def _fake_list(*, dataset_name, token):
@@ -235,8 +238,6 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
 
 
 def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
-    from routes.data_recipe import seed as seed_routes
-
     seen = {}
     monkeypatch.setattr(
         seed_routes,
@@ -418,7 +419,6 @@ def test_the_config_inspection_target_still_uses_the_cache_for_the_ambient_calle
     With no snapshot on disk the resolver raises its own 404; reaching that proves the
     cache branch ran rather than short-circuiting back to the bare repo id.
     """
-    import fastapi
     with pytest.raises(fastapi.HTTPException):
         models_routes._model_config_inspection_target("org/private", True, None, hf_token)
 
@@ -479,8 +479,6 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
     That context deletes HF_TOKEN and moves the login token files process-wide, so a
     concurrent download in another worker thread would lose the operator's credential.
     """
-    import utils.models.model_config as model_config_module
-
     monkeypatch.setenv("HF_TOKEN", "ambient-operator-token")
     seen = {}
 
@@ -538,8 +536,6 @@ def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
         lambda *_a, **_k: "org/private",
     )
 
-    import asyncio
-
     try:
         asyncio.run(
             models_routes.get_model_config(
@@ -562,8 +558,6 @@ def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
 
 def test_offline_embedding_detection_does_not_read_the_cache_anonymously(monkeypatch):
     """The marker read answers for a private repo without ever authorizing."""
-    import utils.models.model_config as model_config_module
-
     monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
     monkeypatch.setattr("utils.utils.hf_env_offline", lambda: True, raising = False)
 
@@ -582,8 +576,6 @@ def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(monkeypat
     The listing carries variant filenames, sizes and the vision flag, so a caller denied
     the ambient token could name a private repo the UI had cached and read it back.
     """
-    import asyncio
-
     from hub.services.models import gguf_variants
 
     reads = {"snapshot": 0, "state": 0}
@@ -629,8 +621,6 @@ def test_offline_capability_probes_do_not_read_the_cache_anonymously(monkeypatch
     So passing local_files_only=False does not put the anonymous caller back on the wire:
     the probe reads the cached config.json off disk and never authorizes.
     """
-    import utils.models.model_config as model_config_module
-
     monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
     reached = {"vision": 0, "audio": 0}
 
@@ -692,10 +682,6 @@ def test_a_cache_only_gguf_listing_is_refused_for_an_anonymous_caller(monkeypatc
     Declining to build a second cached response is not enough: falling through would
     serialize the first one.
     """
-    import asyncio
-
-    import fastapi
-
     from hub.services.models import gguf_variants
 
     monkeypatch.setattr(
@@ -714,8 +700,6 @@ def test_a_cache_only_gguf_listing_is_refused_for_an_anonymous_caller(monkeypatc
 
 def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_token():
     """An absent body token must not read as ambient-authorized."""
-    import inspect
-
     signature = inspect.signature(models_routes.scan_model_remote_code)
 
     assert (
@@ -733,12 +717,6 @@ def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
     The sentinel never reaches an authorization check there, so a previously cached
     private dataset would come back as rows.
     """
-    import asyncio
-
-    import fastapi
-
-    from routes.data_recipe import seed as seed_routes
-
     monkeypatch.setattr(seed_routes, "hf_env_offline", lambda: True)
 
     def _never(*_a, **_k):
@@ -763,8 +741,6 @@ def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
 def test_the_lora_resolver_does_not_launder_the_sentinel(monkeypatch, hf_token):
     """`hf_token if hf_token else None` turned the sentinel back into ambient access."""
-    import utils.models.model_config as model_config_module
-
     seen = {}
 
     def _absent(
@@ -790,8 +766,6 @@ def test_the_lora_resolver_does_not_launder_the_sentinel(monkeypatch, hf_token):
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
 def test_the_audio_tokenizer_probe_does_not_read_the_cache_anonymously(monkeypatch, hf_token):
     """The cache root is walked before any network branch, online as well as offline."""
-    import utils.models.model_config as model_config_module
-
     reads = {"n": 0}
 
     def _cache_path(_name):
@@ -814,8 +788,6 @@ def test_the_audio_tokenizer_probe_does_not_read_the_cache_anonymously(monkeypat
 
 def test_the_embedding_transient_fallback_is_denied_to_an_anonymous_caller(monkeypatch):
     """The anonymous 404 for a private repo lands in the same except branch."""
-    import utils.models.model_config as model_config_module
-
     monkeypatch.setattr(model_config_module, "is_local_path", lambda _n: False)
     monkeypatch.setattr("utils.utils.hf_env_offline", lambda: False, raising = False)
     monkeypatch.setattr(model_config_module, "_embedding_detection_cache", {})
@@ -838,8 +810,6 @@ def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
 
     Sizing it as one returns None, so public models lost model_size_bytes entirely.
     """
-    import inspect
-
     source = inspect.getsource(models_routes.get_model_config)
 
     assert (
@@ -851,8 +821,6 @@ def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
 def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatch, hf_token):
     """token=False disables authentication but not the local cache."""
     import transformers
-
-    import utils.models.model_config as model_config_module
 
     monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
     monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
@@ -875,8 +843,6 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
 
 def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     """Only the exact-snapshot branch was gated; the sibling resolved the cache anyway."""
-    import inspect
-
     source = inspect.getsource(models_routes.scan_model_remote_code)
     marker = source.index("elif prefer_local_cache is True")
     branch = source[marker : marker + 200]
@@ -911,8 +877,6 @@ def test_the_offline_anonymous_rule_is_stated_once(hf_token, offline, denied, mo
 
 def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
     """The three routes that reach disk offline all consult the shared rule."""
-    import inspect
-
     from hub.services.datasets import formatting
 
     for owner, name in (

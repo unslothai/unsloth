@@ -29,10 +29,11 @@ from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionQueue,
 )
+import inspect
+import routes.inference as routes_inference
 
 
 def _tokens(payload, *, budget, capacity, tool_loop):
-    import routes.inference as routes_inference
     return routes_inference._openai_llama_admission_tokens(
         payload,
         budget = budget,
@@ -205,8 +206,6 @@ class TestOldCallers:
         assert queue._reparking == 0, "the non-blocking path must never touch the wait line"
 
     def test_the_route_recost_helper_accepts_no_cancel_event(self):
-        import routes.inference as routes_inference
-
         # Reservation None is the "not admitted yet" case every call site can hit.
         routes_inference._openai_llama_admission_recost(
             None,
@@ -216,8 +215,6 @@ class TestOldCallers:
         )
 
     def test_generate_chat_completion_with_tools_still_takes_no_hook(self):
-        import inspect
-
         from core.inference.llama_cpp import LlamaCppBackend
 
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
@@ -228,8 +225,6 @@ class TestOldCallers:
         """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
         inserting one silently rebinds the arguments after it for positional callers, with
         no exception to report it."""
-        import inspect
-
         from core.inference.llama_cpp import LlamaCppBackend
 
         names = list(
@@ -241,7 +236,6 @@ class TestOldCallers:
 
     def test_the_wait_timeout_has_a_sane_default(self):
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
-        import inspect
 
         from core.inference.llama_admission import LlamaAdmissionLease
 
@@ -311,8 +305,6 @@ class TestTheInjectedToolCatalogueIsCharged:
         """Checked on a wide pool, where the floor is small enough that the catalogue sets
         the price. On a narrow one the floor already exceeds the whole request, so masking
         it there is correct."""
-        import routes.inference as routes_inference
-
         budget, capacity = 8192, 16  # share 512, smaller than the catalogue
         payload = _payload(text = "hi")
         without = _tokens(payload, budget = budget, capacity = capacity, tool_loop = True)
@@ -328,7 +320,6 @@ class TestTheInjectedToolCatalogueIsCharged:
         ), f"the catalogue must raise the price: {with_catalog} vs {without}"
 
     def test_a_catalogue_of_a_realistic_size_is_not_rounded_away(self):
-        import routes.inference as routes_inference
         charged = routes_inference._openai_llama_admission_injected_tool_tokens(self.CATALOG)
         assert charged > 500, f"only {charged} tokens charged for a six-tool catalogue"
 
@@ -336,8 +327,6 @@ class TestTheInjectedToolCatalogueIsCharged:
     async def test_four_tool_chats_are_not_admitted_past_a_small_cache(self):
         """The live failure at unit level: four short prompts with a real catalogue cannot
         share 4096 tokens, and admitting all four produced four 500s."""
-        import routes.inference as routes_inference
-
         budget = 4096
         cost = routes_inference._openai_llama_admission_tokens(
             _payload(text = "hi"),
@@ -356,12 +345,10 @@ class TestTheInjectedToolCatalogueIsCharged:
 
     def test_no_catalogue_means_no_extra_charge(self):
         """A request that injects nothing must be priced exactly as before."""
-        import routes.inference as routes_inference
         for empty in (None, [], ()):
             assert routes_inference._openai_llama_admission_injected_tool_tokens(empty) == 0
 
     def test_an_unserialisable_catalogue_does_not_break_admission(self):
-        import routes.inference as routes_inference
         class Awkward:
             def __repr__(self):
                 raise RuntimeError("no")

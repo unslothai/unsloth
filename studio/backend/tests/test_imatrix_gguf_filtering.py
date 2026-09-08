@@ -32,6 +32,7 @@ from hub.utils.gguf import (
 )
 from hub.utils.gguf_plan import build_gguf_variant_plans, is_main_gguf_variant_path
 from utils.models.model_config import _is_imatrix_path, detect_gguf_model
+from routes.models import _scan_models_dir
 
 IMATRIX_NAMES = [
     "imatrix_unsloth.gguf",
@@ -148,7 +149,6 @@ def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path)
     # from any .gguf, so an interrupted download that landed only the repo's smallest file
     # published the folder as a local model. mmproj and MTP still decide presence, as they
     # are companions of a real model; an imatrix is not a model artifact at all.
-    from routes.models import _scan_models_dir
 
     repo = tmp_path / "Qwen3.8-27B-GGUF"
     repo.mkdir()
@@ -163,7 +163,6 @@ def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path)
 def test_an_mmproj_only_child_still_decides_presence(tmp_path):
     # Guard the line this change must not cross: a lone vision projector keeps its row
     # (format None), which is what the scanner has always reported for a companion.
-    from routes.models import _scan_models_dir
 
     repo = tmp_path / "gemma-4-GGUF"
     repo.mkdir()
@@ -193,7 +192,6 @@ def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_
     # checkpoint still downloading its weights stays visible -- and it lists whether or not
     # an imatrix sits beside it. So the config disjunct is not an imatrix filter to bypass:
     # suppressing it would hide in-flight downloads, which is a different change.
-    from routes.models import _scan_models_dir
 
     for name in ("config-only", "config-and-imatrix"):
         (tmp_path / name).mkdir()

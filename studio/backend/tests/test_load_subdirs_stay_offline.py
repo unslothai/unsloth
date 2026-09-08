@@ -18,6 +18,7 @@ security scanner, which genuinely wants the remote answer.
 import pytest
 
 from hub.utils.hf_cache_state import with_load_subdirs
+import utils.models.model_config as model_config
 
 
 _BICODEC = "unsloth/Spark-TTS-0.5B"
@@ -28,8 +29,6 @@ _PLAIN = "unsloth/Llama-3.2-1B-Instruct"
 def detector_spy(monkeypatch):
     """Record how detect_audio_type is called, without touching the network."""
     calls = []
-
-    import utils.models.model_config as model_config
 
     def fake_detect(
         model_name,
@@ -88,8 +87,6 @@ def test_a_detector_failure_still_degrades_to_root_only(monkeypatch):
     ``b41b819a4`` and is not this PR's to fix -- pinned here so it is a decision rather
     than a surprise.
     """
-    import utils.models.model_config as model_config
-
     def boom(*args, **kwargs):
         raise RuntimeError("hub unreachable")
 
@@ -105,8 +102,6 @@ def test_going_offline_makes_the_yaml_fallback_more_reachable(monkeypatch):
     ``local_files_only``, detection simply reports nothing for an uncached repo, so the
     registry default gets its turn and a known bicodec repo is still identified.
     """
-    import utils.models.model_config as model_config
-
     monkeypatch.setattr(
         model_config,
         "detect_audio_type",

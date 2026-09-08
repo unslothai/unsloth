@@ -31,6 +31,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import diffusion as diffusion_mod
+import huggingface_hub
 
 
 def _call_keyword_sets(module_path: str, function: str, callee: str) -> list[set[str]]:
@@ -157,8 +158,6 @@ def test_the_h3_modular_build_hands_the_flag_to_the_conditioner_loader():
 
 def _drive_resolve_gguf(monkeypatch, *, cached_here, local_files_only):
     """``_resolve_gguf_path`` with the cache answering ``cached_here`` for the live root."""
-    import huggingface_hub
-
     seen: list[dict] = []
 
     monkeypatch.setattr(
@@ -221,8 +220,6 @@ def _drive_krea(
 ):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
     from core.inference.diffusion_krea2 import load_krea2_pipeline
-
-    import huggingface_hub
 
     index = tmp_path / "model_index.json"
     index.write_text(json.dumps({"patch_size": 2}), encoding = "utf-8")
@@ -300,8 +297,6 @@ def test_a_user_initiated_krea_load_still_fetches_every_component(monkeypatch, t
 def test_the_krea_model_index_read_is_a_cache_lookup_offline(monkeypatch):
     """A few KB, but still a fetch: the assembly reads the init config (``is_distilled`` carries
     Turbo's mu shift) straight off the hub id when the repo is not a local directory."""
-    import huggingface_hub
-
     from core.inference.diffusion_krea2 import _load_model_index
 
     seen: dict = {}

@@ -22,6 +22,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import utils.mlx_repair as mr  # noqa: E402
+from utils.hardware import hardware as hw
 
 
 def _fake_versions(monkeypatch, installed: dict[str, str]):
@@ -105,8 +106,6 @@ def test_versions_are_checked_before_imports(monkeypatch):
 
 
 def test_the_detail_line_never_raises_and_stays_short(monkeypatch):
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
 
     def explode() -> list[str]:
@@ -126,8 +125,6 @@ def test_the_detail_line_never_raises_and_stays_short(monkeypatch):
 @pytest.mark.parametrize("reason", ["intel_mac", "no_gpu", "detection_failed", None])
 def test_only_the_mlx_verdict_carries_a_detail(monkeypatch, reason):
     """Nothing else has anything specific to add, so nothing else may claim to."""
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     assert hw.CHAT_ONLY_DETAIL is None
@@ -141,8 +138,6 @@ def test_a_failed_forced_redetect_restores_the_detail(monkeypatch):
     Without it the restored verdict is still mlx_unavailable but has lost the blocker,
     so the row goes back to the generic message this change exists to replace.
     """
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "CHAT_ONLY", True)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "mlx_unavailable")
@@ -164,8 +159,6 @@ def test_a_failed_forced_redetect_restores_the_detail(monkeypatch):
 
 
 def test_a_discarded_verdict_takes_the_detail_with_it(monkeypatch):
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "mlx_unavailable")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "mlx-lm is not installed (needs >=0.31.2)")
     hw._discard_detection_locked()
@@ -199,8 +192,6 @@ def test_health_reads_the_detail_inside_the_guarded_snapshot(monkeypatch):
 # needs the detail the mlx imports are the ones that hang, and this module already treats
 # them as able to park indefinitely; asking twice there is what a second call costs.
 def test_the_gate_measures_the_stack_once(monkeypatch):
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
     calls: list[int] = []
 
@@ -216,8 +207,6 @@ def test_the_gate_measures_the_stack_once(monkeypatch):
 
 def test_a_measurement_is_used_once_and_not_kept(monkeypatch):
     """A list left over from an earlier pass describes a stack since re-measured."""
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
     monkeypatch.setattr(mr, "mlx_stack_blockers", lambda: ["mlx is not installed"])
     hw._has_usable_mlx_stack()
@@ -230,8 +219,6 @@ def test_a_measurement_is_used_once_and_not_kept(monkeypatch):
 
 
 def test_a_healthy_gate_still_reads_as_usable(monkeypatch):
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
     monkeypatch.setattr(mr, "mlx_stack_blockers", lambda: [])
     assert hw._has_usable_mlx_stack() is True
@@ -239,8 +226,6 @@ def test_a_healthy_gate_still_reads_as_usable(monkeypatch):
 
 def test_an_unreadable_gate_falls_back_to_the_bare_import(monkeypatch):
     """mlx_repair should always import; a host where it cannot is not forced chat-only."""
-    from utils.hardware import hardware as hw
-
     monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", ["stale"])
 
     def explode() -> list[str]:
@@ -291,8 +276,6 @@ def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
 def _fake_hardware(monkeypatch, calls: list[str]):
     """Stand the real hardware module's re-detection down, keeping the module identity."""
     from contextlib import nullcontext
-
-    from utils.hardware import hardware as hw
 
     monkeypatch.setattr(hw, "detect_hardware", lambda: calls.append("detect"))
     monkeypatch.setattr(hw, "owning_detection_epoch", lambda epoch: nullcontext())
