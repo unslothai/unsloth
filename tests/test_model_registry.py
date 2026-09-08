@@ -12,11 +12,10 @@ from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 from unsloth.registry import register_models, search_models
 from unsloth.registry._deepseek import register_deepseek_models
 from unsloth.registry._gemma import register_gemma_models
-from unsloth.registry._llama import register_llama_models
+from unsloth.registry._llama import LlamaModelInfo, register_llama_models
 from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
-from unsloth.registry._llama import LlamaModelInfo
 from unsloth.registry.registry import (
     MODEL_REGISTRY,
     QUANT_TAG_MAP,
