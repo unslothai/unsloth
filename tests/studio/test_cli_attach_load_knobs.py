@@ -406,21 +406,38 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
     assert sent(server) == {"model_path": "unsloth/Qwen3-14B"}
 
 
-def _agent_commands() -> list:
-    """Every `unsloth start` command that takes the load knobs, read off the app itself.
+def _registered_command_name(command) -> str:
+    """The name the CLI answers to, including one Typer inferred from the function.
+
+    `@start_app.command()` with no name leaves `command.name` None, and dropping those
+    would silently shrink the roster -- the failure mode this whole derivation exists to
+    avoid. Typer's rule is `main.get_command_name`; inline the same lowercase/underscore
+    swap so the fallback holds on the older typers `pyproject.toml` still allows.
+    """
+    return command.name or command.callback.__name__.lower().replace("_", "-")
+
+
+def _scan_start_commands() -> tuple:
+    """(commands taking every load knob, commands taking only some), off the app itself.
 
     Hardcoding the list is how `dsh` shipped without flag tracking: the roster below is
     whatever is registered today, so a new agent command is covered the day it lands.
+    A command holding only SOME of the knobs is reported rather than skipped -- excluding
+    it would hide exactly the per-command inconsistency this roster is here to catch.
     """
     knobs = set(start_cli._LOAD_OPTION_PARAMS)
-    return sorted(
-        command.name
-        for command in start_cli.start_app.registered_commands
-        if command.name and knobs <= set(inspect.signature(command.callback).parameters)
-    )
+    full, partial = [], []
+    for command in start_cli.start_app.registered_commands:
+        if command.callback is None:
+            continue
+        params = set(inspect.signature(command.callback).parameters)
+        if not knobs & params:
+            continue
+        (full if knobs <= params else partial).append(_registered_command_name(command))
+    return sorted(full), sorted(partial)
 
 
-AGENT_COMMANDS = _agent_commands()
+AGENT_COMMANDS, PARTIAL_KNOB_COMMANDS = _scan_start_commands()
 
 
 class TestExplicitFlagsThroughTheRealCli:
@@ -439,10 +456,17 @@ class TestExplicitFlagsThroughTheRealCli:
 
         start_cli._connect = fake_connect
         try:
-            CliRunner().invoke(start_cli.start_app, argv)
+            result = CliRunner().invoke(start_cli.start_app, argv)
         finally:
             start_cli._connect = real_connect
-        return captured.get("load")
+        if "load" not in captured:
+            # Without the runner's own verdict a parser incompatibility and a dropped
+            # flag both surface as a bare None, and only one of them is this file's bug.
+            pytest.fail(
+                f"{argv} never reached _connect (exit {result.exit_code}): "
+                f"{result.exception!r}\n{result.output}"
+            )
+        return captured["load"]
 
     @pytest.mark.parametrize(
         "flag, expected",
@@ -468,6 +492,14 @@ class TestExplicitFlagsThroughTheRealCli:
     def test_the_agent_command_roster_is_not_empty(self):
         """An empty parametrization collects no tests, so the check below would vanish."""
         assert AGENT_COMMANDS
+
+    def test_no_start_command_takes_only_part_of_the_load_knobs(self):
+        """A partial set would drop out of the roster below and go untested in silence."""
+        assert PARTIAL_KNOB_COMMANDS == [], (
+            f"{PARTIAL_KNOB_COMMANDS} take some load knobs but not all of "
+            f"{sorted(start_cli._LOAD_OPTION_PARAMS)}; give them the full set (and "
+            "_load_options) or they will never be checked for flag tracking."
+        )
 
     @pytest.mark.parametrize("command", AGENT_COMMANDS)
     def test_every_agent_command_tracks_flags_identically(self, command):
