@@ -3,15 +3,9 @@
 
 """An uncapped request must not reserve the whole KV cache (#9955).
 
-Token accounting closed a real overcommit (#9392), but a request naming no
-``max_tokens`` is forwarded as ``max_tokens = backend_ctx``, so it is charged the
-rest of the window and every other caller queues behind it -- "SLOTS 1/6 busy - 4
-queued" on the reporter's card, from the ordinary clients that send no cap.
-
-The fix resolves the omitted cap to the slot's share of the cache before the
-request is reserved or forwarded. These cover both halves: the size of the
-resolved cap, and the reservation it produces.
-"""
+A request naming no ``max_tokens`` is forwarded as ``max_tokens = backend_ctx``, so it is
+charged the rest of the window and everyone else queues behind it (#9392 closed the real
+overcommit). Both halves here: the cap resolved, and the reservation it produces."""
 
 import asyncio
 import time
@@ -42,7 +36,6 @@ def _backend(
 
 
 def _uncapped(messages = None):
-    """A request shaped like the reporter's: short prompt, no cap of any kind."""
     return SimpleNamespace(
         messages = messages or [{"role": "user", "content": "Translate: hello world"}],
         max_tokens = None,
@@ -76,7 +69,6 @@ def _cap_with_date(payload, backend = None):
 
 
 def _headroom(share = SHARE):
-    """The part of a share the resolver leaves for the rendered chat template."""
     return max(
         routes_inference._OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
         share // routes_inference._OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
@@ -117,8 +109,6 @@ class TestTheResolvedCap:
         assert _cap(_uncapped(), _backend(context_length = None)) is None
 
     def test_a_request_that_names_its_own_cap_keeps_it(self):
-        """The helper only ever answers for an omitted cap; a named one is forwarded
-        as sent and may still use the whole window."""
         payload = _uncapped()
         payload.max_tokens = 4096
         assert routes_inference._effective_openai_max_tokens(payload) == 4096
@@ -143,8 +133,7 @@ class TestTheResolvedCap:
             assert _cap(payload, backend) == expected
 
     def test_a_shape_with_no_messages_is_left_alone(self):
-        """Admission charges an unsizeable shape a whole share, so there is no room
-        left to hand its output and the two could not be made to agree."""
+        """Admission charges an unsizeable shape a whole share, leaving no room to hand out."""
         assert _cap(SimpleNamespace(prompt = "raw completion text", max_tokens = None)) is None
 
     def test_slot_only_admission_is_left_alone(self, monkeypatch):
@@ -159,24 +148,19 @@ class TestTheResolvedCap:
 
 @pytest.fixture
 def date_on(monkeypatch):
-    """The date prompt on, and what a request is charged for it."""
     line = "The current date is 2026-08-31."
     monkeypatch.setattr(routes_inference, "current_date_prompt_line", lambda **_: line)
     return routes_inference._openai_llama_uncapped_injected_date_tokens(None)
 
 
 class TestPromptInjectedAfterTheSizing:
-    """The share has to hold what the route adds after the cap is chosen: the standard
-    GGUF path prefixes the current date and sends that, and six slots each overrunning
-    by an uncharged injection are the overcommit #9392 closed."""
+    """The share has to hold what the route adds after the cap is chosen, or slots overrun."""
 
     def test_the_injection_comes_out_of_the_cap(self, date_on):
         payload = _uncapped()
         assert _cap_with_date(payload) == SHARE - HEADROOM - _charged(payload) - date_on
 
     def test_the_slot_still_holds_one_share(self, date_on):
-        """What llama-server is actually asked for -- injected prompt plus the cap --
-        stays inside the share, so N of them still fit the cache."""
         payload = _uncapped()
         assert _charged(payload) + date_on + _cap_with_date(payload) == SHARE - HEADROOM
 
@@ -188,7 +172,6 @@ class TestPromptInjectedAfterTheSizing:
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_an_injection_that_eats_the_answer_is_left_alone(self, date_on):
-        """Same floor as any other prompt that fills the share."""
         payload = _uncapped()
         room = SHARE - HEADROOM - _charged(payload) - date_on
         assert _cap_with_date(_uncapped([{"role": "user", "content": "x" * (room * 4)}])) is None
@@ -212,9 +195,7 @@ class TestPromptInjectedAfterTheSizing:
 
 
 class TestDenseText:
-    """The cap hands out every token the estimate calls free, and a hex prompt tokenises
-    near one character per token against the four the dense rate charges: sizing on that
-    rate would give a slot room its own prompt sits in, N of them at once."""
+    """A hex prompt tokenises near a token per character, so a rate hands out its own room."""
 
     def test_a_blob_is_charged_what_it_can_cost(self):
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
@@ -237,9 +218,7 @@ class TestDenseText:
 
 
 class TestTheTokenizerPricesThePrompt:
-    """The bound is what the cap is spent against, so pricing prose at four times its real
-    size hands a share away to a request that was never going to use it. Where the loaded
-    model can be asked, ask it; the bound stays for when it cannot."""
+    """The bound is what the cap is spent against, so 4x-priced prose hands away a share."""
 
     def _counting_backend(
         self,
@@ -257,8 +236,7 @@ class TestTheTokenizerPricesThePrompt:
         assert _cap(payload, backend) == SHARE - HEADROOM - 700
 
     def test_a_conversation_the_bound_would_serialise_still_gets_a_share(self):
-        """A ten-turn prose chat: 19426 bytes, 4194 real tokens. The bound leaves nothing
-        inside a share and drops it to running alone; the count leaves most of one."""
+        """The bound leaves nothing inside a share and drops it to running alone."""
         payload = _uncapped([{"role": "user", "content": "x" * 19426}])
         assert _cap(payload) is None
         dense = routes_inference._openai_llama_admission_prompt_tokens(payload)
@@ -266,8 +244,7 @@ class TestTheTokenizerPricesThePrompt:
         assert _cap(payload, self._counting_backend(4194)) == SHARE - HEADROOM - max(4194, dense)
 
     def test_the_reservation_still_fits_inside_a_share(self):
-        """Admission prices at the dense rate, which can sit either side of the count, so
-        the invariant to hold is the share, not an equality."""
+        """The dense rate can sit either side of the count, so the invariant is the share."""
         for counted in (10, 700, 4194):
             payload = _uncapped([{"role": "user", "content": "word " * 900}])
             backend = self._counting_backend(counted)
@@ -278,8 +255,7 @@ class TestTheTokenizerPricesThePrompt:
             assert _cost(payload, resolved.extra_prompt_tokens) <= SHARE
 
     def test_the_count_never_parks_more_than_its_share_of_the_executor(self):
-        """It runs BEFORE admission, so a burst of it must not take the threads the
-        generations that already passed admission need."""
+        """It runs BEFORE admission, so a burst must not take already admitted threads."""
         import asyncio as _asyncio
 
         live = {"now": 0, "peak": 0}
@@ -309,13 +285,7 @@ class TestTheTokenizerPricesThePrompt:
         assert live["peak"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
 
     def test_a_second_event_loop_still_gets_counted(self):
-        """The gate is per loop, so a restarted server keeps pricing with the tokenizer.
-
-        A single module-level Semaphore stays bound to the loop it first WAITED on, and the
-        next loop to contend for it raises "is bound to a different event loop", which
-        `_openai_llama_counted_prompt_tokens` catches like any other count failure. The
-        symptom is silent: every request from then on is priced by the byte bound.
-        """
+        """One Semaphore would raise on the second loop, swallowed into silent bound pricing."""
         import asyncio as _asyncio
 
         counted = {"n": 0}
@@ -346,9 +316,7 @@ class TestTheTokenizerPricesThePrompt:
         assert {r.max_tokens for r in first + second} == {SHARE - HEADROOM - 700}
 
     def test_a_burst_declines_the_count_instead_of_queueing_for_it(self):
-        """Ahead of admission there is no queue_limit and no queue timeout to catch a
-        waiter, so a burst prices itself with the bound rather than lining up behind a
-        stalled llama-server."""
+        """Ahead of admission no queue_limit and no queue timeout would catch a waiter."""
         import asyncio as _asyncio
 
         started = {"n": 0}
@@ -374,8 +342,6 @@ class TestTheTokenizerPricesThePrompt:
         started_at = time.monotonic()
         results = _run(burst())
         elapsed = time.monotonic() - started_at
-        # The two that got a slot are priced by the count; the rest by the bound, and
-        # nobody waited for the ten counts to drain.
         assert started["n"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
         assert elapsed < 2.0
         assert {r.max_tokens for r in results} <= {
@@ -400,13 +366,7 @@ class TestTheTokenizerPricesThePrompt:
 
 
 class TestAPromptTooBigForAShare:
-    """The request the flat allowance undercharges worst.
-
-    Its byte bound leaves no usable answer inside a share, so there is no cap worth
-    sending. Handing it the window UNBOUNDED is what #10070 does and what overruns the
-    cache; handing it the window and CHARGING the window keeps the answer and makes it
-    run alone.
-    """
+    """No answer fits a share: the window UNBOUNDED is #10070's overrun, CHARGED it runs alone."""
 
     def _too_big(self):
         return _uncapped([{"role": "user", "content": "x" * SHARE}])
@@ -419,8 +379,6 @@ class TestAPromptTooBigForAShare:
         assert _cost(payload, _resolve(payload).extra_prompt_tokens) == CTX
 
     def test_so_a_second_one_does_not_fit(self):
-        """Charged the window, it runs alone, which is the whole point of charging it."""
-
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             for _ in range(2):
@@ -456,9 +414,7 @@ class TestAPromptTooBigForAShare:
 
 
 class TestWhichRequestsStateNoCap:
-    """Two spellings of "no cap", and `_openai_llama_admission_output_allowance` already
-    charges them the same. Resolving only the omitted one would leave the charge an
-    estimate for Studio's own chat, which sends the context length as its "Max"."""
+    """Two spellings of "no cap"; Studio's own chat sends the window as its "Max"."""
 
     def test_an_omitted_cap(self):
         assert routes_inference._openai_llama_cap_is_unstated(_uncapped(), _backend())
@@ -487,22 +443,19 @@ class TestWhichRequestsStateNoCap:
         assert not routes_inference._openai_llama_cap_is_unstated(payload, backend)
 
     def test_the_window_is_the_slot_not_the_budget(self):
-        """Under --no-kv-unified the budget is N slots; the comparison is per-slot, which
-        is what `_openai_llama_admission_output_allowance` measures against too."""
+        """Under --no-kv-unified the budget is N slots; the comparison is per-slot."""
         backend = _backend(context_length = SHARE, total = CTX)
         payload = _uncapped()
         payload.max_tokens = SHARE
         assert routes_inference._openai_llama_cap_is_unstated(payload, backend)
 
     def test_the_resolved_cap_replaces_a_window_sized_one(self):
-        """The point of the widening: the same share cap either spelling arrives in."""
         stated = _uncapped()
         stated.max_tokens = CTX
         assert _cap(stated) == _cap(_uncapped()) == SHARE - HEADROOM - _charged(_uncapped())
 
     def test_max_completion_tokens_is_the_field_that_is_overwritten(self):
-        """It wins over max_tokens, so writing the other one would send the caller's
-        number while charging ours."""
+        """It wins over max_tokens: writing the other sends their number, charges ours."""
         payload = _uncapped()
         payload.max_completion_tokens = CTX
         assert routes_inference._openai_effective_max_tokens_field(payload) == (
@@ -515,29 +468,24 @@ class TestWhatTheShareDoesNotHold:
     """Prompt that reaches llama-server without appearing in the payload estimate."""
 
     def test_a_multibyte_character_is_charged_its_bytes(self):
-        """A code point with no merge falls back to a token per UTF-8 byte, so counting
-        characters is not a bound."""
+        """A code point with no merge costs a token per UTF-8 byte, so characters are no bound."""
         payload = _uncapped([{"role": "user", "content": "\U0001f600" * 64}])
         ascii_payload = _uncapped([{"role": "user", "content": "x" * 64}])
         assert _charged(payload) > _charged(ascii_payload) * 3
 
     def test_the_headroom_is_left_unspent(self):
-        """The rendered chat template is prompt no estimate of the messages can see."""
         payload = _uncapped()
         resolved = _resolve(payload)
         assert SHARE - (_charged(payload) + resolved.max_tokens) == HEADROOM
 
     def test_a_request_carrying_tools_is_left_alone(self):
-        """The non-streaming passthrough re-sends a tools request under one lease, first
-        answer and nudge appended, at the same cap, so one lease would hold two shares."""
+        """The passthrough re-sends a tools request at the same cap under one lease."""
         payload = _uncapped()
         payload.tools = [{"type": "function", "function": {"name": "get_weather"}}]
         assert _cap(payload) is None
 
 
 class TestTheReservationItProduces:
-    """The half that matters: the cap has to make the reservation land on a share."""
-
     def test_the_reservation_is_exactly_one_share(self):
         payload = _uncapped()
         resolved = _resolve(payload)
@@ -545,16 +493,7 @@ class TestTheReservationItProduces:
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_without_a_resolved_cap_the_reservation_is_only_an_estimate(self):
-        """What is left to close after #10070, which is why the cap is a bound.
-
-        #10070 stopped charging an unstated cap the whole cache, so the queue no longer
-        serialises on its own: the reservation is the prompt plus a flat allowance. But
-        the request is still SENT ``max_tokens = backend_ctx``, so that allowance is an
-        estimate of what it will generate, not a limit on what it may -- as
-        `_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS` says itself, a plain chat has
-        nothing to re-cost it. Resolving the cap turns the estimate into a bound, which
-        is what makes the reservation above land on a share and stay there.
-        """
+        """The request is still SENT the whole window, so the allowance only estimates."""
         flat = routes_inference._OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
         payload = _uncapped()
         prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
@@ -586,10 +525,7 @@ class TestTheReservationItProduces:
         assert all(lease is not None for lease in _run(scenario()))
 
     def test_the_cache_is_still_not_overcommitted(self):
-        """#9392 stays closed. Given a slot to spare, the seventh share does not fit
-        the cache and waits, rather than being admitted onto a cache that cannot hold
-        it. The slots are deliberately not the limit here: this is the token budget
-        refusing, not the pool."""
+        """#9392 stays closed, and a spare slot is left so it is the budget refusing, not the pool."""
 
         async def scenario():
             queue = LlamaAdmissionQueue("test")

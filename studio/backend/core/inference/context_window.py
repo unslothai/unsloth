@@ -143,14 +143,9 @@ def estimate_messages_tokens_conservative(
 
 
 def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
-    """One token per UTF-8 byte: a bound, not a rate.
-
-    A byte-level BPE merges bytes and never splits one, so this holds for the text the
-    rates above mispredict -- dense charges ASCII the English four against a measured
-    1.13 for hex, and the conservative two stays deliberately below what a blob costs.
-    About 4x on prose, so it belongs only to a caller handing out room it then fills,
-    where an undercount is cache nobody accounted for and pessimism costs an answer.
-    """
+    """One token per UTF-8 byte: a bound, not a rate, since byte-level BPE merges bytes
+    and never splits one. About 4x on prose, so it suits only a caller handing out room
+    it then fills, where an undercount is cache nobody accounted for."""
     total = 0
     for message in messages:
         try:
