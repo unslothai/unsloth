@@ -551,7 +551,7 @@ def _sed_program_source_is_stream(value: str) -> bool:
 def _end_program_source(programs: "list[str]", exec_disabled: bool) -> None:
     """Close the script source the pieces collected so far belong to, by appending the blank line
     the join needs. A source BOUNDARY ends any line continuation open across it, so a trailing
-    `a\` appends a blank line instead of swallowing the next source's first line (verified on GNU
+    `a\\` appends a blank line instead of swallowing the next source's first line (verified on GNU
     sed 4.9)."""
     if programs and programs[-1] and not exec_disabled:
         programs.append("")
@@ -700,7 +700,7 @@ def _sed_invocation(
 
 def _sed_text(text: str) -> str:
     """Unescape one sed text argument the way read_text does: every backslash drops away and the
-    character behind it stays, so `e touch MARK\ER` runs MARKER."""
+    character behind it stays, so `e touch MARK\\ER` runs MARKER."""
     return _SED_TEXT_ESCAPE_RE.sub(r"\1", text).strip()
 
 
