@@ -2750,8 +2750,9 @@ def _quant_token_with_bpw(filename: str) -> Optional[str]:
     return token
 
 
-# MIRROR of ``hub.utils.gguf._GGUF_NAME_EXTENSIONS_RE``.
-_GGUF_NAME_EXTENSIONS_RE = re.compile(r"(?:\.[A-Za-z0-9]+)+$")
+# MIRROR of ``hub.utils.gguf._GGUF_EXTENSION_SUFFIX_RE``: the extension only, so a dotted build
+# tag (``model-Q4_K_M.fp16.gguf``) stays part of the identity.
+_GGUF_EXTENSION_SUFFIX_RE = re.compile(r"(?:\.gguf)+$", re.IGNORECASE)
 
 
 def _quant_token_closes_name(filename: str) -> bool:
@@ -2765,7 +2766,7 @@ def _quant_token_closes_name(filename: str) -> bool:
     bpw = _GGUF_BPW_SUFFIX_RE.match(tail)
     if bpw:
         tail = tail[bpw.end() :]
-    return not _GGUF_NAME_EXTENSIONS_RE.sub("", tail)
+    return not _GGUF_EXTENSION_SUFFIX_RE.sub("", tail)
 
 
 def _gguf_variant_key(filename: str) -> str:

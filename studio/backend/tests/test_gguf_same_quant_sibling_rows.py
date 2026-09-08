@@ -32,7 +32,7 @@ from hub.utils.gguf import (
     group_gguf_variant_files,
     list_local_gguf_variants,
 )
-from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant, plan_from_expected_files
 from hub.utils.inventory_scan import complete_snapshot_variants
 from utils.models.model_config import _find_local_gguf_by_variant, _gguf_variant_key
 
@@ -273,3 +273,83 @@ def test_paths_are_keyed_the_same_on_windows_separators():
     assert gguf_variant_key("sub\\model-Q4_K_M-mtp.gguf") == gguf_variant_key(
         "sub/model-Q4_K_M-mtp.gguf"
     )
+
+
+# --------------------------------------------------------------------------------------
+# The separator the tag uses, and the paths that resolve the legacy bare spelling
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        # A DOT separates the tag just as often as a dash, and it is not an extension.
+        ("model-Q4_K_M.fp16.gguf", "model-Q4_K_M.fp16"),
+        ("Qwen3.8-27B-GSQ-RCO-IQ3_S.mtp.gguf", "Qwen3.8-27B-GSQ-RCO-IQ3_S.mtp"),
+        # Only the extension itself is ignored, however many times it repeats.
+        ("llama-2-7b-chat.Q4_K_M.gguf", "Q4_K_M"),
+        ("Llama-3.3-70B-Instruct.Q6_K.gguf-00001-of-00006.gguf", "Q6_K"),
+    ],
+)
+def test_a_dotted_build_tag_is_part_of_the_identity(path, expected):
+    """Stripping every dotted component as though it were an extension collapsed
+    ``model-Q4_K_M.fp16.gguf`` back onto bare ``Q4_K_M`` -- the very collision this file exists
+    to prevent, reached through the other separator."""
+    assert gguf_variant_key(path) == expected
+    assert _gguf_variant_key(path) == expected
+
+
+def test_the_dotted_pair_is_two_rows():
+    rows = group_gguf_variant_files([("model-Q4_K_M.fp16.gguf", 2), ("model-Q4_K_M.gguf", 1)])
+    assert rows == {
+        "Q4_K_M": ("model-Q4_K_M.gguf", 1),
+        "model-Q4_K_M.fp16": ("model-Q4_K_M.fp16.gguf", 2),
+    }
+
+
+def test_the_load_guard_sees_the_alias_a_root_stem_delete_accepts():
+    """Deletion resolves a bare ``q4_0`` onto the lone tagged build's qualified key. The guard
+    compared the two strings literally, so a bare request unlinked the build that was LOADED."""
+    from hub.services.models.deletion import _loaded_repo_variant_blocks_delete
+
+    loaded = "gemma-4-31B_q4_0-it"
+    assert _loaded_repo_variant_blocks_delete("repo", "repo", "q4_0", loaded) is True
+    assert _loaded_repo_variant_blocks_delete("repo", "repo", loaded, loaded) is True
+    # A different quant is still free to go.
+    assert _loaded_repo_variant_blocks_delete("repo", "repo", "Q8_0", loaded) is False
+
+
+def test_a_cached_lone_tagged_build_resolves_under_its_legacy_bare_pin(tmp_path, monkeypatch):
+    """The download path accepts ``q4_0`` for the qualified row, so cached-path lookup has to as
+    well; returning None there reported a downloaded model as not_downloaded and skipped every
+    header-derived fact (VRAM estimate, embedding/diffusion detection)."""
+    from hub.utils import gguf as gguf_module
+
+    snapshot = _materialize(tmp_path / "snap", [("gemma-4-31B_q4_0-it.gguf", 17)])
+    monkeypatch.setattr(
+        gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [snapshot]
+    )
+    resolved = gguf_module.resolve_local_gguf_path("google/gemma-4-31B-it-qat-q4_0-gguf", "q4_0")
+    assert resolved == str(snapshot / "gemma-4-31B_q4_0-it.gguf")
+
+
+def test_an_ambiguous_bare_spelling_resolves_to_nothing():
+    """Two tagged builds at one quant: the bare token names neither, so every caller fails closed
+    rather than picking the one that sorts first."""
+    from hub.utils.gguf import resolve_variant_alias
+
+    keys = ["model-IQ3_S-mtp", "model-IQ3_S-fp16"]
+    assert resolve_variant_alias(keys, "iq3_s") is None
+    assert resolve_variant_alias(keys, "model-IQ3_S-mtp") == "model-IQ3_S-mtp"
+
+
+def test_an_interrupted_bare_alias_download_still_resumes():
+    """The worker writes the manifest under the spelling the request used. Rebuilding the plan
+    from that manifest matched no main file once the key was qualified, so resume aborted on top
+    of blobs it had already fetched."""
+    from hub.utils.download_manifest import ExpectedFile
+
+    expected = [ExpectedFile(path = "gemma-4-31B_q4_0-it.gguf", size = 17, sha256 = "h1")]
+    plan = plan_from_expected_files("q4_0", expected)
+    assert plan.main_filenames == frozenset({"gemma-4-31B_q4_0-it.gguf"})
+    assert plan.main_size_bytes == 17

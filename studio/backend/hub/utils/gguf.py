@@ -858,6 +858,30 @@ def accepts_bare_quant_alias(key: str) -> bool:
     return is_qualified_gguf_variant_key(key) and not is_h3_denoiser_variant_key(key)
 
 
+def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
+    """The key among *keys* that *wanted* names, or None when it names zero or several.
+
+    *wanted* itself when it is one of them, else the ONE qualified key whose bare quant alias it
+    is. Every caller that accepts the legacy bare spelling for a qualified key has to agree on
+    this, or a variant downloads under one identity and is looked up, resumed or guarded under
+    another. Ambiguity resolves to None so each caller fails closed.
+    """
+    target = (wanted or "").strip().lower()
+    if not target:
+        return None
+    by_lower: dict[str, str] = {}
+    for key in keys:
+        by_lower.setdefault((key or "").strip().lower(), key)
+    if target in by_lower:
+        return by_lower[target]
+    matches = [
+        original
+        for original in by_lower.values()
+        if accepts_bare_quant_alias(original) and bare_quant_alias(original).lower() == target
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 
@@ -869,12 +893,16 @@ def _is_quant_directory(segment: str) -> bool:
     return _select_quant_match(segment) is not None
 
 
-_GGUF_NAME_EXTENSIONS_RE = re.compile(r"(?:\.[A-Za-z0-9]+)+$")
+# Only the extension itself, never a dotted build tag: ``model-Q4_K_M.fp16.gguf`` is a second
+# build of Q4_K_M exactly as ``model-Q4_K_M-fp16.gguf`` is, and stripping ``.fp16`` as though it
+# were an extension collapsed the pair back into one row. Repeated because a non-canonical split
+# leaves ``.gguf`` twice (``...Q6_K.gguf-00001-of-00006.gguf``, shard suffix already removed).
+_GGUF_EXTENSION_SUFFIX_RE = re.compile(r"(?:\.gguf)+$", re.IGNORECASE)
 
 
 def _quant_token_closes_name(filename: str) -> bool:
     """Whether the basename ends at its quant token. Anything trailing it is a second build of
-    that quant (``-mtp``, ``-fp16``), not the same one."""
+    that quant (``-mtp``, ``-fp16``, ``.fp16``), not the same one."""
     match, text = _locate_quant_match(filename)
     stem = _quant_search_stem(filename)
     if match is None or text != stem:
@@ -883,7 +911,7 @@ def _quant_token_closes_name(filename: str) -> bool:
     bpw = _GGUF_BPW_SUFFIX_RE.match(tail)
     if bpw:
         tail = tail[bpw.end() :]
-    return not _GGUF_NAME_EXTENSIONS_RE.sub("", tail)
+    return not _GGUF_EXTENSION_SUFFIX_RE.sub("", tail)
 
 
 def gguf_variant_key(filename: str) -> str:
@@ -1366,8 +1394,16 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
     triggers a download. Lets callers read header metadata before a load."""
     for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
         variants, _ = list_local_gguf_variants(str(snapshot))
+        # A lone tagged build is listed under its qualified key, and the download path accepts the
+        # legacy bare quant for it; exact equality here returned None for a model that IS cached,
+        # so callers reported it not_downloaded and skipped every header-derived fact.
+        wanted = (
+            None
+            if gguf_variant is None
+            else resolve_variant_alias([variant.quant for variant in variants], gguf_variant)
+        )
         for variant in variants:
-            if gguf_variant is None or variant.quant == gguf_variant:
+            if gguf_variant is None or variant.quant == wanted:
                 candidate = snapshot / variant.filename
                 if candidate.is_file():
                     return str(candidate)

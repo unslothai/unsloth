@@ -621,7 +621,15 @@ def _loaded_repo_variant_blocks_delete(
         return True
     if not loaded_variant:
         return True
-    return loaded_variant.lower() == delete_variant.lower()
+    if loaded_variant.lower() == delete_variant.lower():
+        return True
+    # ``_variant_keys_to_delete`` resolves the legacy bare quant onto the one qualified key that
+    # answers to it, so the guard has to accept that spelling too. Comparing the two strings
+    # literally let a bare request unlink the build that was loaded under its qualified key.
+    return (
+        accepts_bare_quant_alias(loaded_variant)
+        and bare_quant_alias(loaded_variant).lower() == delete_variant.strip().lower()
+    )
 
 
 _LOAD_STATE_UNVERIFIABLE_DETAIL = (
