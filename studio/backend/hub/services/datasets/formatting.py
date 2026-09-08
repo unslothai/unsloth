@@ -363,12 +363,19 @@ def check_format_response(
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
-        # Offline `datasets` answers a streaming load from its cache without authorizing,
-        # and Tier 2 runs on the default prefer_local_cache=false, ahead of that guard.
-        if anonymous_and_offline(hf_token) and not dataset_exists:
+        # Offline `datasets` answers a streaming load from its own prepared cache without
+        # ever consulting the credential, and both tiers run on the default
+        # prefer_local_cache=false, ahead of the guarded cache reader below. The anonymous
+        # sentinel is not the only caller that has not earned that disk: an explicit token
+        # that cannot reach the repo is the same leak, so this mirrors the seed-inspect gate.
+        if not dataset_exists and not cache_reads_authorized(
+            hf_token,
+            repo_id = request.dataset_name,
+            repo_type = "dataset",
+        ) and (anonymous_and_offline(hf_token) or isinstance(hf_token, str)):
             raise HTTPException(
                 status_code = 404,
-                detail = "This request cannot be authorized without network access.",
+                detail = "Dataset preview is not available without Hub authorization.",
             )
         if dataset_exists:
             train_split = request.train_split or "train"

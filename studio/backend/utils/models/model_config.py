@@ -726,6 +726,25 @@ def _is_vlm(config) -> bool:
     )
 
 
+def _config_json_already_cached(model_name: str, revision: Optional[str] = None) -> bool:
+    """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id = model_name,
+            filename = "config.json",
+            revision = revision,
+            cache_dir = active_hf_hub_cache(),
+        )
+        # Also returns a sentinel object recording a known-absent file; only a str is a real hit.
+        return isinstance(hit, str)
+    except Exception as exc:
+        # Never let the guard's own failure open the path it guards.
+        logger.debug("Could not check cached config.json for '%s': %s", model_name, exc)
+        return True
+
+
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -757,6 +776,15 @@ def _raw_config_has_vision_config(
             }
             if revision is not None:
                 download_kwargs["revision"] = revision
+            # hf_hub_download serves the cached file whenever the Hub is unreachable, even with
+            # local_files_only=False, and never consults the credential to do it. Measured: a
+            # planted cache entry plus a dead endpoint returns a private repo's config.json to a
+            # token that cannot read it. Only a repo already on disk can leak, so authorize just
+            # that case; anything not cached goes to the wire, where the Hub enforces access.
+            if _config_json_already_cached(model_name, revision) and not cache_reads_authorized(
+                hf_token, repo_id = model_name
+            ):
+                return None
             config_path = Path(hf_hub_download(**download_kwargs))
         config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
@@ -1080,6 +1108,10 @@ def is_vision_model(
     effective_offline = bool(local_files_only or _env_offline())
     # Offline the probe reads the cache and never authorizes, so local_files_only=False
     # does not put an anonymous caller back on the wire. It gets the default instead.
+    # The online cache fallback is guarded inside _raw_config_has_vision_config, at the point
+    # where a cached file can actually be served, rather than here: gating the whole call
+    # would deny a legitimate token its answer on any Hub hiccup, for a repo that is not on
+    # disk and so has nothing to leak.
     if (
         effective_offline
         and not is_local_path(model_name)

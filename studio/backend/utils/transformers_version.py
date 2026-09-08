@@ -934,7 +934,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         if cache_denied:
             return None
         cfg = _config_json_from_hf_cache(model_name)
-        if cfg is not None:
+        if cfg is not None and not isinstance(hf_token, str):
+            # Memoized for ambient/anonymous identities only. An explicit token's authorization
+            # is re-derived every call, because this value came off the operator's disk and the
+            # permanent memo would outlive the access it was granted under: cache_reads_authorized
+            # expires in 60 s, so a revoked token must not keep reading through a memo that never does.
             _config_json_cache[cache_key] = cfg
         return cfg
 

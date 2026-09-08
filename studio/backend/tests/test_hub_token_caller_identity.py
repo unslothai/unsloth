@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -1686,3 +1686,196 @@ def test_an_unreachable_hub_is_a_404_not_a_500():
     assert hf_error_status(LocalEntryNotFoundError("no cache, no hub")) == 404
     assert hf_error_status(OfflineModeIsEnabled("offline")) == 404
     assert hf_error_status(RuntimeError("boom")) is None
+
+
+# --- The four defects found reviewing this branch's own gates -------------------------
+
+
+def test_a_ui_sessions_marker_survives_the_route_level_token_normalizer():
+    """``routes.models._normalize_hf_token`` trimmed with ``str.strip()``, which returns a
+    plain ``str``. That silently demoted a UI session to an API key between the dependency
+    and the gate, so an ordinary session lost its own cache offline: the exact regression
+    ``AmbientAuthorizedToken`` exists to prevent, reintroduced one call later."""
+    ui = hf_token_arg("  hf_saved  ", allow_ambient_token = True)
+    resolved = models_routes._normalize_hf_token(ui)
+
+    assert resolved == "hf_saved"
+    assert isinstance(resolved, hf_tokens.AmbientAuthorizedToken), "marker lost in normalization"
+    # An API key must not acquire the marker on the way through.
+    api_key = hf_token_arg("  hf_saved  ", allow_ambient_token = False)
+    assert not isinstance(models_routes._normalize_hf_token(api_key), hf_tokens.AmbientAuthorizedToken)
+    assert models_routes._normalize_hf_token("   ") is None
+    assert models_routes._normalize_hf_token(False) is None
+
+
+def test_the_format_check_authorizes_before_the_streaming_tiers(monkeypatch):
+    """Measured against the installed ``datasets``: offline, ``load_dataset`` answers BOTH
+    ``streaming=True`` tiers out of its own prepared cache, logging "using the latest cached
+    version", with the token never consulted. Both tiers run on the default
+    ``prefer_local_cache=false``, ahead of the guarded cache reader, so the gate has to
+    stand in front of them the way the seed-inspect route already does."""
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+
+    loads = {"n": 0}
+
+    def _explode(*_a, **_k):
+        loads["n"] += 1
+        raise AssertionError("load_dataset must not run for an unauthorized caller")
+
+    monkeypatch.setattr("datasets.load_dataset", _explode)
+
+    request = CheckFormatRequest(dataset_name = "acme/private-secrets")
+    api_key = hf_token_arg("hf_cannot_read_this", allow_ambient_token = False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        formatting.check_format_response(request, api_key)
+    assert excinfo.value.status_code == 404
+    assert loads["n"] == 0
+
+
+def test_the_format_check_still_serves_an_ordinary_ui_session(monkeypatch):
+    """The gate above must not become the UI regression again: a session holding its own
+    saved token is entitled to ambient, so it reaches the loader with no probe."""
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    reset_repo_access_cache()
+    probes = {"n": 0}
+    monkeypatch.setattr(
+        hf_tokens, "_probe_repo_access", lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1)
+    )
+    reached = {"n": 0}
+
+    def _reached(*_a, **_k):
+        reached["n"] += 1
+        raise RuntimeError("stop here: the gate let us through, which is all this asserts")
+
+    monkeypatch.setattr("datasets.load_dataset", _reached)
+
+    request = CheckFormatRequest(dataset_name = "acme/private-secrets")
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+
+    with pytest.raises(HTTPException):
+        formatting.check_format_response(request, ui)
+    assert reached["n"] > 0, "an ordinary UI session was denied its own dataset"
+    assert probes["n"] == 0
+
+
+def test_an_explicit_tokens_offline_config_read_is_not_memoized_forever(monkeypatch):
+    """``cache_reads_authorized`` expires in 60 s precisely so a revoked token stops reading.
+    ``_config_json_cache`` has no TTL, so memoizing a value that came off the operator's disk
+    outlived the access it was granted under: the first read authorized, every later one was
+    served from the memo without the gate running again."""
+    from utils import transformers_version as tv
+
+    reset_repo_access_cache()
+    tv._config_json_cache.clear()
+    monkeypatch.setattr(tv, "_env_offline", lambda: True)
+    monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda *_a, **_k: {"model_type": "secret"})
+
+    authorized = {"v": True}
+    monkeypatch.setattr(
+        tv, "cache_reads_authorized", lambda *_a, **_k: authorized["v"]
+    )
+
+    token = hf_token_arg("hf_explicit", allow_ambient_token = False)
+    assert tv._load_config_json("acme/private", token) == {"model_type": "secret"}
+
+    # The credential is revoked; the next read must re-derive, not replay the memo.
+    authorized["v"] = False
+    assert tv._load_config_json("acme/private", token) is None
+
+
+def test_an_ambient_offline_config_read_keeps_its_memo(monkeypatch):
+    """The fix above must not turn every ambient read into a fresh disk walk."""
+    from utils import transformers_version as tv
+
+    reset_repo_access_cache()
+    tv._config_json_cache.clear()
+    monkeypatch.setattr(tv, "_env_offline", lambda: True)
+    reads = {"n": 0}
+
+    def _from_cache(*_a, **_k):
+        reads["n"] += 1
+        return {"model_type": "public"}
+
+    monkeypatch.setattr(tv, "_config_json_from_hf_cache", _from_cache)
+
+    assert tv._load_config_json("acme/public", None) == {"model_type": "public"}
+    assert tv._load_config_json("acme/public", None) == {"model_type": "public"}
+    assert reads["n"] == 1, "the ambient memo stopped working"
+
+
+def test_the_vision_config_read_refuses_an_unauthorized_cache_fallback(monkeypatch, tmp_path):
+    """Measured against the installed huggingface_hub: with a planted cache entry and a dead
+    endpoint, ``hf_hub_download(local_files_only=False)`` returns the operator's CACHED
+    config.json for a token that cannot read the repo, because it falls back to disk whenever
+    the Hub is unreachable and never consults the credential to do it."""
+    from utils.models import model_config as mc
+
+    reset_repo_access_cache()
+    # A real cached config, so an unguarded read returns the leak rather than an error.
+    tmp_config = tmp_path / "config.json"
+    tmp_config.write_text('{"vision_config": {}, "model_type": "secret"}')
+    monkeypatch.setattr(mc, "_config_json_already_cached", lambda *_a, **_k: True)
+    monkeypatch.setattr(mc, "cache_reads_authorized", lambda *_a, **_k: False)
+
+    # Counted, not raised: the reader wraps everything in `except Exception`, so an
+    # AssertionError thrown in here would be swallowed and the test would pass unguarded.
+    calls = {"n": 0}
+
+    def _download(*_a, **_k):
+        calls["n"] += 1
+        return str(tmp_config)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    api_key = hf_token_arg("hf_cannot_read_this", allow_ambient_token = False)
+    assert mc._raw_config_has_vision_config("acme/private-vlm", hf_token = api_key) is None
+    assert calls["n"] == 0, "hf_hub_download ran for an unauthorized cached repo"
+
+
+def test_the_vision_config_read_keeps_the_wire_for_a_repo_not_on_disk(monkeypatch):
+    """The guard belongs at the leak, not at the API boundary. A repo that is not cached has
+    nothing to leak, so it must reach the Hub, which enforces its own access control. Gating
+    the whole call instead would deny a legitimate token its answer on any Hub hiccup, and it
+    broke exactly that: TestVisionCacheTokenHandling asserts a gated model still classifies."""
+    from utils.models import model_config as mc
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(mc, "_config_json_already_cached", lambda *_a, **_k: False)
+
+    probes = {"n": 0}
+    monkeypatch.setattr(
+        mc, "cache_reads_authorized",
+        lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1) or False,
+    )
+    downloads = {"n": 0}
+
+    def _download(*_a, **_k):
+        downloads["n"] += 1
+        raise RuntimeError("reached the wire, which is all this asserts")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+    monkeypatch.setattr(mc, "hf_file_definitely_absent", lambda *_a, **_k: False, raising = False)
+
+    api_key = hf_token_arg("hf_explicit", allow_ambient_token = False)
+    mc._raw_config_has_vision_config("acme/not-cached", hf_token = api_key)
+
+    assert downloads["n"] == 1, "an uncached repo lost its wire read"
+    assert probes["n"] == 0, "an uncached repo has nothing to leak, so it must not pay a probe"
+
+
+def test_a_failed_cache_check_does_not_open_the_path_it_guards(monkeypatch):
+    """If the cache lookup itself raises, the guard must assume a hit and authorize."""
+    from utils.models import model_config as mc
+
+    def _boom(*_a, **_k):
+        raise OSError("cache unreadable")
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _boom)
+    assert mc._config_json_already_cached("acme/private-vlm") is True

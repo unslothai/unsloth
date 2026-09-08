@@ -119,8 +119,10 @@ def _is_valid_repo_id(repo_id: str) -> bool:
 def _normalize_hf_token(hf_token) -> Optional[str]:
     if not isinstance(hf_token, str):
         return None
-    token = hf_token.strip()
-    return token or None
+    # Trims via normalize_token, not str.strip(): strip() returns a plain str and would drop
+    # the marker saying this token belongs to a UI session already entitled to ambient access,
+    # putting an ordinary session behind the access probe and denying it its own cache offline.
+    return normalize_token(hf_token)
 
 
 def _safe_is_dir(path) -> bool:
@@ -194,7 +196,13 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
-from hub.utils.hf_tokens import HfTokenArg, cache_reads_authorized, hf_token_arg, is_anonymous
+from hub.utils.hf_tokens import (
+    HfTokenArg,
+    cache_reads_authorized,
+    hf_token_arg,
+    is_anonymous,
+    normalize_token,
+)
 from utils.utils import anonymous_and_offline
 
 
