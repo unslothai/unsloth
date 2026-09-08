@@ -780,3 +780,83 @@ def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, mo
     monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1")
     _cmd, _backend_, seen = _launch_with(tmp_path, monkeypatch, plan, avail_mib = 26 * 1024)
     assert seen["inputs"]["cache_ram_default_mib"] == bound - 1024
+
+
+def test_the_single_slot_retry_keeps_one_slot_after_the_plan_is_revoked(tmp_path, monkeypatch):
+    """A plan that lowered --parallel launches, the server refuses the unified
+    cache above one sequence, and the retry is rewritten to one slot. The spawn
+    then revokes the plan, which restores the fitter's slot count, so the retry
+    relaunched the slots the server had just refused. Revoking first keeps the
+    rewrite on top."""
+    import subprocess
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, CARD_MIB, CARD_MIB)])
+
+    def read(_path):
+        for key, value in DENSE.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024 * MIB
+    del backend._can_estimate_kv
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+        "supports_cache_ram": True,
+    }
+    backend._available_system_memory_mib = lambda: 64 * 1024
+    backend._planned_tensor_spill = lambda inputs, **_kw: Plan(
+        changed = True, n_ctx = 8192, n_parallel = 2
+    )
+
+    real_popen = subprocess.Popen
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return real_popen(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": None,
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        if len(cmds) == 1:
+            backend._stdout_lines = ["a unified KV cache is only supported with a single sequence"]
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                speculative_type = "off",
+                n_parallel = 4,
+            )
+        )
+
+    assert len(cmds) == 2, cmds
+    assert _flag(cmds[0], "--parallel") == "2"
+    assert "--kv-unified" in cmds[0]
+    # The plan is gone from the retry and the retry is the one slot it advertised.
+    assert _flag(cmds[1], "--fit") == "on"
+    assert _flag(cmds[1], "--parallel") == "1", cmds[1]
+    assert "--kv-unified" not in cmds[1]
+    assert backend.effective_parallel_slots == 1

@@ -25280,11 +25280,17 @@ class LlamaCppBackend:
                 # this MUST stay ahead of the flash-attn rung, which takes any signal
                 # crash; on the message, not the exit, so Windows lands here too.
                 if not healthy and not _load_cancelled():
-                    _kvu_cmd = (
-                        self._with_single_sequence(_last_spawn_cmd)
-                        if self._is_kv_unified_refused("\n".join(self._stdout_lines))
-                        else None
-                    )
+                    _kvu_cmd = None
+                    if self._is_kv_unified_refused("\n".join(self._stdout_lines)):
+                        # The plan goes FIRST. _spawn_and_wait revokes it on every
+                        # labelled retry, and the revocation puts the fitter's
+                        # --parallel back; applied after the one-slot rewrite it
+                        # relaunched the slot count the server had just refused.
+                        # Idempotent: the revocation inside the spawn then finds
+                        # nothing left to strip and leaves the one slot alone.
+                        _kvu_cmd = self._with_single_sequence(
+                            _revoke_spill_plan(_last_spawn_cmd, "single-seq")
+                        )
                     if _kvu_cmd is not None:
                         logger.warning(
                             "llama-server refused a unified KV cache with more than "
