@@ -42,6 +42,50 @@ def stack():
     return module
 
 
+class _StoppedAtProbe(BaseException):
+    """Raised by the stubbed ROCm version probe so nothing past it runs.
+
+    BaseException, not Exception: the installer catches Exception in places, and a stop
+    signal that can be swallowed is no stop at all.
+    """
+
+
+@pytest.fixture(autouse = True)
+def _no_real_install(stack, monkeypatch):
+    """No test in this file may reach an installation.
+
+    Past the version probe _ensure_rocm_torch calls pip_install, which on the ordinary
+    test interpreter downloads the multi-GB ROCm stack INTO the running environment and
+    replaces whatever torch is there. Autouse rather than per-test, so a code path that
+    moves later cannot quietly make one of these tests non-hermetic again.
+    """
+    def _refuse(*args, **kwargs):
+        pytest.fail(f"the test reached a real install: pip_install{args[:2]}")
+
+    monkeypatch.setattr(stack, "pip_install", _refuse)
+    monkeypatch.setattr(stack, "pip_install_try", _refuse)
+
+
+def _reaches_the_version_probe(stack, monkeypatch) -> bool:
+    """Whether _ensure_rocm_torch gets as far as the ROCm version probe.
+
+    The probe RAISES rather than returning None: reaching it is the whole assertion, and
+    the installer's next step is the install itself.
+    """
+    reached = {"ran": False}
+
+    def _probe(*args, **kwargs):
+        reached["ran"] = True
+        raise _StoppedAtProbe
+
+    monkeypatch.setattr(stack, "_detect_rocm_version", _probe)
+    try:
+        stack._ensure_rocm_torch()
+    except _StoppedAtProbe:
+        pass
+    return reached["ran"]
+
+
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
 def test_the_request_is_recognised(stack, monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", value)
@@ -1020,20 +1064,14 @@ def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
     monkeypatch.setattr(stack, "_is_wsl", lambda: False)
     monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
-    reached = {"ran": False}
-    monkeypatch.setattr(
-        stack,
-        "_detect_rocm_version",
-        lambda *a, **k: (reached.__setitem__("ran", True), (7, 2))[1],
-    )
-    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
     monkeypatch.setattr(
         stack,
         "_probe_torch_runtime",
         lambda *a, **k: (True, True, "2.11.0", False, True),
     )
-    stack._ensure_rocm_torch()
-    assert reached["ran"] is True
+    # Not a no-op pip_install stub: this route installs through pip_install_try, which is
+    # a real subprocess too, so stopping at the probe is what keeps the test hermetic.
+    assert _reaches_the_version_probe(stack, monkeypatch) is True
 
 
 # A card ROCm sees perfectly well and no index can serve. The two questions disagree here,
@@ -1403,14 +1441,7 @@ def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     # A ROCm pin skips the whole vendor-precedence block, so reaching the version probe
     # is what "the pin still won" looks like from outside.
-    reached = {"ran": False}
-    monkeypatch.setattr(
-        stack,
-        "_detect_rocm_version",
-        lambda *a, **k: (reached.__setitem__("ran", True), None)[1],
-    )
-    stack._ensure_rocm_torch()
-    assert reached["ran"] is True
+    assert _reaches_the_version_probe(stack, monkeypatch) is True
 
 
 def _viable_masked(
@@ -1517,14 +1548,7 @@ def _rocm_repair_reached(
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", pin)
     if pin_url is not None:
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", pin_url)
-    reached = {"ran": False}
-    monkeypatch.setattr(
-        stack,
-        "_detect_rocm_version",
-        lambda *a, **k: (reached.__setitem__("ran", True), None)[1],
-    )
-    stack._ensure_rocm_torch()
-    return reached["ran"]
+    return _reaches_the_version_probe(stack, monkeypatch)
 
 
 def test_the_request_needs_a_viable_route_to_bypass_nvidia(stack, monkeypatch):
@@ -2151,3 +2175,77 @@ def test_the_installer_still_routes_that_host_unmasked():
     """The control: the same one-arch host with no mask is exactly what the request exists to
     serve, so the decline above must belong to the mask and not to the host shape."""
     assert _route_shell_masked(["gfx1100"], devices = []) is True
+
+
+_UUID_MASK = "0,GPU-DEADBEEFDEADBEEF"
+
+
+def test_an_ambiguous_target_is_a_rejection_rather_than_a_detection_miss(stack, monkeypatch):
+    """ROCR_VISIBLE_DEVICES may MIX ordinals and UUIDs, and a UUID names a device this
+    installer cannot place. Beside more than one architecture _runtime_gfx_target says so
+    outright -- "which one is selected cannot be read here, so the AMD per-gfx index is left
+    alone" -- and returns no target. Both mask layers still name a device, so the no-target
+    fallback re-read the physical inventory, found the sibling it had just refused to choose
+    between, and approved the swap the message said it would not make: _ensure_cuda_torch
+    stands down and _ensure_rocm_torch then declines on the same ambiguity."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1010", "gfx1100"],
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is False
+    )
+
+
+def test_the_same_uuid_mask_on_one_architecture_still_routes(stack, monkeypatch):
+    """The control, and the reason the branch asks about unlike adapters: a UUID selects an
+    unknown ordinal, but where every ordinal gives the same arch there is nothing ambiguous
+    about it. Without this the rule reads as "any UUID declines"."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1100"],
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is True
+    )
+
+
+def test_the_named_arch_the_message_offers_resolves_the_ambiguity(stack, monkeypatch):
+    """The second control: the message names UNSLOTH_ROCM_GFX_ARCH as the way through, so
+    setting it must restore the route rather than leave the host declined for good."""
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1010", "gfx1100"],
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is True
+    )
+
+
+def test_the_ambiguity_flag_does_not_survive_the_next_host(stack, monkeypatch):
+    """It is a module global read by a separate function, so a stale True would decline a
+    later, unrelated host. _runtime_gfx_target resets it on entry; this is what says so."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1010", "gfx1100"],
+            ROCR_VISIBLE_DEVICES = _UUID_MASK,
+            HIP_VISIBLE_DEVICES = "0",
+        )
+        is False
+    )
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx1100"]) is True

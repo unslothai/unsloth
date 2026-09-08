@@ -1946,6 +1946,14 @@ _LAST_HIP_MASK_RESOLVED = True
 # resolves.
 _LAST_ROCR_MASK_RESOLVED = True
 
+# And the third way a target can fail to resolve, which neither flag above covers: both masks
+# named a device and the probes still could not say WHICH arch was selected -- a UUID token
+# beside more than one architecture, or amd-smi's discovery order on unlike adapters, where
+# no mask need be set at all. _runtime_gfx_target prints and declines there, and a caller that
+# reads "no target" as a detection miss re-reads the physical inventory, finds the sibling it
+# just refused to choose between, and approves the swap the message said it would not make.
+_LAST_GFX_TARGET_AMBIGUOUS = False
+
 
 def _detect_amd_gfx_codes(
     dedup: bool = True,
@@ -2161,7 +2169,11 @@ def _forced_rocm_route_is_viable() -> bool:
     # Above the target test, since the fallback below would otherwise approve the same host
     # off its inventory. Silent by design: _pick_visible_index has already warned, naming
     # the variable and its value, and this predicate is asked from three call sites.
-    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED:
+    if (
+        not _LAST_HIP_MASK_RESOLVED
+        or not _LAST_ROCR_MASK_RESOLVED
+        or _LAST_GFX_TARGET_AMBIGUOUS
+    ):
         return False
     if _target is not None:
         # An arch _ensure_rocm_torch refuses outright is not something to swap TO. Keyed on
@@ -2295,9 +2307,10 @@ def _runtime_gfx_target(
     # Reset on entry rather than only where it is decided, so a caller can never read the
     # answer a previous host-shape gave: every early return below leaves a mask that resolved
     # (an explicit arch outranks it; a no-GPU mask has its own rule) or no list to index.
-    global _LAST_HIP_MASK_RESOLVED, _LAST_ROCR_MASK_RESOLVED
+    global _LAST_HIP_MASK_RESOLVED, _LAST_ROCR_MASK_RESOLVED, _LAST_GFX_TARGET_AMBIGUOUS
     _LAST_HIP_MASK_RESOLVED = True
     _LAST_ROCR_MASK_RESOLVED = True
+    _LAST_GFX_TARGET_AMBIGUOUS = False
     # An empty (or "-1") mask selects NO GPU, deliberately, per _visible_devices_pinned.
     # Decided before any probe runs, because no probe is filtered the way the reroutes need:
     # only ROCR_VISIBLE_DEVICES reaches rocminfo, and amd-smi and KFD sysfs are filtered by
@@ -2464,6 +2477,8 @@ def _runtime_gfx_target(
                 f"   selected cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
+            # A REJECTION, exactly as the mask branch above, and the message just said so.
+            _LAST_GFX_TARGET_AMBIGUOUS = True
             return None, [], None, host_codes
     # Recorded beside the pick, against the same list, because this is the one place both
     # are known: gfx_devices has had the ROCr layer applied and is what the HIP index
