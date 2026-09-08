@@ -23,7 +23,7 @@ if _TESTS_DIR not in sys.path:
 import pytest  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
-from test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
+from .test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
 
 
 @pytest.fixture

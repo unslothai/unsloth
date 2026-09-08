@@ -30234,13 +30234,10 @@ class LlamaCppBackend:
             # again.
             partial = {"role": "assistant", "content": content_accum}
             # The thought that preceded the prose is the same turn's work: replayed as prose
-            # alone, the continuation is conditioned on a different prefix from the one that
-            # produced the visible answer, and the model reasons again or drifts from what it
-            # had decided. Merged with a thought an earlier pause left trailing, since the
-            # accumulators reset each round and hold only the LATEST attempt's.
-            prior = trailing_assistant_reasoning(conversation)
-            if reasoning_accum or prior:
-                partial["reasoning_content"] = prior + reasoning_accum
+            # alone, the continuation is conditioned on a prefix that never produced it.
+            # `append_assistant_turn` merges it with a thought an earlier pause left trailing.
+            if reasoning_accum:
+                partial["reasoning_content"] = reasoning_accum
             append_assistant_turn(conversation, partial, continue_final_message = True)
             return True
 
