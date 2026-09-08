@@ -171,6 +171,7 @@ def cache_reads_authorized(
     *,
     repo_id: str,
     repo_type: str = "model",
+    offline: bool = False,
 ) -> bool:
     """Whether this caller may read the host Hub disk cache for *repo_id*.
 
@@ -185,6 +186,12 @@ def cache_reads_authorized(
 
     Offline an explicit token is denied unless a recent probe is memoized: fail closed
     without wire proof. Ambient ``None`` still reads the cache offline.
+
+    ``offline`` is the CALLER's own offline flag, for a request that asked for cache-only
+    service. Without it this only sees the process-level env, so such a request still put
+    the caller's token and repo id on the wire and could stall for the probe timeout before
+    reaching a branch that was never going to use the network. A memoized decision is still
+    honoured, since that costs no request.
     """
     if is_anonymous(hf_token):
         return False
@@ -205,7 +212,7 @@ def cache_reads_authorized(
         # Unvalidated in the URL, so probing puts the caller's path on the wire with their
         # bearer token, for an answer that can only be no.
         return False
-    return _explicit_token_reaches_repo(repo, hf_token, repo_type)
+    return _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
 
 
 def _is_local_path(repo_id: str) -> bool:
@@ -237,7 +244,9 @@ def _cached_repo_access(key: tuple[str, str, str], now: float) -> Optional[bool]
     return None
 
 
-def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bool:
+def _explicit_token_reaches_repo(
+    repo_id: str, token: str, repo_type: str, offline: bool = False
+) -> bool:
     key = (
         repo_id.casefold(),
         repo_type,
@@ -246,7 +255,7 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
     cached = _cached_repo_access(key, time.monotonic())
     if cached is not None:
         return cached
-    if _hub_offline():
+    if offline or _hub_offline():
         return False
 
     with _inflight_lock(key):

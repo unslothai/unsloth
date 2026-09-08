@@ -575,10 +575,16 @@ def load_model_config(
             **revision_kwargs,
         )
 
+    # Only a repo whose config.json is already on disk can be served without authorizing.
+    # An uncached repo has nothing to leak, and AutoConfig's own authenticated request is
+    # then the thing the Hub checks, so refusing it here would break a mirror that serves
+    # /resolve but not the undocumented /auth-check, and every transient probe failure,
+    # while protecting nothing.
     if (
         isinstance(token, str)
         and token
         and not is_local_path(model_name)
+        and _config_json_already_cached(model_name, revision)
         and not cache_reads_authorized(token, repo_id = model_name)
     ):
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")

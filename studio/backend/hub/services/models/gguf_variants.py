@@ -1274,7 +1274,12 @@ async def get_gguf_variants_answer(
         # The HF cache answers from disk without authorizing, so a denied caller could name
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
-        cache_reads_authorized = hub_cache_reads_authorized(hf_token, repo_id = repo_id)
+        # `offline` is this request's own flag, and the branches that honour it are below.
+        # Passing it in stops an explicit token being put on the wire for a probe whose
+        # answer the request had already decided not to use.
+        cache_reads_authorized = hub_cache_reads_authorized(
+            hf_token, repo_id = repo_id, offline = bool(offline)
+        )
 
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""

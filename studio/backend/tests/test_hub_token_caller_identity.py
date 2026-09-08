@@ -1604,7 +1604,13 @@ def test_a_public_model_keeps_its_size_when_the_cache_is_bypassed():
 
 @pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
 def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatch, hf_token):
-    """token=False disables authentication but not the local cache."""
+    """token=False disables authentication but not the local cache.
+
+    The repo is cached here, which is the premise the denial rests on: the gate exists to
+    stop a caller reading config.json off the operator's disk. An uncached repo has nothing
+    to read and is covered separately, because refusing it protects nothing and breaks a
+    mirror without /auth-check.
+    """
     import transformers
 
     import utils.models.model_config as model_config_module
@@ -1613,6 +1619,9 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
     reset_repo_access_cache()
     monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
     monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
+    monkeypatch.setattr(
+        model_config_module, "_config_json_already_cached", lambda *_a, **_k: True
+    )
     reached = {"n": 0}
 
     def _from_pretrained(_name, **_kwargs):
@@ -2053,3 +2062,74 @@ def test_the_embedding_settings_routes_classify_their_payload_token():
     source = inspect.getsource(settings_routes.update_embedding_model)
     assert "hf_token_arg(" in source, "the payload token is not classified"
     assert '(payload.hf_token or "").strip()' not in source, "still trimming into a plain str"
+
+
+def test_an_uncached_repo_is_not_refused_by_the_autoconfig_gate(monkeypatch):
+    """The gate refused any explicit token whose probe failed, including for a repo with
+    nothing on disk. There it protects nothing: AutoConfig's own authenticated request is
+    what the Hub checks. A mirror that serves /resolve but not the undocumented /auth-check,
+    or one transient probe failure, then broke capability detection for a usable model."""
+    from utils.models import model_config as mc
+
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "cache_reads_authorized", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "active_hf_hub_cache", lambda: None, raising = False)
+
+    calls = {"n": 0}
+
+    def _from_pretrained(*_a, **_k):
+        calls["n"] += 1
+        return SimpleNamespace(model_type = "llama")
+
+    monkeypatch.setattr("transformers.AutoConfig.from_pretrained", _from_pretrained)
+
+    # Nothing cached: the read must reach the Hub, which enforces its own access control.
+    monkeypatch.setattr(mc, "_config_json_already_cached", lambda *_a, **_k: False)
+    mc.load_model_config("acme/not-cached", token = "hf_explicit")
+    assert calls["n"] == 1, "an uncached repo was refused for nothing"
+
+    # Cached: the operator's disk is reachable, so authorization is required again.
+    monkeypatch.setattr(mc, "_config_json_already_cached", lambda *_a, **_k: True)
+    with pytest.raises(OSError):
+        mc.load_model_config("acme/cached-private", token = "hf_explicit")
+    assert calls["n"] == 1, "the cached repo still reached AutoConfig"
+
+
+def test_a_request_that_asked_for_offline_does_not_probe(monkeypatch):
+    """cache_reads_authorized only saw the process-level env, so a request carrying its own
+    offline=true still put the caller's token and repo id on the wire and could stall for the
+    full probe timeout, to reach a branch that was never going to use the network."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    probes = {"n": 0}
+
+    def _probe(*_a, **_k):
+        probes["n"] += 1
+        return True
+
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", _probe)
+
+    assert cache_reads_authorized("hf_explicit", repo_id = "acme/private", offline = True) is False
+    assert probes["n"] == 0, "an offline request still went to the network"
+
+    # Online, the same call still probes: the flag is the caller's, not a new default.
+    assert cache_reads_authorized("hf_explicit", repo_id = "acme/private") is True
+    assert probes["n"] == 1
+
+
+def test_an_offline_request_still_honours_a_memoized_authorization(monkeypatch):
+    """Fail-closed must not throw away a decision already paid for: the memo is consulted
+    before the offline short-circuit, so a token verified moments ago keeps its answer."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    probes = {"n": 0}
+    monkeypatch.setattr(
+        hf_tokens, "_probe_repo_access",
+        lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1) or True,
+    )
+
+    assert cache_reads_authorized("hf_explicit", repo_id = "acme/private") is True
+    assert probes["n"] == 1
+    # Now the caller asks for cache-only service: the memoized yes still stands.
+    assert cache_reads_authorized("hf_explicit", repo_id = "acme/private", offline = True) is True
+    assert probes["n"] == 1
