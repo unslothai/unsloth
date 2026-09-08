@@ -841,10 +841,7 @@ class TestPublishedReleaseResolution:
         assert len(api_calls) == 1
 
     def test_walk_back_skips_a_release_whose_listing_omits_the_checksum_asset(self, monkeypatch):
-        # Reading assets from the listing means a release still being published
-        # (sha256 asset not uploaded yet) is judged on that snapshot instead of a
-        # fresh per-tag lookup. The walk must degrade to the next good release
-        # rather than failing the whole resolution.
+        # A half-published release is judged on the listing snapshot: degrade, do not fail.
         tags = ["b3", "b2", "b1"]
         cdn = "https://github.com/unslothai/llama.cpp/releases/download"
         manifest = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_MANIFEST_ASSET

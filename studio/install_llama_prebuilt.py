@@ -590,9 +590,7 @@ def github_api_headers(url: str | None = None) -> dict[str, str]:
 
 is_github_api_url = _core.is_github_api_url
 is_retryable_url_error = _core.is_retryable_url_error
-# Alias, not a copy: _http_error_retry_delay reads prebuilt_core's global, so a
-# literal here would silently do nothing now that the cap decides whether a
-# GitHub 403 is retried at all, not just how long the backoff waits.
+# Alias, not a copy: _http_error_retry_delay reads prebuilt_core's global, so a literal here does nothing.
 _RATE_LIMIT_WAIT_CAP_SECONDS = _core._RATE_LIMIT_WAIT_CAP_SECONDS
 _http_error_retry_delay = _core._http_error_retry_delay
 sleep_backoff = _core.sleep_backoff
