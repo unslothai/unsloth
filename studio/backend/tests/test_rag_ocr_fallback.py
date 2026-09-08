@@ -136,7 +136,7 @@ def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
     monkeypatch.setattr(captioner.config, "OCR_MIN_CHARS", 16)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     monkeypatch.setattr(parsers, "render_pdf_pages", lambda *a, **k: {1: b"png"})
-    monkeypatch.setattr(captioner, "ocr_pages", lambda page_pngs: {1: "OCR body text"})
+    monkeypatch.setattr(captioner, "ocr_pages", lambda page_pngs, **kwargs: {1: "OCR body text"})
 
     out, ocred = ingestion._ocr_scanned_pages(pages, "scan.pdf", rag_conn, job_id)
     assert ocred == {1}

@@ -28,6 +28,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-luna",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
+            "gpt-6-astra",
         ],
         "model_capabilities": {
             "gpt-5.4": {"vision": True, "studio_tools": True},
@@ -36,6 +37,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-luna": {"vision": True, "studio_tools": True},
             "gpt-5.6-sol": {"vision": True, "studio_tools": True},
             "gpt-5.6-terra": {"vision": True, "studio_tools": True},
+            "gpt-6-astra": {"vision": True, "studio_tools": True},
         },
         "supports_streaming": True,
         "supports_vision": True,
@@ -362,6 +364,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "User-supplied OpenAI-compatible server. Routed to "
             "/v1/chat/completions; /models is optional."
         ),
+        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k.
+        "body_omit": ("top_k", "min_p", "repetition_penalty"),
         # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
     },
@@ -380,6 +384,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "/v1/chat/completions; API key optional (required by Ollama "
             "cloud). Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
         ),
+        # Ollama's /v1 silently drops these (native /api/chat options); this route is public.
+        "body_omit": ("top_k", "min_p", "repetition_penalty"),
         "hidden": True,
     },
     "llama_cpp": {

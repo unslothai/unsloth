@@ -14,6 +14,13 @@ These tests pin the two halves of the fix that live in pyproject.toml:
     to a win_amd64 wheel from the MATCHING CUDA index, and
   * the CUDA-agnostic ``windows`` extra can no longer float onto an arbitrary
     xFormers release.
+
+The first half has two legal spellings. main pins the wheel by URL, which names the
+index outright. The ``pip`` branch is what gets uploaded to PyPI, and PyPI rejects a
+direct reference in ``Requires-Dist``, so there it is a ``==`` pin on the same version
+with the index supplied by ``--index-url`` at install time. The version and the Windows
+marker are what both forms have to agree on, and that is what is asserted; only the URL
+form can additionally be checked for the index it came from.
 """
 
 from __future__ import annotations
@@ -68,8 +75,8 @@ def _extras() -> dict[str, list[str]]:
     return tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"]["optional-dependencies"]
 
 
-def _windows_xformers_urls(deps: list[str]) -> list[str]:
-    """Every xformers direct-URL dep in ``deps`` whose marker holds on Windows x64."""
+def _windows_xformers(deps: list[str]) -> list[str]:
+    """Every xformers dep in ``deps``, URL or version pin, whose marker holds on Win x64."""
     markers = pytest.importorskip("packaging.markers")
     env = {
         "sys_platform": "win32",
@@ -81,15 +88,16 @@ def _windows_xformers_urls(deps: list[str]) -> list[str]:
         "implementation_name": "cpython",
         "platform_python_implementation": "CPython",
     }
-    urls: list[str] = []
+    found: list[str] = []
     for dep in deps:
         spec, _, marker_text = dep.partition(";")
-        if "xformers @ " not in spec:
+        spec = spec.strip()
+        if not spec.startswith("xformers"):
             continue
         if marker_text.strip() and not markers.Marker(marker_text.strip()).evaluate(env):
             continue
-        urls.append(spec.split("@", 1)[1].strip())
-    return urls
+        found.append(spec)
+    return found
 
 
 @pytest.mark.parametrize(("family", "torch_tag"), sorted(XFORMERS_WHEEL_MATRIX))
@@ -97,14 +105,23 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
     """`unsloth[cu128-torch2100]` / `unsloth[cu130-torch2100]` and friends must land on
     a win_amd64 wheel served by their OWN CUDA index -- never PyPI, never a neighbour's."""
     version = XFORMERS_WHEEL_MATRIX[(family, torch_tag)]
-    deps = _extras()[f"{family}onlytorch{torch_tag}"]
-    urls = _windows_xformers_urls(deps)
+    extra = f"{family}onlytorch{torch_tag}"
+    specs = _windows_xformers(_extras()[extra])
 
-    assert len(urls) == 1, (
-        f"{family}onlytorch{torch_tag} must resolve exactly one xformers wheel on "
-        f"Windows, got {urls}"
+    assert len(specs) == 1, (
+        f"{extra} must resolve exactly one xformers wheel on Windows, got {specs}"
     )
-    assert urls[0] == (f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl")
+    spec = specs[0]
+    if "@" in spec:
+        url = spec.split("@", 1)[1].strip()
+        assert url == f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl"
+    else:
+        # Version-pin form: the index is the install-time --index-url, so the version is
+        # the only half of the pairing this branch can carry. It still has to be the
+        # version that index publishes for this torch, which is what the matrix holds.
+        assert spec == f"xformers=={version}", (
+            f"{extra} must pin the {family} wheel version for torch {torch_tag}, got {spec!r}"
+        )
 
 
 @pytest.mark.parametrize(("family", "torch_tag"), sorted(XFORMERS_WHEEL_MATRIX))

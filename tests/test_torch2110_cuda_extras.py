@@ -17,6 +17,12 @@
 """Regression guard: the CUDA torch2110 / torch212x extras must pin the torch trio to the
 matching +cuXXX local build (xformers 0.0.35 does not pin torch), else resolution walks
 torch up to a release the xformers wheel was not built for. Parses files only, no network.
+
+The ``pip`` branch is what gets uploaded to PyPI, and PyPI rejects PEP 508 direct
+references in ``Requires-Dist``, so the xformers wheels main pins by URL are carried
+there as a plain ``==`` pin gated on the platforms those wheels exist for. The xformers
+checks therefore accept either shape, so this file reads the same on both branches. The
+torch trio is asserted identically either way, since that is what this guard is about.
 """
 
 from __future__ import annotations
@@ -61,6 +67,39 @@ def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
     return out
 
 
+def _assert_xformers_035(xformers: list[Requirement], cuda: str, extra: str) -> None:
+    """0.0.35 on the {cuda} index, reachable on Linux and Windows x86-64 and nowhere else.
+
+    Two spellings are legal. main pins the two wheels by URL, one per platform. This
+    branch pins the version and merges the two markers into one, because a direct
+    reference cannot go to PyPI. Either way the version has to be 0.0.35, the marker has
+    to admit Linux x86-64 and Windows AMD64, and it has to skip Linux aarch64 and Windows
+    ARM64, which have no wheel.
+    """
+    urls = [r for r in xformers if r.url]
+    if urls:
+        linux = [r for r in urls if r.url.endswith("manylinux_2_28_x86_64.whl")]
+        windows = [r for r in urls if r.url.endswith("win_amd64.whl")]
+        assert len(linux) == 1 and len(windows) == 1, f"{extra}: unexpected wheels {xformers}"
+        for r in linux + windows:
+            assert f"/whl/{cuda}/xformers-0.0.35-" in r.url, (
+                f"{extra}: xformers not on the {cuda} index: {r.url}"
+            )
+    else:
+        (req,) = xformers
+        assert str(req.specifier) == "==0.0.35", (
+            f"{extra}: xformers pinned as '{req.specifier}', expected ==0.0.35"
+        )
+        linux = windows = xformers
+
+    for r in xformers:
+        assert r.marker is not None, f"{extra}: xformers needs a platform marker"
+        assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
+        assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
+    assert linux[0].marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"})
+    assert windows[0].marker.evaluate({"sys_platform": "win32", "platform_machine": "AMD64"})
+
+
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     reqs = _reqs(_extra(f"{cuda}onlytorch2110"))
@@ -70,20 +109,7 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
         assert (
             spec == f"=={('2.11.0' if pkg != 'torchvision' else '0.26.0')}+{cuda}"
         ), f"{cuda}onlytorch2110: {pkg} pinned as '{spec}', expected the +{cuda} local build"
-    xformers = reqs["xformers"]
-    assert len(xformers) == 2, f"expected Linux + Windows xformers wheels, got {xformers}"
-    linux = [r for r in xformers if r.url and r.url.endswith("manylinux_2_28_x86_64.whl")]
-    windows = [r for r in xformers if r.url and r.url.endswith("win_amd64.whl")]
-    assert len(linux) == 1 and len(windows) == 1, f"unexpected xformers wheels: {xformers}"
-    for r in linux + windows:
-        assert (
-            f"/whl/{cuda}/xformers-0.0.35-" in r.url
-        ), f"xformers not on the {cuda} index: {r.url}"
-        assert r.marker is not None
-        assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
-        assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
-    assert linux[0].marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"})
-    assert windows[0].marker.evaluate({"sys_platform": "win32", "platform_machine": "AMD64"})
+    _assert_xformers_035(reqs["xformers"], cuda, f"{cuda}onlytorch2110")
 
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
@@ -109,19 +135,7 @@ def test_cuda12_torch212_pins_matching_local_build(cuda: str, series: str):
             f"expected the =={want}+{cuda} local build"
         )
         assert req.marker is None, f"the {pkg} pin must apply on every machine"
-    xformers = reqs["xformers"]
-    linux = [r for r in xformers if r.url and r.url.endswith("manylinux_2_28_x86_64.whl")]
-    windows = [r for r in xformers if r.url and r.url.endswith("win_amd64.whl")]
-    assert len(linux) == 1 and len(windows) == 1, f"unexpected xformers wheels: {xformers}"
-    for r in linux + windows:
-        assert (
-            f"/whl/{cuda}/xformers-0.0.35-" in r.url
-        ), f"xformers not on the {cuda} index: {r.url}"
-        assert r.marker is not None
-        assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
-        assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
-    assert linux[0].marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"})
-    assert windows[0].marker.evaluate({"sys_platform": "win32", "platform_machine": "AMD64"})
+    _assert_xformers_035(reqs["xformers"], cuda, f"{cuda}only{series}")
 
 
 @pytest.mark.parametrize("cuda", _TORCH212_CUDA)
