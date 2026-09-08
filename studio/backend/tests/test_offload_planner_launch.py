@@ -860,3 +860,26 @@ def test_the_single_slot_retry_keeps_one_slot_after_the_plan_is_revoked(tmp_path
     assert _flag(cmds[1], "--parallel") == "1", cmds[1]
     assert "--kv-unified" not in cmds[1]
     assert backend.effective_parallel_slots == 1
+
+
+def test_a_plan_below_an_explicit_context_is_not_emitted(tmp_path, monkeypatch):
+    """An explicit context is the user's. A plan that came back below it priced a
+    cache the launch will not run at; it is dropped rather than rewriting -c, and
+    the child gets --fit on at the context asked for."""
+    asked = 2 * NATIVE_CTX
+    plan = Plan(changed = True, n_ctx = NATIVE_CTX, ot_patterns = ("x",), spilled_blocks = (1,))
+    cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan, n_ctx = asked)
+    assert seen["inputs"]["n_ctx"] == asked
+    assert seen["inputs"]["context_policy_fit_only"] is False
+    assert _flag(cmd, "-c") == str(asked)
+    assert _flag(cmd, "--fit") == "on" and "-ot" not in cmd
+    assert "-c" not in backend._spill_plan_restore
+    # The same context in the extras: the trailing -c is what the child runs at,
+    # and no spill sized for a smaller cache goes out ahead of it.
+    cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan, extra_args = ["-c", str(asked)])
+    assert seen["inputs"]["n_ctx"] == asked
+    assert cmd[-2:] == ["-c", str(asked)] and "-ot" not in cmd
+    # A plan AT the explicit context is taken as before.
+    at = Plan(changed = True, n_ctx = asked, ot_patterns = ("x",), spilled_blocks = (1,))
+    cmd, _backend, _ = _launch_with(tmp_path, monkeypatch, at, n_ctx = asked)
+    assert "-ot" in cmd and _flag(cmd, "-c") == str(asked)

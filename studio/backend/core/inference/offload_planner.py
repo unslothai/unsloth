@@ -1539,9 +1539,14 @@ def plan_placement(
         return Plan(reason = "unified memory host, spilling frees no device memory")
     # Settle the context first: the per-device reserve has a context-linear term, so the budget
     # is a function of n_ctx and cannot be computed above it.
+    # An EXPLICIT request is priced as asked, above the training window included:
+    # llama-server serves a -c above n_ctx_train (with a warning, and RoPE scaling
+    # where the user set it), so a plan clamped to the window prices a cache the
+    # child does not run at, and the seam then either rewrote an explicit -c the
+    # launch promised to honour or, with the context in the extras, launched
+    # --fit off with a spill sized for the smaller cache. Only the default (no
+    # request) reads the window; the FIT_ONLY ladder still tops out at it.
     n_ctx = requested_ctx if requested_ctx > 0 else layout.n_ctx_train
-    if layout.n_ctx_train:
-        n_ctx = min(n_ctx, layout.n_ctx_train)
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
 

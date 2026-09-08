@@ -840,10 +840,14 @@ def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
     assert plan.spilled_blocks, "shrinking cannot save this one, so spill"
 
 
-def test_context_is_clamped_to_what_the_model_was_trained_on():
+def test_only_the_default_context_reads_the_training_window():
+    """MOVED: this pinned a clamp of every request to n_ctx_train. llama-server
+    serves a -c above the window, so the clamp priced a cache the child does not
+    run at and the seam rewrote or out-ran the user's -c. An explicit request is
+    priced as asked; the default, and only the default, reads the window."""
     layout = q4_layout()
-    plan = plan_placement(layout, [24 * GIB], 128 * GIB, 999_999)
-    assert plan.n_ctx == layout.n_ctx_train
+    assert plan_placement(layout, [24 * GIB], 128 * GIB, 999_999).n_ctx == 999_999
+    assert plan_placement(layout, [24 * GIB], 128 * GIB, 0).n_ctx == layout.n_ctx_train
 
 
 # ------------------------------------------------------------------- KV quant
@@ -2470,3 +2474,23 @@ def test_the_boundary_block_is_left_whole_when_a_later_rung_closed_the_deficit()
     assert dense, plan.ot_patterns
     graded_expert = [p for p in plan.ot_patterns if "_shexp" not in p and r"\d+" not in p]
     assert not graded_expert, plan.ot_patterns
+
+
+def test_an_explicit_context_above_the_training_window_is_priced_as_asked():
+    """llama-server serves a -c above n_ctx_train, so a plan clamped to the window
+    prices a cache the child does not run at; the seam then rewrote the user's -c
+    or, with the context in the extras, launched --fit off under a spill sized for
+    the smaller cache. Explicit means as asked; only the default reads the window."""
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    opts = PlanOptions(overhead_bytes_per_device = GIB)
+    asked = 2 * layout.n_ctx_train
+    plan = plan_placement(layout, [40 * GIB], 256 * GIB, asked, opts = opts)
+    assert plan.n_ctx == asked, plan
+    # And the cache is priced at that context: twice the window costs more than the window.
+    at_window = plan_placement(layout, [40 * GIB], 256 * GIB, layout.n_ctx_train, opts = opts)
+    assert at_window.n_ctx == layout.n_ctx_train
+    assert plan.host_bytes > at_window.host_bytes or (
+        plan.insufficient and not at_window.insufficient
+    )
+    # The default still reads the window.
+    assert plan_placement(layout, [40 * GIB], 256 * GIB, 0, opts = opts).n_ctx == layout.n_ctx_train

@@ -22698,6 +22698,7 @@ class LlamaCppBackend:
                         requested_ctx = (
                             int((_spill_inputs or {}).get("n_ctx") or 0) if "-c" in cmd else 0
                         ),
+                        may_shrink = bool((_spill_inputs or {}).get("context_policy_fit_only")),
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
@@ -28096,11 +28097,19 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _spill_plan_flags_for(plan: "Optional[SpillPlan]", requested_ctx: int = 0) -> "list[str]":
+    def _spill_plan_flags_for(
+        plan: "Optional[SpillPlan]",
+        requested_ctx: int = 0,
+        may_shrink: bool = True,
+    ) -> "list[str]":
         """The argv tokens for ``plan``, or ``[]`` when it must not be emitted.
 
         ``requested_ctx`` is the context the planner was asked at, or 0 when the
         caller cannot rewrite ``-c`` and so must not act on a shorter one.
+        ``may_shrink`` is False when that context is the user's (an explicit
+        field or a pass-through ``-c``): a plan below it priced a cache the launch
+        will not run at, and is not emitted rather than rewriting the user's
+        value or launching ``--fit off`` under a spill sized for a smaller cache.
 
         The emptiness test is the point. ``Plan`` is a dataclass with no
         ``__bool__``/``__len__``, so EVERY instance is truthy -- including the
@@ -28135,6 +28144,8 @@ class LlamaCppBackend:
         # context the planner proved. A plan at the requested context that spills
         # nothing is llama.cpp's own launch and stays undisturbed.
         shrinks_context = 0 < plan.n_ctx < requested_ctx
+        if shrinks_context and not may_shrink:
+            return []
         if not (plan.spills_anything or plan.reshapes_launch or shrinks_context):
             return []
         tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
