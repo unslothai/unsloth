@@ -21643,6 +21643,12 @@ class LlamaCppBackend:
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
                         "n_parallel": int(n_parallel or 1),
+                        # ...and whether those slots share ONE cache. Under
+                        # --kv-unified llama-server reports n_ctx_slot = n_ctx to
+                        # every slot, so a single request may fill the whole
+                        # window; the cost gate's long-prompt veto keys on that
+                        # number and would otherwise divide it by the slot count.
+                        "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
                         # Rung 0: the projector, separable from extra_gpu_bytes so the
@@ -27524,6 +27530,7 @@ class LlamaCppBackend:
                 mmproj_bytes = mmproj_bytes,
                 mmproj_movable = mmproj_movable,
                 n_parallel = priced_parallel,
+                kv_unified = bool(inputs.get("kv_unified")),
                 min_parallel = max(1, min(priced_parallel, int(inputs.get("min_parallel") or 1))),
                 kv_bytes_floor_by_parallel = dict(inputs.get("kv_bytes_floor_by_parallel") or {}),
                 draft_bytes = draft_bytes,

@@ -484,6 +484,17 @@ class PlanOptions:
     # same per-byte prefill penalty and ``rank`` can only report a near-tie), so it
     # is a hard gate on the per-slot context. 0 disables it.
     moe_long_prompt_ctx: int = 32768
+    # Whether the launch shares ONE cache across slots (``--kv-unified``). It
+    # decides what "per slot" above means: llama-server sets n_ctx_slot = n_ctx
+    # under a unified cache and n_ctx / n_parallel without one, so a single
+    # request can consume the WHOLE window when this is set. Studio appends
+    # ``--kv-unified`` on every launch with more than one slot that the binary
+    # supports it on (llama_cpp.py, `n_parallel > 1 and caps["supports_kv_unified"]`),
+    # and drops to one slot when it does not, so dividing unconditionally
+    # understated the real prompt window by the slot count on exactly the
+    # multi-slot loads Studio actually starts. Defaults False, which is the
+    # divided behaviour every existing caller already gets.
+    kv_unified: bool = False
     # Step of the descending context ladder a FIT_ONLY shrink walks. Feasibility is
     # monotone in context; the cost gate's acceptance is not, so a binary search can
     # skip the largest accepted context. 256-aligned.
@@ -2328,22 +2339,11 @@ def _cost_gate(
                 0.0,
                 0.0,
             )
-    fallback = _fit_fallback_placement(
-        layout,
-        opts,
-        budget,
-        n_ctx,
-        quantised = quantised,
-        kv_bytes_floor = kv_bytes_floor,
-        kv_on_host = opts.kv_on_host,
-    )
-    if fallback is None:
-        # Nothing to lose to: the fitter cannot place this load either, so the
-        # spill is the only thing standing between the caller and a failed launch.
-        return None, 0.0, 0.0
-
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
-    per_slot_ctx = n_ctx // n_slots
+    # One shared stream under --kv-unified, so the window a single request may
+    # fill is the whole n_ctx however many slots are served; N private windows
+    # of n_ctx / N without it.
+    per_slot_ctx = n_ctx if opts.kv_unified else n_ctx // n_slots
     if layout.is_moe and opts.moe_long_prompt_ctx > 0 and per_slot_ctx >= opts.moe_long_prompt_ctx:
         # MEASURED, and the cost model cannot see it: -ot on an MoE loses to
         # llama.cpp's layerwise fit at a 32K prompt (0.94 to 0.97x on 5 cells, 2
@@ -2366,6 +2366,25 @@ def _cost_gate(
             0.0,
             0.0,
         )
+
+    fallback = _fit_fallback_placement(
+        layout,
+        opts,
+        budget,
+        n_ctx,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = opts.kv_on_host,
+    )
+    if fallback is None:
+        # Nothing to COMPARE to. This is not the same as "the fitter cannot place
+        # this load": on a MoE where moving every expert is still short,
+        # common/fit.cpp does not fail, it simply stops after step 3 with fewer
+        # dense-only layers on the device (fit.cpp: `if (hp_nex == 0 ||
+        # global_surplus_cpu_moe <= 0) { set_ngl_tensor_split_tbo(...); return; }`),
+        # and that placement is not modelled here. Only the RANKING is skipped;
+        # the measured vetoes above still apply.
+        return None, 0.0, 0.0
 
     scored = rank(
         [plan, fallback],

@@ -274,9 +274,9 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     # halves of the branch stated in one vocabulary, and makes this test fail if
     # the cache is ever demoted back to a plain host group, which is precisely the
     # regression it exists to catch.
-    assert (
-        placement.kv_host_bytes > 0
-    ), "a dense fit drags the moved layers' cache to host with them"
+    assert placement.kv_host_bytes > 0, (
+        "a dense fit drags the moved layers' cache to host with them"
+    )
 
 
 def test_a_moved_layer_takes_its_share_of_the_recurrent_state_with_it():
@@ -581,3 +581,108 @@ def test_the_draft_drop_penalty_default_is_the_measured_generation_cost():
     re-run did not reproduce), so the default charges 5 percent. Pinned so a
     change is deliberate and re-measured, not drifted."""
     assert PlanOptions().draft_drop_penalty_frac == 0.05
+
+
+def graded_moe_layout(n_blocks: int = 8, ffn_gib: float = 3.0) -> ModelLayout:
+    """A MoE whose blocks carry the per-rung breakdown a real GGUF gives them.
+
+    ``moe_layout`` above leaves the three FFN rungs at 0, which makes every block
+    ungraded and sends the ladder down its coarse whole-FFN path -- where the
+    planner's placement and the modelled fitter's are the same bytes and ``rank``
+    can only tie. A graded layout is what the seam actually builds, and it is the
+    one where the ladder moves LESS than the fitter would and the gate accepts.
+    """
+    third = int(ffn_gib * GIB) // 3
+    blocks = tuple(
+        BlockLayout(
+            i,
+            third * 3,
+            int(0.025 * GIB),
+            ffn_down_bytes = third,
+            ffn_up_bytes = third,
+            ffn_gate_bytes = third,
+        )
+        for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen3moe",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = int(0.5 * GIB),
+        token_embd_bytes = int(0.5 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 0.62 * GIB / 32768,
+        n_ctx_train = 131072,
+        is_moe = True,
+        n_expert = 128,
+        n_expert_used = 8,
+        complete = True,
+    )
+
+
+def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
+    """--kv-unified is one shared stream, so n_ctx / slots is not the window.
+
+    llama-server reports n_ctx_slot = n_ctx to every slot under a unified cache
+    and n_ctx / n_parallel without one, and Studio appends --kv-unified on every
+    multi-slot launch the binary supports it on. Dividing regardless made a 32K
+    shared window with four slots look like 8K, skipped the measured long-prompt
+    veto, and ACCEPTED -ot at exactly the 32K point where it measured 0.94 to
+    0.97x of llama.cpp's own fit.
+    """
+    layout = graded_moe_layout()
+    host = HostProfile(threads = 12)
+    divided = plan_placement(
+        layout,
+        [20 * GIB],
+        200 * GIB,
+        32768,
+        opts = gated(host = host, n_parallel = 4, min_parallel = 4),
+    )
+    # Four private 8K windows really are below the long-prompt point.
+    assert divided.spills_anything and "tokens per slot" not in divided.reason
+
+    unified = plan_placement(
+        layout,
+        [20 * GIB],
+        200 * GIB,
+        32768,
+        opts = gated(host = host, n_parallel = 4, min_parallel = 4, kv_unified = True),
+    )
+    assert not unified.spills_anything and unified.declined_by_gate
+    assert "32768 tokens per slot" in unified.reason, unified.reason
+
+    # And one slot is the same answer either way: nothing to divide.
+    one_slot = plan_placement(layout, [20 * GIB], 200 * GIB, 32768, opts = gated(host = host))
+    assert "tokens per slot" in one_slot.reason, one_slot.reason
+
+
+def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelled():
+    """An unmodellable fallback is not a licence to skip a MEASUREMENT.
+
+    Where moving every expert is still short of the budget,
+    ``_fit_fallback_placement`` returns None. llama.cpp does not fail there: with
+    ``global_surplus_cpu_moe <= 0`` common/fit.cpp returns its step-3 placement,
+    which simply assigns fewer dense-only layers to the device. So None means
+    "nothing to RANK against", not "the fitter cannot place this" -- and the
+    long-prompt veto, which is a measurement rather than a comparison, must not
+    be skipped with it. It was: this was the only path by which a gated MoE ever
+    accepted -ot at a 32K prompt.
+    """
+    layout = graded_moe_layout(n_blocks = 64, ffn_gib = 0.5)
+    got = plan_placement(
+        layout, [4 * GIB], 200 * GIB, 32768, opts = gated(host = HostProfile(threads = 12))
+    )
+    assert not got.spills_anything and got.declined_by_gate
+    assert "tokens per slot" in got.reason, got.reason
+    # ...and with the veto disabled it still falls through to the old answer,
+    # because there is genuinely nothing to rank against.
+    ungated = plan_placement(
+        layout,
+        [4 * GIB],
+        200 * GIB,
+        32768,
+        opts = gated(host = HostProfile(threads = 12), moe_long_prompt_ctx = 0),
+    )
+    assert ungated.spills_anything and not ungated.declined_by_gate
