@@ -23,9 +23,10 @@ import {
   createUploadBrowseDatasetSelection,
   datasetSourceInvariantPatch,
 } from "./training-config-policy";
+import { CPT_LORA_HYPERPARAMS } from "./training-method-transition";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 21;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -242,6 +243,37 @@ function migrateThroughVersion21(
   }
 }
 
+// v22 added the pre-CPT LoRA slots. A session persisted mid-CPT has no record of
+// them, so recover the model defaults frozen in advancedSettingsBaseline. Skip a
+// baseline that is exactly the CPT triple: it was captured after CPT overwrote the
+// hyperparams and says nothing about what preceded it.
+function migrateThroughVersion22(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version >= 22 || state.trainingMethod !== "cpt") return;
+  const provenance = state.trainingMethodProvenance;
+  if (typeof provenance !== "object" || provenance === null) return;
+  const baseline = state.advancedSettingsBaseline;
+  if (typeof baseline !== "object" || baseline === null) return;
+  const { loraRank, loraAlpha, loraVariant } = baseline as Record<
+    string,
+    unknown
+  >;
+  if (
+    loraRank === CPT_LORA_HYPERPARAMS.loraRank &&
+    loraAlpha === CPT_LORA_HYPERPARAMS.loraAlpha &&
+    loraVariant === CPT_LORA_HYPERPARAMS.loraVariant
+  ) {
+    return;
+  }
+  Object.assign(provenance, {
+    loraRankBeforeCpt: positiveIntOrNull(loraRank),
+    loraAlphaBeforeCpt: positiveIntOrNull(loraAlpha),
+    loraVariantBeforeCpt: isLoraVariant(loraVariant) ? loraVariant : null,
+  });
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -327,6 +359,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion18(state, version);
   migrateThroughVersion19(state, version);
   migrateThroughVersion21(state, version);
+  migrateThroughVersion22(state, version);
   return state as unknown as TrainingConfigStore;
 }
 

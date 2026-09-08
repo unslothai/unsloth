@@ -364,13 +364,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     },
                   }
                 : shouldApplyCptTargetDefaults &&
-                    modelDefaultsPatch.targetModules !== undefined
+                    Object.keys(cptProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        targetModulesBeforeCpt: [
-                          ...modelDefaultsPatch.targetModules,
-                        ],
+                        ...cptProvenanceRefresh,
                       },
                     }
                   : {}),

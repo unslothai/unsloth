@@ -32,13 +32,17 @@ type TrainingMethodStatePatch = Partial<
   >
 >;
 
+export const CPT_LORA_HYPERPARAMS = {
+  loraRank: 128,
+  loraAlpha: 32,
+  loraVariant: "rslora",
+} as const;
+
 function getCptTrainingPatch(
   currentTargetModules: readonly string[],
 ): TrainingMethodStatePatch {
   return {
-    loraRank: 128,
-    loraAlpha: 32,
-    loraVariant: "rslora",
+    ...CPT_LORA_HYPERPARAMS,
     targetModules: resolveCptTargetModules(currentTargetModules),
     datasetFormat: "raw",
     trainOnCompletions: false,

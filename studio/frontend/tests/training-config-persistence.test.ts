@@ -62,7 +62,7 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 21);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 22);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
@@ -245,4 +245,52 @@ test("persistence preserves valid Hub streaming", () => {
   );
 
   assert.equal(merged.datasetStreaming, true);
+});
+
+test("a session persisted inside CPT recovers its pre-CPT LoRA params", () => {
+  const migrated = migrateTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      trainingMethod: "cpt",
+      advancedSettingsBaseline: {
+        loraRank: 8,
+        loraAlpha: 8,
+        loraVariant: "lora",
+      },
+      trainingMethodProvenance: {
+        learningRateManuallySet: false,
+        modelAdapterLearningRate: null,
+        datasetFormatBeforeCpt: null,
+        targetModulesBeforeCpt: null,
+      },
+    },
+    21,
+  );
+
+  assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, 8);
+  assert.equal(migrated.trainingMethodProvenance.loraAlphaBeforeCpt, 8);
+  assert.equal(migrated.trainingMethodProvenance.loraVariantBeforeCpt, "lora");
+});
+
+test("a baseline captured inside CPT is not mistaken for pre-CPT params", () => {
+  const migrated = migrateTrainingConfig(
+    {
+      trainingMethod: "cpt",
+      advancedSettingsBaseline: {
+        loraRank: 128,
+        loraAlpha: 32,
+        loraVariant: "rslora",
+      },
+      trainingMethodProvenance: {
+        learningRateManuallySet: false,
+        modelAdapterLearningRate: null,
+        datasetFormatBeforeCpt: null,
+        targetModulesBeforeCpt: null,
+      },
+    },
+    21,
+  );
+
+  assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
 });
