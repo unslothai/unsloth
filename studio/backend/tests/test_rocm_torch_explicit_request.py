@@ -59,6 +59,7 @@ def _no_real_install(stack, monkeypatch):
     replaces whatever torch is there. Autouse rather than per-test, so a code path that
     moves later cannot quietly make one of these tests non-hermetic again.
     """
+
     def _refuse(*args, **kwargs):
         pytest.fail(f"the test reached a real install: pip_install{args[:2]}")
 

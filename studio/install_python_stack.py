@@ -2169,11 +2169,7 @@ def _forced_rocm_route_is_viable() -> bool:
     # Above the target test, since the fallback below would otherwise approve the same host
     # off its inventory. Silent by design: _pick_visible_index has already warned, naming
     # the variable and its value, and this predicate is asked from three call sites.
-    if (
-        not _LAST_HIP_MASK_RESOLVED
-        or not _LAST_ROCR_MASK_RESOLVED
-        or _LAST_GFX_TARGET_AMBIGUOUS
-    ):
+    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED or _LAST_GFX_TARGET_AMBIGUOUS:
         return False
     if _target is not None:
         # An arch _ensure_rocm_torch refuses outright is not something to swap TO. Keyed on
