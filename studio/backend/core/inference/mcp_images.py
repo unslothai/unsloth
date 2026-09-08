@@ -122,6 +122,7 @@ def _decoded_urls(
     images: Sequence[dict],
     limit: int = MAX_MODEL_IMAGES,
     attempts: "list | None" = None,
+    cache: "dict | None" = None,
 ) -> list[str]:
     """Up to *limit* data URLs, counting only what decoded.
 
@@ -143,7 +144,15 @@ def _decoded_urls(
         if len(urls) >= limit or own[0] <= 0:
             break
         own[0] -= 1
-        url = _png_data_url(image.get("data", ""))
+        data = image.get("data", "")
+        # *cache* is one request's decodes, keyed by the payload: a route that
+        # promotes the same history twice must not pay Pillow twice for it.
+        if cache is not None and data in cache:
+            url = cache[data]
+        else:
+            url = _png_data_url(data)
+            if cache is not None:
+                cache[data] = url
         if url:
             urls.append(url)
     return urls
@@ -268,7 +277,9 @@ def content_parts_per_result(results: Sequence[Sequence[dict]]) -> list[dict]:
     ]
 
 
-def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
+def png_payloads_per_result(
+    results: Sequence[Sequence[dict]], cache: "dict | None" = None
+) -> list[str]:
     """For the local marker paths: at most LOCAL_MAX_IMAGES_PER_TURN pictures, taken
     from the NEWEST result that decodes, since a batch lands as one turn and a
     non-GGUF message takes one image."""
@@ -279,7 +290,7 @@ def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     for images in reversed(list(results)):
         if attempts[0] <= 0:
             break
-        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN, attempts = attempts)
+        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN, attempts = attempts, cache = cache)
         if urls:
             return [url.split(",", 1)[1] for url in urls]
     return []
@@ -957,11 +968,14 @@ def promote_history(
 
 
 def promote_history_local(
-    messages: Sequence[dict], *, vision: bool
+    messages: Sequence[dict],
+    *,
+    vision: bool,
+    decode_cache: "dict | None" = None,
 ) -> tuple[list[dict], list[str]]:
     """The same, for backends that take the pixels beside the prompt: the turns
     carry markers and the payloads come back with them."""
-    out, payloads, _promoted = _promote(messages, vision, local = True)
+    out, payloads, _promoted = _promote(messages, vision, local = True, decode_cache = decode_cache)
     return out, payloads
 
 
@@ -1018,6 +1032,7 @@ def _promote(
     *,
     local: bool,
     reserve_for_caller: bool = False,
+    decode_cache: "dict | None" = None,
 ) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
     # Resolved once for the whole conversation, so the provenance gate below works on
@@ -1051,7 +1066,7 @@ def _promote(
         lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] else IMAGE_TURN_TEXT
         interrupted[0] = False
         if local:
-            encoded = png_payloads_per_result(pending)
+            encoded = png_payloads_per_result(pending, cache = decode_cache)
             pending.clear()
             returned_totals.clear()
             if not encoded:

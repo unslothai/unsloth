@@ -52,6 +52,8 @@ from core.tool_healing import (
     strip_outside_think,
 )
 from core.inference.mcp_images import (
+    DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
+    IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
     append_placeholder_turn,
     png_payloads_per_result,
     trim_image_turns,
@@ -1239,6 +1241,8 @@ def run_safetensors_tool_loop(
         deferred_noop_msgs: list = []
         # Per result; see append_image_turn's per_result note.
         batch_mcp_images: list = []
+        # Where this batch\'s results start, for the image turn\'s wording.
+        batch_conversation_start = len(conversation)
 
         for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
@@ -1513,8 +1517,20 @@ def run_safetensors_tool_loop(
                 images_sink.extend(encoded)
                 # Merged into the deferred nudge above when there was one: two
                 # user turns in a row is what a strict VLM template rejects.
+                # Same wording rule as the other loops: several results, and "the
+                # tool call above" names whichever ran last.
+                _batch_results = sum(
+                    1
+                    for m in conversation[batch_conversation_start:]
+                    if isinstance(m, dict) and m.get("role") == "tool"
+                )
                 append_placeholder_turn(
-                    conversation, len(encoded), sum(len(r) for r in batch_mcp_images)
+                    conversation,
+                    len(encoded),
+                    sum(len(r) for r in batch_mcp_images),
+                    lead = MCP_DETACHED_IMAGE_TURN_TEXT
+                    if _batch_results != 1
+                    else MCP_IMAGE_TURN_TEXT,
                 )
                 # Rebased on the way out: this trim deletes entries before the
                 # attachment, and reusing the original index on the next batch

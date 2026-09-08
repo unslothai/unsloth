@@ -2271,3 +2271,55 @@ def test_the_catalog_predicate_never_parses_the_envelope():
     finally:
         inference_route.mcp_images_sentinel_in = original
     assert inference_route._request_has_promotable_mcp_images(payload)
+
+
+def test_the_client_tool_rebuild_decodes_each_picture_once(monkeypatch):
+    """The route promotes the history for the server-tool path and again, from the
+    raw payload, for the client-tool rebuild. One request's decodes are shared, so a
+    retained raster is decoded once, not once per promotion. Two DIFFERENT pictures:
+    the cache is keyed by payload, and identical bytes would decode once anyway."""
+    decoded: list = []
+    original = mcp_images._png_data_url
+
+    def counting(data):
+        decoded.append(data[:16])
+        return original(data)
+
+    monkeypatch.setattr(mcp_images, "_png_data_url", counting)
+    call = _client_tool_route(
+        monkeypatch,
+        [
+            {"role": "user", "content": "read a.png"},
+            *_shot_round(0, _image(_png((8, 8)))),
+            {"role": "assistant", "content": "a is blue"},
+            {"role": "user", "content": "now b.png"},
+            *_shot_round(1, _image(_png((9, 9)))),
+            {"role": "assistant", "content": "b is red"},
+            {"role": "user", "content": "compare them"},
+        ],
+        tools = [_LOOKUP],
+    )
+    assert len(call["images"]) == 2
+    assert len(decoded) == 2, decoded
+
+
+def test_the_local_loops_detach_the_note_for_a_multi_result_batch():
+    """Same rule as the external loop: a batch of several results gets the wording
+    that claims no adjacency, since "the tool call above" names whichever ran last."""
+    import inspect
+
+    from core.inference import llama_cpp, safetensors_agentic
+
+    rule = (
+        "lead = MCP_DETACHED_IMAGE_TURN_TEXT\n"
+        "                        if _batch_results != 1\n"
+        "                        else MCP_IMAGE_TURN_TEXT,"
+    )
+    assert rule in inspect.getsource(llama_cpp)
+    assert rule.replace(
+        "\n                        ", "\n                    "
+    ) in inspect.getsource(safetensors_agentic)
+    for module in (llama_cpp, safetensors_agentic):
+        body = inspect.getsource(module)
+        assert "batch_conversation_start = len(conversation)" in body
+        assert "for m in conversation[batch_conversation_start:]" in body

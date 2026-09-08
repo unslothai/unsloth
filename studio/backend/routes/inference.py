@@ -20509,13 +20509,23 @@ async def _promote_mcp_history_images_async(
     return promote_mcp_history_images(messages, vision = vision, promoted_out = promoted_out)
 
 
-async def _promote_local_mcp_images_async(messages, *, vision: bool):
+async def _promote_local_mcp_images_async(
+    messages,
+    *,
+    vision: bool,
+    decode_cache = None,
+):
     """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
     A permitted image runs to 40 megapixels, so that belongs off the shared loop --
     the same hop the GGUF and external replay paths already take."""
     if vision and _messages_mention_mcp_images(messages):
-        return await asyncio.to_thread(promote_mcp_history_images_local, messages, vision = vision)
-    return promote_mcp_history_images_local(messages, vision = vision)
+        return await asyncio.to_thread(
+            promote_mcp_history_images_local,
+            messages,
+            vision = vision,
+            decode_cache = decode_cache,
+        )
+    return promote_mcp_history_images_local(messages, vision = vision, decode_cache = decode_cache)
 
 
 async def _build_external_messages_async(messages, supports_vision, **kwargs) -> list[dict]:
@@ -24524,8 +24534,14 @@ async def produce_openai_chat_completions(
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     # Strips for a text-only model, rebuilds the picture as a marker turn for one
     # that reads images; either way no envelope reaches the template.
+    # One request's decodes, shared with the client-tool rebuild below, which promotes
+    # the same history again from the raw payload: a retained picture can be a 40
+    # megapixel raster, and it is decoded once, not once per promotion.
+    _sf_mcp_decode_cache: dict = {}
     chat_messages, sf_mcp_images = await _promote_local_mcp_images_async(
-        chat_messages, vision = bool(_sf_model_info.get("is_vision"))
+        chat_messages,
+        vision = bool(_sf_model_info.get("is_vision")),
+        decode_cache = _sf_mcp_decode_cache,
     )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
@@ -25405,6 +25421,7 @@ async def produce_openai_chat_completions(
                 )
             ),
             vision = _sf_renders_image,
+            decode_cache = _sf_mcp_decode_cache,
         )
         if image is not None and _sf_rebuilt_images:
             # The attachment rides beside the replay and both reach the backend as
