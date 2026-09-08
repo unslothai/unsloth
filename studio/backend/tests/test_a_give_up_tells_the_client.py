@@ -195,10 +195,11 @@ class TestTheToolLoopPath:
     def test_a_refused_resume_is_announced_there_too(self, monkeypatch):
         """Every GUI chat carries tools, so this is the surface most users are on.
 
-        Giving up here breaks into the final answering pass rather than ending the
-        response, so the turn usually still has text. The notice is owed all the same:
-        the client was shown "Paused while another chat finishes" and nothing has
-        resolved it.
+        Giving up here ends the turn the way the final pass ends its own refused
+        resume: the lease went back with `on_preempted` and the participant is PAUSED,
+        so breaking into the final answering pass would decode on cells the planner had
+        already handed to somebody else. The notice is owed all the same: the client
+        was shown "Paused while another chat finishes" and nothing has resolved it.
         """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
@@ -213,9 +214,14 @@ class TestTheToolLoopPath:
         chunks = _run_tools(recorder.backend, signal = signal, policy = policy)
 
         assert policy.events.count("preempted") == 1
-        # Unchanged: the turn is handed to the final pass rather than abandoned.
-        assert len(recorder.payloads) == 2
+        # One request, not two: the turn ends rather than decoding without a lease.
+        assert len(recorder.payloads) == 1
         assert len(_gave_up(chunks)) == 1, "the tool loop gave up without telling anyone"
+        finishes = [
+            c.get("finish_reason") for c in chunks
+            if isinstance(c, dict) and c.get("type") == "metadata"
+        ]
+        assert finishes and finishes[-1] == "length", "the client resumes from a length finish"
 
     def test_it_is_emitted_once_even_though_the_loop_continues(self, monkeypatch):
         """`context_truncated` is not idempotent on the client: `mergeContextTruncation`

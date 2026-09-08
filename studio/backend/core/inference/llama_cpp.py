@@ -6575,6 +6575,12 @@ class LlamaCppBackend:
         # Bumped by every unload. load_model clears _cancel_event, so a respawn that
         # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
         self._unload_epoch = 0
+        # The admission queue and the preemption controller are keyed per model load. A
+        # mid-session respawn picks a fresh port, so a key read off base_url would strand
+        # every live participant under the old one; this key is stamped by load_model and
+        # held across the replay _respawn_if_dead does (see admission_key).
+        self._admission_key: Optional[str] = None
+        self._respawn_replay = False
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -6717,6 +6723,22 @@ class LlamaCppBackend:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}"
+
+    @property
+    def admission_key(self) -> str:
+        """Key for the admission queue and the preemption controller.
+
+        One per model load, and held across a respawn: the participants registered
+        before the crash are the ones the replacement server must be reconciled
+        against, and a resume that looked them up under the new port found an empty
+        ledger and an empty queue instead.
+        """
+        return getattr(self, "_admission_key", None) or self.base_url
+
+    def _stamp_admission_key(self) -> None:
+        # A replay keeps the key it was launched under; a user-driven load starts fresh.
+        if not getattr(self, "_respawn_replay", False) or not getattr(self, "_admission_key", None):
+            self._admission_key = self.base_url
 
     @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
@@ -14011,6 +14033,7 @@ class LlamaCppBackend:
 
         self._kill_process()
         self._port = self._find_free_port()
+        self._stamp_admission_key()
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
@@ -18903,6 +18926,7 @@ class LlamaCppBackend:
                     return False
 
                 self._port = self._find_free_port()
+                self._stamp_admission_key()
 
                 # Select GPU(s) from model size + estimated KV cache. Seed
                 # safe defaults before probing so the except path has valid
@@ -28175,11 +28199,14 @@ class LlamaCppBackend:
                     f"llama-server for '{self._model_identifier}' exited "
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
+                self._respawn_replay = True
                 try:
                     started = bool(self.load_model(intent))
                 except Exception as exc:
                     logger.error(f"Failed to respawn llama-server: {exc}")
                     return False
+                finally:
+                    self._respawn_replay = False
                 if started and self._unload_epoch != epoch:
                     # An unload landed mid-reload. load_model cleared _cancel_event on
                     # the way in, so the epoch is the only surviving evidence; undo the

@@ -537,8 +537,14 @@ class LlamaAdmissionLease:
         cancel_event = None,
         poll_s: float = 0.02,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
+        progress = None,
     ) -> bool:
         """Take the room back after a preemption, waiting until the cache has it.
+
+        ``progress`` is an optional zero-argument callable whose result changes whenever
+        the backend does work (the controller's ``progress_signature``). ``timeout_s`` is
+        then a stall bound that resets on each change, capped at
+        ``_MAX_REPARK_WAIT_MULTIPLE`` times itself, rather than a flat wall clock.
 
         ``tokens`` is re-stated rather than remembered because a resumed run carries the
         partial it already generated, so it is larger than it was when preempted.
@@ -571,6 +577,13 @@ class LlamaAdmissionLease:
             # commitment, whether or not it is holding the slot at this instant.
             commitment_only = self._parked or self._slot is not None
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+        patience = None if deadline is None else float(timeout_s)
+        hard_deadline = (
+            None
+            if patience is None
+            else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
+        )
+        last_progress = progress() if progress is not None else None
         if commitment_only:
             # Stall, not wall clock. A resume queued behind a long answer waits through
             # entirely healthy draining, and a flat deadline cannot tell that from a pool
@@ -579,12 +592,8 @@ class LlamaAdmissionLease:
             # was simply shorter than the answer ahead of it. The deadline resets whenever
             # the pool's commitment falls, which is exactly when room is handed back;
             # growth never resets it, so a pool that only fills still times out.
-            patience = None if deadline is None else float(timeout_s)
-            hard_deadline = (
-                None
-                if patience is None
-                else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
-            )
+            # ``progress`` widens that to any work at all, for the same reason
+            # ``acquire_parked_slot`` takes it below.
             last_committed = queue.committed_now()
             while True:
                 if queue.try_recost(0, want):
@@ -597,6 +606,11 @@ class LlamaAdmissionLease:
                     if current < last_committed:
                         deadline = now + patience
                     last_committed = current
+                    if progress is not None:
+                        signature = progress()
+                        if signature != last_progress:
+                            last_progress = signature
+                            deadline = now + patience
                     if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         return False
                 await asyncio.sleep(poll_s)
@@ -605,6 +619,9 @@ class LlamaAdmissionLease:
             cancel_event = cancel_event,
             poll_s = poll_s,
             deadline = deadline,
+            patience = patience,
+            hard_deadline = hard_deadline,
+            progress = progress,
         )
         if slot is None:
             return False
@@ -1228,6 +1245,9 @@ class LlamaAdmissionQueue:
         cancel_event = None,
         poll_s: float = 0.02,
         deadline: Optional[float] = None,
+        patience: Optional[float] = None,
+        hard_deadline: Optional[float] = None,
+        progress = None,
     ) -> Optional[int]:
         """Wait for a slot for a holder resuming from a park, None if cancelled.
 
@@ -1244,8 +1264,15 @@ class LlamaAdmissionQueue:
         ``deadline`` is a ``time.monotonic()`` instant to give up at, for a preempted
         holder whose wait must be bounded. None is the park default: an approved prompt
         waits as long as it takes, which is the behaviour that predates preemption.
+
+        ``progress`` makes that bound a stall bound: whenever the callable's result
+        changes the deadline moves out by ``patience`` seconds, so a resume queued
+        behind a long answer waits through healthy draining instead of timing out
+        while every slot is busy and moving. ``hard_deadline`` still ends the wait
+        whatever the pool does.
         """
         want = max(0, int(tokens or 0))
+        last_progress = progress() if progress is not None else None
         with self._lock:
             self._unpark_seq += 1
             ticket = self._unpark_seq
@@ -1264,7 +1291,14 @@ class LlamaAdmissionQueue:
                         return slot
                     if cancel_event is not None and cancel_event.is_set():
                         return None
-                    if deadline is not None and time.monotonic() >= deadline:
+                if deadline is not None:
+                    now = time.monotonic()
+                    if progress is not None and patience is not None:
+                        signature = progress()
+                        if signature != last_progress:
+                            last_progress = signature
+                            deadline = now + patience
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         return None
                 await asyncio.sleep(poll_s)
         finally:
