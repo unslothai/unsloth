@@ -389,7 +389,11 @@ def test_colab_notebook_proxy_still_gets_the_setup_token(monkeypatch):
     """
 
     class _Req:
-        def __init__(self, host, headers = None):
+        def __init__(
+            self,
+            host,
+            headers = None,
+        ):
             self.headers = {"host": host, **(headers or {})}
             self.url = type("U", (), {"scheme": "https", "netloc": host})()
 

@@ -211,9 +211,9 @@ def test_a_strictmode_replay_does_not_burn_the_single_use_token():
     gets a 401, and the operator is left on an error they cannot reload out of.
     """
     result = _run_effect_harness(strict_mode = True)
-    assert result["exchangeCalls"] == 1, (
-        "the setup token was exchanged more than once across a StrictMode replay, which burns it"
-    )
+    assert (
+        result["exchangeCalls"] == 1
+    ), "the setup token was exchanged more than once across a StrictMode replay, which burns it"
     assert result["setupSession"] == "ACCESS"
     assert result["setupError"] is None
 
