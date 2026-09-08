@@ -1446,7 +1446,7 @@ def test_reset_route_without_body_stays_supported():
     route = _load_route_module("training_route_unscoped_reset")
     calls: list[str | None] = []
     backend = SimpleNamespace(
-        reset_training_state = lambda expected_job_id = None: (calls.append(expected_job_id) or "ok")
+        reset_training_state = lambda expected_job_id = None: calls.append(expected_job_id) or "ok"
     )
 
     with (
@@ -2336,8 +2336,9 @@ def test_worker_security_scans_exact_model_load_target(offline):
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["local_only_load"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = offline),
     ):
@@ -2370,8 +2371,9 @@ def test_worker_remote_retry_security_scan_is_not_local_only():
         patch("utils.security.security_load_subdirs", return_value = ()),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["local_only_load"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
     ):
@@ -2403,12 +2405,13 @@ def test_worker_security_scopes_pinned_target_before_registry_fallback():
         ),
         patch(
             "utils.security.security_load_subdirs",
-            side_effect = lambda target, _token: (("LLM",) if target == snapshot else ("registry",)),
+            side_effect = lambda target, _token: ("LLM",) if target == snapshot else ("registry",),
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["load_subdirs"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["load_subdirs"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
     ):
@@ -3296,3 +3299,17 @@ def test_cache_local_paths_blank_normalizes_to_none():
     request = _request(model_local_path = "   ", dataset_local_path = "")
     assert request.model_local_path is None
     assert request.dataset_local_path is None
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_boolean_eval_steps_is_rejected_by_the_request_model(value):
+    """`float` is not strict, so `"eval_steps": true` used to arrive as 1.0 and read as a
+    cadence of every step. Checking for a bool inside the trainer cannot see that, because the
+    coercion happens first."""
+    with pytest.raises(ValidationError):
+        _request(eval_steps = value)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 0.25, 1, 2, "0.1"])
+def test_numeric_eval_steps_still_accepted(value):
+    assert _request(eval_steps = value).eval_steps == float(value)

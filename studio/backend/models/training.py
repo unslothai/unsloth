@@ -206,6 +206,15 @@ class TrainingStartRequest(BaseModel):
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
 
+    @field_validator("eval_steps", mode = "before")
+    @classmethod
+    def _reject_boolean_eval_steps(cls, value: Any) -> Any:
+        # float is not strict, so `"eval_steps": true` would arrive as 1.0 and read as a cadence
+        # of every step. A bool is not a cadence; say so instead of guessing which one was meant.
+        if isinstance(value, bool):
+            raise ValueError("eval_steps must be a number, not a boolean")
+        return value
+
     # pydantic runs all mode="after" validators in definition order and _check_steps_or_epochs is lower
     # in this class, so keep these checks order-independent.
     @model_validator(mode = "after")

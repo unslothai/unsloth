@@ -56,6 +56,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 from datasets import Dataset
+from core.training.eval_dataset import evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -2366,6 +2367,12 @@ class UnslothTrainer:
         """Preprocess eval data, warning and dropping it on failure."""
         if eval_dataset is None:
             return None
+        if self.should_stop:
+            # A stop during the train pass still returns its partial rows, so without this the
+            # eval pass starts anyway and reloads a codec model (DAC pulls Whisper Turbo) just
+            # to abort on its first row.
+            logger.info("Stopped before eval preprocessing\n")
+            return None
         try:
             return preprocess(eval_dataset, custom_format_mapping)
         except Exception as e:
@@ -2403,8 +2410,6 @@ class UnslothTrainer:
 
     def _audio_eval_config(self, training_args):
         """Build audio evaluation arguments and return the eval dataset."""
-        from core.training.eval_dataset import evaluation_enabled
-
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
@@ -2652,7 +2657,9 @@ class UnslothTrainer:
             eval_dataset = None
             dataset_attestation_source = None
             has_separate_eval_source = False
-            eval_enabled = eval_steps is not None and eval_steps > 0
+            # Not `eval_steps > 0`: inf and NaN pass that and would have the whole eval
+            # split loaded and codec-encoded before _audio_eval_config discards it.
+            eval_enabled = evaluation_enabled(eval_steps)
             raw_text_mode = is_cpt or format_type == "raw"
             dataset_loaded_from_cache = False
 
@@ -4114,24 +4121,32 @@ class UnslothTrainer:
             eval_dataset = training_args.get("eval_dataset", None)
             eval_steps_val = training_args.get("eval_steps", 0.00)
             if eval_dataset is not None:
-                if eval_steps_val > 0:
+                eval_rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else None
+                # Same gate as _audio_eval_config. BiCodec and DAC land here rather than in an
+                # audio branch, so without this they would still hand inf to TrainingArguments.
+                if not evaluation_enabled(eval_steps_val):
+                    logger.info(
+                        f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"
+                    )
+                    logger.info("To enable evaluation, set eval_steps > 0.0\n")
+                elif eval_rows == 0:
+                    self._record_warning(
+                        "The eval dataset is empty after preprocessing, so this run has no "
+                        "evaluation."
+                    )
+                else:
                     config_args["eval_strategy"] = "steps"
-                    config_args["eval_steps"] = eval_steps_val
+                    config_args["eval_steps"] = float(eval_steps_val)
                     config_args["per_device_eval_batch_size"] = config_args[
                         "per_device_train_batch_size"
                     ]
                     logger.info(
                         f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n"
                     )
-                    if hasattr(eval_dataset, "__len__"):
-                        logger.info(f"Eval dataset: {len(eval_dataset)} rows\n")
-                    else:
+                    if eval_rows is None:
                         logger.info("Eval dataset is streaming / length unknown\n")
-                else:
-                    logger.info(
-                        f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"
-                    )
-                    logger.info("To enable evaluation, set eval_steps > 0.0\n")
+                    else:
+                        logger.info(f"Eval dataset: {eval_rows} rows\n")
             else:
                 logger.info("No eval dataset — evaluation disabled\n")
 

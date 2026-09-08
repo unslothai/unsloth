@@ -257,3 +257,114 @@ def test_transformers_accepts_the_produced_config(audio_trainer, tmp_path, eval_
     assert args.eval_strategy == "steps"
     assert args.eval_steps == expected
     assert args.per_device_eval_batch_size == 2
+
+
+def test_a_stop_skips_the_eval_preprocessor_entirely(audio_trainer):
+    """A stop during the train pass still returns partial rows, so the eval pass would start
+    anyway and reload a codec model (DAC pulls Whisper Turbo) just to abort on its first row."""
+    audio_trainer.should_stop = True
+    calls = []
+
+    def preprocess(dataset, custom_format_mapping = None):
+        calls.append(dataset)
+        return dataset
+
+    assert audio_trainer._preprocess_audio_eval_split(object(), preprocess, None) is None
+    assert calls == [], "the codec preprocessor ran after the run was stopped"
+    assert not audio_trainer.training_progress.warnings
+
+
+@pytest.mark.parametrize("eval_steps", [float("inf"), float("nan"), 0, -1])
+@pytest.mark.parametrize("audio_type", CODEC_TYPES)
+def test_an_invalid_cadence_never_preprocesses_the_eval_split(
+    audio_trainer, tmp_path, monkeypatch, audio_type, eval_steps
+):
+    """load_and_format_dataset used to gate on `eval_steps > 0`, so inf and NaN had the whole
+    eval split loaded and codec-encoded before _audio_eval_config discarded it."""
+    audio_trainer._audio_type = audio_type
+    monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True)
+    seen = []
+    monkeypatch.setattr(
+        audio_trainer,
+        f"_preprocess_{audio_type}_dataset",
+        lambda ds, m = None: (seen.append(len(ds)), ds)[1],
+        raising = True,
+    )
+
+    _train, evaluation = audio_trainer.load_and_format_dataset(
+        None,
+        local_datasets = [_rows(tmp_path / "train.jsonl", "train")],
+        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", "eval")],
+        eval_steps = eval_steps,
+    )
+
+    assert evaluation is None
+    assert len(seen) == 1, f"eval_steps={eval_steps} still preprocessed the eval split"
+
+
+@pytest.mark.parametrize(
+    "eval_steps,expect_enabled",
+    [(0.25, True), (2, True), (float("inf"), False), (float("nan"), False), (0, False)],
+)
+def test_the_generic_sft_path_uses_the_same_cadence_gate(
+    audio_trainer, tmp_path, monkeypatch, eval_steps, expect_enabled
+):
+    """BiCodec and DAC deliberately fall through to the generic SFT path, so the gate there has
+    to match the one in _audio_eval_config or inf still reaches TrainingArguments for them."""
+    captured = {}
+
+    class _FakeSFTConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeSFTTrainer:
+        def __init__(self, **kwargs):
+            captured["trainer_kwargs"] = kwargs
+
+        def add_callback(self, cb):
+            pass
+
+        def train(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(tmod, "SFTConfig", _FakeSFTConfig, raising = False)
+    monkeypatch.setattr(tmod, "SFTTrainer", _FakeSFTTrainer, raising = False)
+    monkeypatch.setattr(tmod, "resolve_output_dir", lambda p: tmp_path, raising = True)
+    monkeypatch.setattr(tmod, "ensure_dir", lambda p: p, raising = True)
+    monkeypatch.setattr(tmod, "_drop_hf_stdout_callbacks", lambda trainer: None, raising = True)
+    monkeypatch.setattr(
+        tmod.UnslothTrainer, "_finalize_training", lambda self, *a, **k: None, raising = True
+    )
+    monkeypatch.setattr(
+        tmod.UnslothTrainer, "_preflight_first_batch", lambda self: None, raising = True
+    )
+
+    audio_trainer._audio_type = "bicodec"
+    audio_trainer.model = object()
+    audio_trainer.tokenizer = object()
+    audio_trainer.model_name = "unsloth/spark-tts"
+
+    rows = [{"text": "a"}, {"text": "b"}]
+    try:
+        audio_trainer._train_worker(
+            {"dataset": rows, "final_format": "audio_bicodec"},
+            eval_dataset = rows,
+            eval_steps = eval_steps,
+            batch_size = 2,
+            gradient_accumulation_steps = 1,
+            max_steps = 8,
+            warmup_steps = 0,
+            output_dir = str(tmp_path),
+        )
+    except Exception:
+        # The generic path needs far more of a real model than this test provides; the eval
+        # decision is made before any of that, so the captured config is what matters.
+        pass
+
+    if expect_enabled:
+        assert captured.get("eval_strategy") == "steps", f"eval_steps={eval_steps} was not enabled"
+    else:
+        assert captured, "the config was never built, so this asserts nothing"
+        assert "eval_strategy" not in captured, (
+            f"eval_steps={eval_steps} reached TrainingArguments as a cadence"
+        )
