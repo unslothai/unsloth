@@ -292,3 +292,36 @@ def test_a_redirection_does_not_hide_a_non_wheel(tmp_path):
     r = _run_guard(tmp_path, PROLOGUE + "python -m twine upload dist/*.tar.gz >log\n")
     assert r.returncode == 1, r.stdout + r.stderr
     assert "non-wheel" in r.stdout
+
+
+@pytest.mark.parametrize(
+    "upload_line",
+    [
+        "python -m twine upload dist/*.whl && python -m twine upload dist/*.tar.gz",
+        "python -m twine upload dist/*.whl ; twine upload dist/*.tar.gz",
+        "python -m twine upload dist/*.whl || twine upload dist/*.tar.gz",
+    ],
+)
+def test_a_second_chained_upload_is_still_inspected(tmp_path, upload_line):
+    """Every command on the line counts, not just the first.
+
+    Stopping at the first control operator kept the guard from reading a pipe's
+    right-hand side, but it also discarded a chained SECOND upload, so the wheel
+    was recorded, the sdist was not, and the guard passed while both shipped.
+    """
+    r = _run_guard(tmp_path, PROLOGUE + upload_line + "\n")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "non-wheel" in r.stdout
+
+
+@pytest.mark.parametrize(
+    "upload_line",
+    [
+        "python -m twine upload dist/*.whl && echo done",
+        "python -m twine upload dist/*.whl | tee upload.log",
+    ],
+)
+def test_a_chained_non_upload_is_not_an_artifact(tmp_path, upload_line):
+    """Segmenting must not turn the other side of an operator into artifacts."""
+    r = _run_guard(tmp_path, PROLOGUE + upload_line + "\n")
+    assert r.returncode == 0, r.stdout + r.stderr

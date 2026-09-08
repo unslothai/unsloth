@@ -155,22 +155,52 @@ jobs:
               "-c", "--comment", "--config-file", "--cert", "--client-cert",
           }
 
-          def positionals(argstr):
+          OPERATORS = {"|", "||", "&&", ";", "&"}
+
+          def segments(line):
+              """One token list per command on the line, split on control operators.
+
+              Ending the scan at the first operator was wrong in one direction:
+              it correctly ignored the right-hand side of a pipe, but it also
+              discarded a SECOND upload, so
+              `twine upload dist/*.whl && twine upload dist/*.tar.gz` recorded
+              only the wheel and passed while the sdist was published too. Each
+              segment is a command in its own right and is judged on its own.
+              """
               try:
-                  toks = shlex.split(argstr, comments=True)
+                  toks = shlex.split(line, comments=True)
               except ValueError:
                   # Unbalanced quoting: not something this guard can read, so
                   # refuse rather than wave it through.
                   return None
-              out, skip = [], False
+              out, current = [], []
               for t in toks:
+                  if t in OPERATORS:
+                      out.append(current)
+                      current = []
+                      continue
+                  current.append(t)
+              out.append(current)
+              return out
+
+          def upload_args(seg):
+              """twine's positional arguments, or None when seg is not an upload."""
+              head = list(seg)
+              if head[:3] == ["python", "-m", "twine"] or (
+                  head and re.fullmatch(r"python[0-9.]*", head[0]) and head[1:3] == ["-m", "twine"]
+              ):
+                  head = head[3:]
+              elif head[:1] == ["twine"]:
+                  head = head[1:]
+              else:
+                  return None
+              if head[:1] != ["upload"]:
+                  return None
+              out, skip = [], False
+              for t in head[1:]:
                   if skip:
                       skip = False
                       continue
-                  # A control operator ends this command; whatever follows is a
-                  # different one and its words are not twine's arguments.
-                  if t in {"|", "||", "&&", ";", "&"}:
-                      break
                   # Redirections are shell syntax, not artifacts. `>twine.log`
                   # arrives as one token and used to be reported as a non-wheel
                   # artifact, failing CI on a perfectly valid upload line.
@@ -221,19 +251,19 @@ jobs:
           uploads = []
           unreadable = False
           for line in lines:
-              # Anchored to the start of the command, so only an invocation
-              # counts. Unanchored, a shell no-op that never publishes anything
-              # (`: twine upload dist/*.whl`) still registered a wheel target and
-              # satisfied the has-an-upload check below, which is the one thing
-              # that check exists to catch.
-              m = re.match(r"\s*(?:python[0-9.]*\s+-m\s+)?twine\s+upload\b(.*)$", line)
-              if not m:
-                  continue
-              args = positionals(m.group(1))
-              if args is None:
+              parts = segments(line)
+              if parts is None:
                   unreadable = True
                   continue
-              uploads.extend(args)
+              # Every command on the line, judged separately. A segment only
+              # counts when twine IS the command: a shell no-op that merely names
+              # it (`: twine upload dist/*.whl`) has ':' as its command, so it no
+              # longer satisfies the has-an-upload check below, which is the one
+              # thing that check exists to catch.
+              for seg in parts:
+                  args = upload_args(seg)
+                  if args is not None:
+                      uploads.extend(args)
           print(f"twine upload targets in build.sh: {uploads}")
           if unreadable:
               print("FAIL: could not parse a twine upload line in build.sh")
