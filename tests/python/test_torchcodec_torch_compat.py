@@ -991,8 +991,11 @@ def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
     assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu126"
 
-    # The override does not make an untagged or rocm torch start pinning.
-    assert ips._torchcodec_index_url("2.11.0") is None
+    # An explicit family DOES make an untagged torch pin, and deliberately so: a private
+    # mirror that rebuilds torch ships it bare, and naming the family is how such a host
+    # says which leaf to use. rocm still never pins a codec, because no rocm index
+    # publishes one under any name.
+    assert ips._torchcodec_index_url("2.11.0") == "https://download.pytorch.org/whl/cu126"
     assert ips._torchcodec_index_url("2.11.0+rocm7.0") is None
 
 
@@ -1382,27 +1385,54 @@ def test_the_remedy_spells_the_variable_for_the_shell_it_will_be_pasted_into(mon
         assert fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL") == '"$UNSLOTH_TORCH_INDEX_URL"'
 
 
-def test_a_mirror_carrying_a_token_gets_the_leaf_in_its_path(monkeypatch):
-    """UNSLOTH_PYTORCH_MIRROR may authenticate through a query token. Concatenating the leaf
-    put it INSIDE the token -- "https://m/whl?token=abc/cu130" -- so the index resolved
-    nothing. For torchcodec that silently costs audio; for torchao, whose step is fatal, the
-    unpinned retry also drops the mirror, so a mirror-only host cannot install it at all.
+def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
+    """No URL shape pins a query-auth index: pip joins the project name as text, so both
+    "base?token=x/cu130" and "base/cu130/?token=x" ask the wrong thing.
+    _warn_query_index_unusable says so directly, and says the join cannot repair it.
 
-    _index_url_join already existed for the ROCm mirrors and its docstring names this exact
-    failure, so this is about using it rather than about new logic."""
-    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    Constructing one anyway is worse than declining, which is the whole point. Passing
+    --index-url makes _install_env_for_cmd strip the user's own index configuration
+    (UV_NO_CONFIG=1, PIP_CONFIG_FILE=os.devnull), and for this mirror that configuration is
+    the only channel that can work, since the credential has to come from pip.conf or
+    ~/.netrc. So a broken pin trades a working install for a guaranteed failure."""
+    for base in ("https://mirror.example/whl?token=abc", "https://mirror.example/whl#tok"):
+        monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", base)
+        mod = _reload_install_python_stack()
+        assert mod._torch_accelerator_index_url("2.13.0+cu130") is None, base
+        assert mod._torchcodec_index_url("2.13.0+cu130") is None, base
+        # The FAMILY override reaches the same base, so it declines the same way.
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+        assert mod._torch_accelerator_index_url("2.13.0") is None, base
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    # An explicit full UNSLOTH_TORCH_INDEX_URL is still taken verbatim: that is the user
+    # naming one exact index rather than a base this code appends a leaf to.
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.example/simple?token=abc")
     mod = _reload_install_python_stack()
     assert mod._torch_accelerator_index_url("2.13.0+cu130") == (
-        "https://mirror.example/whl/cu130/?token=abc"
+        "https://mirror.example/simple?token=abc"
     )
-    assert mod._torchcodec_index_url("2.13.0+cu130") == (
-        "https://mirror.example/whl/cu130/?token=abc"
+
+
+def test_an_explicit_family_is_honoured_when_torch_carries_no_tag(monkeypatch):
+    """UNSLOTH_TORCH_INDEX_FAMILY is as explicit an instruction as the full URL, and the
+    host that needs it is exactly the one whose torch has no local tag -- a private mirror
+    rebuilding torch bare. _explicit_unknown_family_torch_index_url already treats a custom
+    leaf such as /current as authoritative and leaves that torch alone, so returning None
+    here is never corrected later; step 4 just installs torchao from the default index,
+    which on an air-gapped host is no index at all."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "current")
+    mod = _reload_install_python_stack()
+    assert mod._torch_accelerator_index_url("2.14.0") == "https://mirror.example/whl/current"
+    assert mod._torchcodec_index_url("2.14.0") == "https://mirror.example/whl/current"
+    # A tagged torch is unaffected: the family still wins, as it did before.
+    assert mod._torch_accelerator_index_url("2.14.0+cu130") == (
+        "https://mirror.example/whl/current"
     )
-    # The FAMILY override takes the same path, substitution included.
+    # And the per-package substitution still applies to the override.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
-    assert mod._torchcodec_index_url("2.13.0+xpu") == (
-        "https://mirror.example/whl/cpu/?token=abc"
-    )
+    assert mod._torchcodec_index_url("2.14.0") == "https://mirror.example/whl/cpu"
 
 
 def test_a_plain_mirror_is_still_joined_the_obvious_way(monkeypatch):

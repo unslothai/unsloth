@@ -519,21 +519,24 @@ _CUDA_RUNTIME_MARKER_RE = re.compile(
 )
 
 
-def _pytorch_whl_leaf_url(leaf: str) -> str:
-    """_PYTORCH_WHL_BASE plus an accelerator leaf, keeping a mirror's query out of the way.
+def _pytorch_whl_leaf_url(leaf: str) -> "str | None":
+    """_PYTORCH_WHL_BASE plus an accelerator leaf, or None when it cannot be expressed.
 
-    UNSLOTH_PYTORCH_MIRROR may authenticate through a query token, and plain concatenation
-    buries the leaf inside it -- "https://m/whl?token=abc" + "/cu130" asks for /whl with
-    "abc/cu130" as the token, which resolves nothing. torchcodec would silently lose audio;
-    torchao's step is fatal AND its unpinned retry drops the mirror too, so a mirror-only
-    host could not install it at all.
+    A mirror may authenticate through a query token, and NO url shape pins such an index:
+    pip joins the project name as text (posixpath.join), so both "base?token=x/cu130" and
+    "base/cu130/?token=x" ask the wrong thing -- _warn_query_index_unusable spells this out
+    and says the join cannot repair it.
 
-    _index_url_join is the existing fix for exactly this, written for the ROCm mirrors, but
-    it also appends a trailing slash. That is harmless to pip and wrong to spread: without a
-    query there is nothing to work around, so the plain form is kept byte for byte.
+    So there is nothing to construct here, and constructing something anyway is worse than
+    declining. Passing --index-url makes _install_env_for_cmd strip the user's own index
+    configuration (UV_NO_CONFIG=1, PIP_CONFIG_FILE=os.devnull), which for a query-auth
+    mirror is the ONLY channel that can work: the credential has to come from pip.conf or
+    ~/.netrc. A broken pin therefore destroys the working path to install a wheel from an
+    index that never resolves. Returning None leaves the configuration in place.
     """
     if "?" in _PYTORCH_WHL_BASE or "#" in _PYTORCH_WHL_BASE:
-        return _index_url_join(_PYTORCH_WHL_BASE, leaf)
+        _warn_query_index_unusable(_PYTORCH_WHL_BASE)
+        return None
     return f"{_PYTORCH_WHL_BASE}/{leaf}"
 
 
@@ -628,15 +631,20 @@ def _torch_accelerator_index_url(
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
         return _trim_index_path_slashes(url)
-    local = str(torch_version).partition("+")[2].strip().lower()
-    if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
-        return None
     # A FAMILY override names a leaf under our own base, so a per-package substitution still
     # applies to it -- otherwise UNSLOTH_TORCH_INDEX_FAMILY=xpu would send torchcodec to the
     # xpu leaf, which publishes no codec below 0.13.
+    #
+    # Read BEFORE the tag check for the same reason as the URL above: it is an explicit
+    # instruction, and the host that needs it is exactly the one whose torch has no tag.
+    # _explicit_unknown_family_torch_index_url already treats a custom leaf such as /current
+    # as authoritative and leaves that torch alone, so nothing later corrects a None here.
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/")
     if family:
         return _pytorch_whl_leaf_url(substitutions.get(family.lower(), family))
+    local = str(torch_version).partition("+")[2].strip().lower()
+    if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
+        return None
     # _PYTORCH_WHL_BASE rather than a literal, since UNSLOTH_PYTORCH_MIRROR redirects every
     # other index this module builds.
     return _pytorch_whl_leaf_url(substitutions.get(local, local))
@@ -8150,7 +8158,7 @@ def install_python_stack() -> int:
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
                 "the rest of the install is unaffected"
             )
-        elif _codec_index and _cuda_major_for_npp(_codec_torch_ver, _codec_index):
+        elif _codec_index:
             # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
             # torch's own dependency set, so a --no-deps install from a cuNNN index reports
             # success and then fails to import, disabling audio for a reason nothing here
@@ -8159,17 +8167,19 @@ def install_python_stack() -> int:
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
                 # The retry dropped the pin, so the resident torch's tag no longer describes
-                # where this wheel came from. The default index carries one build per
-                # release, at whatever CUDA major PyTorch currently defaults to, so a cu129
-                # host lands a libcudart.so.13 codec and the tag would have asked for
-                # nvidia-npp-cu12 -- the wrong runtime, and audio stays broken on a host
-                # with no system toolkit, which is the case this whole step exists for.
+                # where this wheel came from, and the probe has to run for EVERY fallback
+                # rather than only where the tag already implied CUDA. PyPI's torchcodec is
+                # a CUDA build, so a host whose tag implies none -- xpu, which takes the cpu
+                # leaf, or an untagged private build -- lands one anyway and needs the NPP
+                # its tag said nothing about. Gating the probe on the tag skipped exactly
+                # the hosts it was meant to rescue. In the other direction a cu129 host
+                # lands a libcudart.so.13 codec while its tag asks for nvidia-npp-cu12.
                 _npp_probed = _installed_torchcodec_cuda_major()
                 if _npp_probed is not None and _npp_probed != _npp_major:
                     _note(
                         f"the unpinned torchcodec links CUDA {_npp_probed or 'nothing'} "
-                        f"rather than the CUDA {_npp_major} its torch tag implies "
-                        "-- matching NPP to the wheel"
+                        f"rather than {'CUDA ' + _npp_major if _npp_major else 'nothing'}, "
+                        "which its torch tag implies -- matching NPP to the wheel"
                     )
                     _npp_major = _npp_probed
             # _npp_major is "" when the probe found a build linking no CUDA runtime at
