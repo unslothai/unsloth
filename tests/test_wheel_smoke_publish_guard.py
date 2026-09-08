@@ -135,6 +135,29 @@ def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
 
 
 @pytest.mark.parametrize(
+    "heredoc",
+    [
+        "cat <<'USAGE'\ntwine upload dist/*.whl\nUSAGE\n",
+        "cat <<USAGE\ntwine upload dist/*.whl\nUSAGE\n",
+        "cat <<-USAGE\n\ttwine upload dist/*.whl\n\tUSAGE\n",
+    ],
+)
+def test_heredoc_text_is_not_an_upload(tmp_path, heredoc):
+    """Usage text naming the command is text, not the release path."""
+    r = _run_guard(tmp_path, PROLOGUE + heredoc)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "no twine upload line" in r.stdout
+
+
+def test_a_heredoc_does_not_hide_the_real_upload(tmp_path):
+    """Skipping heredoc bodies must not skip the invocation that follows one."""
+    body = PROLOGUE + "cat <<'USAGE'\ntwine upload dist/*.tar.gz\nUSAGE\n"
+    body += "python -m twine upload dist/*.whl\n"
+    r = _run_guard(tmp_path, body)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
     "invocation",
     [
         "twine upload dist/*.whl",

@@ -173,8 +173,33 @@ jobs:
                   out.append(t)
               return out
 
+          def executable_lines(text):
+              """build.sh lines the shell would actually run.
+
+              Comments and heredoc bodies are text, not commands, but both can
+              contain a line that starts with `twine upload dist/*.whl` -- usage
+              output being the obvious one. Counting that as the upload lets a
+              build.sh whose real publish line was deleted still report PASS,
+              which is the one thing the has-an-upload check exists to catch.
+              """
+              out, terminator = [], None
+              for line in text.splitlines():
+                  if terminator is not None:
+                      # <<- strips leading tabs from the terminator, << does not.
+                      if line.strip() == terminator:
+                          terminator = None
+                      continue
+                  opened = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
+                  if opened:
+                      terminator = opened.group(2)
+                      continue
+                  if line.lstrip().startswith("#"):
+                      continue
+                  out.append(line)
+              return out
+
           src = open("build.sh").read()
-          lines = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+          lines = executable_lines(src)
           uploads = []
           unreadable = False
           for line in lines:
