@@ -279,6 +279,42 @@ def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(monkeypa
     ]
 
 
+def test_full_access_on_ollama_keeps_the_date_the_nudge_costs_nothing_to_carry(monkeypatch):
+    """Full access synthesizes its own system turn, displacing the Modelfile SYSTEM regardless.
+
+    Withholding the date there gives it up for a prompt that is lost anyway, which is the one
+    way the exemption can leave a caller worse off than having no exemption at all.
+    """
+    inf = _install(monkeypatch, "ollama")
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+    seen = {}
+
+    def _capture(*_args, **kwargs):
+        seen["messages"] = list(kwargs["run"].messages)
+        raise LoopEntered(kwargs.get("policy"))
+
+    monkeypatch.setattr(inf, "stream_with_studio_tools", _capture)
+
+    with pytest.raises(LoopEntered):
+        _run(
+            inf,
+            _payload(
+                enable_tools = True,
+                enabled_tools = ["terminal"],
+                run_tools_locally = True,
+                bypass_permissions = True,
+            ),
+        )
+
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
+    assert "sandbox" in seen["messages"][0]["content"], "the Full access nudge is still delivered"
+
+
 def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
     """The regression in one line: `code_execution` has no local implementation,
     so a loop that captures this request executes web_search itself and silently

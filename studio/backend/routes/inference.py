@@ -5124,8 +5124,9 @@ def _prepend_current_date_to_messages(
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
     if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Not a
-        # guarantee: the Full access nudge can still add one via _append_to_system_message.
+        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Callers
+        # must not claim this exemption when something later will synthesize a system turn anyway:
+        # the date would be given up for a prompt that is displaced regardless.
         return messages
     return [{"role": "system", "content": date_line}, *copied]
 
@@ -19901,23 +19902,28 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
-    chat_messages = _prepend_current_date_to_messages(
-        chat_messages,
-        request,
-        include_api_key = run_studio_tool_loop,
-        provider_type = provider_type,
-    )
+    # Built before the date is applied, not after, because whether it exists decides whether the
+    # Modelfile exemption is worth claiming: _append_to_system_message below synthesizes its own
+    # system turn, which costs an Ollama caller the Modelfile SYSTEM whatever the date does. The
+    # date can only be withheld to save that prompt when nothing after this will displace it.
+    # Full access disables the sandbox at execution time, so the schemas must say so too rather
+    # than describing a sandbox the model will not get.
+    _external_nudge = ""
     if run_studio_tool_loop and payload.bypass_permissions:
-        # Full access disables the sandbox at execution time, so the schemas must
-        # say so too rather than describing a sandbox the model will not get.
         _external_nudge = _build_tool_action_nudge(
             tools = external_studio_tools,
             model_name = model,
             full_access = True,
             full_access_only = True,
         )
-        if _external_nudge:
-            chat_messages = _append_to_system_message(chat_messages, _external_nudge)
+    chat_messages = _prepend_current_date_to_messages(
+        chat_messages,
+        request,
+        include_api_key = run_studio_tool_loop,
+        provider_type = None if _external_nudge else provider_type,
+    )
+    if _external_nudge:
+        chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
