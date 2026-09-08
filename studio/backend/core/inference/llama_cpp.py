@@ -32693,6 +32693,10 @@ class LlamaCppBackend:
                 )
                 # Started, not yet read back. Empty in a sequential round.
                 _pending_calls: list = []
+                # Calls that reach a driver: a suppressed repeat, disabled tool or spent
+                # one-shot stores no result, and dividing the room by the raw list cut a lone
+                # real read short. A cell the workers read; final before any driver starts.
+                _round_launched = [0]
 
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
@@ -33142,6 +33146,8 @@ class LlamaCppBackend:
                             # Bound for the same reason: an overlapped round's drivers run
                             # after the loop, and this decides how the room is divided.
                             _round_parallel = _parallel_round,
+                            # Read, not bound by value: the cell completes after this closure.
+                            _round_launched_cell = _round_launched,
                         ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
@@ -33326,10 +33332,11 @@ class LlamaCppBackend:
                                         _spent + _pending_args,
                                     ) // (
                                         # Sequentially, call k divides by the calls still to
-                                        # run. Run together they all price against the same
-                                        # `_spent`, so each dividing by its own remainder hands
-                                        # out more than the batch has.
-                                        len(tool_calls or [])
+                                        # run. Run together they price against the same
+                                        # `_spent`, so per-call remainders would hand out
+                                        # more than the batch has; the launched calls, since
+                                        # a suppressed one stores no result.
+                                        max(1, _round_launched_cell[0])
                                         if _round_parallel
                                         else (len(_pending) + 1)
                                     )
@@ -33467,10 +33474,10 @@ class LlamaCppBackend:
                                     None,
                                 )
                             )
-                            # Counted HERE, not when it settles. The cap is read once per call
-                            # while the round is prepared, and every call is prepared before any
-                            # finishes, so counting at the end lets four searches through a cap
-                            # of three.
+                            _round_launched[0] += 1
+                            # Counted HERE, not when it settles: every call of an overlapped
+                            # round is prepared before any finishes, so counting at the end
+                            # lets four searches through a cap of three.
                             if decision.tool_name in RAG_SEARCH_TOOLS:
                                 _kb_search_count += 1
                             # Spent by THIS call, for the same reason. Leaving it set until the
@@ -33534,7 +33541,7 @@ class LlamaCppBackend:
                             self._effective_context_length,
                             _iteration_max_tokens,
                             _round_spent,
-                        ) // max(1, len(tool_calls or []))
+                        ) // max(1, _round_launched[0])
                         if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
                             _roomier, _n_roomier = compact_completed_tool_arguments(
                                 conversation, protect_last = 1
