@@ -1273,6 +1273,16 @@ def test_mtp_plan_verdicts(cluster, monkeypatch, tmp_path):
     assert plan["mtp"] == "enabled"
     assert plan["request"] == {"spec_draft_n_max": 3}
     assert "1 MTP layer(s)" in plan["reason"] and "--spec-draft-n-max 3" in plan["reason"]
+    # The depth follows the rows the load is sized for. Not told, it is the one-Spark 3.
+    for rows, depth in ((None, 3), (1, 3), (8, 3), (31, 3), (32, 2), (64, 1), (128, 1)):
+        plan = ss.mtp_plan(head, users = rows)
+        assert plan["request"] == {"spec_draft_n_max": depth}, rows
+        assert f"--spec-draft-n-max {depth}" in plan["reason"], rows
+        if depth != 3:
+            assert f"measured best at {rows} rows" in plan["reason"], rows
+    # A depth the caller set is still theirs, whatever the row count would have chosen.
+    plan = ss.mtp_plan(head, spec_draft_n_max = 3, users = 64)
+    assert plan["mtp"] == "user override" and plan["request"] == {}
     assert ss.mtp_plan(head, ["--seed", "1", "-np", "4"])["mtp"] == "enabled"
     for mode in (None, "auto", "default", "AUTO"):
         assert ss.mtp_plan(head, speculative_type = mode)["mtp"] == "enabled", mode
@@ -1444,7 +1454,7 @@ def test_split_takes_groups_and_speculation_above_the_crossover(cluster, monkeyp
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
     assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
     assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
-    assert out.spec_draft_n_max == 3 and out.speculative_type is None
+    assert out.spec_draft_n_max == ss.mtp_draft_n_max(32) == 2 and out.speculative_type is None
     status = ss.status()
     assert status["pipeline_groups"] == 2 and status["mtp"] == "enabled"
     assert status["split_config"] == ss.SPLIT_CONFIG_BOTH == "groups + speculation"
@@ -1473,7 +1483,7 @@ def test_split_crossover_sits_at_the_measured_row_count(cluster, monkeypatch, tm
         status = ss.status()
         assert status["split_config"] == config, (rows, status)
         assert status["mtp"] == "enabled", rows
-        assert out.spec_draft_n_max == 3, rows
+        assert out.spec_draft_n_max == ss.mtp_draft_n_max(rows), rows
         if config == ss.SPLIT_CONFIG_BOTH:
             assert status["pipeline_groups"] == 2, rows
             assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"], rows
@@ -1505,7 +1515,7 @@ def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
     assert ss.llama_server_accepts_groups_with_drafter(1) is False, "one group is not the pair"
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
     assert "--pipeline-groups" not in out.llama_extra_args
-    assert out.spec_draft_n_max == 3
+    assert out.spec_draft_n_max == ss.mtp_draft_n_max(32) == 2
     status = ss.status()
     assert status["pipeline_groups"] == 0 and status["mtp"] == "enabled"
     assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
@@ -1560,7 +1570,7 @@ def test_mmproj_control_vectors_and_idle_sleep_cost_the_groups_not_the_speculati
         out = run(ss.before_load(_FakeRequest(str(head), llama_extra_args = list(extras)), 32))
         assert "--pipeline-groups" not in out.llama_extra_args, extras
         assert out.llama_extra_args[:2] == extras[:2], "the caller's flags are untouched"
-        assert out.spec_draft_n_max == 3, extras
+        assert out.spec_draft_n_max == ss.mtp_draft_n_max(32) == 2, extras
         status = ss.status()
         assert status["pipeline_groups"] == 0 and status["mtp"] == "enabled", extras
         assert status["split_config"] == ss.SPLIT_CONFIG_SPEC, extras
@@ -1589,7 +1599,8 @@ def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkey
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "0")
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
-    assert "--pipeline-groups" not in out.llama_extra_args and out.spec_draft_n_max == 3
+    assert "--pipeline-groups" not in out.llama_extra_args
+    assert out.spec_draft_n_max == ss.mtp_draft_n_max(32) == 2
     status = ss.status()
     assert status["split_config"] == ss.SPLIT_CONFIG_SPEC and status["mtp"] == "enabled"
     assert ss.ENV_PIPELINE_GROUPS in status["split_config_reason"]
@@ -1675,6 +1686,36 @@ def _load_spark_cluster():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_the_draft_depth_follows_the_rows_and_the_crossover_does_not_move():
+    """The depth table is mirrored in both modules, it picks the depth that actually won
+    each measured row count, and it moves NOTHING about when a split turns speculation on."""
+    sc = _load_spark_cluster()
+    assert ss.MTP_DRAFT_N_MAX == sc.MTP_DRAFT_N_MAX == 3
+    assert ss.MTP_DRAFT_N_MAX_BY_ROWS == sc.MTP_DRAFT_N_MAX_BY_ROWS == {32: 2, 64: 1}
+    # Below the lowest row count measured on the split, the one-Spark answer stands, and so
+    # does the answer for a caller that never says how many rows are coming.
+    for rows in (None, 1, 4, 8, 16, 31):
+        assert ss.mtp_draft_n_max(rows) == sc.mtp_draft_n_max(rows) == 3, rows
+    for rows, want in ((32, 2), (48, 2), (63, 2), (64, 1), (128, 1), (512, 1)):
+        assert ss.mtp_draft_n_max(rows) == sc.mtp_draft_n_max(rows) == want, rows
+    # The rule is the measurement: at each swept row count it returns the depth with the
+    # highest measured throughput, so the table and the rule cannot drift apart.
+    for rows, cells in sc.MTP_DRAFT_N_MAX_X_ROWS_TOKS.items():
+        drafting = {depth: toks for depth, toks in cells.items() if depth}
+        assert sc.mtp_draft_n_max(rows) == max(drafting, key = drafting.get), rows
+        # every swept row count has the drafter-off arm in it, so "best vs off" is sayable
+        assert 0 in cells, rows
+    # Acceptance is a property of the depth, not of the rows: it is keyed by depth alone.
+    assert sorted(sc.MTP_DRAFT_N_MAX_ACCEPTANCE) == [1, 2, 3]
+    # Measured with the flags the product launches, like every other cell in this file.
+    for text in (sc.MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT,):
+        assert "--kv-unified" in text and "--pipeline-groups 2" in text
+    # This is a DEPTH change. Whether a split runs groups AND speculation is a different
+    # question with its own measurement, and it is unchanged.
+    assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == ss.GROUPS_X_MTP_MIN_ROWS == 16
+    assert sc.groups_x_mtp_wins(16) and not sc.groups_x_mtp_wins(8)
 
 
 def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():

@@ -3044,6 +3044,69 @@ MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
 MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
 MTP_DRAFT_N_MAX = 3
 MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
+# ── The draft depth is not one number: it depends on how many rows are in flight ──────
+# Everything above was measured at 1 to 8 users, where n-max 3 is right. On the two-Spark
+# layer split the product runs 32 to 64 rows, and n-max 3 was never swept there: it was
+# simply the default carried up from the one-Spark table. Swept on the split at 32 / 64 /
+# 128 rows, two pipeline groups, --kv-unified, both nodes pinned at 1690 MHz, every cell
+# bracketed forward and reversed (2026-09-07):
+#
+#   rows | drafter off | n-max 1 | n-max 2 | n-max 3 | best n-max | best vs off
+#     32 |   146.8     |  152.8  |  162.9  |  155.9  |     2      |   +11 %
+#     64 |   186.3     |  171.7  |  166.9  |  146.3  |     1      |    -8 %
+#    128 |   212.7     |  164.1  |  138.7  |  132.2  |     1      |   -23 %
+#
+# So n-max 3 is the WORST of the three at every row count on the split, and the depth that
+# wins moves with rows: 2 at 32, 1 at 64 and above. Acceptance is a function of the depth
+# alone and not of rows -- 0.87 at n-max 1, 0.78 at 2, 0.69 at 3, flat to within 0.02 across
+# 32, 64 and 128 rows -- so this is not the drafter working less well at width; it is the
+# extra draft tokens widening a batch that is already past the cheap point of the per-token
+# curve. Below 32 rows nothing here was measured, so the one-Spark answer stands and the
+# default stays 3.
+# Every cell above is a TWO-GROUP split, which is what the product runs from 16 rows up, so
+# the depth only ever changes in the regime that was swept. A one-context split at the same
+# row count is not measured, and it gets the same depth: with one context the rows all sit in
+# one step rather than being halved across two groups, so the batch is WIDER at the same row
+# count and the width penalty this table is about can only be larger. Extrapolating a
+# narrower draft there is the safe direction, and it is the only extrapolation here.
+# This changes the DEPTH only. Whether a split turns speculation on at all is
+# ``groups_x_mtp_wins`` and its crossover, which this measurement does not touch: at 64 and
+# 128 rows the drafter loses at every depth, which is the same direction that table already
+# had, only smaller (-8 % rather than -20 % at 64 rows, once the depth is chosen well).
+MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL split over two DGX Sparks, llama-server --pipeline-groups 2 "
+    "--kv-unified --tensor-split 0.5,0.5 --spec-type draft-mtp, unslothai/llama.cpp PR #187 "
+    "a1dd7c5e8, both nodes pinned at 1690 MHz, 2026-09-07, npp 128 / ntg 256, forward and "
+    "reversed legs per cell"
+)
+# concurrent rows -> {n-max: decode tok/s}, leg mean. 0 is the drafter off.
+MTP_DRAFT_N_MAX_X_ROWS_TOKS = {
+    32: {0: 146.8, 1: 152.8, 2: 162.9, 3: 155.9},
+    64: {0: 186.3, 1: 171.7, 2: 166.9, 3: 146.3},
+    128: {0: 212.7, 1: 164.1, 2: 138.7, 3: 132.2},
+}
+MTP_DRAFT_N_MAX_ACCEPTANCE = {1: 0.87, 2: 0.78, 3: 0.69}  # n-max -> acceptance, flat in rows
+# rows at or above the key -> the draft depth measured best there. Read by nearest key at or
+# below the row count; under the lowest key the one-Spark default applies.
+MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}
+
+
+def mtp_draft_n_max(users: Optional[int] = None) -> int:
+    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows.
+
+    ``MTP_DRAFT_N_MAX`` (3) below the lowest measured row count, which is where the
+    one-Spark table lives and where 3 is right; the nearest measured row count at or below
+    ``users`` otherwise. No fitting and no extrapolation above 128 rows: the largest
+    measured key applies from there up, and the depth is monotone in rows over the range
+    that was swept."""
+    if users is None:
+        return MTP_DRAFT_N_MAX
+    rows = max(1, int(users or 1))
+    depth = MTP_DRAFT_N_MAX
+    for key in sorted(MTP_DRAFT_N_MAX_BY_ROWS):
+        if rows >= key:
+            depth = MTP_DRAFT_N_MAX_BY_ROWS[key]
+    return depth
 # ── Pipeline groups AND speculative decoding on the same layer split ──────────────────
 # unslothai/llama.cpp PR #187 (feature/pipeline-groups, a1dd7c5e8) gives every pipeline group
 # its own speculative state, so --pipeline-groups N > 1 is now accepted together with

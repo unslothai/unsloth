@@ -146,6 +146,24 @@ PARALLEL_MAX = 64
 # by default: on this pair both are a single-user trick and a 0.4x to 0.8x loss from 4 users.
 MTP_SPEC_TYPE = "draft-mtp"
 MTP_DRAFT_N_MAX = 3
+# The depth above is the 1-to-8-user answer. On the two-Spark layer split the product runs 32
+# to 64 rows, and 3 was never swept there -- it was carried up from the one-Spark table and it
+# is the worst of the three depths at every row count on the split. Swept at 32 / 64 / 128
+# rows, two pipeline groups, --kv-unified, both nodes at 1690 MHz, forward and reversed legs
+# (2026-09-07; spark_cluster.MTP_DRAFT_N_MAX_X_ROWS_TOKS holds the table):
+#
+#   rows | drafter off | n-max 1 | n-max 2 | n-max 3 | best | best vs off
+#     32 |    146.8    |  152.8  |  162.9  |  155.9  |  2   |   +11 %
+#     64 |    186.3    |  171.7  |  166.9  |  146.3  |  1   |    -8 %
+#    128 |    212.7    |  164.1  |  138.7  |  132.2  |  1   |   -23 %
+#
+# Acceptance follows the depth and not the rows (0.87 / 0.78 / 0.69 at n-max 1 / 2 / 3, flat
+# to 0.02 across the three row counts), and the TTFT cost of the winning depth at 32 rows is
+# under half a second at the median and the p99. Below 32 rows nothing was measured on the
+# split, so the one-Spark default stands there.
+# Mirrored rather than imported: this module is loaded by the CLI and by tests that never
+# import spark_cluster. test_spark_serving asserts the two stay equal.
+MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}  # spark_cluster.MTP_DRAFT_N_MAX_BY_ROWS
 SPEC_TYPE_FLAG = "--spec-type"
 SPEC_DRAFT_N_MAX_FLAG = "--spec-draft-n-max"
 # Pass-through flags that make the launch's speculative decoding the caller's: the backend's
@@ -1041,12 +1059,29 @@ def extra_args_own_speculation(extra_args: Optional[List[str]]) -> Optional[str]
     return None
 
 
+def mtp_draft_n_max(users: Optional[int] = None) -> int:
+    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows.
+
+    ``MTP_DRAFT_N_MAX`` below the lowest measured row count (the one-Spark answer, and the
+    answer when the caller does not say how many rows are coming), the nearest measured row
+    count at or below ``users`` otherwise. Mirrors ``spark_cluster.mtp_draft_n_max``."""
+    if users is None:
+        return MTP_DRAFT_N_MAX
+    rows = max(1, int(users or 1))
+    depth = MTP_DRAFT_N_MAX
+    for key in sorted(MTP_DRAFT_N_MAX_BY_ROWS):
+        if rows >= key:
+            depth = MTP_DRAFT_N_MAX_BY_ROWS[key]
+    return depth
+
+
 def mtp_plan(
     gguf_path: Optional[str],
     extra_args: Optional[List[str]] = None,
     *,
     speculative_type: Optional[str] = None,
     spec_draft_n_max: Optional[int] = None,
+    users: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Whether a Spark load should ask for MTP self speculation at the Spark depth.
 
@@ -1060,6 +1095,10 @@ def mtp_plan(
     the LoadRequest fields to set, ``reason`` says why in one line. The probe of the
     binary runs only once the header has said there is a head, and the header is read
     from the first shard of a split file.
+
+    ``users`` is the number of concurrent rows the load is being sized for, and it picks
+    the draft depth through ``mtp_draft_n_max``. Omitted, the depth is the one-Spark
+    ``MTP_DRAFT_N_MAX``, which is what a caller that does not know the row count gets.
     """
     out: Dict[str, Any] = {"mtp": "unknown", "reason": None, "request": {}}
     owner = extra_args_own_speculation(extra_args)
@@ -1094,13 +1133,15 @@ def mtp_plan(
     if not llama_server_supports(SPEC_TYPE_FLAG):
         out.update(mtp = "server too old", reason = f"bundle llama-server lacks {SPEC_TYPE_FLAG}")
         return out
+    depth = mtp_draft_n_max(users)
     out.update(
         mtp = "enabled",
         reason = (
             f"{layers} MTP layer(s) in the header; {SPEC_TYPE_FLAG} {MTP_SPEC_TYPE} "
-            f"{SPEC_DRAFT_N_MAX_FLAG} {MTP_DRAFT_N_MAX}"
+            f"{SPEC_DRAFT_N_MAX_FLAG} {depth}"
+            + ("" if depth == MTP_DRAFT_N_MAX else f" (measured best at {users} rows)")
         ),
-        request = {"spec_draft_n_max": MTP_DRAFT_N_MAX},
+        request = {"spec_draft_n_max": depth},
     )
     return out
 
@@ -1856,6 +1897,7 @@ class SparkServing:
                 list(extra if extra is not None else (inherited_extra_args or [])),
                 speculative_type = getattr(request, "speculative_type", None),
                 spec_draft_n_max = getattr(request, "spec_draft_n_max", None),
+                users = users,
             )
             if plan.get("topology") != "layer_split":
                 # single or replicas: both are decided again after the load, when the
