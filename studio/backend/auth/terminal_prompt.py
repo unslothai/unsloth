@@ -191,15 +191,25 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
 
 
 def should_prompt_password_change(
-    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool, stderr_isatty: bool
+    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool,
+    stderr_isatty: bool, bind_is_exposed: bool = False,
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 
-    True only when the tunnel is actually about to start, the admin still has
-    the seeded password, and both stdin and stderr are real terminals (headless
-    launches keep the bootstrap-timeout protection instead of hanging).
+    True when the launch puts the web UI where others can reach it, the admin
+    still has the seeded password, and both stdin and stderr are real terminals
+    (headless launches keep the bootstrap-timeout protection instead of hanging).
+
+    Two ways to be reachable, not one. ``tunnel_will_start`` is the public
+    Cloudflare URL. ``bind_is_exposed`` is a raw non-loopback bind such as
+    ``-H 0.0.0.0``, which is reachable by every host on the network, and by the
+    internet when the machine has a public address, yet starts no tunnel. That
+    second case previously got no prompt at all, so the seeded password stayed
+    live and was served in the page to anyone who loaded it.
     """
-    return tunnel_will_start and requires_change and stdin_isatty and stderr_isatty
+    if not (tunnel_will_start or bind_is_exposed):
+        return False
+    return requires_change and stdin_isatty and stderr_isatty
 
 
 def prompt_for_password_change(
@@ -209,17 +219,23 @@ def prompt_for_password_change(
     apply_change: Callable[[str], None],
     username: str = "unsloth",
     out: "TextIO | None" = None,
+    exposure: str = "on the public internet",
 ) -> bool:
-    """Force a new admin password before public exposure; True on success.
+    """Force a new admin password before exposure; True on success.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
     Ctrl-C / EOF returns False; the caller must then abort the launch.
+
+    ``exposure`` names where this launch will be reachable. A tunnel really is
+    the public internet; a raw ``-H 0.0.0.0`` bind is every network interface,
+    which is the LAN behind a NAT router and the internet on a cloud box with a
+    public address. Claiming the wrong one trains people to ignore the message.
     """
     if out is None:
         out = sys.stderr
     out.write(
         "\n"
-        "Unsloth Studio will be exposed on the public internet, so set a\n"
+        f"Unsloth Studio will be reachable {exposure}, so set a\n"
         "password now. Ctrl+C to abort.\n\n"
     )
     out.flush()

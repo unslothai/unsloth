@@ -188,7 +188,7 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
         lambda u, p, **kw: calls.append(("update", u, p, kw)),
     )
 
-    def _fake_prompt(*, min_length, is_current_password, apply_change, out):
+    def _fake_prompt(*, min_length, is_current_password, apply_change, out, **_kw):
         # The gate wires the policy constant and route-equivalent apply hook.
         assert min_length == auth_storage.MIN_PASSWORD_LENGTH
         # Wired to the real hash comparison: a wrong guess is rejected.
@@ -409,3 +409,90 @@ def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
     run._apply_supplied_password("literal-new-password")
     assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The gate now covers a raw exposed bind, not just the tunnel.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_RAW_BIND_KWARGS = dict(
+    host = "0.0.0.0",
+    secure = False,
+    api_only = False,
+    frontend_served = True,
+)
+
+
+def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
+    """The compatibility promise of this change.
+
+    Headless `-H 0.0.0.0` is the long-running container case. It must still
+    proceed, still keep serving the bootstrap credential, and above all must not
+    reach the strip-and-refuse handling that a public tunnel launch uses; that
+    would delete the .bootstrap_password such deployments are logged into with.
+    """
+    _patch_streams(monkeypatch, tty = False)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+
+
+def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):
+    """The fix. Before this, `if not tunnel_will_start` returned first."""
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    seen = {}
+
+    def _fake_prompt(*, min_length, is_current_password, apply_change, out, **kw):
+        seen.update(kw)
+        apply_change("a-brand-new-password")
+        return True
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, True)
+    # And it must not tell a LAN operator they are on the public internet.
+    assert seen.get("exposure") == "on every network interface"
+
+
+def test_a_loopback_launch_still_short_circuits(monkeypatch):
+    """Plain `unsloth studio` must not consult storage at all."""
+    def _boom(*_a, **_k):
+        raise AssertionError("storage must not be consulted for a loopback launch")
+
+    monkeypatch.setattr(run, "_stream_isatty", lambda _s: True)
+    from auth import storage as _storage
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False,
+        host = "127.0.0.1",
+        secure = False,
+        api_only = False,
+        frontend_served = True,
+    ) == (True, False)
+
+
+def test_api_only_and_colab_raw_binds_do_not_prompt(monkeypatch):
+    """Scoped like the bootstrap deadline: web UI only, never api-only or Colab."""
+    def _boom(*_a, **_k):
+        raise AssertionError("storage must not be consulted")
+
+    monkeypatch.setattr(run, "_stream_isatty", lambda _s: True)
+    from auth import storage as _storage
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, host = "0.0.0.0", secure = False,
+        api_only = True, frontend_served = True,
+    ) == (True, False)
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, host = "0.0.0.0", secure = False,
+        api_only = False, frontend_served = True, is_colab = True,
+    ) == (True, False)

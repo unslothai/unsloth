@@ -37,30 +37,79 @@ _NEW_PW = "brand-new-password"
 # ── pure trigger matrix ──────────────────────────────────────────────
 
 
+_TUNNEL_MATRIX = [
+    # --secure always implies the tunnel (host already forced to loopback).
+    (None, "127.0.0.1", True, False, True),
+    (True, "127.0.0.1", True, False, True),
+    (None, "127.0.0.1", True, True, True),
+    # --cloudflare tunnels only non-api-only wildcard binds.
+    (True, "0.0.0.0", False, False, True),
+    (True, "::", False, False, True),
+    (True, "::0", False, False, True),
+    (True, "0:0:0:0:0:0:0:0", False, False, True),
+    (True, "0", False, False, True),
+    (True, "::ffff:0.0.0.0", False, False, True),
+    (True, "", False, False, False),
+    (True, "127.0.0.1", False, False, False),
+    (True, "0.0.0.0", False, True, False),
+    # Off/unset never starts a tunnel without --secure.
+    (None, "0.0.0.0", False, False, False),
+    (False, "0.0.0.0", False, False, False),
+    (None, "127.0.0.1", False, False, False),
+]
+
+
+@pytest.mark.parametrize("cloudflare,host,secure,api_only,expected", _TUNNEL_MATRIX)
+def test_launch_publishes_tunnel_matrix(cloudflare, host, secure, api_only, expected):
+    """The narrow predicate. Unchanged, and pinned so it stays that way.
+
+    The strip-and-lockout guards key off this one. A raw wildcard bind never
+    strips .bootstrap_password, so it must not be pulled in here even though it
+    does now prompt.
+    """
+    assert (
+        _studio()._launch_publishes_tunnel(
+            cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+        )
+        is expected
+    )
+
+
 @pytest.mark.parametrize(
-    "cloudflare,host,secure,api_only,expected",
+    "cloudflare,host,secure,api_only,interactive,expected",
     [
-        # --secure always implies the tunnel (host already forced to loopback).
-        (None, "127.0.0.1", True, False, True),
-        (True, "127.0.0.1", True, False, True),
-        (None, "127.0.0.1", True, True, True),
-        # --cloudflare tunnels only non-api-only wildcard binds.
-        (True, "0.0.0.0", False, False, True),
-        (True, "::", False, False, True),
-        (True, "::0", False, False, True),
-        (True, "0:0:0:0:0:0:0:0", False, False, True),
-        (True, "0", False, False, True),
-        (True, "::ffff:0.0.0.0", False, False, True),
-        (True, "", False, False, False),
-        (True, "127.0.0.1", False, False, False),
-        (True, "0.0.0.0", False, True, False),
-        # Off/unset never prompts without --secure.
-        (None, "0.0.0.0", False, False, False),
-        (False, "0.0.0.0", False, False, False),
-        (None, "127.0.0.1", False, False, False),
+        # Every tunnel launch prompts regardless of the terminal; the headless
+        # fallback is handled downstream, not here.
+        *[(c, h, s, a, False, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
+        *[(c, h, s, a, True, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
+        # The change: a RAW wildcard bind with a terminal attached. Reachable by
+        # every host on the network with the seeded password live, and it starts
+        # no tunnel, so before this it got no prompt at all.
+        (None, "0.0.0.0", False, False, True, True),
+        (False, "0.0.0.0", False, False, True, True),
+        (None, "::", False, False, True, True),
+        (None, "0", False, False, True, True),
+        (None, "::ffff:0.0.0.0", False, False, True, True),
+        # Headless raw binds stay exactly as they were: no prompt, no strip, no
+        # refusal. Long-running containers are the common use of this flag and
+        # the bootstrap deadline is what covers them.
+        (None, "0.0.0.0", False, False, False, False),
+        (False, "0.0.0.0", False, False, False, False),
+        (None, "::", False, False, False, False),
+        # --api-only authenticates by API key, not the admin password.
+        (None, "0.0.0.0", False, True, True, False),
+        # Loopback is not exposed, so nothing changes for plain `unsloth studio`.
+        (None, "127.0.0.1", False, False, True, False),
+        (None, "localhost", False, False, True, False),
+        (None, "", False, False, True, False),
     ],
 )
-def test_should_prompt_password_change_matrix(cloudflare, host, secure, api_only, expected):
+def test_should_prompt_password_change_matrix(
+    monkeypatch, cloudflare, host, secure, api_only, interactive, expected
+):
+    monkeypatch.setattr(
+        _studio(), "_prompt_streams_interactive", lambda: interactive
+    )
     assert (
         _studio()._should_prompt_password_change(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
@@ -694,7 +743,7 @@ def test_studio_default_connect_failure_fails_closed(monkeypatch, tmp_path):
     assert "exec" not in kinds, events
     assert result.exit_code == 1, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
+    assert "refusing to expose" in combined.lower()
     # Not stripped: a retry can still prompt/strip once the lock clears.
     assert bootstrap_file.exists()
 
@@ -717,7 +766,7 @@ def test_studio_default_seed_commit_failure_fails_closed(monkeypatch, tmp_path):
     assert "exec" not in kinds, events
     assert result.exit_code == 1, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
+    assert "refusing to expose" in combined.lower()
     # The half-written seed file is stripped, and no admin row was committed.
     assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
     verify = sqlite3.connect(_auth_db(tmp_path))

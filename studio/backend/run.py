@@ -2172,7 +2172,26 @@ def _terminal_password_gate(
     (api-only, timeout 0) nothing protects it, so refuse. NOT wrapped in a broad
     try/except: an auth storage failure must abort rather than expose the default.
     """
-    if not tunnel_will_start:
+    from auth.bootstrap_timeout import _is_exposed_bind
+
+    # A raw non-loopback bind (-H 0.0.0.0) starts no tunnel, so it used to skip
+    # this gate entirely even though the docstring above describes exactly its
+    # hazard: the served HTML injects the bootstrap credential, and every host on
+    # the network can load it. Scoped like the bootstrap deadline: web UI only,
+    # never api-only (authenticates by API key, not the admin password) and never
+    # Colab (sandboxed, no inbound).
+    # secure = False deliberately. _is_exposed_bind counts --secure as exposed
+    # because for a tunnel launch the tunnel IS the exposure, but --secure forces
+    # a loopback bind, so asking it with secure = True would conflate "the tunnel
+    # publishes this" with "the socket itself is reachable". Here only the second
+    # question matters; the first is already tunnel_will_start.
+    bind_is_exposed = (
+        _is_exposed_bind(host, False)
+        and frontend_served
+        and not api_only
+        and not is_colab
+    )
+    if not tunnel_will_start and not bind_is_exposed:
         return True, False
 
     from auth import hashing as _auth_hashing
@@ -2195,10 +2214,19 @@ def _terminal_password_gate(
 
     if not should_prompt_password_change(
         tunnel_will_start = tunnel_will_start,
+        bind_is_exposed = bind_is_exposed,
         requires_change = requires_change,
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
+        # Headless raw bind: leave it EXACTLY as it behaved before this gate
+        # learned about non-tunnel exposure. The refuse-and-strip handling below
+        # is calibrated to publishing a public URL; applying it here would break
+        # long-running headless containers, which are the common use of
+        # -H 0.0.0.0, and would delete the .bootstrap_password file such a
+        # deployment is often read from. The bootstrap deadline still arms.
+        if not tunnel_will_start:
+            return True, False
         # No terminal: only proceed if the bootstrap deadline will arm; api-only
         # and TIMEOUT=0 never arm it, leaving the default credential public.
         deadline_arms = should_arm_bootstrap_timeout(
@@ -2258,6 +2286,10 @@ def _terminal_password_gate(
         is_current_password = _is_current_password,
         apply_change = _apply_change,
         out = sys.stderr,
+        exposure = (
+            "on the public internet" if tunnel_will_start
+            else "on every network interface"
+        ),
     )
     return (True, True) if changed else (False, False)
 

@@ -1170,14 +1170,20 @@ def _create_desktop_secret_in_cli() -> str:
         conn.close()
 
 
-def _should_prompt_password_change(
+def _launch_publishes_tunnel(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> bool:
-    """Whether this launch will expose Unsloth through the Cloudflare tunnel.
+    """Whether this launch will publish Unsloth through the Cloudflare tunnel.
 
-    CLI mirror of run.py's _cloudflare_tunnel_should_start, minus the Colab
-    case (Colab launches never come through this CLI path). --secure implies
-    the tunnel; --cloudflare only tunnels non-api-only wildcard binds.
+    CLI mirror of run.py's _cloudflare_tunnel_should_start, minus the Colab case
+    (Colab launches never come through this CLI path). --secure implies the
+    tunnel; --cloudflare only tunnels non-api-only wildcard binds.
+
+    Kept separate from _should_prompt_password_change, which is deliberately
+    wider. The guards that key off THIS one exist because a headless tunnel
+    launch strips .bootstrap_password and could lock the admin out; a raw
+    wildcard bind never strips, so widening them would add failure modes that
+    protect nothing.
     """
     if secure:
         return True
@@ -1186,6 +1192,40 @@ def _should_prompt_password_change(
     from unsloth_cli._tool_policy import is_wildcard_host
 
     return is_wildcard_host(host) and not api_only
+
+
+def _should_prompt_password_change(
+    *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
+) -> bool:
+    """Whether this launch puts Unsloth where someone else can reach it.
+
+    CLI mirror of run.py's gate, minus the Colab case (Colab launches never come
+    through this CLI path). --secure implies the tunnel; --cloudflare only
+    tunnels non-api-only wildcard binds.
+
+    A raw wildcard bind counts too, and only when a terminal is attached. It is
+    reachable by every host on the network, and by the internet on a machine
+    with a public address, while starting no tunnel, so it previously got no
+    prompt, no warning and no strip: the seeded admin password stayed live and
+    was served in the page to anyone who loaded it.
+
+    The interactivity condition is deliberate and is what keeps this safe to
+    ship. Everything downstream of here is calibrated to publishing a public
+    URL: it refuses to launch when the deadline is disabled and it deletes
+    .bootstrap_password. Applying that to headless -H 0.0.0.0 would break
+    long-running containers, which are the common use of the flag. Headless raw
+    binds therefore keep exactly today's behaviour, protected by the bootstrap
+    deadline; only a launch with a human present is asked to set a password.
+    """
+    if secure:
+        return True
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    if not is_wildcard_host(host) or api_only:
+        return False
+    if cloudflare is True:
+        return True
+    return _prompt_streams_interactive()
 
 
 def _prompt_streams_interactive() -> bool:
@@ -1394,7 +1434,7 @@ def _require_servable_frontend_or_exit(
     index.html) or the auto-resolved built dist. Returns `frontend` unchanged for
     non-public or --api-only launches (no login page needed).
     """
-    if api_only or not _should_prompt_password_change(
+    if api_only or not _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return frontend
@@ -1436,7 +1476,7 @@ def _validate_inproc_backend_before_strip(
     on that path and exit cleanly if broken, before anything is stripped.
     Headless-only so an interactive prompt is not delayed behind the import.
     """
-    if not _should_prompt_password_change(
+    if not _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
@@ -1543,6 +1583,15 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
+    # Only a tunnel launch is genuinely "a public Cloudflare URL". A raw wildcard
+    # bind is every network interface, which is the LAN behind a NAT router and
+    # the internet on a cloud box. Naming the wrong one in an error trains people
+    # to ignore it, and would be plainly wrong for `unsloth studio -H 0.0.0.0`.
+    tunnel_will_start = secure or cloudflare is True
+    exposure = (
+        "on a public Cloudflare URL" if tunnel_will_start
+        else "on every network interface"
+    )
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
     # seeded + committed below), an old studio-venv child could regenerate a fresh
@@ -1556,7 +1605,7 @@ def _enforce_password_change_before_exposure(
         # Refuse rather than risk a child serving the default login; a transient
         # lock clears on retry.
         typer.echo(
-            "Error: refusing to publish Unsloth on a public Cloudflare URL: could "
+            f"Error: refusing to expose Unsloth {exposure}: could "
             f"not open the Unsloth auth database ({exc}) to confirm the admin "
             "password was changed. Retry (a transient database lock clears), or "
             "change the password first (run `unsloth studio` locally with a "
@@ -1582,7 +1631,7 @@ def _enforce_password_change_before_exposure(
             except OSError:
                 pass
             typer.echo(
-                "Error: refusing to publish Unsloth on a public Cloudflare URL: could "
+                f"Error: refusing to expose Unsloth {exposure}: could "
                 f"not initialize the admin account ({exc}), so a re-exec'd Unsloth "
                 "child could regenerate and serve a default credential. Retry (a "
                 "transient database lock clears), or change the password first (run "
@@ -1692,7 +1741,7 @@ def _enforce_password_change_before_exposure(
             )
 
         typer.echo(
-            "Unsloth Studio will be exposed on the public internet, so set a "
+            f"Unsloth Studio will be reachable {exposure}, so set a "
             "password now. Ctrl+C to abort.",
             err = True,
         )
