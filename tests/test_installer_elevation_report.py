@@ -52,8 +52,6 @@ def _repair_block(path: Path) -> str:
     return src[src.index("# A desktop repair runs update.rs") :]
 
 
-
-
 def test_diag_marker_prefix_is_still_parsed_and_reported():
     """Both scripts write [TAURI:DIAG]; if the Rust side stops reading it the
     markers become invisible without either file changing."""
@@ -62,8 +60,6 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     assert "installer_diag_markers" in _read(
         REPORT_RS
     ), "the support report no longer prints markers"
-
-
 
 
 def test_install_ps1_reports_elevation():
@@ -226,7 +222,7 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
     src = _read(INSTALL_PS1)
     restore = src[src.index("} finally {") :]
     # The handoff try specifically; install.ps1 opens several.
-    handoff_try = src.index('\n    try {\n        $env:SKIP_STUDIO_BASE')
+    handoff_try = src.index("\n    try {\n        $env:SKIP_STUDIO_BASE")
     for var, saved in (
         ("SKIP_STUDIO_BASE", "$previousSkipStudioBase"),
         ("STUDIO_PACKAGE_NAME", "$previousStudioPackageName"),
@@ -248,9 +244,9 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
             "unassigned $hadPrevious* as 'there was nothing here'"
         )
         assert f"$env:{var} = {saved}" in restore, f"{var} is never restored"
-        assert f"Remove-Item Env:{var}" in restore, (
-            f"{var} must be REMOVED when it was originally unset, not left as an empty string"
-        )
+        assert (
+            f"Remove-Item Env:{var}" in restore
+        ), f"{var} must be REMOVED when it was originally unset, not left as an empty string"
 
 
 def test_the_early_bail_restores_the_environment_too():
@@ -342,8 +338,6 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     assert idx < src.index(
         "$StudioHome = Join-Path $env:USERPROFILE"
     ), "this test is only meaningful while the notice precedes the resolver"
-
-
 
 
 def test_degraded_llama_cpp_is_recorded_not_only_flashed():
