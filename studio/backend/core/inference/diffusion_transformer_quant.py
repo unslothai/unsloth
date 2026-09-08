@@ -986,7 +986,12 @@ _TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
 
 
 def _torchao_may_set_inductor_config() -> bool:
-    return (_os.environ.get(_TORCHAO_INDUCTOR_CONFIG_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+    return (_os.environ.get(_TORCHAO_INDUCTOR_CONFIG_ENV) or "").strip().lower() in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
 
 
 def _quiet_config(cls: Any, **kwargs: Any) -> Any:
@@ -1000,7 +1005,10 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
         try:
             if "set_inductor_config" in _inspect.signature(cls).parameters:
                 kwargs = {**kwargs, "set_inductor_config": False}
-        except (TypeError, ValueError):  # C-implemented or otherwise unintrospectable: leave it alone
+        except (
+            TypeError,
+            ValueError,
+        ):  # C-implemented or otherwise unintrospectable: leave it alone
             pass
     return cls(**kwargs)
 
@@ -1064,7 +1072,8 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         try:
             return _quiet_config(
                 MXDynamicActivationMXWeightConfig,
-                activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn,
+                activation_dtype = torch.float8_e4m3fn,
+                weight_dtype = torch.float8_e4m3fn,
             )
         except (TypeError, AttributeError):
             # TypeError: older torchao without the explicit dtype knobs. AttributeError: a torch build without

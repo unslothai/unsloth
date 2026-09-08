@@ -879,9 +879,7 @@ def test_torchao_intmm_patch_is_idempotent():
 
     intmm, patched = _patched_torchao_safe_int_mm()
     fix_torchao_safe_int_mm_repr_probe()
-    assert intmm.safe_int_mm is patched, (
-        "DRIFT DETECTED: safe_int_mm was replaced twice."
-    )
+    assert intmm.safe_int_mm is patched, "DRIFT DETECTED: safe_int_mm was replaced twice."
 
     def already_patched(input, mat2):
         return None

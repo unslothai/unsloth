@@ -5830,16 +5830,14 @@ def _make_safe_int_mm(mod, original):
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
 
         # error checking for cublas path
-        assert mat2.device == input.device, (
-            f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
-        )
+        assert (
+            mat2.device == input.device
+        ), f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
         device_cpu = "cpu" in [mat2.device.type, input.device.type]
         # with input.shape = [i,j] and mat2.shape = [j,k]
         j_is_nonzero_multiple_of_8 = (input.shape[1] % 8 == 0) and (input.shape[1] > 0)
         k_is_nonzero_multiple_of_8 = (mat2.shape[1] % 8 == 0) and (mat2.shape[1] > 0)
-        bad_dimensions_for_cublas = not (
-            j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8
-        )
+        bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
             # fallback path
@@ -5861,9 +5859,7 @@ def _make_safe_int_mm(mod, original):
         except Exception:
             # fallback path, would run on H100 for float8 dtypes
             # Exception on H100 float8 dtype : "addmm_cuda" not implemented for 'Float8_e4m3fn'
-            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(
-                torch.int32
-            )
+            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(torch.int32)
 
     safe_int_mm.__unsloth_patched__ = True
     safe_int_mm.__unsloth_original__ = original
@@ -5967,7 +5963,12 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
         setattr(self, _TORCHAO_INTMM_SENTINEL, True)
         self._finding = False
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname != _TORCHAO_INTMM_MODULE or self._finding:
             return None
         self._finding = True

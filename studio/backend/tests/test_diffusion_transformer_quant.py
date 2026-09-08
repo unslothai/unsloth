@@ -1504,13 +1504,23 @@ class _RecordingConfig:
 
     built: list = []
 
-    def __init__(self, *, set_inductor_config = True, **kw):
+    def __init__(
+        self,
+        *,
+        set_inductor_config = True,
+        **kw,
+    ):
         self.set_inductor_config = set_inductor_config
         self.kw = kw
         type(self).built.append(self)
 
 
-def _stub_torchao_configs(monkeypatch, *, int8 = None, fp8 = None):
+def _stub_torchao_configs(
+    monkeypatch,
+    *,
+    int8 = None,
+    fp8 = None,
+):
     tqz = types.ModuleType("torchao.quantization")
     tqz.quantize_ = lambda *a, **k: None
     tqz.PerRow = lambda: "per_row"

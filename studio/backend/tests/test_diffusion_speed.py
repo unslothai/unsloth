@@ -877,7 +877,11 @@ def _stub_full_inductor_config(torch):
     return cfg
 
 
-def _stub_matmul_precision(torch, calls: list, initial = "highest"):
+def _stub_matmul_precision(
+    torch,
+    calls: list,
+    initial = "highest",
+):
     cell = {"v": initial}
 
     def _get():
@@ -992,8 +996,10 @@ def test_video_snapshot_precedes_transformer_quant():
             if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "quantize_transformer"
         ]
         if snaps and quants:
-            assert min(snaps) < min(quants), (
-                f"{node.name}: snapshot_backend_flags at {snaps} must precede quantize_transformer at {quants}"
-            )
+            assert (
+                min(snaps) < min(quants)
+            ), f"{node.name}: snapshot_backend_flags at {snaps} must precede quantize_transformer at {quants}"
             return
-    raise AssertionError("no video.py function calls both snapshot_backend_flags and quantize_transformer")
+    raise AssertionError(
+        "no video.py function calls both snapshot_backend_flags and quantize_transformer"
+    )
