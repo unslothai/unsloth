@@ -74,7 +74,11 @@ def _provider_round(calls, tool = "web_search"):
     )
 
 
-def _two_calls(first = "alpha", second = "beta", tool = "web_search"):
+def _two_calls(
+    first = "alpha",
+    second = "beta",
+    tool = "web_search",
+):
     return _provider_round([("call_a", first), ("call_b", second)], tool = tool)
 
 
@@ -111,7 +115,14 @@ def _gguf_round(calls):
     ]
 
 
-def _gguf_events(monkeypatch, calls, execute, *, tools = None, **kwargs):
+def _gguf_events(
+    monkeypatch,
+    calls,
+    execute,
+    *,
+    tools = None,
+    **kwargs,
+):
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -161,9 +172,9 @@ class TestTheProviderLoopOverlaps:
     def test_two_calls_are_in_flight_at_once(self, rendezvous):
         ends = _events(_run(_two_calls()), "tool_end")
         assert len(ends) == 2
-        assert all("TOGETHER" in result for result in _results(ends)), (
-            f"a tool returned without ever meeting the other: {_results(ends)}"
-        )
+        assert all(
+            "TOGETHER" in result for result in _results(ends)
+        ), f"a tool returned without ever meeting the other: {_results(ends)}"
         assert sorted(rendezvous) == ["alpha", "beta"]
 
     def test_the_switch_puts_them_back_in_single_file(self, rendezvous, monkeypatch):
@@ -208,6 +219,7 @@ class TestAProviderRoundBoundsItsOverlap:
             f"call_{i}" for i in range(_CAP + 1)
         ], "the provider reads results by position, so a reordered history answers wrongly"
 
+
 class TestOrderIsStillTheModelsOrder:
     def test_the_cards_and_the_replayed_transcript_follow_the_call_order(self, recorder):
         transport = _two_calls("alpha", "beta")
@@ -229,6 +241,7 @@ class TestOrderIsStillTheModelsOrder:
         tool_rows = [m for m in messages if m.get("role") == "tool"]
         assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"]
         assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
+
 
 def _fast_sizing(monkeypatch):
     monkeypatch.setattr(
@@ -295,9 +308,7 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert ran == ["same"], "the duplicate ran, so the round was overlapped"
         assert [e.get("type") for e in events].count("tool_end") == 1
 
-    def test_the_search_cap_counts_launches_and_keeps_the_capped_calls_in_place(
-        self, monkeypatch
-    ):
+    def test_the_search_cap_counts_launches_and_keeps_the_capped_calls_in_place(self, monkeypatch):
         from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
 
         tool = sorted(RAG_SEARCH_TOOLS)[0]
@@ -320,9 +331,9 @@ class TestTheLocalGgufLoopOverlapsToo:
             "cap was read while the round was being prepared and written when it settled"
         )
         ends = [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"]
-        assert ends == [f"call_{i}" for i in range(n)], (
-            f"cards closed {ends}: the capped calls overtook the ones still searching"
-        )
+        assert ends == [
+            f"call_{i}" for i in range(n)
+        ], f"cards closed {ends}: the capped calls overtook the ones still searching"
 
 
 class TestARoundIsPreparedWholeAndBounded:
@@ -356,7 +367,9 @@ class TestARoundIsPreparedWholeAndBounded:
         starts = [i for i, (kind, _name) in enumerate(order) if kind == "start"]
         attaches = [i for i, (kind, _name) in enumerate(order) if kind == "attach"]
         assert len(starts) == 3 and len(attaches) >= 3
-        assert max(attaches) < min(starts), f"a driver started before the round was attached: {order}"
+        assert max(attaches) < min(
+            starts
+        ), f"a driver started before the round was attached: {order}"
 
     def test_nine_calls_run_single_file(self, monkeypatch):
         _fast_sizing(monkeypatch)
@@ -384,6 +397,6 @@ class TestARoundIsPreparedWholeAndBounded:
         events, _payloads = _gguf_events(monkeypatch, _searches(8), _meeting_tool(8))
         ends = [e for e in events if e.get("type") == "tool_end"]
         assert len(ends) == 8
-        assert all("TOGETHER" in result for result in _results(ends)), (
-            f"a round at the cap serialised: {_results(ends)}"
-        )
+        assert all(
+            "TOGETHER" in result for result in _results(ends)
+        ), f"a round at the cap serialised: {_results(ends)}"

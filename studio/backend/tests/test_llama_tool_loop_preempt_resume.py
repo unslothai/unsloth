@@ -58,10 +58,15 @@ def _Recorder(
     )
 
 
-def _run(backend, *, signal, policy, tools = None, **kwargs):
-    return run_tool_loop(
-        backend, signal = signal, policy = policy, tools = tools or [_TOOL], **kwargs
-    )
+def _run(
+    backend,
+    *,
+    signal,
+    policy,
+    tools = None,
+    **kwargs,
+):
+    return run_tool_loop(backend, signal = signal, policy = policy, tools = tools or [_TOOL], **kwargs)
 
 
 def _two_part(monkeypatch, signal, **kwargs):
@@ -81,11 +86,7 @@ def _content(events) -> list[str]:
 
 
 def _gave_up(events) -> list[dict]:
-    return [
-        e
-        for e in events
-        if isinstance(e, dict) and e.get("reason") == PREEMPT_GAVE_UP_REASON
-    ]
+    return [e for e in events if isinstance(e, dict) and e.get("reason") == PREEMPT_GAVE_UP_REASON]
 
 
 def _metadata(events) -> list[dict]:
@@ -149,6 +150,7 @@ class TestARoundPauses:
                 order.append(event["state"])
         assert order == ["on_preempted", "paused", "on_resumed", "resumed"]
 
+
 class TestAPauseNeverRunsAToolTwice:
     """The one-shot ledger, and how far back a pause is allowed to roll."""
 
@@ -171,7 +173,11 @@ class TestAPauseNeverRunsAToolTwice:
         recorder = _Recorder(
             monkeypatch,
             [
-                [_tool_call("call_1", "web_search", {"query": "ropes"}), _finish("tool_calls"), _done()],
+                [
+                    _tool_call("call_1", "web_search", {"query": "ropes"}),
+                    _finish("tool_calls"),
+                    _done(),
+                ],
                 [_delta("Based on the search, a rope"), _finish(), _done()],
                 [_delta(" is a balanced tree."), _finish(), _done()],
             ],
@@ -180,17 +186,19 @@ class TestAPauseNeverRunsAToolTwice:
         )
         _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
 
-        assert calls == [("web_search", {"query": "ropes"})], (
-            f"the tool ran {len(calls)} times: the resume re-executed a finished round"
-        )
+        assert calls == [
+            ("web_search", {"query": "ropes"})
+        ], f"the tool ran {len(calls)} times: the resume re-executed a finished round"
         resumed = recorder.payloads[2]
         tool_row = next(m for m in resumed["messages"] if m.get("role") == "tool")
         assert tool_row.get("content") == "RESULT<ropes>"
-        assert [m for m in resumed["messages"] if m.get("role") == "assistant" and m.get("tool_calls")]
+        assert [
+            m for m in resumed["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+        ]
         trailing = resumed["messages"][-1]
-        assert "Based on the search, a rope" in (trailing.get("content") or ""), (
-            "round two's partial was not carried, so it restarts from the tool result"
-        )
+        assert "Based on the search, a rope" in (
+            trailing.get("content") or ""
+        ), "round two's partial was not carried, so it restarts from the tool result"
         assert resumed.get("continue_final_message") is True
 
     def test_a_resume_is_not_charged_as_a_tool_iteration(self, monkeypatch):
@@ -208,9 +216,9 @@ class TestAPauseNeverRunsAToolTwice:
             policy = _RecordingPolicy(),
             max_tool_iterations = 1,
         )
-        assert len(recorder.payloads) == pauses + 1, (
-            "a paused turn was cut short by the tool-iteration bound"
-        )
+        assert (
+            len(recorder.payloads) == pauses + 1
+        ), "a paused turn was cut short by the tool-iteration bound"
 
 
 class TestAPauseBeforeTheFirstToken:
@@ -226,7 +234,12 @@ class TestAPauseBeforeTheFirstToken:
             signal = signal,
         )
 
-        def fake_iter(response, _cancel, first_token_deadline = None, preempt_event = None):
+        def fake_iter(
+            response,
+            _cancel,
+            first_token_deadline = None,
+            preempt_event = None,
+        ):
             if len(recorder.payloads) - 1 == 0:
                 raise preemption.LlamaStreamPreempted
             yield from response.chunks
@@ -235,16 +248,24 @@ class TestAPauseBeforeTheFirstToken:
         _run(recorder.backend, signal = signal, policy = policy)
 
         assert len(recorder.payloads) == 2
-        assert not recorder.payloads[1].get("continue_final_message"), (
-            "there was no partial, so nothing should be continued"
-        )
+        assert not recorder.payloads[1].get(
+            "continue_final_message"
+        ), "there was no partial, so nothing should be continued"
         assert policy.checkpoints[0].has_resume_point() is False
 
 
 # ---------------------------------------------------------------- the final answering pass
 
 
-def _final_pass(monkeypatch, streams, *, signal, policy, pause_attempts = (1,), **run_kwargs):
+def _final_pass(
+    monkeypatch,
+    streams,
+    *,
+    signal,
+    policy,
+    pause_attempts = (1,),
+    **run_kwargs,
+):
     recorder = _Recorder(
         monkeypatch,
         streams,
@@ -269,7 +290,12 @@ def _final_pass(monkeypatch, streams, *, signal, policy, pause_attempts = (1,), 
 class _WatchingPolicy(_RecordingPolicy):
     """Records whether the signal was still set when it was made selectable again."""
 
-    def __init__(self, signal, *, resume = True):
+    def __init__(
+        self,
+        signal,
+        *,
+        resume = True,
+    ):
         super().__init__(resume = resume)
         self._signal = signal
         self.cleared_before_resume: list[bool] = []
@@ -360,6 +386,7 @@ class TestTheFinalPassPausesAndResumes:
         )
         assert recorder.payloads[0]["max_tokens"] == 512, "the rounds were already clamped"
 
+
 class TestTheFinalPassReportsItsGrowth:
     """The sweep is only as good as the thing feeding it."""
 
@@ -368,7 +395,14 @@ class TestTheFinalPassReportsItsGrowth:
     def _answer(self, letter):
         return [_delta(letter) for _ in range(self._PER_ATTEMPT)] + [_finish(), _done()]
 
-    def _run(self, monkeypatch, *, on_tokens, pause_attempts = (1,), policy = None):
+    def _run(
+        self,
+        monkeypatch,
+        *,
+        on_tokens,
+        pause_attempts = (1,),
+        policy = None,
+    ):
         signal = preemption.PreemptSignal()
         policy = policy if policy is not None else _DecliningPolicy()
         recorder = _Recorder(
@@ -453,6 +487,7 @@ class TestGivingUpTellsTheClient:
         assert len(_gave_up(events)) == 1, "the tool loop gave up without telling anyone"
         assert _metadata(events)[-1]["finish_reason"] == "length"
 
+
 class TestADeclinedPauseUnsticksTheParticipant:
     """A pause the stream refuses has to be handed back, not merely ignored."""
 
@@ -528,9 +563,9 @@ class TestADeclinedPauseUnsticksTheParticipant:
         _recorder, events = self._declining_run(
             monkeypatch, signal = signal, policy = policy, pause_attempts = (1,)
         )
-        assert participant.state != ParticipantState.PREEMPTING, (
-            "the turn ended with the ledger still holding a chosen victim"
-        )
+        assert (
+            participant.state != ParticipantState.PREEMPTING
+        ), "the turn ended with the ledger still holding a chosen victim"
         assert not signal.is_set()
         assert _gave_up(events), "the turn ended with no notice of why"
         assert _metadata(events)[-1]["finish_reason"] == "length"
@@ -539,9 +574,7 @@ class TestADeclinedPauseUnsticksTheParticipant:
 class TestADeclinedContinuationTellsTheClient:
     """A continuation the backend declines must not be retried by the client."""
 
-    def test_the_decline_says_the_retry_would_not_fit_and_still_ends_with_length(
-        self, monkeypatch
-    ):
+    def test_the_decline_says_the_retry_would_not_fit_and_still_ends_with_length(self, monkeypatch):
         from test_truncated_answer_continuation import (
             _cut_off_then,
             _done as _tc_done,

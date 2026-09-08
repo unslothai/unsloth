@@ -1765,6 +1765,8 @@ def _server_park_sse(raw_line) -> Optional[str]:
     if isinstance(raw_line, (bytes, bytearray)):
         raw_line = bytes(raw_line).decode("utf-8", "replace")
     return _SERVER_PARK_SSE_BY_COMMENT.get(str(raw_line or "").strip())
+
+
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -33427,9 +33429,7 @@ async def _anthropic_passthrough_stream(
                     continue
                 if not _raw_measured:
                     _raw_measured = True
-                    _openai_llama_note_raw_measured(
-                        llama_backend = llama_backend, gen_id = message_id
-                    )
+                    _openai_llama_note_raw_measured(llama_backend = llama_backend, gen_id = message_id)
                 data_str = raw_line[6:]
                 if data_str.strip() == "[DONE]":
                     break

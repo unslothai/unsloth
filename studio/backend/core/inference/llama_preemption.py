@@ -229,7 +229,10 @@ class PreemptionPolicy(Protocol):
     def on_preempted(self, checkpoint: StreamCheckpoint) -> None: ...
 
     def await_resume(
-        self, timeout: Optional[float] = None, *, cancel_event = None
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
     ) -> bool: ...
 
     def on_resumed(self) -> None: ...
@@ -261,7 +264,10 @@ class DeferredPreemptionPolicy:
             self._inner.on_preempted(checkpoint)
 
     def await_resume(
-        self, timeout: Optional[float] = None, *, cancel_event = None
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
     ) -> bool:
         if self._inner is None:
             return False
@@ -302,7 +308,10 @@ class NullPreemptionPolicy:
         return None
 
     def await_resume(
-        self, timeout: Optional[float] = None, *, cancel_event = None
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
     ) -> bool:
         return True
 
@@ -1259,7 +1268,10 @@ class ControllerPreemptionPolicy:
                 pass
 
     def await_resume(
-        self, timeout: Optional[float] = None, *, cancel_event = None
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
     ) -> bool:
         # None means "caller stated no preference", NOT "wait forever".
         if timeout is None:

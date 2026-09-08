@@ -40,7 +40,12 @@ from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 from .preempt_fakes import clean_admission_queues, clean_preemption_registry  # noqa: F401
 
 
-def _controller(budget = 16384, kv_unified = True, key = "test", **kw):
+def _controller(
+    budget = 16384,
+    kv_unified = True,
+    key = "test",
+    **kw,
+):
     controller = PreemptionController(key)
     controller.configure(budget = budget, kv_unified = kv_unified, **kw)
     return controller
@@ -51,15 +56,32 @@ def _ceiling(controller):
     return snapshot.budget - snapshot.buffer
 
 
-def _register(controller, gen_id, tokens, state = ParticipantState.DECODING, **kw):
+def _register(
+    controller,
+    gen_id,
+    tokens,
+    state = ParticipantState.DECODING,
+    **kw,
+):
     return controller.register(gen_id, tokens = tokens, state = state, **kw)
 
 
-def _fill(controller, gen_id, fraction, state = ParticipantState.DECODING):
+def _fill(
+    controller,
+    gen_id,
+    fraction,
+    state = ParticipantState.DECODING,
+):
     return _register(controller, gen_id, int(_ceiling(controller) * fraction), state = state)
 
 
-async def _lease(queue, *, tokens, capacity = 4, budget = 16384):
+async def _lease(
+    queue,
+    *,
+    tokens,
+    capacity = 4,
+    budget = 16384,
+):
     reservation = queue.reserve(
         capacity = capacity, config = LlamaAdmissionConfig(), tokens = tokens, budget = budget
     )
@@ -187,9 +209,12 @@ class TestTheCheckpoint:
         )
         assert len(convo) == 1, "an empty assistant turn would be refused downstream"
 
-        assert LlamaCppBackend._assemble_preempt_resume(
-            object(), convo, StreamCheckpoint(reasoning_text = "first half "), "", "first half "
-        ) is True
+        assert (
+            LlamaCppBackend._assemble_preempt_resume(
+                object(), convo, StreamCheckpoint(reasoning_text = "first half "), "", "first half "
+            )
+            is True
+        )
         assert convo[-1]["reasoning_content"] == "first half "
         assert convo[-1]["content"] == "", "a thought in content is rendered as the answer"
 
@@ -218,7 +243,12 @@ class _FakeResponse:
         self.closed = True
 
 
-def _drain(response, *, cancel_event = None, preempt_event = None):
+def _drain(
+    response,
+    *,
+    cancel_event = None,
+    preempt_event = None,
+):
     return list(
         LlamaCppBackend._iter_text_cancellable(
             response,
@@ -259,6 +289,7 @@ class TestWhichExceptionComesOutOfTheStream:
                 preempt_event = pause,
             )
         assert "d" not in seen, "the stream kept reading after the pause"
+
 
 # ==================================================================== the buffer arithmetic
 
@@ -301,14 +332,20 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
 
     def _c(self, key = "test://buffer"):
         return _controller(
-            budget = self.BUDGET, key = key, slots = self.SLOTS,
-            draft_tokens = self.DRAFTS, batch_tokens = self.N_BATCH,
+            budget = self.BUDGET,
+            key = key,
+            slots = self.SLOTS,
+            draft_tokens = self.DRAFTS,
+            batch_tokens = self.N_BATCH,
         )
 
     def _buffer(self, **kw):
         return preemption_buffer_tokens(
-            self.BUDGET, slots = self.SLOTS, draft_tokens = self.DRAFTS,
-            batch_tokens = self.N_BATCH, **kw,
+            self.BUDGET,
+            slots = self.SLOTS,
+            draft_tokens = self.DRAFTS,
+            batch_tokens = self.N_BATCH,
+            **kw,
         )
 
     def test_the_reserve_is_the_pending_prompt_bounded_by_one_chunk_or_nothing_at_all(self):
@@ -336,6 +373,7 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
             higher.observe(f"chat{i}", 1)
         assert higher.committed_tokens() == 7604 > self.BUDGET - self.IDLE
         assert higher.plan_preemptions(needed = 0), "7604 is past the 7416 dynamic ceiling"
+
 
 # ============================================================================== who stops
 
@@ -405,6 +443,7 @@ class TestWhoStops:
         assert raw.state == ParticipantState.STREAMING_RAW
         assert chat.state == ParticipantState.PREEMPTING
 
+
 class TestAReclaimedHolderIsNotAVictim:
     """It holds no cells, so pausing it frees none."""
 
@@ -417,9 +456,9 @@ class TestAReclaimedHolderIsNotAVictim:
         controller.note_cells_reclaimed()
         assert controller.committed_tokens() > 15616, "the sweep has to be under pressure"
         victims = [v.gen_id for v in controller.plan_preemptions(needed = 0)]
-        assert victims == ["live-b"], (
-            "newest-first among the holders that still have cells, with one left standing"
-        )
+        assert victims == [
+            "live-b"
+        ], "newest-first among the holders that still have cells, with one left standing"
         assert not controller.participant("parked").preempt_event.is_set()
 
 
@@ -442,6 +481,7 @@ class TestStarvation:
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims and victims[0] != "starved", f"taken first anyway, order was {victims}"
 
+
 class TestTheSwitchesThatTurnItOff:
     @pytest.mark.parametrize("budget, unified", [(16384, False), (0, True)])
     def test_a_private_cache_or_an_unknown_budget_plans_nothing(self, budget, unified):
@@ -459,7 +499,6 @@ class TestTheSwitchesThatTurnItOff:
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
         assert controller.plan_preemptions() == [] and controller.active is False
 
-
     def test_the_signal_is_cleared_with_the_state_and_it_can_be_chosen_again(self):
         controller = _controller(key = "declined-signal")
         signal = PreemptSignal()
@@ -468,12 +507,12 @@ class TestTheSwitchesThatTurnItOff:
         controller.plan_preemptions(needed = 16384)
         controller.note_declined("chat")
         assert participant.state == ParticipantState.DECODING
-        assert not signal.is_set() and not signal.pending, (
-            "a signal left set aborts the very stream this call is letting run"
-        )
-        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == ["chat"], (
-            "the point of the handback: pressure later in the turn can ask again"
-        )
+        assert (
+            not signal.is_set() and not signal.pending
+        ), "a signal left set aborts the very stream this call is letting run"
+        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == [
+            "chat"
+        ], "the point of the handback: pressure later in the turn can ask again"
 
 
 # ============================================================================== the ledger
@@ -510,9 +549,9 @@ class TestTheLedger:
         controller.observe("a", 500)
         controller.note_replayed("a", 500)
         controller.observe("a", 0)
-        assert controller.participant("a").tokens == 1500, (
-            "occupancy fell back to the admission prompt and lost the replayed partial"
-        )
+        assert (
+            controller.participant("a").tokens == 1500
+        ), "occupancy fell back to the admission prompt and lost the replayed partial"
         for charged in (564, 59, 1079):
             controller.note_replayed("a", charged)
         controller.note_replayed("a", 0)
@@ -558,14 +597,13 @@ class TestTheLedger:
         c.observe("chat", 1)
         assert chat.state == ParticipantState.DECODING
 
+
 class TestAParkedHolderGivesItsCellsBack:
     """A chat stopped on a tool approval must not keep waiting chats out of an empty cache."""
 
     def _c(self, key = "test://parked"):
         # 8192 cells and a buffer well under 2100, so a 6000-plus ceiling: the failing shape.
-        return _controller(
-            budget = 8192, key = key, slots = 4, draft_tokens = 2, batch_tokens = 2048
-        )
+        return _controller(budget = 8192, key = key, slots = 4, draft_tokens = 2, batch_tokens = 2048)
 
     def test_a_parked_holder_whose_cells_were_reclaimed_stops_counting(self):
         c = self._c()
@@ -601,6 +639,7 @@ class TestAParkedHolderGivesItsCellsBack:
         assert c.note_cells_reclaimed() == 0, "once per park, not once per sweep"
         assert lease.yielded == 1
 
+
 # =========================================================================== the residency
 
 
@@ -627,22 +666,29 @@ class TestReadingWhatTheCacheActuallyHolds:
         # `n_prompt_tokens - n_decoded` is constant within a request to within 3 tokens,
         # and adding them again scored 28238 in a 16384-cell cache.
         def _slot(field, processing = True):
-            return [{"id": 0, "is_processing": processing, field: 12632,
-                     "next_token": [{"n_decoded": 6323}]}]
+            return [
+                {
+                    "id": 0,
+                    "is_processing": processing,
+                    field: 12632,
+                    "next_token": [{"n_decoded": 6323}],
+                }
+            ]
 
         assert read_slot_occupancy(lambda: _slot("n_prompt_tokens"))["resident"] == 12632
-        assert read_slot_occupancy(lambda: _slot("n_prompt_tokens_cache"))["resident"] == 18955, (
-            "n_prompt_tokens_cache is the prompt only, so generation is still missing"
-        )
+        assert (
+            read_slot_occupancy(lambda: _slot("n_prompt_tokens_cache"))["resident"] == 18955
+        ), "n_prompt_tokens_cache is the prompt only, so generation is still missing"
         finished = read_slot_occupancy(lambda: _slot("n_prompt_tokens_cache", processing = False))
-        assert finished["resident"] == 12632, (
-            "a finished slot's cache already holds the whole sequence it produced"
-        )
+        assert (
+            finished["resident"] == 12632
+        ), "a finished slot's cache already holds the whole sequence it produced"
         assert finished["idle_tokens"] == 12632
 
     def test_an_unreadable_endpoint_is_not_an_empty_cache(self):
         assert read_slot_occupancy(lambda: None) is None
         assert read_slot_occupancy(lambda: []) is None
+
 
 class TestTheCacheHoldsMoreThanTheLedgerKnows:
     def test_a_chat_that_has_not_prefilled_is_added_to_what_the_cache_holds(self):
@@ -705,8 +751,11 @@ class TestReclaimingIdleResidue:
 
     def test_a_partial_reclaim_leaves_the_rest_holding_their_cells(self):
         """`reclaim_idle_slots` stops at `needed`; `note_cells_reclaimed` does not."""
-        occupancy = {"resident": 9000, "idle_tokens": 9000,
-                     "idle": [(0, 3000), (1, 3000), (2, 3000)]}
+        occupancy = {
+            "resident": 9000,
+            "idle_tokens": 9000,
+            "idle": [(0, 3000), (1, 3000), (2, 3000)],
+        }
         erased: list[int] = []
         freed = reclaim_idle_slots(
             occupancy, lambda slot_id: (erased.append(slot_id), 3000)[1], needed = 3000
@@ -716,6 +765,7 @@ class TestReclaimingIdleResidue:
             "which is exactly the condition the caller has to check before telling the "
             "ledger that every parked holder lost its cells"
         )
+
 
 class TestTheSlotProbesAreAuthenticated:
     """``/slots`` is not a public endpoint."""
@@ -768,9 +818,10 @@ class TestTheResumeGrantChecksRoom:
         assert controller.try_grant_resume("a", 9000) is True
         assert controller.try_grant_resume("b", 9000) is False, "the first has booked the room"
         controller.note_resume_failed("a")
-        assert controller.try_grant_resume("b", 9000) is True, (
-            "room booked by a resume that never happened must not stay booked"
-        )
+        assert (
+            controller.try_grant_resume("b", 9000) is True
+        ), "room booked by a resume that never happened must not stay booked"
+
 
 class TestAChatThatOutgrewTheSharedCeiling:
     """No eviction can admit it, so waiting for room is a deadlock, not a delay."""
@@ -792,6 +843,7 @@ class TestAChatThatOutgrewTheSharedCeiling:
         controller = self._c()
         assert controller.cannot_ever_fit(16384)
         assert not controller.cannot_ever_fit(10000)
+
 
 class _Lease:
     is_released = False
@@ -815,7 +867,13 @@ class TestTheResumeWait:
         return controller
 
     @staticmethod
-    def _waiting_policy(controller, gen_id, tokens, *, paused = False):
+    def _waiting_policy(
+        controller,
+        gen_id,
+        tokens,
+        *,
+        paused = False,
+    ):
         loop = asyncio.new_event_loop()
         threading.Thread(target = loop.run_forever, daemon = True).start()
         controller.register(gen_id, lease = _Lease(), tokens = tokens, signal = PreemptSignal())
@@ -842,7 +900,7 @@ class TestTheResumeWait:
             self._shutdown(loop)
 
     def test_the_progress_signature_sees_a_decoding_backend_committed_cannot(self):
-        """"no progress for 90.0s" about three chats decoding at full rate."""
+        """ "no progress for 90.0s" about three chats decoding at full rate."""
         controller = self._pinned("pinned")
         before = controller.progress_signature()
         controller.observe("holder", 512)
@@ -942,18 +1000,21 @@ class TestTheAdmissionLeaseGivesItsCommitmentBack:
         assert await lease.resume_async(9999) is True
         assert queue.snapshot().committed == 4000, "an unpreempted lease must not be re-costed"
 
-# ============================================================ the barrier and the registry
-
+    # ============================================================ the barrier and the registry
 
     def test_an_unreadable_metrics_endpoint_times_out_rather_than_blocking(self):
         clock = iter([0.0, 0.0, 1.0, 99.0])
-        assert wait_for_reclaim(
-            lambda: None,
-            target_processing = 0,
-            timeout_s = 1.0,
-            sleep = lambda _s: None,
-            monotonic = lambda: next(clock),
-        ) is False
+        assert (
+            wait_for_reclaim(
+                lambda: None,
+                target_processing = 0,
+                timeout_s = 1.0,
+                sleep = lambda _s: None,
+                monotonic = lambda: next(clock),
+            )
+            is False
+        )
+
 
 class TestTheRegistry:
     def test_one_controller_per_key_and_an_idle_one_retires_but_a_busy_one_is_kept(self):

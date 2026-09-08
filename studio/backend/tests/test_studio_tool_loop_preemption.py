@@ -117,7 +117,13 @@ class PausingTransport:
         return _gen()
 
 
-def _run(transport, *, signal, tools = None, **policy_kwargs):
+def _run(
+    transport,
+    *,
+    signal,
+    tools = None,
+    **policy_kwargs,
+):
     fields = {
         "tools": tools if tools is not None else [WEB],
         "max_calls": 25,
@@ -188,9 +194,10 @@ class TestWhereThePauseLands:
         _run(transport, signal = signal)
         assert len(transport.visible_at_turn_start) >= 2
         assert transport.visible_at_turn_start[0] is False
-        assert transport.visible_at_turn_start[1] is True, (
-            "the deferred pause should be visible by the next round's stream"
-        )
+        assert (
+            transport.visible_at_turn_start[1] is True
+        ), "the deferred pause should be visible by the next round's stream"
+
 
 class TestWithoutASignal:
     def test_the_loop_is_unchanged(self, executed):

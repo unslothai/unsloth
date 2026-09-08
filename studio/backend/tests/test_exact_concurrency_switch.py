@@ -25,9 +25,25 @@ def _clean(monkeypatch):
 # A launch line of the shape Studio actually emits: four slots, a unified cache, flash
 # attention on, no context shift.
 _STUDIO_ARGV = [
-    "llama-server", "-m", "/models/Qwen3.5-4B-UD-Q4_K_XL.gguf", "--port", "9705",
-    "--parallel", "4", "--flash-attn", "on", "--no-context-shift", "-c", "8192",
-    "--metrics", "-ngl", "-1", "--fit", "off", "--kv-unified", "--jinja",
+    "llama-server",
+    "-m",
+    "/models/Qwen3.5-4B-UD-Q4_K_XL.gguf",
+    "--port",
+    "9705",
+    "--parallel",
+    "4",
+    "--flash-attn",
+    "on",
+    "--no-context-shift",
+    "-c",
+    "8192",
+    "--metrics",
+    "-ngl",
+    "-1",
+    "--fit",
+    "off",
+    "--kv-unified",
+    "--jinja",
 ]
 
 # What the server prints on its way out when it will not run the mode: all three
@@ -73,9 +89,7 @@ class TestTheSetting:
     @pytest.mark.parametrize("spelling", ["yes", "true", "1", "", "exact", None])
     def test_an_unknown_spelling_is_not_a_setting(self, spelling):
         assert exact.normalize_setting(spelling) is None
-        assert (
-            exact.resolve_exact_setting(spelling, stored = "auto", environ = {}) == exact.EXACT_AUTO
-        )
+        assert exact.resolve_exact_setting(spelling, stored = "auto", environ = {}) == exact.EXACT_AUTO
 
     def test_an_inherited_llama_variable_is_the_default_rather_than_ignored(self):
         environ = {exact.CHILD_ENV: "1"}
@@ -92,16 +106,30 @@ class TestTheSetting:
 
     @pytest.mark.parametrize(
         ("raw", "set_"),
-        [("0", False), ("", False), ("no", False), ("off", False), ("false", False),
-         ("1", True), ("2", True), ("true", True), ("on", True), ("yes", True)],
+        [
+            ("0", False),
+            ("", False),
+            ("no", False),
+            ("off", False),
+            ("false", False),
+            ("1", True),
+            ("2", True),
+            ("true", True),
+            ("on", True),
+            ("yes", True),
+        ],
     )
     def test_what_counts_as_an_inherited_variable_being_set(self, raw, set_):
         assert exact.child_flag_set({exact.CHILD_ENV: raw}) is set_
 
     def test_wants_exact_is_auto_and_on(self):
         assert [exact.wants_exact(v) for v in ("auto", "on", "off", None)] == [
-            True, True, False, False,
+            True,
+            True,
+            False,
+            False,
         ]
+
 
 class TestTheChildEnvironment:
     def test_the_variable_is_set_exactly_when_the_answer_is_yes(self):
@@ -256,7 +284,9 @@ class TestTheReportedState:
     def test_a_build_that_ignores_the_variable_is_not_reported_as_on(self, setting):
         assert (
             self._state(
-                setting = setting, env = {exact.CHILD_ENV: "1"}, args = _STUDIO_ARGV,
+                setting = setting,
+                env = {exact.CHILD_ENV: "1"},
+                args = _STUDIO_ARGV,
                 supports_exact = False,
             )
             == exact.EXACT_STATE_UNAVAILABLE
@@ -280,8 +310,7 @@ class TestTheReportedState:
 
     def test_unavailable_once_the_fallback_or_a_respawn_took_away_what_it_needs(self):
         assert (
-            self._state(setting = "auto", env = {}, args = _STUDIO_ARGV)
-            == exact.EXACT_STATE_UNAVAILABLE
+            self._state(setting = "auto", env = {}, args = _STUDIO_ARGV) == exact.EXACT_STATE_UNAVAILABLE
         )
         no_flash = [a for a in _STUDIO_ARGV if a not in ("--flash-attn", "on")]
         no_unified = [a for a in _STUDIO_ARGV if a != "--kv-unified"]
@@ -321,12 +350,10 @@ class TestTheParkingBudgetHoldsTheWholePool:
 
     def test_a_pool_the_default_holds_needs_no_flag(self):
         from core.inference.llama_cpp import _exact_parking_budget_mib
-
         assert _exact_parking_budget_mib(2 * 1024 * 1024 * 1024, args = [], env = {}) is None
 
     def test_an_unknown_pool_needs_no_flag(self):
         from core.inference.llama_cpp import _exact_parking_budget_mib
-
         assert _exact_parking_budget_mib(0, args = [], env = {}) is None
 
     @pytest.mark.parametrize(
@@ -339,5 +366,4 @@ class TestTheParkingBudgetHoldsTheWholePool:
     )
     def test_a_budget_someone_named_keeps_its_say(self, args, env):
         from core.inference.llama_cpp import _exact_parking_budget_mib
-
         assert _exact_parking_budget_mib(64 * 1024 * 1024 * 1024, args = args, env = env) is None

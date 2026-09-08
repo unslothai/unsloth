@@ -31,7 +31,13 @@ def _chat(text = "hi", **fields):
     return _Payload(messages = [{"role": "user", "content": text}], **fields)
 
 
-def _backend(*, window, total, slots, unified = True):
+def _backend(
+    *,
+    window,
+    total,
+    slots,
+    unified = True,
+):
     # ``_kv_cache_unified`` as the real backend sets it: the window is offered only while
     # preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
@@ -43,9 +49,7 @@ def _backend(*, window, total, slots, unified = True):
 
 
 def _enforced(payload, backend):
-    return _openai_llama_admission_enforced_max_tokens(
-        payload, request = None, llama_backend = backend
-    )
+    return _openai_llama_admission_enforced_max_tokens(payload, request = None, llama_backend = backend)
 
 
 def _prompt_tokens(payload):
@@ -61,9 +65,9 @@ class TestEveryChatIsPermittedItsWholeWindow:
         payload = _chat(max_tokens = total)
         enforced = _enforced(payload, backend)
         assert enforced is not None
-        assert _prompt_tokens(payload) + enforced <= total, (
-            f"{total}: a single request may occupy more than the whole window"
-        )
+        assert (
+            _prompt_tokens(payload) + enforced <= total
+        ), f"{total}: a single request may occupy more than the whole window"
 
     def test_the_whole_window_is_offered_not_a_share_whatever_the_slot_count(self):
         enforced = _enforced(_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4))
@@ -84,7 +88,10 @@ class TestEveryChatIsPermittedItsWholeWindow:
             (_chat(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 1)),
             (_Payload(max_tokens = 16384), _backend(window = 16384, total = 16384, slots = 4)),
             (_chat(max_tokens = 4096), _backend(window = 4096, total = 16384, slots = 4)),
-            (_chat(max_tokens = 4096), SimpleNamespace(context_length = None, effective_parallel_slots = 4)),
+            (
+                _chat(max_tokens = 4096),
+                SimpleNamespace(context_length = None, effective_parallel_slots = 4),
+            ),
         ],
     )
     def test_a_stated_cap_a_single_slot_a_private_cache_and_an_unknown_budget_are_left_alone(
@@ -150,9 +157,9 @@ class TestChargedAndPermittedCannotDrift:
             charged = self._charged(budget, share, prompt)
             # Cheap enough that a full capacity fits, which is what bounds how many chats
             # are admitted at once.
-            assert charged * slots <= budget or charged <= share, (
-                f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
-            )
+            assert (
+                charged * slots <= budget or charged <= share
+            ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
             assert charged < prompt + max(1, budget - prompt)
         assert self._charged(budget, share, 8) * slots <= budget
 
@@ -207,16 +214,16 @@ class TestAStatedCapNoLongerSerialises:
         prompt, cap = 3000, 6000
         before = _charged(cap, prompt, active = False)
         assert before == cap, "the old behaviour was to charge the cap in full"
-        assert BUDGET // (prompt + before) == 1, (
-            "which is why four chats at max_tokens 6000 ran one at a time"
-        )
+        assert (
+            BUDGET // (prompt + before) == 1
+        ), "which is why four chats at max_tokens 6000 ran one at a time"
         after = _charged(cap, prompt, active = True)
-        assert BUDGET // (prompt + after) >= SLOTS, (
-            f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
-        )
-        assert after == _charged(None, prompt, active = True), (
-            "a stated cap is charged the same as an unstated one"
-        )
+        assert (
+            BUDGET // (prompt + after) >= SLOTS
+        ), f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
+        assert after == _charged(
+            None, prompt, active = True
+        ), "a stated cap is charged the same as an unstated one"
 
     def test_the_cases_that_must_not_change(self):
         assert _charged(50, 200, active = True) == _charged(50, 200, active = False) == 50
@@ -229,9 +236,9 @@ class TestAStatedCapNoLongerSerialises:
             assert _charged(None, prompt, active = False) == SHARE - prompt
         for cap in (BUDGET, BUDGET + 1):
             for active in (True, False):
-                assert _charged(cap, 3000, active = active) == _charged(None, 3000, active = active), (
-                    "a cap at or above the window was already unstated"
-                )
+                assert _charged(cap, 3000, active = active) == _charged(
+                    None, 3000, active = active
+                ), "a cap at or above the window was already unstated"
         assert _charged(6000, BUDGET - 1, active = True) >= 1, "the charge is never zero"
         assert _charged(1, BUDGET - 1, active = True) >= 1
 
@@ -239,9 +246,9 @@ class TestAStatedCapNoLongerSerialises:
         prompt = 1000
         charged = _charged(6000, prompt, active = True)
         assert (prompt + charged) * SLOTS <= BUDGET, "a full capacity must still be admitted"
-        assert (prompt + (BUDGET - prompt)) * SLOTS > BUDGET, (
-            "the cache is meant to be overcommitted now; preemption is the enforcement"
-        )
+        assert (
+            (prompt + (BUDGET - prompt)) * SLOTS > BUDGET
+        ), "the cache is meant to be overcommitted now; preemption is the enforcement"
 
 
 class TestTheGateIsTheEnforcementItself:
@@ -273,4 +280,3 @@ class TestTheGateIsTheEnforcementItself:
         assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
         monkeypatch.setenv(switch, "0")
         assert _openai_llama_preemption_will_apply(backend, BUDGET) is False
-

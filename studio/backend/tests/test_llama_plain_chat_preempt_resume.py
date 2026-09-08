@@ -77,9 +77,9 @@ def _assembled(events) -> str:
 def _monotonic(events) -> None:
     snapshots = _texts(events)
     for earlier, later in zip(snapshots, snapshots[1:]):
-        assert later.startswith(earlier), (
-            f"a snapshot went backwards across the pause: {earlier!r} then {later!r}"
-        )
+        assert later.startswith(
+            earlier
+        ), f"a snapshot went backwards across the pause: {earlier!r} then {later!r}"
 
 
 def _preempts(events) -> list[dict]:
@@ -121,6 +121,7 @@ class TestAPlainChatPauses:
         policy = _RecordingPolicy()
         _run(_two_part(monkeypatch, signal).backend, signal = signal, policy = policy)
         assert policy.events == ["preempted", "awaited", "resumed"]
+
 
 class TestThePauseIsVisibleToTheClient:
     def test_a_pause_and_its_resume_are_both_announced(self, monkeypatch):
@@ -209,11 +210,12 @@ class TestTheSeamIsSeamless:
         _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
         resumed = recorder.payloads[1]["messages"][-1]
         assert resumed["role"] == "assistant"
-        assert "<think>" not in (resumed.get("content") or ""), (
-            "the open thought was replayed as visible content with a literal tag"
-        )
+        assert "<think>" not in (
+            resumed.get("content") or ""
+        ), "the open thought was replayed as visible content with a literal tag"
         assert resumed.get("reasoning_content") == "Let me"
         assert recorder.payloads[1].get("continue_final_message") is True
+
 
 class TestTheCapIsSpentDownAcrossResumes:
     def test_a_stated_max_tokens_shrinks_on_resume(self, monkeypatch):
@@ -320,7 +322,14 @@ class TestTheUsageCoversEveryAttempt:
         recorder = _Recorder(
             monkeypatch,
             [
-                [_delta("Once "), _delta("upon "), _delta("a "), _delta("time"), _finish(), _done()],
+                [
+                    _delta("Once "),
+                    _delta("upon "),
+                    _delta("a "),
+                    _delta("time"),
+                    _finish(),
+                    _done(),
+                ],
             ],
             signal = signal,
             pause_after = 4,
@@ -333,17 +342,23 @@ class TestTheUsageCoversEveryAttempt:
         kinds = [e.get("type") for e in events if isinstance(e, dict)]
         assert kinds.index("preempt") < kinds.index("context_truncated") < kinds.index("metadata")
         metadata = _metadata(events)
-        assert len(metadata) == 1 and metadata[0]["finish_reason"] == "length", (
-            "an incomplete turn reported as anything else tells the client it is done"
-        )
+        assert (
+            len(metadata) == 1 and metadata[0]["finish_reason"] == "length"
+        ), "an incomplete turn reported as anything else tells the client it is done"
         assert metadata[0]["usage"].get("completion_tokens"), (
             "four deltas were streamed and shown; reporting zero completion tokens for "
             "them corrupts every usage-based client and monitor"
         )
 
+
 class TestThePauseCanLandBeforeTheStreamOpens:
     @staticmethod
-    def _pause_on_first_open(monkeypatch, recorder, signal, payloads = None):
+    def _pause_on_first_open(
+        monkeypatch,
+        recorder,
+        signal,
+        payloads = None,
+    ):
         real_stream = recorder.backend._stream_with_retry
         opened = {"n": 0}
 
@@ -395,6 +410,7 @@ class TestThePauseCanLandBeforeTheStreamOpens:
                 preempt_event = signal,
             ):
                 raise AssertionError("the stream opened despite a pending preemption")
+
 
 class TestNothingChangesForCallersThatDoNotPreempt:
     def test_no_policy_means_the_stream_is_untouched(self, monkeypatch):

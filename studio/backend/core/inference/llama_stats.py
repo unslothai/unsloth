@@ -74,7 +74,11 @@ def erase_llama_slot(
         return 0
 
 
-def scrape_llama_metrics(base_url, timeout_s = 3.0, headers = None):
+def scrape_llama_metrics(
+    base_url,
+    timeout_s = 3.0,
+    headers = None,
+):
     """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of
     the daemon's own scrape so a single-sample caller reuses this parser. None means "cannot
     tell", covering every reason the read did not happen."""

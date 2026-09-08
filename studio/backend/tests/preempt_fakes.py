@@ -52,7 +52,11 @@ def usage(prompt_tokens: int, completion_tokens: int) -> str:
     return "data: " + json.dumps(chunk) + "\n"
 
 
-def tool_call_chunk(call_id = "call_search", name = "web_search", arguments = None) -> str:
+def tool_call_chunk(
+    call_id = "call_search",
+    name = "web_search",
+    arguments = None,
+) -> str:
     call = {
         "index": 0,
         "id": call_id,
@@ -235,7 +239,14 @@ class PreemptRecorder:
             )
 
 
-def run_plain(backend, *, signal, policy, prompt = "write me a poem", **kwargs):
+def run_plain(
+    backend,
+    *,
+    signal,
+    policy,
+    prompt = "write me a poem",
+    **kwargs,
+):
     return list(
         backend.generate_chat_completion(
             messages = [{"role": "user", "content": prompt}],
@@ -247,7 +258,15 @@ def run_plain(backend, *, signal, policy, prompt = "write me a poem", **kwargs):
     )
 
 
-def run_tool_loop(backend, *, signal, policy, tools, prompt = "write me a poem", **kwargs):
+def run_tool_loop(
+    backend,
+    *,
+    signal,
+    policy,
+    tools,
+    prompt = "write me a poem",
+    **kwargs,
+):
     return list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": prompt}],

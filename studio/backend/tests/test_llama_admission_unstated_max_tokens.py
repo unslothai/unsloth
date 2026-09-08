@@ -208,9 +208,9 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
                 preemption_active = True,
             )
 
-        assert _pausable(262144) == _pausable(32768), (
-            "a large cache must not be charged more for the same unstated request"
-        )
+        assert _pausable(262144) == _pausable(
+            32768
+        ), "a large cache must not be charged more for the same unstated request"
         for budget in (32768, 262144):
             assert _pausable(budget) < budget // 4
             assert self._cost(budget, 4) == budget // 4, "unpausable: the share it may fill"

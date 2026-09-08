@@ -34,7 +34,13 @@ from .preempt_fakes import clean_admission_queues, clean_preemption_registry  # 
 BASE = "http://llama.test"
 
 
-def _backend(*, window = 16384, slots = 4, unified = True, url = "http://127.0.0.1:1/"):
+def _backend(
+    *,
+    window = 16384,
+    slots = 4,
+    unified = True,
+    url = "http://127.0.0.1:1/",
+):
     return SimpleNamespace(
         base_url = url,
         context_length = window,
@@ -53,7 +59,12 @@ class _ArmedBackend(FakeLlamaCppBackend):
     _kv_cache_unified = True
     _kv_cache_context_total = 8192
 
-    def __init__(self, *, tools = False, raises = False):
+    def __init__(
+        self,
+        *,
+        tools = False,
+        raises = False,
+    ):
         self.supports_tools = tools
         self.seen: list[dict] = []
         self._raises = raises
@@ -106,7 +117,12 @@ def ledger(monkeypatch):
     return events
 
 
-def _client(monkeypatch, backend, *, reraise = True):
+def _client(
+    monkeypatch,
+    backend,
+    *,
+    reraise = True,
+):
     monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(
         inference, "_effective_enable_tools", lambda payload: bool(backend.supports_tools)
@@ -122,7 +138,13 @@ def _client(monkeypatch, backend, *, reraise = True):
     return TestClient(app, raise_server_exceptions = reraise)
 
 
-def _post(monkeypatch, backend, *, stream, reraise = True):
+def _post(
+    monkeypatch,
+    backend,
+    *,
+    stream,
+    reraise = True,
+):
     body = {"messages": [{"role": "user", "content": "write me an essay"}], "stream": stream}
     if backend.supports_tools:
         body["enable_tools"] = True
@@ -155,9 +177,10 @@ class TestEveryLocalChatSurfaceArms:
             "never dropped grows the ledger forever, and once it reads full the next chat "
             "waits for room that cannot arrive"
         )
-        assert ("probe", "set") in ledger, (
-            "a surface that arms without a residency probe can livelock its own resume"
-        )
+        assert (
+            "probe",
+            "set",
+        ) in ledger, "a surface that arms without a residency probe can livelock its own resume"
 
         kwargs = backend.seen[0]
         assert kwargs.get("preempt_event") is not None
@@ -338,13 +361,24 @@ class TestARawPassthroughIsCountedAndNeverChosen:
         controller.register("chat", tokens = 6000, signal = PreemptSignal())
         assert [v.gen_id for v in controller.plan_preemptions(needed = 4000)] == ["chat"]
 
+
 class TestArmingItself:
-    def _reserve(self, url, tokens = 4096):
+    def _reserve(
+        self,
+        url,
+        tokens = 4096,
+    ):
         return get_llama_admission_queue(url).reserve(
             capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = tokens
         )
 
-    def _arm(self, url, backend = None, gen_id = "armed", signal = None):
+    def _arm(
+        self,
+        url,
+        backend = None,
+        gen_id = "armed",
+        signal = None,
+    ):
         return inference._openai_llama_preemption_arm(
             request = None,
             llama_backend = backend or _backend(url = url),
@@ -365,13 +399,14 @@ class TestArmingItself:
         # The budget is the cache llama-server was launched with. Reducing it here to
         # reserve the drafts double-counts them: the watermark buffer holds them back.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend()) == 16384
-        assert 0 < snapshot.buffer < snapshot.budget, (
-            "nothing is held back, so the cache can be worked to its last cell"
-        )
+        assert (
+            0 < snapshot.buffer < snapshot.budget
+        ), "nothing is held back, so the cache can be worked to its last cell"
         assert controller.participant("armed").preempt_event is signal, (
             "the participant holds a different signal than the stream polls, so a preempt "
             "can never reach the stream"
         )
+
 
 class _Lease:
     def __init__(self, tokens = 2000):
@@ -401,7 +436,12 @@ def erasures(monkeypatch):
         lambda scrape: {"idle": [(0, 2000)], "resident": 2000, "idle_tokens": 2000},
     )
 
-    def _reclaim(occupancy, erase, *, needed = 0):
+    def _reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         for slot_id, _tokens in occupancy.get("idle", []):
             seen.append(slot_id)
             erase(slot_id)
@@ -469,10 +509,18 @@ class TestTheDisarmKeepsThePrefixCache:
         _disarm()
         assert erasures == [0], "somebody is queued for the room and the cells were kept"
 
+
 class TestTheResidencySweep:
     """Reclaiming only once a victim had been chosen made the erase almost useless."""
 
-    def _observer(self, monkeypatch, slots, *, controller, gen_id = "chat"):
+    def _observer(
+        self,
+        monkeypatch,
+        slots,
+        *,
+        controller,
+        gen_id = "chat",
+    ):
         # An eligible backend: the sweep answers to the same switches arming does, so a
         # private cache or a missing budget would rightly sweep nothing.
         backend = SimpleNamespace(
@@ -486,7 +534,11 @@ class TestTheResidencySweep:
         monkeypatch.setattr(inference, "fetch_llama_slots", lambda base, headers = None: slots)
         erased: list[int] = []
 
-        def _erase(base, slot_id, headers = None):
+        def _erase(
+            base,
+            slot_id,
+            headers = None,
+        ):
             erased.append(slot_id)
             return next(s["n_prompt_tokens_cache"] for s in slots if s["id"] == slot_id)
 
@@ -515,13 +567,11 @@ class TestTheResidencySweep:
             "somebody is paused for want of cells and the idle residue was kept until the "
             "cache went over its ceiling, by which time llama-server is already retrying"
         )
-        assert controller.room_for("waiter", 5000) is True, (
-            "the controller kept planning against the pre-erase figure"
-        )
+        assert (
+            controller.room_for("waiter", 5000) is True
+        ), "the controller kept planning against the pre-erase figure"
 
-    def test_the_sweep_reports_growth_and_reclaims_before_it_pauses_a_live_chat(
-        self, monkeypatch
-    ):
+    def test_the_sweep_reports_growth_and_reclaims_before_it_pauses_a_live_chat(self, monkeypatch):
         controller = PreemptionController(BASE)
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("chat", tokens = 15000, signal = PreemptSignal())
@@ -530,11 +580,10 @@ class TestTheResidencySweep:
             {"id": 0, "is_processing": False, "n_prompt_tokens_cache": 8000},
             {"id": 1, "is_processing": True, "n_prompt_tokens_cache": 8000},
         ]
-        _refresh, observe, _note, erased = self._observer(
-            monkeypatch, slots, controller = controller
-        )
+        _refresh, observe, _note, erased = self._observer(monkeypatch, slots, controller = controller)
         observe(2000)
         assert erased == [0], "a live chat was paused without first freeing dead residue"
+
 
 class TestTheRespawnRetryKeepsItsControls:
     """`_respawn_if_dead()` re-opens the same generation against a replacement server.

@@ -363,7 +363,12 @@ class TestExactModeIsOnlyReportedOnEvidence:
 # ── 4. Arming obeys the same eligibility gate as pricing ─────────────────────
 
 
-def _arm(backend, gen_id, *, tokens = None):
+def _arm(
+    backend,
+    gen_id,
+    *,
+    tokens = None,
+):
     reservation, _config = inf._openai_llama_admission_reserve(
         request = None, llama_backend = backend, payload = _chat(64)
     )
@@ -461,9 +466,12 @@ class TestTheWireClampFollowsTheSwitches:
         backend = _backend()
         payload = _chat(20000)
         prompt = _prompt_tokens(payload, backend)
-        assert inf._openai_llama_admission_enforced_max_tokens(
-            payload, request = None, llama_backend = backend
-        ) == _BUDGET - prompt
+        assert (
+            inf._openai_llama_admission_enforced_max_tokens(
+                payload, request = None, llama_backend = backend
+            )
+            == _BUDGET - prompt
+        )
 
     def test_a_stated_cap_below_the_window_is_left_alone(self):
         assert (
@@ -478,7 +486,13 @@ class TestTheWireClampFollowsTheSwitches:
 
 
 class _Erases:
-    def __init__(self, monkeypatch, *, queued = 1, idle_tokens = 2000):
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        queued = 1,
+        idle_tokens = 2000,
+    ):
         self.erased: list[int] = []
         monkeypatch.setattr(
             inf,
@@ -488,9 +502,7 @@ class _Erases:
         monkeypatch.setattr(
             inf,
             "fetch_llama_slots",
-            lambda *_a, **_k: [
-                {"id": 0, "is_processing": False, "n_prompt_tokens": idle_tokens}
-            ],
+            lambda *_a, **_k: [{"id": 0, "is_processing": False, "n_prompt_tokens": idle_tokens}],
         )
 
         def _erase(_base, slot_id, **_kwargs):
@@ -635,11 +647,25 @@ class TestTheAnthropicPassthroughIsSentTheCapItWasChargedFor:
         monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
         sent: dict = {}
 
-        async def _stream(request, cancel_event, llama_backend, messages, tools, temperature, top_p, top_k, max_tokens, *a, **k):
+        async def _stream(
+            request,
+            cancel_event,
+            llama_backend,
+            messages,
+            tools,
+            temperature,
+            top_p,
+            top_k,
+            max_tokens,
+            *a,
+            **k,
+        ):
             sent["max_tokens"] = max_tokens
             raise HTTPException(status_code = 418)
 
-        async def _non_streaming(llama_backend, messages, tools, temperature, top_p, top_k, max_tokens, *a, **k):
+        async def _non_streaming(
+            llama_backend, messages, tools, temperature, top_p, top_k, max_tokens, *a, **k
+        ):
             sent["max_tokens"] = max_tokens
             raise HTTPException(status_code = 418)
 
