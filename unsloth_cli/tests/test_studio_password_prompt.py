@@ -44,8 +44,9 @@ def _no_leaked_unattended_marker(monkeypatch):
     later test and silently suppresses the prompt they assert on.
     """
     import unsloth_cli.commands.studio as studio_mod
-
     monkeypatch.delenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, raising = False)
+
+
 _NEW_PW = "brand-new-password"
 
 
@@ -1925,8 +1926,8 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_foreground_raw_bind_still_prompts(monkeypatch):
     """The ordinary interactive case is untouched."""
@@ -2050,8 +2051,8 @@ def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
     """The mechanism itself, against a real pty with no writer."""
@@ -2179,7 +2180,11 @@ def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, 
     studio_mod = _studio()
     calls = []
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         calls.append(kw)
         raise studio_mod._password_prompt.PromptUnattended
 
@@ -2192,6 +2197,7 @@ def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, 
     _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
     assert len(calls) == 1
     import os as _os
+
     assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1"
 
     # Child, after the re-exec: same terminal, must not sit on it again.
@@ -2205,7 +2211,11 @@ def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
     studio_mod = _studio()
     calls = []
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         calls.append(kw)
         return _NEW_PW
 
@@ -2230,7 +2240,11 @@ def _banner(monkeypatch, tmp_path, args):
     studio_mod = _studio()
     _os.environ.pop(studio_mod._UNATTENDED_PROMPT_DONE_ENV, None)
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         raise KeyboardInterrupt
 
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
@@ -2241,9 +2255,7 @@ def _banner(monkeypatch, tmp_path, args):
     return (result.output or "") + (getattr(result, "stderr", "") or "")
 
 
-def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(
-    monkeypatch, tmp_path,
-):
+def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(monkeypatch, tmp_path):
     """`Ctrl+C to abort` is true for a tunnel and false for a raw bind.
 
     On a raw bind the interrupt declines the prompt and the launch continues by
