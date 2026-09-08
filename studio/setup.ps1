@@ -576,13 +576,38 @@ function Get-InstalledLlamaPrebuiltRelease {
         return $null
     }
 
+    # An interrupted write leaves an empty marker, which deserializes to $null: reading a
+    # property off that is fatal under a caller's Set-StrictMode, and printed "@" without one.
+    if ($null -eq $payload -or $payload -isnot [System.Management.Automation.PSCustomObject]) {
+        return $null
+    }
+    if (-not ($payload.PSObject.Properties.Name -ccontains 'published_repo') -or
+        -not ($payload.PSObject.Properties.Name -ccontains 'release_tag')) {
+        return $null
+    }
     if (-not $payload.published_repo -or -not $payload.release_tag) {
         return $null
     }
 
     $message = "installed release: $($payload.published_repo)@$($payload.release_tag)"
-    if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
-        $message += " (tag $($payload.tag))"
+    # tag is optional too, so it carries the same strict-mode hazard as backend.
+    $llamaTag = ""
+    if ($payload.PSObject.Properties.Name -ccontains 'tag') {
+        $llamaTag = [string]$payload.tag
+    }
+    if ($llamaTag -and $llamaTag -ne $payload.release_tag) {
+        $message += " (tag $llamaTag)"
+    }
+    # Name the backend: a Vulkan and a ROCm bundle print an identical line without it.
+    # Absent in every marker written before #8520, and a missing property is fatal under a
+    # caller's Set-StrictMode. -ccontains and the type/shape checks keep this byte-identical
+    # to the setup.sh twin, which is case-sensitive and renders non-strings differently.
+    $backendName = ""
+    if (($payload.PSObject.Properties.Name -ccontains 'backend') -and ($payload.backend -is [string])) {
+        $backendName = $payload.backend.Trim()
+    }
+    if ($backendName -match '^[A-Za-z0-9._+-]{1,32}$') {
+        $message += " -- $backendName backend"
     }
     return $message
 }
@@ -1832,6 +1857,72 @@ function Clear-WebViewCaches {
         } catch { }
     }
     if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
+}
+
+# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it drives, so this
+# covers direct setup, update and desktop repair. Keep in step with the copies in install.ps1.
+if ($env:SKIP_STUDIO_BASE -ne "1") {
+    $ElevationState = "unknown"
+    try {
+        $_identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal($_identity)
+        $ElevationState = if ($_principal.IsInRole(
+                [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
+    } catch { }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+        [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
+        [Console]::Out.Flush()
+    }
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
+        try {
+            $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
+        } catch {
+            try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        }
+        return $_p.TrimEnd('\', '/')
+    }
+
+    if ($ElevationState -eq "true") {
+        # $StudioHome is resolved much later, so mirror its precedence for the message only.
+        # USERPROFILE can be unset (service, CI), where a bare Join-Path throws under Stop.
+        $_unslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            '%USERPROFILE%\.unsloth'
+        } else {
+            Join-Path $env:USERPROFILE ".unsloth"
+        }
+        $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $env:STUDIO_HOME.Trim()
+        } else {
+            $_unslothRoot
+        }
+        # A legacy-equal override is not a custom root: name the parent that holds llama.cpp.
+        if ((Get-CanonicalRootPath $_elevRoot) -ieq
+            (Get-CanonicalRootPath (Join-Path $_unslothRoot "studio"))) {
+            $_elevRoot = $_unslothRoot
+        }
+        Write-StudioLine ""
+        Write-StudioLine "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-StudioLine "            Anything written to $_elevRoot will be owned by Administrators," -ForegroundColor Yellow
+        Write-StudioLine "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-StudioLine "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-StudioLine "            update run normally fails on it." -ForegroundColor Yellow
+        Write-StudioLine "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+    }
 }
 
 # Resolve and preflight the install root before phase 1, with the same override
@@ -4604,6 +4695,36 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # Same shape, same reason, and the sibling of the probe setup.sh runs: a venv
+        # installed before the tokenizers pin can hold a tokenizers the installed
+        # transformers rejects at import, which takes down every `import transformers`
+        # and so the whole model stack, while $_PkgName itself is current. Without this
+        # the fast path reports "up to date" and repairs nothing. Ask the metadata, not
+        # an import: the import is what is broken. Any unreadable half exits 1 and
+        # changes nothing.
+        $_tokenizersBad = $false
+        try {
+            & python -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_tokenizersBad = $true }
+        } catch {}
+        if ($_tokenizersBad) {
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # An interrupted install leaves $_PkgName current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
@@ -6719,10 +6840,21 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
     # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
     # the user as install-progress-detail text.
+    # DIAG as well: the progress detail is cleared by the next install-step, so only the
+    # marker can still answer "why is GGUF missing" afterwards.
     if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }
+}
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the block above
+# is skipped and a degraded repair recorded nothing. Marker only: the update stays successful.
+if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
+    (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
+    [Console]::Out.Flush()
 }

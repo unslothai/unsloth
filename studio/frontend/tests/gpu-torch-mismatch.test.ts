@@ -341,7 +341,7 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     source.indexOf("INVENTORY_SENSITIVE_REASONS = new Set(["),
   );
   const listed = set.slice(0, set.indexOf("]"));
-  for (const settled of ["mlx_unavailable", "intel_mac"]) {
+  for (const settled of ["mlx_unavailable", "no_torch", "intel_mac"]) {
     assert.ok(
       !listed.includes(settled),
       `${settled} cannot change on a probe and must not keep polling`,
@@ -411,6 +411,10 @@ test("only a host the inventory can still reclassify keeps polling", () => {
     "a healthy GPU host must not gain a forced read a minute",
   );
   assert.ok(!polls(true, "intel_mac"), "an Intel Mac stays an Intel Mac");
+  assert.ok(
+    !polls(true, "no_torch"),
+    "a --no-torch install declined the training stack; nothing is coming to change it",
+  );
   // detection_failed is NOT settled when torch is the thing that failed: the backend
   // classifies the wheel from disk and swaps in the mismatch once the inventory recovers,
   // so stopping the poll froze the sidebar on the failure for the session.
