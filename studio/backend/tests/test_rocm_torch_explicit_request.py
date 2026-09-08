@@ -1223,10 +1223,7 @@ def test_one_arch_is_still_answerable_without_a_per_device_list():
     arch on the whole host every ordinal names it, so no enumeration order can change the
     answer and the flat inventory is enough. Denying here would strand every host that sets
     CUDA_VISIBLE_DEVICES=0 and has no rocminfo installed."""
-    assert (
-        _route_shell_masked(["gfx1100", "gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "0")
-        is True
-    )
+    assert _route_shell_masked(["gfx1100", "gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "0") is True
 
 
 def test_discovery_order_does_not_answer_for_runtime_device_zero():
@@ -1235,10 +1232,7 @@ def test_discovery_order_does_not_answer_for_runtime_device_zero():
     describe a different GPU from the one HIP hands torch at ordinal 0. Reading it approved
     the swap off a routable first row while the gfx1010 that actually runs has kernels in no
     wheel. Unlike adapters with no ordered source is unanswerable, and fails closed."""
-    assert (
-        _route_shell_masked(["gfx1100", "gfx1010"], devices = [], HIP_VISIBLE_DEVICES = "0")
-        is False
-    )
+    assert _route_shell_masked(["gfx1100", "gfx1010"], devices = [], HIP_VISIBLE_DEVICES = "0") is False
 
 
 def test_the_kernel_topology_supplies_the_order_amd_smi_cannot():
@@ -1808,7 +1802,6 @@ def test_an_unresolvable_mask_does_not_answer_for_the_next_host(stack, monkeypat
     assert _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"]) is True
 
 
-
 def test_a_rocr_ordinal_past_the_last_device_is_not_a_viable_route(stack, monkeypatch):
     """ROCr's own filter (ROCR-Runtime, core/inc/amd_filter_device.h) surfaces the tokens that
     are "Legal and NOT Terminating", and an index terminates when it "lies outside the interval
@@ -1817,9 +1810,7 @@ def test_a_rocr_ordinal_past_the_last_device_is_not_a_viable_route(stack, monkey
     for that value on purpose, which is right for arch SELECTION and wrong here: it left the
     HIP-layer flag looking at a full list and approved replacing a working CUDA stack."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], ROCR_VISIBLE_DEVICES = "7"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"], ROCR_VISIBLE_DEVICES = "7")
         is False
     )
 
@@ -1843,9 +1834,7 @@ def test_a_selected_miscomputing_arch_is_not_something_to_swap_to(stack, monkeyp
     the CUDA repair stood down, and the install then declined the target -- leaving the venv on
     a broken torch with neither vendor served."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1033", "gfx1100"], HIP_VISIBLE_DEVICES = "0"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1033", "gfx1100"], HIP_VISIBLE_DEVICES = "0")
         is False
     )
 
@@ -1854,9 +1843,7 @@ def test_the_same_pair_selecting_the_healthy_card_is_still_viable(stack, monkeyp
     """The control: same host, mask on the gfx1100. Without it the rule could be "a gfx1033
     anywhere keeps CUDA", which is the host-wide reading this replaces."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1033", "gfx1100"], HIP_VISIBLE_DEVICES = "1"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1033", "gfx1100"], HIP_VISIBLE_DEVICES = "1")
         is True
     )
 
@@ -1892,9 +1879,7 @@ def test_a_declared_arch_does_not_answer_over_an_unresolvable_mask_in_python(sta
     arch beside HIP_VISIBLE_DEVICES=7 approved the swap on a host where HIP exposes nothing."""
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7")
         is False
     )
 
@@ -1904,9 +1889,7 @@ def test_a_declared_arch_over_a_mask_that_resolves_is_still_viable_in_python(sta
     ordinary declared-arch host has none, and must still route without paying for a probe."""
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "1"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "1")
         is True
     )
 
@@ -1921,7 +1904,7 @@ _VAN_GOGH_PLUS_DGPU = "\n".join(
         # The real map, not a constant: without it gfx1033 has no per-arch family here and
         # the route test declines for the wrong reason, so the control below would pass
         # whatever the gate does.
-        "_amd_arch_index_family_for_gfx() { case \"$1\" in"
+        '_amd_arch_index_family_for_gfx() { case "$1" in'
         " gfx1100) echo gfx110X-all ;; gfx1033) echo gfx103X-all ;; *) return 1 ;; esac; }",
         "_kfd_gfx_targets() { printf '%s\\n' gfx1033 gfx1100; }",
         "_infer_linux_amd_gfx_arch() { :; }",
@@ -1940,18 +1923,14 @@ def test_the_bad_arch_gate_answers_for_the_selected_card_under_the_request(stack
     An honoured request HAS resolved it -- _amd_request_has_a_wheel_route composes both mask
     layers -- so answering on the gfx1033 the mask hid took the cpu index for a routable
     gfx1100, and the CUDA fallback at the end of the file then undid the request entirely."""
-    out = _index_url(
-        "UNSLOTH_FORCE_ROCM_TORCH=1 HIP_VISIBLE_DEVICES=1", _VAN_GOGH_PLUS_DGPU
-    )
+    out = _index_url("UNSLOTH_FORCE_ROCM_TORCH=1 HIP_VISIBLE_DEVICES=1", _VAN_GOGH_PLUS_DGPU)
     assert out.strip().endswith("/rocm7.0"), out
 
 
 def test_the_same_request_selecting_the_deck_still_takes_the_cpu_index(stack):
     """The control that keeps the narrowing honest: the request cannot buy ROCm wheels for
     the arch measured to compute wrong answers. Same host, mask on the gfx1033."""
-    out = _index_url(
-        "UNSLOTH_FORCE_ROCM_TORCH=1 HIP_VISIBLE_DEVICES=0", _VAN_GOGH_PLUS_DGPU
-    )
+    out = _index_url("UNSLOTH_FORCE_ROCM_TORCH=1 HIP_VISIBLE_DEVICES=0", _VAN_GOGH_PLUS_DGPU)
     assert out.strip().endswith("/cpu"), out
 
 
