@@ -1593,10 +1593,19 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
 
         with (
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = after),
+            # The resync asks _pin_needs_reinstall, which reads the installed version and
+            # compares its local tag against the index it is about to pin. So "already
+            # matching" means the exact wheel that pin would fetch, tag included -- an
+            # untagged 0.16.0 beside a cu130 pin is precisely the case it must NOT skip.
             patch.object(
                 stack_mod,
-                "_exact_distribution_spec_is_installed",
-                return_value = installed_spec,
+                "_installed_distribution_version",
+                side_effect = lambda name: (
+                    stack_mod._select_torchao_spec(after).split("==", 1)[1]
+                    + ("+" + after.partition("+")[2] if after.partition("+")[2] else "")
+                    if (installed_spec and name == "torchao")
+                    else None
+                ),
             ),
             patch.object(
                 stack_mod,
@@ -1634,19 +1643,33 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["torchao"], "the CUDA major moved, so the pin has to be re-selected"
         assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
 
-    def test_a_flavor_change_within_one_cuda_major_leaves_torchao_alone(self):
+    def test_a_flavor_change_within_one_cuda_major_re_pins_torchao(self):
+        """A no-op while every host took PyPI's one build; different wheels now that the
+        install is pinned to the leaf matching torch."""
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
-        assert calls["torchao"] == []
+        assert calls["torchao"], "the leaf moved, so the pinned build has to be re-selected"
+        assert any("cu128" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
+
+    def test_a_cpu_to_xpu_move_re_pins_torchao(self):
+        """Neither side names a CUDA major, so None == None skipped the resync entirely."""
+        calls = self._resync("2.10.0+cpu", "2.10.0+xpu")
+        assert calls["torchao"], "cpu to xpu changes the build even at one release"
+        assert any("/xpu" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
+
+    def test_a_build_that_kept_its_leaf_is_still_left_alone(self):
+        """The widened test must not have become "always re-pin"."""
+        assert self._resync("2.10.0+cu128", "2.10.0+cu128")["torchao"] == []
+        assert self._resync("2.10.0", "2.10.0")["torchao"] == []
 
     def test_a_flavor_change_alone_still_rechecks_xformers(self):
         # xFormers links against the exact (torch, CUDA) pair.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128", resident_xformers = "2.10.0+cu124")
-        assert calls["torchao"] == [], "the release did not move; torchao is fine"
         assert calls["removed"] == ["xformers"]
-        assert calls["ok"] is True, "nothing here touched torch"
+        assert calls["ok"] is False, "re-pinning torchao asks for a re-verify, as anywhere else"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
-        # torchao depends on torch: resolving deps re-pulls the wheel just removed.
+        # No torchao release declares a runtime torch dependency, but a reinstall right after
+        # a repair is where one would undo it.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])
