@@ -309,7 +309,7 @@ _INDEX_INVENTORY = {
     "cu129": {"torch": range(8, 14), "codec": {6, 7, 10, 11, 15, 16}},
     "cu130": {"torch": range(9, 15), "codec": set(range(8, 17))},
     "cu132": {"torch": range(12, 15), "codec": set(range(12, 17))},
-    "xpu": {"torch": range(6, 15), "codec": {13, 14, 15, 16}},
+    # xpu is not listed: an xpu torch is pinned to the cpu leaf, which is covered above.
 }
 
 
@@ -324,9 +324,11 @@ def test_torchcodec_index_follows_the_resident_torch_build():
     assert ips._torchcodec_index_url("2.14.0+cu130") == base + "cu130"
     assert ips._torchcodec_index_url("2.11.0+cpu") == base + "cpu"
 
-    # xpu began publishing torchcodec at 0.13, so it pins like any other accelerator. An
-    # xpu host left unpinned takes PyPI's CUDA build, which is the failure this prevents.
-    assert ips._torchcodec_index_url("2.14.0+xpu") == base + "xpu"
+    # An Intel-GPU torch is sent to cpu: torchcodec publishes no xpu build, the xpu leaf
+    # only mirrors the CPU wheels for Linux x86_64, and PyPI's default is the CUDA build,
+    # so leaving xpu unpinned hands it a codec that tries to dlopen CUDA.
+    assert ips._torchcodec_index_url("2.14.0+xpu") == base + "cpu"
+    assert ips._torchcodec_index_url("2.9.0+xpu") == base + "cpu"
 
     # Untagged is PyPI's own torch, whose counterpart is PyPI's default torchcodec. Pinning
     # cpu here would be wrong: on Linux an untagged torch is a CUDA build.
@@ -375,8 +377,7 @@ def test_pinning_the_index_starves_only_where_the_retry_covers_it():
     """
     starved = {(tag, minor) for tag, minor, _ in _starved_index_cells()}
     # One cell, and it is the one no floor could have predicted: cu129 publishes 0.6, 0.7,
-    # 0.10, 0.11, 0.15 and 0.16, so its gap is in the MIDDLE. The xpu rows below 0.13, which
-    # would otherwise be five more, are declined up front by _TORCHCODEC_INDEX_FLOORS.
+    # 0.10, 0.11, 0.15 and 0.16, so its gap is in the MIDDLE of its range.
     assert starved == {("cu129", 9)}, sorted(starved)
 
 
@@ -392,26 +393,42 @@ def test_the_installer_retries_without_the_index_when_the_pin_finds_nothing():
     assert "--index-url" not in retry
 
 
-def test_an_index_that_joined_late_is_not_pinned_below_its_first_release():
-    """xpu serves torch from 2.6 but published no torchcodec before 0.13, so pinning it for
-    the older lines is a resolve that cannot succeed. A floor, unlike a list of what an index
-    holds, only says "nothing below X was ever published here", which upstream does not walk
-    back, so it stays true as releases are added."""
+def test_an_accelerator_with_no_codec_build_of_its_own_takes_the_cpu_one():
+    """torchcodec has no XPU build at all. The xpu leaf republishes the CPU wheels verbatim
+    (`torchcodec-0.16.0+cpu-...`) and only for Linux x86_64, whereas the cpu leaf carries the
+    same wheel for aarch64 and Windows too and goes back to 0.3 rather than starting at 0.13.
+    So every Intel-GPU torch is served, not just the newest."""
     ips = _load_install_python_stack()
-    assert ips._TORCHCODEC_INDEX_FLOORS["xpu"] == (0, 13, 0)
-    for minor in (7, 8, 9, 10, 11):
+    assert ips._TORCHCODEC_INDEX_TAGS == {"xpu": "cpu"}
+    for minor in (7, 8, 9, 10, 11, 12, 13, 14):
         version = f"2.{minor}.0+xpu"
         spec = ips._select_torchcodec_spec(version)
-        assert ips._torchcodec_index_url(version, spec) is None, spec
-    # 2.12+ takes the open ABI-stable window, which reaches 0.13, so it pins.
-    for minor in (12, 13, 14):
-        version = f"2.{minor}.0+xpu"
-        spec = ips._select_torchcodec_spec(version)
-        assert ips._torchcodec_index_url(version, spec) == "https://download.pytorch.org/whl/xpu"
-    # The floor is per leaf, not global: cu126 still pins the same old lines it always did.
+        assert ips._torchcodec_index_url(version, spec) == (
+            "https://download.pytorch.org/whl/cpu"
+        ), spec
+    # The substitution is per tag, not a blanket fallback: cu126 still pins its own leaf.
     assert ips._torchcodec_index_url("2.9.0+cu126", ips._select_torchcodec_spec("2.9.0")) == (
         "https://download.pytorch.org/whl/cu126"
     )
+    # torchao is unaffected: its xpu leaf really does carry +xpu builds.
+    assert ips._torch_accelerator_index_url("2.14.0+xpu") == "https://download.pytorch.org/whl/xpu"
+
+
+def test_the_provenance_check_compares_against_the_tag_the_pin_will_fetch():
+    """The step force-reinstalls when the installed codec's local tag says another index
+    built it. That tag has to be the one the PIN fetches, not the resident torch's own: an
+    xpu torch is served a `+cpu` wheel, so comparing against `xpu` never matches and every
+    run would force-reinstall a codec that was already right."""
+    ips = _load_install_python_stack()
+    assert ips._torchcodec_index_tag("2.14.0+xpu") == "cpu"
+    assert ips._torchcodec_index_tag("2.14.0+cu130") == "cu130"
+    assert ips._torchcodec_index_tag("2.14.0") == ""
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    assert "_codec_want = _torchcodec_index_tag(_codec_torch_ver)" in step
+    # The old spelling read the torch tag straight off the version string.
+    assert '_codec_want = str(_codec_torch_ver).partition("+")' not in step
 
 
 def test_the_two_pypi_only_rows_stay_unpinned():

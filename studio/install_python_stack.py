@@ -479,11 +479,13 @@ def _torchcodec_python_is_supported(
 # oldest venvs. They keep today's unpinned behavior.
 _TORCHCODEC_MIN_ON_TORCH_INDEX = (0, 3, 0)
 
-# Leaves that joined later than that. A floor, not an inventory: it only ever says "this
-# index published nothing below X", which upstream does not walk back, so it cannot rot the
-# way a list of held versions does. Holes ABOVE the floor are real (cu129 carries no 0.8 or
-# 0.9) and are left to the caller's unpinned retry rather than tabulated here.
-_TORCHCODEC_INDEX_FLOORS = {"xpu": (0, 13, 0)}
+# torchcodec has no XPU build. The xpu leaf carries the CPU wheels verbatim
+# (torchcodec-0.16.0+cpu-...), and only for Linux x86_64, while the cpu leaf carries that
+# same wheel for aarch64 and Windows as well and goes back to 0.3 instead of starting at
+# 0.13. So an Intel-GPU torch is sent to cpu. Not cosmetic: PyPI's default torchcodec is
+# the CUDA build (9.5 MB, byte-for-byte the size of the cu130 wheel, against 5.1 MB for
+# cpu), so an xpu host left unpinned gets a codec that tries to dlopen CUDA.
+_TORCHCODEC_INDEX_TAGS = {"xpu": "cpu"}
 
 
 def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
@@ -512,7 +514,7 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
 _TORCH_ACCELERATOR_TAG_RE = re.compile(r"cpu|cu\d+|xpu|rocm\d+(\.\d+)?")
 
 
-def _torch_accelerator_index_url(torch_version: "str | None") -> "str | None":
+def _torch_accelerator_index_url(torch_version: "str | None", tag: str = "") -> "str | None":
     """The download.pytorch.org leaf serving the resident torch's build, or None.
 
     Companion wheels (torchcodec, torchao) are published per accelerator exactly the way
@@ -527,7 +529,7 @@ def _torch_accelerator_index_url(torch_version: "str | None") -> "str | None":
     """
     if not torch_version:
         return None
-    local = str(torch_version).partition("+")[2].strip().lower()
+    local = tag or str(torch_version).partition("+")[2].strip().lower()
     if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
         return None
     # An explicit pin wins, as it does for the torch repair helpers: synthesising the public
@@ -548,21 +550,27 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
     docker/Dockerfile already pins cu128 by hand for this reason.
 
     rocm is the one accelerator excluded: every rocm leaf answers 404/403 for torchcodec,
-    so a pin there is a guaranteed wasted resolve. xpu IS pinnable -- it began publishing
-    torchcodec at 0.13 -- and an xpu host that stays unpinned takes PyPI's CUDA build.
-    Where a pinned index turns out not to serve the selected window (cu129 has no 0.8 or
-    0.9), the caller's unpinned retry recovers; that is deliberate, because no local table
-    of index contents stays true.
+    so a pin there is a guaranteed wasted resolve. xpu is redirected to cpu, for the reason
+    beside _TORCHCODEC_INDEX_TAGS. Where a pinned index turns out not to serve the selected
+    window (cu129 has no 0.8 or 0.9), the caller's unpinned retry recovers; that is
+    deliberate, because no local table of index CONTENTS stays true.
     """
     local = str(torch_version or "").partition("+")[2].strip().lower()
     if local.startswith("rocm"):
         return None
     if spec:
         _, ceiling = _torchcodec_spec_bounds(spec)
-        floor = max(_TORCHCODEC_MIN_ON_TORCH_INDEX, _TORCHCODEC_INDEX_FLOORS.get(local, (0,)))
-        if ceiling is not None and ceiling <= floor:
-            return None  # window sits entirely below what this index ever published
-    return _torch_accelerator_index_url(torch_version)
+        if ceiling is not None and ceiling <= _TORCHCODEC_MIN_ON_TORCH_INDEX:
+            return None  # window sits entirely below what any torch index publishes
+    return _torch_accelerator_index_url(torch_version, _torchcodec_index_tag(torch_version))
+
+
+def _torchcodec_index_tag(torch_version: "str | None") -> str:
+    """The local tag of the codec build the index pin will fetch, which is NOT always the
+    resident torch's own tag: an xpu torch is served the cpu wheel. The provenance check
+    below compares against this, so it must come from the same place the URL does."""
+    local = str(torch_version or "").partition("+")[2].strip().lower()
+    return _TORCHCODEC_INDEX_TAGS.get(local, local)
 
 
 def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
@@ -7916,7 +7924,10 @@ def install_python_stack() -> int:
             # from the version: the torch indexes carry a +cuNNN / +cpu local tag and PyPI
             # forbids one, so a local tag that is missing or different means another build.
             _codec_have = _installed_distribution_version("torchcodec") or ""
-            _codec_want = str(_codec_torch_ver).partition("+")[2].strip().lower()
+            # The tag the PIN will fetch, not the resident torch's own: an xpu torch is
+            # served the cpu wheel, and comparing against "xpu" would never match, so every
+            # run would force-reinstall a codec that was already correct.
+            _codec_want = _torchcodec_index_tag(_codec_torch_ver)
             if _codec_have and _codec_have.partition("+")[2].strip().lower() != _codec_want:
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
