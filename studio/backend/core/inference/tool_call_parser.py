@@ -651,7 +651,45 @@ def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> 
 _BLOCKED_BODY_MASK = ""
 _BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
 # The aliases ``_parse_bare_json_call`` accepts for the argument object.
-_BARE_JSON_ARGS_RE = re.compile(r'"(?:arguments|parameters|args)"\s*:\s*\{')
+# The aliases ``_parse_bare_json_call`` accepts for the argument object.
+_BARE_JSON_ARGS_KEYS = ("arguments", "parameters", "args")
+
+
+def _top_level_args_brace(text: str, start: int, end: int) -> "int | None":
+    """Index of the ``{`` opening the TOP-LEVEL argument object of the JSON call at
+    ``start``, else None.
+
+    Structural, not the first textual match: an earlier nested or decoy ``arguments``
+    mapping matched instead, so only the decoy was masked and the display strip still
+    edited the real arguments."""
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < end and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if depth == 1 and text[i + 1 : j] in _BARE_JSON_ARGS_KEYS:
+                k = j + 1
+                while k < end and text[k].isspace():
+                    k += 1
+                if k < end and text[k] == ":":
+                    k += 1
+                    while k < end and text[k].isspace():
+                        k += 1
+                    if k < end and text[k] == "{":
+                        return k
+            i = j + 1
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return None
+        i += 1
+    return None
 
 
 def _string_content_spans(text: str, start: int, end: int) -> list:
@@ -773,11 +811,11 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     ):
         # Only the arguments object: the NAME lives in this body too, and the scans that
         # decide the call is blocked (and anchor the peer behind it) read it from there.
-        args = _BARE_JSON_ARGS_RE.search(text, 0, lead)
-        if args is not None:
-            end = _balanced_brace_end(text, args.end() - 1)
+        brace = _top_level_args_brace(text, text.index("{"), lead)
+        if brace is not None:
+            end = _balanced_brace_end(text, brace)
             if end is not None:
-                spans.extend(_string_content_spans(text, args.end(), end))
+                spans.extend(_string_content_spans(text, brace + 1, end))
     spans = [(start, end) for start, end in spans if end > start]
     spans.sort()
     # Nested blocked calls are already covered by the outer body; keep spans disjoint so the
@@ -806,7 +844,10 @@ def _mask_blocked_bodies(
     path passes ``think=False`` and ``strip_outside_think`` handles it there."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
     if think:
-        spans = sorted(spans + _tool_healing._think_spans_outside_tool_markup(text))
+        # Merged, not just sorted: a blocked body may CONTAIN a reasoning block, and the
+        # masking walk moved its cursor backward over the enclosed span and re-appended the
+        # rest of the body unmasked, which put a rehearsal quoted there back in play.
+        spans = _merge_spans(spans + _tool_healing._think_spans_outside_tool_markup(text))
     if not spans:
         return text, []
     out: list = []

@@ -7160,3 +7160,37 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+@pytest.mark.parametrize("held", [
+    '{"name":"terminal","arguments":{"command":"id"}}',
+    'call:terminal{command:"id"}',
+])
+def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatch, held):
+    """A completed blocked markerless call keeps the chain guard true while its suffix is
+    empty, so the whole object sits in the buffer as display text the parser never promotes.
+    The cancel arm returned without it and the reply vanished."""
+    from core.inference.llama_cpp import _LlamaStreamCancelled
+
+    backend = _make_backend(monkeypatch, [[_sse({"content": held})]], [])
+
+    def _cancel_after_chunks(response, _cancel_event, first_token_deadline = None):
+        yield from response.chunks
+        raise _LlamaStreamCancelled
+
+    monkeypatch.setattr(backend, "_iter_text_cancellable", _cancel_after_chunks)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    texts = [event["text"] for event in events if event["type"] == "content"]
+    assert texts and texts[-1] == held
+    assert not any(event["type"] == "tool_start" for event in events)

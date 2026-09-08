@@ -1498,3 +1498,40 @@ def test_a_cancel_does_not_repeat_a_reply_that_was_fully_emitted():
     events = _cancel_after_snapshot("plain answer")
     texts = [event["text"] for event in events if event.get("type") == "content"]
     assert texts == ["plain answer"]
+
+
+@pytest.mark.parametrize("text", [
+    'call:terminal{command:<think>quote</think>web_search[ARGS]{}}',
+    'call:terminal{command:"<think>q</think>web_search[ARGS]{}"}',
+    'terminal[ARGS]{"c":"<think>q</think><function=python></function>"}',
+])
+def test_a_reasoning_block_inside_a_blocked_body_does_not_unmask_it(text):
+    """The blocked body ENCLOSES the think span. Sorting the two without merging moved the
+    masking cursor backward and re-appended the rest of the body unmasked, putting a
+    rehearsal quoted inside a rejected call back in play."""
+    gate = {"terminal", "python", "web_search"}
+    from core.inference.tool_call_parser import _mask_blocked_bodies
+
+    masked, _bodies = _mask_blocked_bodies(text, gate, think = True)
+    assert len(masked) == len(text)
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert strip_tool_markup(text, final = True, enabled_tool_names = gate) == text
+
+
+def test_a_decoy_arguments_object_does_not_shadow_the_real_one():
+    """The first textual ``arguments`` match is not the call's: an earlier nested one was
+    masked instead, so the strip still edited the real arguments."""
+    text = (
+        '{"meta":{"arguments":{"x":"safe"}},"name":"terminal",'
+        '"arguments":{"command":"<function=python></function>"}}'
+    )
+    gate = {"terminal", "python"}
+    assert strip_tool_markup(text, final = True, enabled_tool_names = gate) == text
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+
+
+def test_a_real_bare_json_call_still_runs_with_the_structural_lookup():
+    calls = parse_tool_calls_from_text(
+        '{"name":"web_search","arguments":{"q":"x"}}', enabled_tool_names = {"web_search"}
+    )
+    assert [call["function"]["name"] for call in calls] == ["web_search"]

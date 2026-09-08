@@ -29386,6 +29386,22 @@ class LlamaCppBackend:
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
 
+        def _cancelled_hold_text() -> str:
+            """Display text the guards are still holding, which a cancel would drop.
+
+            Mirrors the safetensors loop: a completed blocked markerless object keeps the
+            chain guard true while its suffix is empty, so the whole object sits in
+            ``content_buffer`` as ordinary display text the parser will never promote, and
+            returning on cancellation lost the reply outright. The final strip removes
+            genuinely promotable markup, so an aborted real call contributes only prose."""
+            if _suppress_visible_output:
+                return ""
+            held = cumulative_display + content_buffer
+            if not held:
+                return ""
+            cleaned = _strip_tool_markup(held, final = True, force = True)
+            return cleaned if len(cleaned) > len(_last_emitted) else ""
+
         def _close_streamed_think() -> bool:
             """Close a live-streamed <think> before a tool call drains, so
             consumers without a reasoning extractor (Anthropic) get a balanced
@@ -32182,6 +32198,9 @@ class LlamaCppBackend:
                 continue
 
             except _LlamaStreamCancelled:
+                _held = _cancelled_hold_text()
+                if _held:
+                    yield {"type": "content", "text": _held}
                 return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
@@ -33052,6 +33071,9 @@ class LlamaCppBackend:
                 break
 
             except _LlamaStreamCancelled:
+                _held = _cancelled_hold_text()
+                if _held:
+                    yield {"type": "content", "text": _held}
                 return
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
