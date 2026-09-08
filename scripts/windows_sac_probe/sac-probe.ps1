@@ -554,6 +554,11 @@ function Save-Baseline([string] $dir) {
         StudioInstalledByProbe  = $false
         StudioInstallRoots      = @()
         AuditPolicyApplied      = $false
+        # $true when an unsigned control raised 3076/3077 under the applied
+        # policy, $false never (prepare throws), $null when no control could be
+        # built. collect refuses to read an empty window as an allow unless
+        # this is $true.
+        AuditPolicyControlFired = $null
         # A policy with the NoISG GUID that was there before prepare: kept
         # aside and put back by revert rather than deleted as ours.
         AuditPolicyPreexisting  = $false
@@ -562,6 +567,65 @@ function Save-Baseline([string] $dir) {
     $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding UTF8
     Write-Host "baseline written to $path"
     return $baseline
+}
+
+# Proves the audit policy is not merely listed but actually evaluating loads.
+# Being in CiTool's list is not that: a policy that loaded and evaluates nothing
+# produces a window with no 3076 in it, which reads exactly like a clean allow,
+# and the whole verdict of a Smart-App-Control-off cell rests on that window.
+# The CI job runs the same control for the same reason.
+#
+# Returns $true (fired), $false (did not fire) or $null (no control could be
+# built, so the question was not asked).
+function Test-AuditPolicyEvaluating {
+    $dir = Join-Path $WorkDir ".control-$Label"
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    try {
+        $control = Join-Path $dir 'unsigned-control.exe'
+        $since = (Get-Date).AddSeconds(-1)
+        try {
+            # Windows PowerShell 5.1 only. PowerShell 7 dropped assembly
+            # emission from Add-Type ("Both the assembly types
+            # 'ConsoleApplication' and 'WindowsApplication' are not currently
+            # supported"), so on pwsh the cell is marked unverified rather than
+            # failed. One line, not a here-string, to keep this readable.
+            $src = 'public class UnsignedControl { public static void Main() { System.Console.WriteLine("control"); } }'
+            Add-Type -TypeDefinition $src -OutputAssembly $control -OutputType ConsoleApplication -ErrorAction Stop
+        } catch {
+            Write-Warning "could not build an unsigned control binary ($_); the audit policy is listed as active but has NOT been shown to evaluate loads here. Run prepare from Windows PowerShell 5.1 for a verified cell."
+            return $null
+        }
+        if (-not (Test-Path -LiteralPath $control)) {
+            Write-Warning 'Add-Type reported success but produced no control binary; the audit policy has NOT been shown to evaluate loads here.'
+            return $null
+        }
+        # Launch failure is not an error here. On a machine where Smart App
+        # Control is genuinely enforcing, an unsigned binary is refused and
+        # never runs: that refusal is a 3077 and is stronger evidence of
+        # evaluation than the 3076 an audit-only machine produces.
+        try { & $control 2>&1 | Out-Null } catch { }
+        # Polled, not slept once. Code integrity writes these asynchronously, so
+        # a fixed wait that is slightly too short would report "not evaluating"
+        # for a policy that works, which is the one conclusion this must never
+        # reach by accident.
+        foreach ($attempt in 1..10) {
+            Start-Sleep -Seconds 3
+            $fired = @(Get-WinEvent -FilterHashtable @{
+                LogName = $CI_LOG; StartTime = $since
+            } -ErrorAction SilentlyContinue |
+                Where-Object { ($_.Id -eq 3076 -or $_.Id -eq 3077) -and $_.Message -like '*unsigned-control*' })
+            if ($fired.Count -gt 0) {
+                Write-Host "positive control raised $($fired[0].Id): the policy is evaluating loads on this machine"
+                return $true
+            }
+        }
+        return $false
+    } finally {
+        # Never left behind, and never staged into the evidence: an unsigned
+        # executable does not belong in an archive attached to a public issue.
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-Prepare {
@@ -718,6 +782,14 @@ function Invoke-Prepare {
             # produce a result this script would stand behind.
             throw "CiTool listed no policies, so the audit policy cannot be verified as active; the copied file is left in place, run revert"
         }
+
+        Write-Section 'Positive control'
+        $controlFired = Test-AuditPolicyEvaluating
+        if ($false -eq $controlFired) {
+            throw "the audit policy $NOISG_GUID is listed as active but an unsigned control binary raised no 3076 or 3077 event, so it is not evaluating loads on this machine; a run with no events would be meaningless. Run revert and re-apply the policy."
+        }
+        $baseline.AuditPolicyControlFired = $controlFired
+        $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
     } else {
         Write-Host ''
         Write-Host 'No -AuditPolicy given. Download the sample policies from https://aka.ms/sacauditpolicies'
@@ -1068,6 +1140,21 @@ function Invoke-Collect {
         $a = @($g.Group | Where-Object { $_.Id -eq 3076 }).Count
         Write-Host ("  {0,-10} {1} x 3077, {2} x 3076, {3} event(s)" -f $g.Name, $b, $a, $g.Count)
     }
+    # An empty window is an allow only if the policy was shown to be evaluating
+    # loads. prepare throws when its control did not fire, so the case left here
+    # is the one where no control could be built (PowerShell 7); saying nothing
+    # would let that run be read as a clean result.
+    $baselineForControl = Join-Path $dir 'baseline.json'
+    if ($ours.Count -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
+        $b = Get-Content -LiteralPath $baselineForControl -Raw | ConvertFrom-Json
+        if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
+            $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so an empty event window here is a NULL result, not an allow'
+            Write-Warning 'No Unsloth path raised a code integrity event, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
+        } elseif ($b.AuditPolicyApplied) {
+            Write-Host 'no Unsloth path raised an event, and the positive control confirmed the policy was evaluating loads'
+        }
+    }
+
     # Reported, never folded into the totals above. These are somebody else's
     # binaries and say nothing about whether Studio is blocked.
     Write-Host "unrelated to Unsloth: $foreign event(s) (kept in the export, excluded from the counts)"

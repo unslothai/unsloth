@@ -175,6 +175,17 @@ since a sample uploaded during the probe cannot be recalled.
 venv's native modules load, and those loads have to happen inside the event window
 and under the audit policy to be measured.
 
+With `-AuditPolicy`, `prepare` also runs a **positive control**: it builds a small
+unsigned executable, runs it, and requires the policy to raise a 3076 (or a 3077 on
+a machine where Smart App Control is genuinely enforcing) naming it. Without that,
+a cell with no events is unfalsifiable, since "nothing would be blocked" and "the
+policy loaded but evaluates nothing" look identical. `prepare` refuses to continue
+when the control does not fire. Building the control needs Windows PowerShell 5.1;
+PowerShell 7 dropped assembly emission from `Add-Type`, so on pwsh the control is
+skipped, the cell is recorded as unverified, and `collect` says so rather than
+reading an empty window as an allow. The control binary is built outside the run
+directory and deleted immediately, so it never reaches the evidence zip.
+
 Running `prepare` again with the same label (after a failure, or to add
 `-AuditPolicy`) keeps the baseline the first pass captured, so `revert` still
 restores the machine as it was before the first pass. `collect` refuses a label

@@ -991,9 +991,10 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     raw evtx or a core artifact read as a complete evidence package."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    # evtx export, staging, redaction failure, and no-interpreter: every path
-    # that leaves a documented artifact out of the archive records it.
-    assert collect.count("$collectionProblems += ") == 4
+    # evtx export, staging, redaction failure, no-interpreter, and an
+    # unverified empty window: every path that would let the archive be read
+    # as more than it is records itself.
+    assert collect.count("$collectionProblems += ") == 5
     redact = collect[collect.index("$redactor = Join-Path") :]
     assert redact.index("$collectionProblems += \"log redaction failed") < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
@@ -1058,3 +1059,33 @@ def test_acl_repair_reaches_a_custom_home_outside_the_user_profile():
     # Still two gates: prepare recorded it, and it resolves under a live root.
     assert "if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }" in revert
     assert "$full.StartsWith($_ + '\\', [StringComparison]::OrdinalIgnoreCase)" in revert
+
+
+def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
+    """Being in CiTool's policy list is not evidence of evaluation: a policy
+    that loaded and evaluates nothing produces a window with no 3076 in it,
+    which reads exactly like a clean allow. The CI job runs the same control."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")]
+    assert "-OutputType ConsoleApplication" in fn
+    # An enforcing machine refuses the control outright: that 3077 is stronger
+    # evidence of evaluation than the 3076 an audit-only machine produces.
+    assert "$_.Id -eq 3076 -or $_.Id -eq 3077" in fn
+    # Polled, not slept once, and never staged into the evidence.
+    assert "foreach ($attempt in 1..10)" in fn
+    assert 'Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue' in fn
+    assert "$dir = Join-Path $WorkDir \".control-$Label\"" in fn
+
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    assert prepare.index("-not (Test-PolicyActive $NOISG_GUID)") < prepare.index(
+        "$controlFired = Test-AuditPolicyEvaluating"
+    ), "the control runs only once the policy is verified to be in the active set"
+    # $null (no control could be built) is not a failure; $false is.
+    assert "if ($false -eq $controlFired) {" in prepare
+    assert "$baseline.AuditPolicyControlFired = $controlFired" in prepare
+    assert "AuditPolicyControlFired = $null" in ps1
+
+    # And collect refuses to read an unverified empty window as an allow.
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$true -ne $b.AuditPolicyControlFired" in collect
+    assert "NULL result, not an allow" in collect
