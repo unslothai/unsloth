@@ -105,9 +105,10 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
-# Every native import left in the installers, however it is declared. install.ps1 defines its three through
-# reflection emit, which costs no compile at all; studio/setup.ps1 still uses Add-Type for the console thunk, which
-# costs a csc.exe run. Either way a new entry needs a reason, and a PowerShell equivalent usually exists.
+# Every native import left in the installers, however it is declared. Both scripts define theirs through reflection
+# emit now, which costs no compile at all: install.ps1 the path resolver, the console thunk, the icon refresh and the
+# process-image lookup, studio/setup.ps1 the console thunk. A new entry still needs a reason, and a PowerShell
+# equivalent usually exists.
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths.
     # No PS 5.1 equivalent: ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
@@ -268,6 +269,37 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     assert (
         "$env:TMP" not in body and "$env:TEMP" not in body
     ), "the native resolver touches the temporary directory again; it should need nothing there"
+
+
+def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
+    """The behavioural half of the guard above.
+
+    Reading the scripts cannot see a compile reached through a module, a dot-sourced
+    file or a generated here-string, and it cannot see one a dependency performs while
+    our process tree is what a scanner scores. Bitdefender scored the chain, not the
+    bytes, so there has to be a lane that runs the installer and fails on the process.
+
+    The positive control is the part worth asserting from here: a detector that sees
+    nothing reads exactly like a clean run, and auditing can silently fail to apply. If
+    the lane ever loses the control, every later green result stops meaning anything.
+    """
+    workflow = REPO / ".github" / "workflows" / "windows-no-compiler-ci.yml"
+    assert workflow.is_file(), "the runtime guard lane is gone; the text check is alone again"
+    body = workflow.read_text(encoding = "utf-8")
+    assert "Positive control" in body, "the lane no longer proves its own detector works"
+    assert "Add-Type -TypeDefinition" in body, (
+        "the positive control must really compile something; a simulated one proves nothing"
+    )
+
+    watcher = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
+    assert watcher.is_file()
+    watcher_body = watcher.read_text(encoding = "utf-8")
+    for image in ("csc.exe", "vbc.exe", "cvtres.exe"):
+        assert image in watcher_body, f"the watcher no longer looks for {image}"
+    # 4688 is what sees a compiler spawned at any depth; the temp sweep is what
+    # survives auditing being overridden. Losing either leaves one detector.
+    assert "4688" in watcher_body
+    assert "*.cmdline" in watcher_body
 
 
 def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
