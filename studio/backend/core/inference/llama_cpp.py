@@ -6213,16 +6213,12 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
-    # Held only across "is a teardown running?" and publishing the child, never
-    # across a health wait, so app shutdown never blocks behind a 600s load. On the
-    # class rather than in __init__ because the lightweight doubles that reach
-    # _kill_process are built with __new__ and never run it.
+    # Held across "is a teardown running?" and publishing the child, never across a
+    # health wait. On the class: doubles built with __new__ never run __init__.
     _spawn_lock = threading.Lock()
 
-    # Bumped by each _begin_server_lifecycle. A load captures it at the start and
-    # is refused at the spawn if it no longer matches, which is what stops a
-    # request left over from a previous embedded lifecycle launching into the new
-    # one. Same reason as the lock above for living on the class.
+    # Bumped per _begin_server_lifecycle; a load captures it and is refused if it no
+    # longer matches, keeping a previous embedded lifecycle's load out.
     _lifecycle_generation = 0
 
     def __init__(self, *, manages_processes: bool = True):
@@ -14148,9 +14144,8 @@ class LlamaCppBackend:
 
         # The shim (and its visual server) die with this backend process, so a
         # Unsloth crash/restart never orphans a GPU process.
-        # Same check-with-publication as the llama-server spawn: this launcher has
-        # its own Popen, and the parent-death backstop is not available on every
-        # platform, so a runner started after the shutdown sweep can outlive it.
+        # Own Popen, and no parent-death backstop on every platform, so a runner
+        # started after the shutdown sweep outlives it.
         with self._spawn_lock:
             if self._spawn_is_stale(load_generation):
                 logger.info("app is shutting down; not starting the diffusion runner")
@@ -14174,10 +14169,9 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
-            # macOS has no parent-death signal, so the kwargs above are empty there
-            # and only this record lets the next startup reap a runner holding the
-            # GPU. Under the lock, as on the llama-server path: adopting after a
-            # teardown sweep has run puts back a pid the sweep just forgot.
+            # macOS has no parent-death signal, so only this record reaps a runner
+            # holding the GPU. Under the lock: adopting after the sweep re-adds a
+            # pid it just forgot.
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(_spawned.pid)
@@ -14274,9 +14268,8 @@ class LlamaCppBackend:
         healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
             if not self._publish_healthy(load_generation):
-                # Same window as the llama-server path: a teardown between the
-                # probe and this commit is already killing the runner, so
-                # publishing it healthy would advertise a server that is gone.
+                # A teardown between the probe and this commit is already killing
+                # the runner; publishing would advertise a server that is gone.
                 self._kill_process()
                 return False
             self._gpu_offload_active = not holds_no_gpu
@@ -18354,8 +18347,8 @@ class LlamaCppBackend:
         # with --mmproj stripped), redacting the API key.
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
-        # Checked with publication under one lock, as in _spawn_and_wait: the
-        # text-only mmproj retry reaches a spawn without passing that boundary.
+        # Check with publication under one lock: the mmproj text-only retry reaches
+        # a spawn without passing _spawn_and_wait's boundary.
         with self._spawn_lock:
             if self._spawn_is_stale(load_generation):
                 logger.info("app is shutting down; not starting llama-server")
@@ -18374,10 +18367,8 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
-            # Cross-session backstop: record the PID so a later startup can reap this
-            # server if parent-death cleanup did not run (macOS / best-effort failure).
-            # Under the lock for the same reason as _spawn_and_wait: recorded after a
-            # teardown sweep, this is a bare pid the next launch would kill blind.
+            # Cross-session backstop for when parent-death cleanup did not run.
+            # Under the lock: see _spawn_and_wait.
             self._record_server_pid(_spawned.pid)
 
         # Start background thread to drain stdout and prevent pipe deadlock
@@ -18458,20 +18449,15 @@ class LlamaCppBackend:
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
-        # Read before the serial scope, not inside it: a load that queues behind
-        # another still belongs to the lifecycle it was requested in, and an
-        # embedded restart can land while it waits.
+        # Before the serial scope: a queued load still belongs to the lifecycle it
+        # was requested in.
         _load_generation = getattr(self, "_lifecycle_generation", 0)
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
-            # Refused HERE, not at the spawn: a lock gives a waiter no priority, so a
-            # load left over from a previous lifecycle can take this scope after the
-            # restart and spend minutes on probes and downloads first. Worse, the
-            # duplicate-adoption phase below calls _kill_process() on whatever is
-            # loaded, which by then is the NEW lifecycle's model -- so refusing only
-            # at the Popen would unload the restarted server and then decline to
-            # replace it, leaving it with nothing.
+            # Here, not at the spawn: a lock gives a waiter no priority, and the
+            # duplicate-adoption phase below kills whatever is loaded -- after a
+            # restart, the new lifecycle's model.
             with self._spawn_lock:
                 _stale_load = self._spawn_is_stale(_load_generation)
             if _stale_load:
@@ -23792,10 +23778,9 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
-                        # Checked against publication under one lock, so teardown
-                        # cannot slip between the two: a spawn either publishes
-                        # first and is killed by the sweep, or sees the flag and
-                        # never starts. Held across Popen only, never the wait.
+                        # Check with publication under one lock: a spawn either
+                        # publishes first and the sweep kills it, or sees the flag
+                        # and never starts. Across Popen only, never the wait.
                         with self._spawn_lock:
                             if self._spawn_is_stale(_load_generation):
                                 logger.info("app is shutting down; not starting llama-server")
@@ -23815,13 +23800,9 @@ class LlamaCppBackend:
                                 **_child_popen_kwargs(),
                             )
                             self._process = _spawned
-                            # Inside the lock, not after it: teardown takes the lock
-                            # the moment publication ends, and a sweep that reaps the
-                            # child first would have this write the pid back afterwards.
-                            # _pid_start_identity cannot read a start time for a reaped
-                            # pid, so the record left behind is a bare pid -- which the
-                            # next launch accepts without an identity check and kills,
-                            # whatever the OS has since recycled that number onto.
+                            # Inside the lock: written after a sweep reaped the child,
+                            # _pid_start_identity yields no start time, and the bare pid
+                            # left behind is one a later launch kills blind.
                             self._record_server_pid(_spawned.pid)
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
@@ -25042,8 +25023,7 @@ class LlamaCppBackend:
                                 )
                             else:
                                 _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
-                                # Snapshot: a teardown between the two reads is
-                                # the NoneType poll again.
+                                # Snapshot: re-reading races the teardown.
                                 _proc_snap6 = self._process
                                 _cpu_projector_rc = (
                                     _proc_snap6.poll() if _proc_snap6 is not None else None
@@ -25122,10 +25102,8 @@ class LlamaCppBackend:
                                 child_gpu_physical_ids = _child_gpu_physical_ids,
                                 load_generation = _load_generation,
                             ):
-                                # Shutdown refused the retry, so the old child is
-                                # still what self._process names and the teardown is
-                                # clearing it. Waiting on it and then reading it for
-                                # an exit code is how the NoneType poll came back.
+                                # Shutdown refused the retry; self._process still names
+                                # the old child the teardown is clearing.
                                 _cleanup_cancelled_load("App shut down during the text-only retry")
                                 return False
                             if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
@@ -25148,8 +25126,7 @@ class LlamaCppBackend:
                             else:
                                 # Read the exit code before _kill_process() clears it, so
                                 # an OS-killed text-only retry still gets the OOM message.
-                                # Snapshotted, not re-read per term: a teardown between
-                                # the two reads is the NoneType poll again.
+                                # Snapshot: re-reading races the teardown.
                                 _retry_proc = self._process
                                 _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
                                 self._kill_process()
@@ -25256,9 +25233,8 @@ class LlamaCppBackend:
                         ),
                     )
                 if not self._publish_healthy(_load_generation):
-                    # Teardown began between the probe that answered 200 and this
-                    # commit, so the child is already being killed. Publishing here
-                    # would leave the backend reporting a model it does not have.
+                    # Teardown began between the 200 and this commit; publishing
+                    # would report a model that is gone.
                     _cleanup_cancelled_load("App shut down as the load was completing")
                     return False
                 self._commit_effective_parallel_slots(n_parallel)
@@ -26393,17 +26369,10 @@ class LlamaCppBackend:
     def _publish_healthy(self, load_generation: Optional[int] = None) -> bool:
         """Commit _healthy under the spawn lock, or refuse if this load is stale.
 
-        The recheck inside the health wait only narrows the window: teardown can
-        still start after a successful probe returns, kill the child and clear the
-        reference, and the caller would then publish _healthy for a server that no
-        longer exists. Taken under the same lock the teardown mark is set with, so
-        the two orders are the only ones possible: publish then teardown (which
-        clears _healthy on its way out), or teardown then a refused publish.
-
-        The generation matters as much as the flag. A load still blocked in /health
-        when the host restarted returns to a lifecycle that has already cleared
-        _shutting_down, so the flag alone would let it publish a 200 it received
-        before the teardown -- for a process that is now None.
+        Under the lock the teardown mark is set with, so only two orders exist:
+        publish then teardown (which clears _healthy), or teardown then a refused
+        publish. The generation matters as much as the flag -- a load still blocked
+        in /health when the host restarted comes back to a cleared flag.
         """
         with self._spawn_lock:
             if self._spawn_is_stale(load_generation):
@@ -26415,10 +26384,9 @@ class LlamaCppBackend:
     def _close_attempt_log(self) -> None:
         """Close the per-attempt tee log opened just before a spawn.
 
-        A refused spawn never publishes a process, and _kill_process returns
-        early when there is none, so nothing else closes this handle. The next
-        attempt overwrites the attribute, leaking the descriptor and, on Windows,
-        holding the file lock that an update needs to replace it.
+        A refusal publishes no process and _kill_process returns early when there is
+        none, so nothing else closes it: the next attempt leaks the descriptor and,
+        on Windows, holds the file lock an update needs.
         """
         fh = getattr(self, "_llama_log_fh", None)
         if fh is not None:
@@ -26436,12 +26404,9 @@ class LlamaCppBackend:
         to a lifecycle rather than to the interpreter. Called from run_server
         before anything can spawn.
 
-        The generation bump is what keeps the PREVIOUS lifecycle's loads out.
-        _graceful_shutdown only latches the flag: it does not cancel an in-flight
-        load nor wait for the server thread, so a request still downloading when
-        the host restarted would otherwise find the flag cleared, spawn its stale
-        model after the shutdown sweep, and hold the serial load scope against the
-        new lifecycle's own load. A load compares the generation it captured.
+        The generation bump keeps the PREVIOUS lifecycle's loads out: clearing the
+        flag for a new lifecycle necessarily clears it for the old one, so a load
+        compares the generation it captured instead.
         """
         with self._spawn_lock:
             self._shutting_down = False
@@ -26468,13 +26433,10 @@ class LlamaCppBackend:
         retry ladder reaping a child it is about to replace: only the former may
         end an in-flight health wait.
 
-        A teardown holds the spawn lock for the WHOLE kill, not just long enough to
-        set the flag. The terminate/wait below reads self._process repeatedly and
-        finally clears it, so an embedded host that saw the server thread stop and
-        called run_server() again could otherwise reopen the lifecycle mid-kill: the
-        new load would spawn, and this teardown's finally would then drop or
-        terminate its child. Marking is above the early return because a quit during
-        a download has no process to kill and still has to be recorded.
+        A teardown holds the spawn lock for the WHOLE kill: the terminate/wait below
+        keeps reading self._process and finally clears it, so a lifecycle reopened
+        mid-kill would have its new child dropped or terminated here. Marked above
+        the early return, since a quit during a download still has to be recorded.
         """
         if teardown:
             with self._spawn_lock:
@@ -26511,12 +26473,9 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
         if teardown:
-            # Before the signal, not in the finally: the reference stays set across
-            # the waits below, so a racing _wait_for_health would read this
-            # deliberate exit as a startup crash and respawn during shutdown.
-            # Recorded as the process itself, not a flag: a teardown landing
-            # between a spawn and its health wait must survive until that wait
-            # reads it, and only identity can say which child it referred to.
+            # Before the signal, and as the process itself: the reference stays set
+            # across the waits below, and only identity says which child a teardown
+            # landing between a spawn and its wait referred to.
             self._torn_down_process = self._process
         try:
             if terminable:
@@ -28065,15 +28024,13 @@ class LlamaCppBackend:
         # Why this wait ended, for callers that must tell a cancel apart from a crash:
         # a cancel landing during CPU-fallback staging is not a cancelled wait.
         self._health_wait_cancelled = False
-        # No teardown reset here on purpose: it would erase a teardown that landed
-        # between this load's spawn and this line. _torn_down_process is compared
-        # by identity instead, so an earlier child's teardown cannot match.
+        # No teardown reset here: it would erase one that landed between this load's
+        # spawn and this line. _torn_down_process is matched by identity instead.
         process = None  # the child this wait last looked at, read again after the loop
 
         while time.monotonic() < deadline:
-            # Durable and monotonic, so unlike the per-process marker below this
-            # cannot be missed by landing between two checks: once teardown has
-            # begun, every later iteration sees it and the wait ends terminally.
+            # Durable, unlike the per-process marker below: once teardown begins,
+            # every later iteration sees it.
             if getattr(self, "_shutting_down", False):
                 logger.info("llama-server was torn down while waiting for it to become healthy")
                 self._health_wait_cancelled = True
@@ -28096,8 +28053,8 @@ class LlamaCppBackend:
                 return False
             # Process crashed?
             if process.poll() is not None:
-                # A teardown publishes before it signals and holds the reference
-                # across its waits, so THIS child exiting under it is deliberate.
+                # A teardown holds the reference across its waits, so THIS child
+                # exiting under it is deliberate.
                 if getattr(self, "_torn_down_process", None) is process:
                     logger.info("llama-server was torn down while waiting for it to become healthy")
                     self._health_wait_cancelled = True
@@ -28131,9 +28088,7 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy after the load was cancelled")
                         self._health_wait_cancelled = True
                         return False
-                    # Same window, same reasoning: a server that answered 200 just as
-                    # shutdown began must not be reported healthy, or the load commits
-                    # _healthy on a child the teardown is already killing.
+                    # A 200 arriving as shutdown began must not publish _healthy.
                     if getattr(self, "_shutting_down", False):
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
@@ -28157,15 +28112,9 @@ class LlamaCppBackend:
             self._health_wait_cancelled = True
             return False
 
-        # A teardown landing during the last probe or interval wait leaves no
-        # iteration to notice it, so the deadline is the other way out of this
-        # loop and has to ask too. Otherwise the caller reads a deliberate stop as
-        # a plain timeout and the fallbacks respawn during shutdown.
-        #
-        # Both signals, because _kill_process publishes them apart: it sets
-        # _shutting_down under the spawn lock on entry and _torn_down_process only
-        # once it has collected the descendants, so a deadline landing between the
-        # two sees an active teardown with no marker yet.
+        # The deadline is the other way out of the loop, so it asks too -- and about
+        # both signals, since _kill_process sets _shutting_down on entry but
+        # _torn_down_process only after collecting descendants.
         if getattr(self, "_shutting_down", False) or (
             process is not None and getattr(self, "_torn_down_process", None) is process
         ):

@@ -1639,10 +1639,8 @@ def _graceful_shutdown(server = None):
     try:
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
-        # Before the kill: a /load still in the lifecycle gate or preflight holds
-        # nothing the backend's shutdown flag can see, so it would reach the
-        # backend in a lifecycle that has since been reset and load a model the
-        # next server never asked for. Non-blocking, so shutdown does not wait.
+        # Before the kill: a load still in the gate or preflight is invisible to the
+        # backend's shutdown flag and would spawn into the next lifecycle.
         try:
             cancelled = cancel_pending_loads()
             if cancelled:
@@ -2879,22 +2877,12 @@ def run_server(
 
             _close_lan_listener()
 
-    # A new server lifecycle. The backend is a module singleton, so an embedded host
-    # that stops and calls this again reuses the instance _graceful_shutdown marked
-    # as shutting down, and without this every launch of the second session would be
-    # refused.
-    #
-    # Immediately before the serve, after EVERY pre-serve exit: clearing the flag is
-    # what lets a spawn through, so an abort in between (an occupied port from
-    # _resolve_port, the missing-frontend SystemExit, the admin-password gate's
-    # sys.exit) would leave the previous session's still-unwinding load free to start
-    # a child that the shutdown sweep has already run past. The sys.exit further down
-    # is a startup FAILURE after this thread is running, by which point a spawn is
-    # legitimate. Also after `from main import app`, which imports the route package,
-    # so the singleton exists by now and the import below is a lookup -- reaching for
-    # it earlier would build it here instead, ahead of the UTF-8 reconfigure, the
-    # session log, the structlog setup, initialize_parent_lifetime() and
-    # write_startup_marker(), each documented above as having to come first.
+    # A new server lifecycle: the backend is a module singleton, so an embedded host
+    # calling run_server again reuses the instance _graceful_shutdown marked as
+    # shutting down. Last, after every pre-serve exit, because clearing the flag is
+    # what lets a spawn through; and after `from main import app`, or reaching for
+    # the route module here would build the singleton ahead of the startup steps
+    # above that must come first.
     try:
         from routes.inference import _llama_cpp_backend
         if _llama_cpp_backend is not None:
