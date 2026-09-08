@@ -239,6 +239,9 @@ class PlanOptions:
     # on a 27B at 32K that produced a 0.2 GiB deficit, a spill, and a measured loss where
     # llama.cpp's own fitter, which targets a flat 1 GiB, had slack and moved nothing.
     overhead_free_ctx: int = 32768
+    # Both reserve terms withhold DEVICE memory on a discrete card. On a unified-memory part
+    # (Strix Halo, DGX Spark) the binding constraint is host MemAvailable and the planner
+    # abstains before either term is read, so neither has a meaning there.
     # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft
     # reserve), charged once against the pooled budget: the layout only knows the
     # target GGUF's tensor table. Subtracting from the budget also reaches
