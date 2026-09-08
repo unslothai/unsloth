@@ -2024,10 +2024,8 @@ def _openai_llama_admission_media_tokens(
 def _openai_llama_admission_transport_tokens(payload) -> int:
     """Audio and video, charged by encoded length because nothing here can size their KV.
 
-    A LEDGER figure only, and a deliberately high one: it keeps a request carrying either
-    from sharing the cache with anything it might collide with. It is not a prompt count,
-    so it never reaches the wire bound (see
-    ``_openai_llama_admission_unpriceable_media``).
+    A deliberately high LEDGER figure, which keeps such a request from sharing the cache.
+    Not a prompt count, so it never reaches the wire bound.
     """
     total = 0
     for attribute in ("audio_base64", "video_base64"):
@@ -2116,13 +2114,11 @@ def _openai_llama_admission_tokens(
     if not budget:
         return None
     if conversation is not None:
-        # The messages the request will actually send, so the lease and the wire bound are
-        # taken on ONE figure. `payload.messages` is what the client sent, and the GGUF
-        # builders splice a current-date prompt, a tool nudge and any media part into it
-        # afterwards; a lease that does not know about them lets a full set of requests in
-        # while each occupies more than the share it was charged. Transport bytes are
-        # added back because they belong on the ledger even though they are not a prompt
-        # count.
+        # What the request will actually send, so the lease and the wire bound are taken on
+        # ONE figure: the GGUF builders splice a current-date prompt, a tool nudge and any
+        # media part into `payload.messages` afterwards, and a lease that has not heard of
+        # them admits a full set of requests each occupying more than its share. Transport
+        # bytes come back because they belong on the ledger, prompt count or not.
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation, image_tokens = image_tokens, injected_tools = injected_tools
         ) + _openai_llama_admission_transport_tokens(payload)
@@ -2213,18 +2209,14 @@ def _openai_llama_admission_share(
     return None if share >= window else share
 
 
-# The media parts whose bytes ride in the message list. `image_url` is excluded because
-# `_openai_llama_admission_messages_for_estimate` compacts it and returns a count that is
-# priced as a bounded per-image allowance; nothing prices the rest.
+# Media whose bytes ride in the message list. `image_url` is out because
+# `_openai_llama_admission_messages_for_estimate` compacts it into a per-image allowance;
+# nothing prices the rest.
 _TRANSPORT_MEDIA_TYPES = _UNPRICED_MEDIA_TYPES - {"image_url"}
 
 
 def _openai_llama_admission_messages_without_transport(conversation):
-    """``conversation`` with the media parts the text estimator cannot price removed.
-
-    ``_UNPRICED_MEDIA_TYPES`` names them; ``image_url`` is the exception, compacted and
-    counted by ``_openai_llama_admission_messages_for_estimate`` instead.
-    """
+    """``conversation`` without the media parts the text estimator cannot price."""
     stripped = []
     for message in conversation or []:
         message_dict = (
@@ -2248,13 +2240,11 @@ def _openai_llama_admission_messages_without_transport(conversation):
 def _openai_llama_admission_unpriceable_media(payload, conversation = None) -> bool:
     """Audio or video, whose prompt KV nobody can size yet.
 
-    Admission charges their transport bytes. That is a usable LEDGER figure, deliberately
-    far above the truth, but as a prompt count it is nonsense: subtracting a megabyte of
-    base64 from a share leaves the one-token floor for an ordinary voice message. The
-    encoders produce embeddings whose count follows the loaded projector and the clip
-    duration, and there is no estimate for either here, so a request carrying one is left
-    unenforced rather than bounded on a number that does not describe it. Images are
-    different: ``_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS`` is a real per-image bound.
+    Their charge is transport length, which as a prompt count is nonsense: subtracting a
+    megabyte of base64 from a share leaves the one-token floor for a voice message. The
+    embeddings follow the projector and the clip duration and there is no estimate for
+    either here, so such a request is left unenforced rather than bounded on a number that
+    does not describe it. Images keep their bound, which is a real per-image ceiling.
     """
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
@@ -2278,29 +2268,14 @@ def _openai_llama_admission_wire_prompt_tokens(
 ) -> int:
     """What the NEXT request carries, which is not what the ledger charges.
 
-    The charge is deliberately conservative: it re-adds ``system``/``tools`` from the
-    payload every round, and keeps the tool catalogue in the figure even for the
-    synthesized final answer, so a lease is never smaller than the run needs. Subtracting
-    that same figure from the share is a different question, and getting it wrong cuts an
-    answer nobody's cache needed protecting from. Two shapes made it concrete: the
-    Anthropic routes fold ``system`` into the translated messages, so charging it again
-    took the system prompt off the answer twice, and the final pass sends no ``tools``
-    array at all, so subtracting the catalogue there could floor a real answer at one
-    token.
-
-    So this counts only what goes on the wire: the conversation as it stands, its media,
-    and a catalogue only where one is actually sent.
-
-    Transport bytes are dropped first. An injected ``input_audio`` part rides in the
-    message list, so leaving it in the text estimate prices a 25 MB upload as millions of
-    prompt tokens; ``_openai_llama_admission_unpriceable_media`` turns enforcement off for
-    such a request instead. ``image_url`` stays, since the estimator compacts it and
-    returns the count this then prices as a bounded image allowance.
-
-    Media comes from the CONVERSATION alone, not from
-    ``_openai_llama_admission_media_tokens``: that also charges the legacy top-level
-    image, which the GGUF builder has already spliced into these very messages, so on
-    finalized messages the two would charge one image twice.
+    A charge may safely count more than is sent; a bound may not, because every extra
+    token comes off the answer and the floor is one token. So this leaves out the three
+    the ledger keeps: ``system``/``tools`` from the payload, which a translating route has
+    already folded into these messages; the catalogue on the pass that sends none; and
+    audio and video transport, which is not a prompt count at all (a request carrying it
+    is left unenforced instead). Media is counted from the conversation rather than
+    through ``_openai_llama_admission_media_tokens``, which would charge the legacy
+    top-level image the GGUF builder has already spliced into these very messages.
     """
     conversation = _openai_llama_admission_messages_without_transport(conversation)
     estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
@@ -2340,13 +2315,11 @@ def _openai_llama_admission_enforced_max_tokens(
     lone chat to about a thousand tokens for no safety gain.
 
     ``conversation`` prices the bound from the messages that will actually be sent, which
-    a route that translates its input has to pass: the Anthropic routes fold ``system``
-    into them and turn image blocks into ``image_url`` parts, and pricing the raw payload
-    instead charged the system prompt twice and the base64 transport of every image once.
-    ``prompt_tokens`` and ``capacity`` let a caller that has already priced this request
-    hand the figures over rather than paying for them twice; the re-cost path does, and
-    passing the conversation it just charged is what keeps a growing tool loop bounded by
-    what it currently is rather than by what it opened as.
+    a translating route must pass: the Anthropic ones fold ``system`` into them and
+    normalise image blocks, so the raw payload charged the system prompt twice and every
+    image's base64 as prompt text. ``prompt_tokens`` and ``capacity`` let a caller that
+    has already priced the request hand the figures over; the re-cost path does, which is
+    what keeps a growing tool loop bounded by what it now is.
 
     Returns None to leave the caller's value alone. A client that named its own cap is
     already honest and is never clamped, and neither is a backend whose operator turned
@@ -2520,11 +2493,8 @@ def _openai_llama_admission_recost(
             + _openai_llama_admission_extra_prompt_tokens(payload)
             + media_tokens
         )
-        # Priced separately rather than assembled from the parts above: the charge counts
-        # `system`/`tools` from the payload that a translating route has already folded
-        # into the conversation, keeps the catalogue on the pass that sends none, and
-        # prices audio transport as prompt text. Conservative for a lease; on the wire
-        # every one of those comes off the answer.
+        # Not assembled from the parts above: the charge counts three things this request
+        # does not send. See `_openai_llama_admission_wire_prompt_tokens`.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
@@ -2552,9 +2522,8 @@ def _openai_llama_admission_recost(
             payload,
             request = request,
             llama_backend = llama_backend,
-            # Already priced, so this is only what the media gate reads. The charge above
-            # still happens either way: a run whose media cannot be priced is left
-            # unenforced, not uncharged.
+            # Already priced, so this is only what the media gate reads: a run whose media
+            # cannot be priced is left unenforced, never uncharged.
             conversation = conversation,
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
@@ -22525,14 +22494,9 @@ async def produce_openai_chat_completions(
                         _stripped if _msg is _gguf_continue_target else _stripped.strip()
                     )
 
-            # Priced from the finalized `gguf_messages` and the catalogue the reservation
-            # above charges: the messages carry the current-date prompt, the tool nudge
-            # and any media part, and the catalogue is roughly 1250 prompt tokens
-            # llama-server holds every round that the message list cannot show. Measured
-            # against the client's messages alone this permitted `share + catalogue` per
-            # slot on a cache sized for `share`. Round zero re-costs it from the live
-            # conversation, so this figure only has to be right for the run that never
-            # reaches a re-cost.
+            # The finalized messages and the catalogue the reservation above charges, so
+            # the two agree. Measured against the client's messages alone this permitted
+            # `share + catalogue` per slot on a cache sized for `share`.
             _tool_admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
                 payload,
                 request = request,
