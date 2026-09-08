@@ -318,10 +318,8 @@ def test_the_tool_loop_continuation_keeps_the_same_sampling():
 
 
 def test_a_stale_frontend_bundle_does_not_start_400ing_a_custom_gateway():
-    # The pre-PR bundle classified custom as ALL_SUPPORTED and spread top_k on EVERY
-    # request, so a tab left open across an upgrade sends `top_k` to a backend that now
-    # forwards it. Measured on a gateway that validates its input: without custom's
-    # registry guard the same body went 200 -> 400 and the turn failed outright.
+    # The pre-PR bundle spread top_k on every custom request and a tab left open across an
+    # upgrade still runs it. Without custom's registry guard this same body went 200 -> 400.
     class _Strict(_Handler):
         def do_POST(self) -> None:  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)

@@ -362,9 +362,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "User-supplied OpenAI-compatible server. Routed to "
             "/v1/chat/completions; /models is optional."
         ),
-        # A strict gateway 400s the whole turn on an unknown key, and a browser tab left open
-        # across an upgrade still runs the bundle that spread top_k on every custom request.
-        # Servers that want these are reachable through the vllm / llama_cpp presets.
+        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k.
         "body_omit": ("top_k", "min_p", "repetition_penalty"),
         # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
