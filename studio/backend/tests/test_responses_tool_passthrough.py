@@ -1000,9 +1000,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
         # Clients branch on error.code / error.param.
         payload = ResponsesRequest(
-            input = [
-                {"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}
-            ],
+            input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
         )
         with pytest.raises(HTTPException) as exc:
             _normalise_responses_input(payload)
@@ -1054,8 +1052,8 @@ def _matrix_id(case):
 class TestResponsesMessagePartMatrix:
     """One expected answer per (part shape, role, position). No server, no GPU."""
 
-    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
-    @pytest.mark.parametrize("alone", [True, False], ids=["alone", "with_text"])
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("alone", [True, False], ids = ["alone", "with_text"])
     def test_user_turn(self, case, alone):
         part, refused, needle = case
         content = [part] if alone else [{"type": "input_text", "text": "hi"}, part]
@@ -1068,7 +1066,7 @@ class TestResponsesMessagePartMatrix:
         else:
             assert _normalise_responses_input(payload)
 
-    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
         # These roles flatten to text, so only a text-ish part survives; everything else,

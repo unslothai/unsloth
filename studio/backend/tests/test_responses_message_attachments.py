@@ -40,7 +40,12 @@ def _route_client():
     return TestClient(app, raise_server_exceptions = False)
 
 
-def _body(part, *, role = "user", stream = False):
+def _body(
+    part,
+    *,
+    role = "user",
+    stream = False,
+):
     message = {
         "role": role,
         "content": [{"type": "input_text", "text": "what does this say?"}, part],
@@ -52,14 +57,18 @@ def _body(part, *, role = "user", stream = False):
 
 
 _REFUSED_PARTS = [
-    ({"type": "input_file", "file_data": "data:application/pdf;base64,AA", "filename": "r.pdf"},
-     "input_file"),
+    (
+        {"type": "input_file", "file_data": "data:application/pdf;base64,AA", "filename": "r.pdf"},
+        "input_file",
+    ),
     ({"type": "input_file", "file_id": "file_abc"}, "input_file"),
     ({"type": "input_file", "file_url": "https://example.com/d.pdf"}, "input_file"),
     ({"type": "input_image", "file_id": "file_abc"}, "file_id"),
     ({"type": "input_image"}, "require an image_url string"),
-    ({"type": "input_image", "image_url": "https://example.com/a.png", "detail": "medium"},
-     "auto, low, high, or original"),
+    (
+        {"type": "input_image", "image_url": "https://example.com/a.png", "detail": "medium"},
+        "auto, low, high, or original",
+    ),
     ({"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}}, "input_audio"),
     ({"type": "input_something_new", "value": 1}, "input_something_new"),
 ]
