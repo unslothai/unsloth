@@ -242,6 +242,8 @@ def main() -> None:
                 panel.get_by_text("MTP companion", exact = False).wait_for()
                 panel.get_by_text(MTP_FILENAME.rsplit("/", 1)[-1], exact = True).wait_for()
                 panel.get_by_text("540 MB / 2.8 GB", exact = True).wait_for()
+                progress_track = panel.locator("div.relative.overflow-hidden.rounded-full")
+                assert progress_track.evaluate("el => el.getBoundingClientRect().height") == 3
                 jobs = page.evaluate("window.__mtpDownloadSmoke.jobs()")
                 assert len(jobs["jobs"]) == 1, jobs
 

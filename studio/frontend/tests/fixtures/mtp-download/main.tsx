@@ -27,7 +27,7 @@ import {
 } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "../../../src/index.css";
+import "./styles.css";
 
 const REPO_ID = "unsloth/Qwen3.8-Flash-Next-GGUF";
 
