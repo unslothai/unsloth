@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import ast
 import builtins
+import inspect
+import os
 import subprocess
 import sys
 import types
@@ -942,8 +945,12 @@ _NEVER_PIP_INSTALLED = ("flash-linear-attention", "fla-core", "tilelang", "apach
 
 
 @not_on_windows
-def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch):
-    """Every pip argv the worker builds, and none of them may name the vendored stack."""
+@pytest.mark.parametrize("uv_path", ["/usr/bin/uv", None], ids = ["uv", "no-uv"])
+def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv_path):
+    """Every pip argv the worker builds, and none of them may name the vendored stack.
+
+    Parametrized over uv: the pip and the uv branch of every installer build different argvs.
+    """
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -959,7 +966,7 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch):
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
     monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
-    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: uv_path if name == "uv" else None)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
 
     worker._ensure_causal_conv1d_fast_path(
@@ -991,14 +998,96 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch):
         assert package not in flat, f"{package} must never be pip installed: {calls}"
 
 
-def test_worker_source_never_pins_the_vendored_stack():
-    """worker.py may name flash-linear-attention in a log line, never in a pip spec."""
-    import inspect
+# The only two worker.py strings allowed to name the stack: prose log lines, never pip specs.
+_FLA_PROSE_LOG_LINES = (
+    "flash-linear-attention fast path importable: %s",
+    "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
+)
 
-    src = inspect.getsource(worker)
-    for package in ("fla-core", "tilelang", "apache-tvm-ffi"):
-        assert package not in src, f"worker.py still references {package}"
-    assert "flash-linear-attention==" not in src
+
+def test_worker_source_never_pins_the_vendored_stack():
+    """worker.py may name the stack in a log line, never in a pip spec, pinned or not."""
+    for node in ast.walk(ast.parse(inspect.getsource(worker))):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node.value in _FLA_PROSE_LOG_LINES:
+            continue
+        for package in _NEVER_PIP_INSTALLED:
+            assert not node.value.startswith(package), (
+                f"worker.py names {package} in a string constant: {node.value!r}"
+            )
+
+
+def _stub_fla_modules(monkeypatch):
+    """Register a walkable `fla` package exposing the two submodules the probe imports."""
+    fla = types.ModuleType("fla")
+    fla.__path__ = []
+    for name in ("fla", "fla.modules", "fla.ops", "fla.ops.gated_delta_rule"):
+        monkeypatch.setitem(sys.modules, name, fla if name == "fla" else types.ModuleType(name))
+
+
+def test_flash_linear_attention_importable_true_when_vendored_fla_imports(monkeypatch):
+    """unsloth_zoo injects the vendored kernels as `fla`; the probe must report them present."""
+    _stub_fla_modules(monkeypatch)
+
+    assert worker._flash_linear_attention_importable() is True
+
+
+def test_flash_linear_attention_importable_false_and_warns_when_import_raises(monkeypatch):
+    """No fla at all: the probe answers False and says the run drops to the pure-torch path."""
+    for name in ("fla", "fla.modules", "fla.ops", "fla.ops.gated_delta_rule"):
+        monkeypatch.setitem(sys.modules, name, None)
+    # worker.logger is a structlog BoundLogger, so caplog never sees it.
+    warnings: list[str] = []
+    monkeypatch.setattr(worker.logger, "warning", lambda msg, *a: warnings.append(msg % a))
+
+    assert worker._flash_linear_attention_importable() is False
+    assert any("pure-torch path" in line for line in warnings), warnings
+
+
+def _force_torch_hip(monkeypatch, hip: str | None):
+    """Make the guard's lazily imported torch look like a ROCm (or CUDA) build."""
+    import torch
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+
+
+def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_hip(monkeypatch):
+    """tilelang 0.1.8 has no HIP GEMM, so a pre-existing pip tilelang must not be dispatched to."""
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _force_torch_hip(monkeypatch, "6.4.43483")
+    _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
+
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
+
+    assert os.environ.get("FLA_TILELANG") == "0"
+
+
+def test_install_fast_path_hooks_respects_user_fla_tilelang_override(monkeypatch):
+    """If the user set FLA_TILELANG (even on HIP), don't overwrite; they may have a HIP-aware fork."""
+    monkeypatch.setenv("FLA_TILELANG", "1")
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _force_torch_hip(monkeypatch, "6.4.43483")
+    _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
+
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
+
+    assert os.environ["FLA_TILELANG"] == "1"
+
+
+def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
+    """CUDA path must NOT set FLA_TILELANG (tilelang is wanted there)."""
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _force_torch_hip(monkeypatch, None)
+    _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
+
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
+
+    assert os.environ.get("FLA_TILELANG") is None
 
 
 def _isdir_for_layout(*existing: str):

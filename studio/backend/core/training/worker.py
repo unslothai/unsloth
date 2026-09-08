@@ -1784,6 +1784,14 @@ def _install_fast_path_hooks(
         logger.info("Fast-path hooks disabled via env; using substring fallback")
         return
 
+    # tilelang has no HIP GEMM, so a pip fla must not dispatch to it on ROCm; setdefault keeps a user override.
+    try:
+        import torch as _torch_for_fla
+        if getattr(_torch_for_fla.version, "hip", None):
+            os.environ.setdefault("FLA_TILELANG", "0")
+    except Exception:
+        pass
+
     try:
         from transformers.utils import import_utils as _iu
     except Exception as exc:
