@@ -2369,6 +2369,12 @@ class UnslothTrainer:
         try:
             return preprocess(eval_dataset, custom_format_mapping)
         except Exception as e:
+            if self.should_stop:
+                # A stop empties the codec preprocessors' output, which they report as "no valid
+                # examples". That is the cancel, not the user's file: warning about their eval data
+                # here would be a false accusation on every cancelled run.
+                logger.info("Stopped during eval preprocessing\n")
+                return None
             self._record_warning(
                 "The eval dataset could not be prepared for this audio model, so this run has "
                 f"no evaluation: {e}"
@@ -2397,20 +2403,34 @@ class UnslothTrainer:
 
     def _audio_eval_config(self, training_args):
         """Build audio evaluation arguments and return the eval dataset."""
+        from core.training.eval_dataset import evaluation_enabled
+
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
             return {}, None
-        if not eval_steps or eval_steps <= 0:
+        # evaluation_enabled rejects bools and non-finite values too: `eval_steps <= 0` alone lets
+        # True through as "every step", inf through to an OverflowError inside TrainingArguments,
+        # and NaN through to a cadence that never fires. It is what the MLX worker already uses.
+        if not evaluation_enabled(eval_steps):
             logger.info(f"⚠️  Eval dataset provided but eval_steps={eval_steps} (disabled)\n")
             return {}, None
         rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
+        if rows == 0:
+            # eval_strategy="steps" over an empty dataloader yields no eval_loss at all, so the run
+            # would claim evaluation and report none.
+            self._record_warning(
+                "The eval dataset is empty after preprocessing, so this run has no evaluation."
+            )
+            return {}, None
         logger.info(f"✅ Evaluation enabled: eval_steps={eval_steps}, eval rows={rows}\n")
         return {
             "eval_strategy": "steps",
-            "eval_steps": eval_steps,
+            # float(): a numeric string passes evaluation_enabled but TrainingArguments compares
+            # eval_steps against an int, which raises TypeError on a str.
+            "eval_steps": float(eval_steps),
             # Avoid HF's default of 8, which can OOM audio runs.
-            "per_device_eval_batch_size": training_args.get("batch_size", 2),
+            "per_device_eval_batch_size": training_args.get("batch_size") or 2,
         }, eval_dataset
 
     def _preprocess_whisper_dataset(
