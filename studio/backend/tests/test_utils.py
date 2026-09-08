@@ -130,24 +130,21 @@ class TestIsAppleSilicon:
     def test_returns_bool(self):
         assert isinstance(is_apple_silicon(), bool)
 
-    def test_true_on_darwin_arm64(self):
-        with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Darwin"
-            mock_plat.machine.return_value = "arm64"
-            assert is_apple_silicon() is True
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2",
+        [
+            pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
+            pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
+            # Intel Mac should return False.
+            pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
+        ],
+    )
+    def test_is_apple_silicon_cases(self, _p0, _p1, _p2):
+        with patch('utils.hardware.hardware.platform') as mock_plat:
+            mock_plat.system.return_value = _p0
+            mock_plat.machine.return_value = _p1
+            assert is_apple_silicon() is _p2
 
-    def test_false_on_linux_x86(self):
-        with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Linux"
-            mock_plat.machine.return_value = "x86_64"
-            assert is_apple_silicon() is False
-
-    def test_false_on_darwin_x86(self):
-        """Intel Mac should return False."""
-        with patch("utils.hardware.hardware.platform") as mock_plat:
-            mock_plat.system.return_value = "Darwin"
-            mock_plat.machine.return_value = "x86_64"
-            assert is_apple_silicon() is False
 
 
 # ========== clear_gpu_cache() ==========

@@ -583,12 +583,19 @@ class TestCheckConfigNeeds510:
 class TestNemotronHNeedsMlpSupport:
     """Dense NemotronH configs (MLP layers) require transformers >= 5.10."""
 
-    def test_hybrid_override_pattern_with_dash(self):
-        cfg = {
-            "model_type": "nemotron_h",
-            "hybrid_override_pattern": "M-M-M*-M-",
-        }
-        assert _nemotron_h_needs_mlp_support(cfg) is True
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2",
+        [
+            pytest.param("nemotron_h", "M-M-M*-M-", True, id = "hybrid_override_pattern_with_dash"),
+            # A pure MoE NemotronH (no MLP) does not need the 5.10 tier.
+            pytest.param("nemotron_h", "MEME*MEM", False, id = "nemotron_h_moe_only_returns_false"),
+            # The dash heuristic only applies to nemotron_h configs.
+            pytest.param("llama", "M-M-", False, id = "non_nemotron_with_dash_returns_false"),
+        ],
+    )
+    def test_nemotron_h_needs_mlp_support_cases(self, _p0, _p1, _p2):
+        cfg = {'model_type': _p0, 'hybrid_override_pattern': _p1}
+        assert _nemotron_h_needs_mlp_support(cfg) is _p2
 
     def test_layers_block_type_with_mlp(self):
         cfg = {
@@ -597,18 +604,6 @@ class TestNemotronHNeedsMlpSupport:
         }
         assert _nemotron_h_needs_mlp_support(cfg) is True
 
-    def test_nemotron_h_moe_only_returns_false(self):
-        """A pure MoE NemotronH (no MLP) does not need the 5.10 tier."""
-        cfg = {
-            "model_type": "nemotron_h",
-            "hybrid_override_pattern": "MEME*MEM",
-        }
-        assert _nemotron_h_needs_mlp_support(cfg) is False
-
-    def test_non_nemotron_with_dash_returns_false(self):
-        """The dash heuristic only applies to nemotron_h configs."""
-        cfg = {"model_type": "llama", "hybrid_override_pattern": "M-M-"}
-        assert _nemotron_h_needs_mlp_support(cfg) is False
 
     def test_config_needs_510_includes_dense_nemotron_h(self):
         cfg = {
@@ -874,17 +869,20 @@ class TestGetTransformersTier:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
 
-    def test_gemma4_substring_returns_550(self):
-        assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+    @pytest.mark.parametrize(
+        "_p0, _p1",
+        [
+            pytest.param("google/gemma-4-E2B-it", "550", id = "gemma4_substring_returns_550"),
+            pytest.param("unsloth/gemma-4-12b-it", "510", id = "gemma4_12b_substring_returns_510"),
+            pytest.param("google/gemma-4-E2B-it-assistant", "510", id = "gemma4_assistant_substring_returns_510"),
+            pytest.param("unsloth/gemma4-E4B-it", "550", id = "gemma4_alt_substring_returns_550"),
+            # 5.5.0 is checked before 5.3.0 - a model matching both gets 550.
+            pytest.param("gemma-4-model", "550", id = "550_checked_before_530"),
+        ],
+    )
+    def test_get_transformers_tier_cases(self, _p0, _p1):
+        assert get_transformers_tier(_p0) == _p1
 
-    def test_gemma4_12b_substring_returns_510(self):
-        assert get_transformers_tier("unsloth/gemma-4-12b-it") == "510"
-
-    def test_gemma4_assistant_substring_returns_510(self):
-        assert get_transformers_tier("google/gemma-4-E2B-it-assistant") == "510"
-
-    def test_gemma4_alt_substring_returns_550(self):
-        assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
 
     @pytest.mark.parametrize(
         "model_id",
@@ -900,35 +898,22 @@ class TestGetTransformersTier:
     def test_mlx_vlm_v5_processor_name_returns_550(self, model_id: str):
         assert get_transformers_tier(model_id) == "550"
 
-    def test_gemma4_config_json_returns_550(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 architecture → 550."""
-        cfg = {
-            "architectures": ["Gemma4ForConditionalGeneration"],
-            "model_type": "gemma4",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2",
+        [
+            # Local checkpoint with Gemma4 architecture → 550.
+            pytest.param("Gemma4ForConditionalGeneration", "gemma4", "550", id = "gemma4_config_json_returns_550"),
+            # Local checkpoint with Gemma4 Unified architecture → 510.
+            pytest.param("Gemma4UnifiedForConditionalGeneration", "gemma4_unified", "510", id = "gemma4_unified_config_json_returns_510"),
+            # Local checkpoint with Gemma4 Assistant architecture → 510.
+            pytest.param("Gemma4AssistantForCausalLM", "gemma4_assistant", "510", id = "gemma4_assistant_config_json_returns_510"),
+        ],
+    )
+    def test_get_transformers_tier_cases_2(self, tmp_path, _p0, _p1, _p2):
+        cfg = {'architectures': [_p0], 'model_type': _p1}
+        (tmp_path / 'config.json').write_text(json.dumps(cfg))
+        assert get_transformers_tier(str(tmp_path)) == _p2
 
-        assert get_transformers_tier(str(tmp_path)) == "550"
-
-    def test_gemma4_unified_config_json_returns_510(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 Unified architecture → 510."""
-        cfg = {
-            "architectures": ["Gemma4UnifiedForConditionalGeneration"],
-            "model_type": "gemma4_unified",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert get_transformers_tier(str(tmp_path)) == "510"
-
-    def test_gemma4_assistant_config_json_returns_510(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 Assistant architecture → 510."""
-        cfg = {
-            "architectures": ["Gemma4AssistantForCausalLM"],
-            "model_type": "gemma4_assistant",
-        }
-        (tmp_path / "config.json").write_text(json.dumps(cfg))
-
-        assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):
         """Local dense NemotronH checkpoint → 510 (MLP layers need >= 5.10)."""
@@ -1053,9 +1038,6 @@ class TestGetTransformersTier:
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
 
-    def test_550_checked_before_530(self):
-        """5.5.0 is checked before 5.3.0 - a model matching both gets 550."""
-        assert get_transformers_tier("gemma-4-model") == "550"
 
     # ---- issue #6103: the tier decision must be traceable in the logs ----
 

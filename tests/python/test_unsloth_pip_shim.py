@@ -187,30 +187,24 @@ def test_index_url_value_flag_kept_verbatim(shim):
     assert execd == ["--extra-index-url", "https://example.com/simple", "snac"], execd
 
 
-def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
-    req = tmp_path / "reqs.txt"
-    req.write_text(
-        "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
-        encoding = "utf-8",
-    )
-    execd, _ = _run(shim, "pip", ["-r", str(req)])
-    assert execd is not None and execd[0] == "-r", execd
-    filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    assert "snac==1.2.0" in filtered
-    assert "unsloth" not in filtered
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2, _p3, _p4",
+    [
+        pytest.param("-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_protected_in_requirements_file_dropped"),
+        pytest.param("-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_attached_protected_in_requirements_file_dropped"),
+        pytest.param("torch==2.11.0\nsnac==1.2.0\n", "uv", "--requirements", "--requirements", "torch", id = "uv_plural_requirements_filtered"),
+    ],
+)
+def test_module_cases(shim, tmp_path, _p0, _p1, _p2, _p3, _p4):
+    req = tmp_path / 'reqs.txt'
+    req.write_text(_p0, encoding='utf-8')
+    execd, _ = _run(shim, _p1, [_p2, str(req)])
+    assert execd is not None and execd[0] == _p3, execd
+    filtered = Path(execd[1]).read_text(encoding='utf-8')
+    assert 'snac==1.2.0' in filtered
+    assert _p4 not in filtered
 
 
-def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path):
-    req = tmp_path / "reqs.txt"
-    req.write_text(
-        "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
-        encoding = "utf-8",
-    )
-    execd, _ = _run(shim, "pip", ["-r", str(req)])
-    assert execd is not None and execd[0] == "-r", execd
-    filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    assert "snac==1.2.0" in filtered
-    assert "unsloth" not in filtered
 
 
 def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
@@ -287,14 +281,22 @@ def test_bare_wheel_filename_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-def test_vcs_url_without_egg_protected_dropped(shim):
-    execd, _ = _run(shim, "pip", ["git+https://github.com/huggingface/transformers.git", "snac"])
-    assert execd == ["snac"], execd
+@pytest.mark.parametrize(
+    "_p0, _p1",
+    [
+        pytest.param("pip", "git+https://github.com/huggingface/transformers.git", id = "vcs_url_without_egg_protected_dropped"),
+        pytest.param("pip", "git+https://github.com/unslothai/unsloth-zoo.git@main", id = "vcs_url_without_egg_with_ref_dropped"),
+        pytest.param("pip", "--force-reinstall", id = "force_reinstall_flag_stripped"),
+        pytest.param("pip", "-I", id = "ignore_installed_short_flag_stripped"),
+        pytest.param("uv", "--reinstall", id = "uv_reinstall_flag_stripped"),
+        pytest.param("uv", "--exact", id = "uv_exact_flag_stripped"),
+    ],
+)
+def test_module_cases_2(shim, _p0, _p1):
+    execd, _ = _run(shim, _p0, [_p1, 'snac'])
+    assert execd == ['snac'], execd
 
 
-def test_vcs_url_without_egg_with_ref_dropped(shim):
-    execd, _ = _run(shim, "pip", ["git+https://github.com/unslothai/unsloth-zoo.git@main", "snac"])
-    assert execd == ["snac"], execd
 
 
 def test_vcs_url_without_egg_unprotected_kept(shim):
@@ -333,19 +335,6 @@ def test_nested_remote_include_dropped(shim, tmp_path):
 
 
 # resolver-wide reinstall / ignore-installed flags cannot rebuild satisfied baked deps
-def test_force_reinstall_flag_stripped(shim):
-    execd, _ = _run(shim, "pip", ["--force-reinstall", "snac"])
-    assert execd == ["snac"], execd
-
-
-def test_ignore_installed_short_flag_stripped(shim):
-    execd, _ = _run(shim, "pip", ["-I", "snac"])
-    assert execd == ["snac"], execd
-
-
-def test_uv_reinstall_flag_stripped(shim):
-    execd, _ = _run(shim, "uv", ["--reinstall", "snac"])
-    assert execd == ["snac"], execd
 
 
 @pytest.mark.parametrize(
@@ -384,14 +373,6 @@ def test_source_archive_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-def test_uv_plural_requirements_filtered(shim, tmp_path):
-    req = tmp_path / "reqs.txt"
-    req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
-    execd, _ = _run(shim, "uv", ["--requirements", str(req)])
-    assert execd is not None and execd[0] == "--requirements", execd
-    filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    assert "snac==1.2.0" in filtered
-    assert "torch" not in filtered
 
 
 def test_uv_plural_constraints_filtered(shim, tmp_path):
@@ -604,9 +585,6 @@ def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
 
 
 # uv --exact is an exact SYNC: it removes packages outside the kept target's closure
-def test_uv_exact_flag_stripped(shim):
-    execd, _ = _run(shim, "uv", ["--exact", "snac"])
-    assert execd == ["snac"], execd
 
 
 # a local project dir naming a protected package needs its name from the project

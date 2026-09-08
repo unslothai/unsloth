@@ -375,53 +375,50 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
     assert output == "4"
 
 
-def test_muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block():
-    """A reply closes with <|eom|> like any other block, so the turn can carry
-    on afterwards; treating the reply as the end would leak the rest verbatim."""
+@pytest.mark.parametrize(
+    "_p0, _p1",
+    [
+        # A reply closes with <|eom|> like any other block, so the turn can carry
+        # on afterwards; treating the reply as the end would leak the rest verbatim.
+        pytest.param(" to=user<|message|>Partly.<|eom|>"
+            "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
+            "<|start|>assistant to=user<|message|>Actually four.", "Partly.<think>Reconsider.</think>Actually four.", id = "muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block"),
+        # The checkpoint's own response_template matches `name` among other attributes;
+        # a stricter reading drops parameters or fails to see the call at all.
+        pytest.param("to=web_search<|message|><atem:function_calls>\n"
+            '<atem:invoke type="function" name="web_search">\n'
+            '<atem:parameter type="string" name="query">FIFA</atem:parameter>\n'
+            "</atem:invoke>\n</atem:function_calls><|eom|>", '<tool_call>{"name": "web_search", "arguments": {"query": "FIFA"}}</tool_call>', id = "muse_glimmer_call_grammar_allows_attributes_beside_the_name"),
+        # Only the call syntax and its envelope are framing; prose beside them is the
+        # answer, and rewriting the call must not quietly delete it.
+        pytest.param("to=web_search<|message|>Looking it up.<atem:function_calls>"
+            '<atem:invoke name="s"><atem:parameter name="q">v</atem:parameter></atem:invoke>'
+            "</atem:function_calls>One moment.<|eom|>", "Looking it up."
+            '<tool_call>{"name": "s", "arguments": {"q": "v"}}</tool_call>'
+            "One moment.", id = "muse_glimmer_text_the_model_wrote_around_a_call_is_kept"),
+        # A tool block holding no call at all is not reshaped into something downstream
+        # might run: its body is content. The block closed, though, so the turn keeps
+        # parsing rather than shipping every later block as raw control markup.
+        pytest.param(" to=user<|message|>Checking.<|eom|>"
+            '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
+            "<|start|>assistant to=user<|message|>Done.<|eot|>", 'Checking.{"q": 1}Done.', id = "muse_glimmer_tool_addressed_block_without_a_call_keeps_its_body"),
+        pytest.param("to=self<|message|>First.<|eom|>"
+            "<|start|>assistant to=self<|message|>Second.<|eom|>"
+            "<|start|>assistant to=user<|message|>Done.", "<think>First.</think><think>Second.</think>Done.", id = "muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block"),
+        # A call the token budget truncated has no arguments worth executing, and its
+        # header is protocol framing, so neither belongs in what the user reads.
+        pytest.param("to=self<|message|>Need a search.<|eom|>"
+            "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"
+            '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA', "<think>Need a search.</think>", id = "muse_glimmer_cut_short_tool_call_leaks_no_markup"),
+    ],
+)
+def test_module_cases(_p0, _p1):
     parser = _muse_normalizer()
-    output = parser.feed(
-        " to=user<|message|>Partly.<|eom|>"
-        "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
-        "<|start|>assistant to=user<|message|>Actually four."
-    )
+    output = parser.feed(_p0)
     output += parser.finish()
-
-    assert output == "Partly.<think>Reconsider.</think>Actually four."
-
-
-def test_muse_glimmer_call_grammar_allows_attributes_beside_the_name():
-    """The checkpoint's own response_template matches `name` among other attributes;
-    a stricter reading drops parameters or fails to see the call at all."""
-    parser = _muse_normalizer()
-    output = parser.feed(
-        "to=web_search<|message|><atem:function_calls>\n"
-        '<atem:invoke type="function" name="web_search">\n'
-        '<atem:parameter type="string" name="query">FIFA</atem:parameter>\n'
-        "</atem:invoke>\n</atem:function_calls><|eom|>"
-    )
-    output += parser.finish()
-
-    assert output == (
-        '<tool_call>{"name": "web_search", "arguments": {"query": "FIFA"}}</tool_call>'
-    )
+    assert output == _p1
 
 
-def test_muse_glimmer_text_the_model_wrote_around_a_call_is_kept():
-    """Only the call syntax and its envelope are framing; prose beside them is the
-    answer, and rewriting the call must not quietly delete it."""
-    parser = _muse_normalizer()
-    output = parser.feed(
-        "to=web_search<|message|>Looking it up.<atem:function_calls>"
-        '<atem:invoke name="s"><atem:parameter name="q">v</atem:parameter></atem:invoke>'
-        "</atem:function_calls>One moment.<|eom|>"
-    )
-    output += parser.finish()
-
-    assert output == (
-        "Looking it up."
-        '<tool_call>{"name": "s", "arguments": {"q": "v"}}</tool_call>'
-        "One moment."
-    )
 
 
 @pytest.mark.parametrize(
@@ -537,19 +534,6 @@ def test_muse_glimmer_bare_repeated_invokes_are_calls_without_an_envelope():
     assert [json.loads(call["function"]["arguments"])["q"] for call in calls] == [1, 2]
 
 
-def test_muse_glimmer_tool_addressed_block_without_a_call_keeps_its_body():
-    """A tool block holding no call at all is not reshaped into something downstream
-    might run: its body is content. The block closed, though, so the turn keeps
-    parsing rather than shipping every later block as raw control markup."""
-    parser = _muse_normalizer()
-    output = parser.feed(
-        " to=user<|message|>Checking.<|eom|>"
-        '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
-        "<|start|>assistant to=user<|message|>Done.<|eot|>"
-    )
-    output += parser.finish()
-
-    assert output == 'Checking.{"q": 1}Done.'
 
 
 def test_muse_glimmer_a_call_free_block_does_not_disable_later_reasoning():
@@ -568,16 +552,6 @@ def test_muse_glimmer_a_call_free_block_does_not_disable_later_reasoning():
     assert "<|" not in output
 
 
-def test_muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block():
-    parser = _muse_normalizer()
-    output = parser.feed(
-        "to=self<|message|>First.<|eom|>"
-        "<|start|>assistant to=self<|message|>Second.<|eom|>"
-        "<|start|>assistant to=user<|message|>Done."
-    )
-    output += parser.finish()
-
-    assert output == "<think>First.</think><think>Second.</think>Done."
 
 
 @pytest.mark.parametrize("gap", [" ", "\n", "\n\n"])
@@ -675,18 +649,6 @@ def test_muse_glimmer_turn_marker_is_consumed_wherever_it_lands():
         assert streamed == expected, raw
 
 
-def test_muse_glimmer_cut_short_tool_call_leaks_no_markup():
-    """A call the token budget truncated has no arguments worth executing, and its
-    header is protocol framing, so neither belongs in what the user reads."""
-    parser = _muse_normalizer()
-    output = parser.feed(
-        "to=self<|message|>Need a search.<|eom|>"
-        "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"
-        '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA'
-    )
-    output += parser.finish()
-
-    assert output == "<think>Need a search.</think>"
 
 
 def test_muse_glimmer_call_closed_inside_a_cut_short_block_survives_finish():

@@ -2706,87 +2706,31 @@ class TestLoopRePrompt:
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert contents[-1].endswith("This is the final visible answer.")
 
-    def test_prefilled_reasoning_intent_does_not_reprompt_a_visible_answer(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield "Let me prepare the requested summary carefully.</think>This is the final visible answer."
-
-        exec_fn = FakeExecuteTool([])
-        events = _collect_events(
-            run_safetensors_tool_loop(
-                single_turn = _gen,
-                messages = [{"role": "user", "content": "summarize this"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                execute_tool = exec_fn,
-                nudge_tool_calls = True,
-                reasoning_prefilled = True,
-            )
-        )
-
-        assert generations == 1
-        assert exec_fn.calls == []
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1].endswith("This is the final visible answer.")
-
-    def test_prefilled_reasoning_with_reemitted_think_does_not_reprompt(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield (
-                "Let me prepare the requested summary carefully."
-                "<think>more private planning</think>This is the final visible answer."
-            )
-
-        exec_fn = FakeExecuteTool([])
-        events = _collect_events(
-            run_safetensors_tool_loop(
-                single_turn = _gen,
-                messages = [{"role": "user", "content": "summarize this"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                execute_tool = exec_fn,
-                nudge_tool_calls = True,
-                reasoning_prefilled = True,
-            )
-        )
-
-        assert generations == 1
-        assert exec_fn.calls == []
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1].endswith("This is the final visible answer.")
-
-    def test_prefilled_reasoning_with_later_think_does_not_reprompt(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield (
-                "private prefilled planning</think>"
+    @pytest.mark.parametrize(
+        "_p0",
+        [
+            pytest.param("Let me prepare the requested summary carefully.</think>This is the final visible answer.", id = "prefilled_reasoning_intent_does_not_reprompt_a_visible_answer"),
+            pytest.param("Let me prepare the requested summary carefully."
+                "<think>more private planning</think>This is the final visible answer.", id = "prefilled_reasoning_with_reemitted_think_does_not_reprompt"),
+            pytest.param("private prefilled planning</think>"
                 "<think>Let me prepare the requested summary carefully.</think>"
-                "This is the final visible answer."
-            )
-
+                "This is the final visible answer.", id = "prefilled_reasoning_with_later_think_does_not_reprompt"),
+        ],
+    )
+    def test_loop_re_prompt_cases(self, _p0):
+        generations = 0
+        
+        def _gen(_messages, active_tools=None):
+            nonlocal generations
+            generations += 1
+            yield _p0
         exec_fn = FakeExecuteTool([])
-        events = _collect_events(
-            run_safetensors_tool_loop(
-                single_turn = _gen,
-                messages = [{"role": "user", "content": "summarize this"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                execute_tool = exec_fn,
-                nudge_tool_calls = True,
-                reasoning_prefilled = True,
-            )
-        )
-
+        events = _collect_events(run_safetensors_tool_loop(single_turn=_gen, messages=[{'role': 'user', 'content': 'summarize this'}], tools=[{'type': 'function', 'function': {'name': 'web_search'}}], execute_tool=exec_fn, nudge_tool_calls=True, reasoning_prefilled=True))
         assert generations == 1
         assert exec_fn.calls == []
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1].endswith("This is the final visible answer.")
+        contents = [e['text'] for e in events if e['type'] == 'content']
+        assert contents[-1].endswith('This is the final visible answer.')
+
 
     def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
         loop, exec_fn = _make_loop(
@@ -2981,40 +2925,21 @@ class TestLoopRePrompt:
 class TestLoopCanonicalHealKey:
     """Per-tool canonical heal key (``code``/``command``/``query``), mirroring GGUF."""
 
-    def test_python_bare_string_heals_to_code(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>'],
-                ["done"],
-            ],
-            exec_results = ["1\n"],
-        )
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2, _p3, _p4, _p5",
+        [
+            # The bare string must heal to {"code": "print(1)"}, not
+            # {"query": ...}, so the python sandbox actually executes it.
+            pytest.param('<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>', "done", "1\n", "python", "code", "print(1)", id = "python_bare_string_heals_to_code"),
+            pytest.param('<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>', "done", "...", "terminal", "command", "ls -la", id = "terminal_bare_string_heals_to_command"),
+            pytest.param('<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>', "ok", "...", "web_search", "query", "hello", id = "unknown_tool_bare_string_heals_to_query"),
+        ],
+    )
+    def test_loop_canonical_heal_key_cases(self, _p0, _p1, _p2, _p3, _p4, _p5):
+        loop, exec_fn = _make_loop(turns=[[_p0], [_p1]], exec_results=[_p2])
         events = _collect_events(loop)
-        # The bare string must heal to {"code": "print(1)"}, not
-        # {"query": ...}, so the python sandbox actually executes it.
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert exec_fn.calls == [(_p3, {_p4: _p5})]
 
-    def test_terminal_bare_string_heals_to_command(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>'],
-                ["done"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("terminal", {"command": "ls -la"})]
-
-    def test_unknown_tool_bare_string_heals_to_query(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>'],
-                ["ok"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hello"})]
 
 
 class TestGGUFSafetensorsHealingParity:

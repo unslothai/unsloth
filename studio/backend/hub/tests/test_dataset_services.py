@@ -163,74 +163,45 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
     return repo_root
 
 
-def test_raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot(monkeypatch, tmp_path):
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        (".gitattributes", "README.md", "dataset_infos.json", "LICENSE"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
-def test_raw_dataset_cache_has_data_ignores_os_clutter(monkeypatch, tmp_path):
-    """Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
-    card, which must not read as payload."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", ".DS_Store", "Thumbs.db"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2, _p3",
+    [
+        pytest.param(".gitattributes", "README.md", "dataset_infos.json", "LICENSE", id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot"),
+        # Neither suffix is in `datasets`' extension map, and a script also needs
+        # `trust_remote_code`, which no load path here passes and `datasets>=4` removed.
+        pytest.param("README.md", "CITATION.cff", "data.py", "docs/usage.md", id = "raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script"),
+        # `.gitignore` and friends are not in the enumerated list, but `datasets` skips every
+        # dotted name when resolving data files, so none of them can supply rows.
+        pytest.param("README.md", ".gitignore", ".gitattributes", ".hidden/notes.txt", id = "raw_dataset_cache_has_data_ignores_any_dotfile"),
+    ],
+)
+def test_module_cases(monkeypatch, tmp_path, _p0, _p1, _p2, _p3):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, (_p0, _p1, _p2, _p3))
+    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_finds_nested_payload_of_any_format(monkeypatch, tmp_path):
-    """Image and audio repos ship no extension the app keeps a format list for, so the check
-    asks whether anything beyond metadata is present rather than matching known formats."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "data/train-00000-of-00001.parquet", "data/train/0001.png"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
-
-
-def test_raw_dataset_cache_has_data_ignores_appledouble_sidecars(monkeypatch, tmp_path):
-    """A snapshot carried through a Mac zip picks up `._name` sidecars and a `__MACOSX`
-    tree. `datasets` skips dotted names and `__`-prefixed dirs when it resolves data files,
-    so counting them as payload offered a card-only snapshot On Device again."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "._README.md", "__MACOSX/._README.md"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2",
+    [
+        # Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
+        # card, which must not read as payload.
+        pytest.param(".DS_Store", "Thumbs.db", False, id = "raw_dataset_cache_has_data_ignores_os_clutter"),
+        # Image and audio repos ship no extension the app keeps a format list for, so the check
+        # asks whether anything beyond metadata is present rather than matching known formats.
+        pytest.param("data/train-00000-of-00001.parquet", "data/train/0001.png", True, id = "raw_dataset_cache_has_data_finds_nested_payload_of_any_format"),
+        # A snapshot carried through a Mac zip picks up `._name` sidecars and a `__MACOSX`
+        # tree. `datasets` skips dotted names and `__`-prefixed dirs when it resolves data files,
+        # so counting them as payload offered a card-only snapshot On Device again.
+        pytest.param("._README.md", "__MACOSX/._README.md", False, id = "raw_dataset_cache_has_data_ignores_appledouble_sidecars"),
+        # The suffix rule is for files only: a script beside real data is still payload.
+        pytest.param("data.py", "data/train.parquet", True, id = "raw_dataset_cache_has_data_counts_payload_beside_a_loading_script"),
+    ],
+)
+def test_module_cases_2(monkeypatch, tmp_path, _p0, _p1, _p2):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ('README.md', _p0, _p1))
+    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is _p2
 
 
-def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(monkeypatch, tmp_path):
-    """Neither suffix is in `datasets`' extension map, and a script also needs
-    `trust_remote_code`, which no load path here passes and `datasets>=4` removed."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "CITATION.cff", "data.py", "docs/usage.md"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
-def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monkeypatch, tmp_path):
-    """The suffix rule is for files only: a script beside real data is still payload."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "data.py", "data/train.parquet"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
 def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
@@ -419,16 +390,6 @@ def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monk
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_ignores_any_dotfile(monkeypatch, tmp_path):
-    """`.gitignore` and friends are not in the enumerated list, but `datasets` skips every
-    dotted name when resolving data files, so none of them can supply rows."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", ".gitignore", ".gitattributes", ".hidden/notes.txt"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
 def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch, tmp_path):

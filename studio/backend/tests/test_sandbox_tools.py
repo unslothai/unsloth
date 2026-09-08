@@ -790,11 +790,24 @@ class TestBashBlocklistPosition:
         return _find_blocked_commands
 
     # ---- argument-position: must NOT be blocked ----
-    def test_grep_for_curl_string_allowed(self):
-        assert self._find()("grep -r curl .") == set()
+    @pytest.mark.parametrize(
+        "_p0",
+        [
+            pytest.param("grep -r curl .", id = "grep_for_curl_string_allowed"),
+            pytest.param("echo source the data", id = "echo_source_allowed"),
+            pytest.param("ls /usr/bin/curl", id = "ls_path_containing_curl_allowed"),
+            pytest.param("find . -name wget", id = "find_for_wget_string_allowed"),
+            pytest.param('echo "curl is a tool"', id = "quoted_curl_arg_allowed"),
+            # A bracket expression in argument position is not a command word.
+            pytest.param("echo '[a]'", id = "glob_without_literal_character_allowed"),
+            # Only the long spellings carry an attached command; -x belongs to too
+            # many other utilities to read its neighbour as one.
+            pytest.param("grep -x rm file.txt", id = "short_flag_neighbour_not_read_as_command"),
+        ],
+    )
+    def test_bash_blocklist_position_cases(self, _p0):
+        assert self._find()(_p0) == set()
 
-    def test_echo_source_allowed(self):
-        assert self._find()("echo source the data") == set()
 
     def test_cat_with_word_source_allowed(self):
         # 'source' is an argument to echo, and echo isn't blocked either.
@@ -802,59 +815,76 @@ class TestBashBlocklistPosition:
         assert "source" not in self._find()("cat README.md && echo source")
         assert "echo" not in self._find()("cat README.md && echo source")
 
-    def test_ls_path_containing_curl_allowed(self):
-        assert self._find()("ls /usr/bin/curl") == set()
-
-    def test_find_for_wget_string_allowed(self):
-        assert self._find()("find . -name wget") == set()
-
-    def test_quoted_curl_arg_allowed(self):
-        assert self._find()('echo "curl is a tool"') == set()
 
     # ---- command-position: must be blocked ----
-    def test_bare_rm_blocked(self):
-        assert "rm" in self._find()("rm -rf /")
+    @pytest.mark.parametrize(
+        "_p0, _p1",
+        [
+            pytest.param("rm", "rm -rf /", id = "bare_rm_blocked"),
+            pytest.param("curl", "curl https://example.com", id = "curl_at_command_position_blocked"),
+            pytest.param("wget", "cd /tmp && wget https://bad", id = "after_double_ampersand_blocked"),
+            # shlex collapses 'r''m' -> 'rm' at command position.
+            pytest.param("rm", "r''m -rf /", id = "split_quotes_obfuscation_blocked"),
+            pytest.param("sudo", "/usr/bin/sudo whoami", id = "path_prefixed_command_blocked"),
+            # Recursion into the nested command string catches command-position curl.
+            pytest.param("curl", "bash -c 'curl https://x'", id = "nested_bash_c_blocked"),
+            pytest.param("rm", "echo $(rm -rf /tmp)", id = "subshell_command_blocked"),
+            pytest.param("rm", "echo `rm -rf /tmp`", id = "backtick_command_blocked"),
+            pytest.param("rm", "{ rm -rf /tmp/x; }", id = "brace_group_blocked"),
+            pytest.param("curl", "if true; then curl --version; fi", id = "if_then_blocked"),
+            pytest.param("curl", "while true; do curl --version; break; done", id = "while_do_blocked"),
+        ],
+    )
+    def test_bash_blocklist_position_cases_2(self, _p0, _p1):
+        assert _p0 in self._find()(_p1)
 
-    def test_curl_at_command_position_blocked(self):
-        assert "curl" in self._find()("curl https://example.com")
 
-    def test_after_semicolon_blocked(self):
-        # `rm` after `;` even without surrounding whitespace.
-        assert "rm" in self._find()("echo done; rm -rf /tmp/x")
-        assert "rm" in self._find()("echo done;rm -rf /tmp/x")
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2, _p3",
+        [
+            # `rm` after `;` even without surrounding whitespace.
+            pytest.param("rm", "echo done; rm -rf /tmp/x", "rm", "echo done;rm -rf /tmp/x", id = "after_semicolon_blocked"),
+            # Which of the two sed compiles depends on permutation, so they are
+            # alternatives rather than one program. Joining them let an unterminated
+            # command in the one swallow the other: `safe` is `s` with delimiter `a`
+            # and no closing one, and it ate the positional payload behind it while
+            # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -e safe` really runs.
+            pytest.param("rm", "sed '1e rm -f victim' input -e safe", "rm", "sed '1e rm -f victim' input -e p", id = "late_program_flag_and_the_positional_are_alternatives"),
+            pytest.param("rm", "printf /tmp/x | xargs rm", "rm", "printf /tmp/x | xargs -- rm", id = "xargs_command_blocked"),
+            pytest.param(".", ". ./script.sh", ".", "cat x && . ./payload", id = "dot_source_blocked"),
+            pytest.param("ssh", "$'ssh' user@host", "source", "$'source' ./payload", id = "ansi_c_quoted_command_blocked"),
+            # Bash expands the pattern to the blocked name after this scan runs.
+            pytest.param("rm", "/bin/r[m] -rf /tmp/victim", "rm", "/bin/r? -rf /tmp/victim", id = "command_position_glob_matches_blocked_name"),
+            # fd accepts the command attached to the flag, so the value is what runs.
+            pytest.param("rm", "fd victim . --exec=rm", "rm", "fd victim . --exec-batch=rm", id = "attached_exec_flag_value_blocked"),
+        ],
+    )
+    def test_bash_blocklist_position_cases_3(self, _p0, _p1, _p2, _p3):
+        assert _p0 in self._find()(_p1)
+        assert _p2 in self._find()(_p3)
 
-    def test_after_double_ampersand_blocked(self):
-        assert "wget" in self._find()("cd /tmp && wget https://bad")
 
-    def test_split_quotes_obfuscation_blocked(self):
-        # shlex collapses 'r''m' -> 'rm' at command position.
-        assert "rm" in self._find()("r''m -rf /")
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2, _p3, _p4, _p5, _p6",
+        [
+            # sed's `e COMMAND` hands COMMAND to the shell, so the payload is a real
+            # command position hiding inside the script argument.
+            pytest.param("sed -n '1e rm -rf victim' input", "curl", "sed -e '/x/e curl https://x' input", "rm", "sed -ne '$e rm -rf build' input", "wget", "sed '1,2e wget https://bad' input", id = "sed_exec_payload_blocked"),
+            # An `e` payload whose line ends in a backslash carries onto the NEXT
+            # line, which reaches the same shell, so the scan must not stop at the
+            # newline. Quote splitting (r''m) hides the name from the raw-text
+            # fallback, leaving the parsed payload as the only place rm shows up.
+            # A backslash before an ordinary character drops away: r\m runs rm.
+            pytest.param("sed -n '1e\\\nrm -f victim' f", "rm", "sed -n '1e\\\nr''m -f victim' f", "rm", "sed -n '1e touch a\\\nrm -f victim' f", "rm", "sed 'e r\\m -f victim' f", id = "sed_exec_payload_continues_past_backslash"),
+            pytest.param("echo done; r''m -rf /tmp/x", "rm", "echo done;r''m -rf /tmp/x", "curl", "echo done; c''url --version", "curl", "echo done; /usr/bin/c''url --version", id = "split_quotes_after_semicolon_blocked"),
+        ],
+    )
+    def test_bash_blocklist_position_cases_4(self, _p0, _p1, _p2, _p3, _p4, _p5, _p6):
+        assert 'rm' in self._find()(_p0)
+        assert _p1 in self._find()(_p2)
+        assert _p3 in self._find()(_p4)
+        assert _p5 in self._find()(_p6)
 
-    def test_path_prefixed_command_blocked(self):
-        assert "sudo" in self._find()("/usr/bin/sudo whoami")
-
-    def test_nested_bash_c_blocked(self):
-        # Recursion into the nested command string catches command-position curl.
-        assert "curl" in self._find()("bash -c 'curl https://x'")
-
-    def test_sed_exec_payload_blocked(self):
-        # sed's `e COMMAND` hands COMMAND to the shell, so the payload is a real
-        # command position hiding inside the script argument.
-        assert "rm" in self._find()("sed -n '1e rm -rf victim' input")
-        assert "curl" in self._find()("sed -e '/x/e curl https://x' input")
-        assert "rm" in self._find()("sed -ne '$e rm -rf build' input")
-        assert "wget" in self._find()("sed '1,2e wget https://bad' input")
-
-    def test_sed_exec_payload_continues_past_backslash(self):
-        # An `e` payload whose line ends in a backslash carries onto the NEXT
-        # line, which reaches the same shell, so the scan must not stop at the
-        # newline. Quote splitting (r''m) hides the name from the raw-text
-        # fallback, leaving the parsed payload as the only place rm shows up.
-        assert "rm" in self._find()("sed -n '1e\\\nrm -f victim' f")
-        assert "rm" in self._find()("sed -n '1e\\\nr''m -f victim' f")
-        assert "rm" in self._find()("sed -n '1e touch a\\\nrm -f victim' f")
-        # A backslash before an ordinary character drops away: r\m runs rm.
-        assert "rm" in self._find()("sed 'e r\\m -f victim' f")
 
     def test_sed_comment_ends_at_newline(self):
         # A sed comment runs to a real newline, so an `e` on the line after one
@@ -1045,16 +1075,35 @@ class TestBashBlocklistPosition:
         assert self._find()("sed -n '1,3p' input |& grep -e safe") == set()
         assert self._find()("grep -r pattern . |& head -5") == set()
 
-    def test_script_file_source_ends_a_continuation(self):
-        # A source BOUNDARY closes any continuation open across it, so reading
-        # every -e as one uninterrupted text let an unreadable -f in the middle
-        # hide a payload: `sed -e '1a\' -f /dev/null -e 'e touch MARKER' input`
-        # creates MARKER while the same line without the -f does not.
-        assert "rm" in self._find()(r"sed -e '1a\' -f /dev/null -e 'e rm -f victim' input")
-        assert "rm" in self._find()(r"sed -e '1a\' -f/dev/null -e 'e rm -f victim' input")
-        assert "rm" in self._find()(r"sed -e '1a\' --file=/dev/null -e 'e rm -f victim' input")
-        # ...and with no source boundary the continuation still swallows it.
-        assert self._find()(r"sed -e '1a\' -e 'e rm -f victim' input") == set()
+    @pytest.mark.parametrize(
+        "_p0, _p1, _p2, _p3, _p4, _p5",
+        [
+            # A source BOUNDARY closes any continuation open across it, so reading
+            # every -e as one uninterrupted text let an unreadable -f in the middle
+            # hide a payload: `sed -e '1a\' -f /dev/null -e 'e touch MARKER' input`
+            # creates MARKER while the same line without the -f does not.
+            # ...and with no source boundary the continuation still swallows it.
+            pytest.param("rm", r"sed -e '1a\' -f /dev/null -e 'e rm -f victim' input", r"sed -e '1a\' -f/dev/null -e 'e rm -f victim' input", "rm", r"sed -e '1a\' --file=/dev/null -e 'e rm -f victim' input", r"sed -e '1a\' -e 'e rm -f victim' input", id = "script_file_source_ends_a_continuation"),
+            # The shell performs a redirection and removes it, but a QUOTED one is a
+            # word it hands the command: with an empty file named `>prog`,
+            # `sed -f '>prog' -e '1e rm -f victim' input` takes it as the script
+            # FILE and really runs the payload behind it.
+            # A bare one is still a redirection, target quoting and all.
+            # ...and a quoted operand that merely starts with one runs silently.
+            pytest.param("sed", "sed -f '>prog' -e '1e rm -f victim' input", "sed > out.txt '1e rm -f victim' input", "rm", "sed 2>'/dev/null' '1e rm -f victim' input", "sed -n '1,3p' '>notes'", id = "quoted_redirection_operand_is_data"),
+            # Arithmetic evaluates to an integer, so a digit stands in for it and
+            # the expansion's own punctuation stops hiding the command behind it.
+            # Read raw, `$((c+1))e rm -f victim` takes the `c` for an append-text
+            # command that swallows the payload, while real sed runs rm.
+            # Ordinary line maths still yields no payload.
+            pytest.param("rm", 'sed "$((c+1))e rm -f victim" input', 'sed "$[c+1]e rm -f victim" input', "curl", 'sed "$((4/2))e curl https://x" input', 'sed -n "1,$((n + 1))p" f', id = "sed_program_behind_an_arithmetic_expansion"),
+        ],
+    )
+    def test_bash_blocklist_position_cases_5(self, _p0, _p1, _p2, _p3, _p4, _p5):
+        assert _p0 in self._find()(_p1)
+        assert 'rm' in self._find()(_p2)
+        assert _p3 in self._find()(_p4)
+        assert self._find()(_p5) == set()
 
     def test_program_flag_behind_the_positional_script(self):
         # A program flag AHEAD of the positional makes that word an input file.
@@ -1125,14 +1174,6 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("sed > ';' '1e rm -f victim' input")
         assert "rm" in self._find()("sed > -n '1e rm -f victim' input")
 
-    def test_late_program_flag_and_the_positional_are_alternatives(self):
-        # Which of the two sed compiles depends on permutation, so they are
-        # alternatives rather than one program. Joining them let an unterminated
-        # command in the one swallow the other: `safe` is `s` with delimiter `a`
-        # and no closing one, and it ate the positional payload behind it while
-        # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -e safe` really runs.
-        assert "rm" in self._find()("sed '1e rm -f victim' input -e safe")
-        assert "rm" in self._find()("sed '1e rm -f victim' input -e p")
 
     def test_find_batches_only_at_a_real_plus_terminator(self):
         # find closes the batched form at `{} +` only, so a `+` anywhere else is
@@ -1238,17 +1279,6 @@ class TestBashBlocklistPosition:
         assert self._find()("find . -exec sed -n '1,3p' {} +") == set()
         assert self._find()("find . -exec sed -i 's/a/b/' {} +") == set()
 
-    def test_quoted_redirection_operand_is_data(self):
-        # The shell performs a redirection and removes it, but a QUOTED one is a
-        # word it hands the command: with an empty file named `>prog`,
-        # `sed -f '>prog' -e '1e rm -f victim' input` takes it as the script
-        # FILE and really runs the payload behind it.
-        assert "sed" in self._find()("sed -f '>prog' -e '1e rm -f victim' input")
-        # A bare one is still a redirection, target quoting and all.
-        assert "rm" in self._find()("sed > out.txt '1e rm -f victim' input")
-        assert "rm" in self._find()("sed 2>'/dev/null' '1e rm -f victim' input")
-        # ...and a quoted operand that merely starts with one runs silently.
-        assert self._find()("sed -n '1,3p' '>notes'") == set()
 
     def test_ansi_c_apostrophe_keeps_the_program_intact(self):
         # An apostrophe in the decoded word used to send it down the flattening
@@ -1385,16 +1415,6 @@ class TestBashBlocklistPosition:
         assert self._find()("p='1e rm -f victimZ'; sed \"${p%Z}\" input") == set()
         assert self._find()("printf -v p '1e rm -f victim'; sed \"$p\" input") == set()
 
-    def test_sed_program_behind_an_arithmetic_expansion(self):
-        # Arithmetic evaluates to an integer, so a digit stands in for it and
-        # the expansion's own punctuation stops hiding the command behind it.
-        # Read raw, `$((c+1))e rm -f victim` takes the `c` for an append-text
-        # command that swallows the payload, while real sed runs rm.
-        assert "rm" in self._find()('sed "$((c+1))e rm -f victim" input')
-        assert "rm" in self._find()('sed "$[c+1]e rm -f victim" input')
-        assert "curl" in self._find()('sed "$((4/2))e curl https://x" input')
-        # Ordinary line maths still yields no payload.
-        assert self._find()('sed -n "1,$((n + 1))p" f') == set()
 
     def test_sed_spelled_as_a_command_glob(self):
         # Bash expands a command-position glob after this scan, so a pattern
@@ -1419,11 +1439,6 @@ class TestBashBlocklistPosition:
         assert self._find()("sed 's/a/b/we out.txt' input") == set()
         assert self._find()("sed -e '1a\\' -e 'e rm -rf x' input") == set()
 
-    def test_subshell_command_blocked(self):
-        assert "rm" in self._find()("echo $(rm -rf /tmp)")
-
-    def test_backtick_command_blocked(self):
-        assert "rm" in self._find()("echo `rm -rf /tmp`")
 
     # ---- shell prefixes / wrappers: must still be blocked ----
     @pytest.mark.parametrize(
@@ -1449,11 +1464,6 @@ class TestBashBlocklistPosition:
         assert blocked_cmd in self._find()(command)
 
     # ---- split-quoted command name after attached separators ----
-    def test_split_quotes_after_semicolon_blocked(self):
-        assert "rm" in self._find()("echo done; r''m -rf /tmp/x")
-        assert "rm" in self._find()("echo done;r''m -rf /tmp/x")
-        assert "curl" in self._find()("echo done; c''url --version")
-        assert "curl" in self._find()("echo done; /usr/bin/c''url --version")
 
     # ---- find -exec / xargs invoke a command directly ----
     def test_find_exec_blocked(self):
@@ -1461,24 +1471,10 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("find . -type f -exec rm -f {} ';'")
         assert "rm" in self._find()("find . -execdir rm -f {} ';'")
 
-    def test_xargs_command_blocked(self):
-        assert "rm" in self._find()("printf /tmp/x | xargs rm")
-        assert "rm" in self._find()("printf /tmp/x | xargs -- rm")
 
     # ---- brace groups and bash compound statements ----
-    def test_brace_group_blocked(self):
-        assert "rm" in self._find()("{ rm -rf /tmp/x; }")
-
-    def test_if_then_blocked(self):
-        assert "curl" in self._find()("if true; then curl --version; fi")
-
-    def test_while_do_blocked(self):
-        assert "curl" in self._find()("while true; do curl --version; break; done")
 
     # ---- `.` is the POSIX synonym for the blocked `source` builtin ----
-    def test_dot_source_blocked(self):
-        assert "." in self._find()(". ./script.sh")
-        assert "." in self._find()("cat x && . ./payload")
 
     def test_dot_in_argument_position_allowed(self):
         assert self._find()("find . -type f") == set()
@@ -1486,9 +1482,6 @@ class TestBashBlocklistPosition:
         assert self._find()("cd .") == set()
 
     # ---- ANSI-C quoting must not hide a blocked command name ----
-    def test_ansi_c_quoted_command_blocked(self):
-        assert "ssh" in self._find()("$'ssh' user@host")
-        assert "source" in self._find()("$'source' ./payload")
 
     def test_ansi_c_data_with_newline_is_not_a_command(self):
         # $'...' expands to a single word, so a newline inside it is data for
@@ -1496,24 +1489,6 @@ class TestBashBlocklistPosition:
         payload = "printf '%s' $'hello\\n" + "rm" + " -rf x\\n'"
         assert self._find()(payload) == set()
 
-    def test_command_position_glob_matches_blocked_name(self):
-        # Bash expands the pattern to the blocked name after this scan runs.
-        assert "rm" in self._find()("/bin/r[m] -rf /tmp/victim")
-        assert "rm" in self._find()("/bin/r? -rf /tmp/victim")
-
-    def test_glob_without_literal_character_allowed(self):
-        # A bracket expression in argument position is not a command word.
-        assert self._find()("echo '[a]'") == set()
-
-    def test_attached_exec_flag_value_blocked(self):
-        # fd accepts the command attached to the flag, so the value is what runs.
-        assert "rm" in self._find()("fd victim . --exec=rm")
-        assert "rm" in self._find()("fd victim . --exec-batch=rm")
-
-    def test_short_flag_neighbour_not_read_as_command(self):
-        # Only the long spellings carry an attached command; -x belongs to too
-        # many other utilities to read its neighbour as one.
-        assert self._find()("grep -x rm file.txt") == set()
 
     def test_alias_body_scanned_as_command(self):
         # `alias zap='rm -rf'` stores a command bash runs when zap is invoked.

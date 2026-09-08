@@ -39,17 +39,22 @@ class TestBuildUvCmdTorchBackend:
             a.startswith("--torch-backend") for a in cmd
         ), f"--torch-backend should not appear by default, got: {cmd}"
 
-    def test_uv_torch_backend_auto(self):
-        """UV_TORCH_BACKEND=auto adds --torch-backend=auto."""
-        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "auto"}):
-            cmd = self._call(("somepackage",))
-        assert "--torch-backend=auto" in cmd
+    @pytest.mark.parametrize(
+        "_p0, _p1",
+        [
+            # UV_TORCH_BACKEND=auto adds --torch-backend=auto.
+            pytest.param("auto", "--torch-backend=auto", id = "uv_torch_backend_auto"),
+            # UV_TORCH_BACKEND=cpu adds --torch-backend=cpu.
+            pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_cpu"),
+            # Non-pinned commands still honour UV_TORCH_BACKEND.
+            pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_kept_for_unpinned"),
+        ],
+    )
+    def test_build_uv_cmd_torch_backend_cases(self, _p0, _p1):
+        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': _p0}):
+            cmd = self._call(('somepackage',))
+        assert _p1 in cmd
 
-    def test_uv_torch_backend_cpu(self):
-        """UV_TORCH_BACKEND=cpu adds --torch-backend=cpu."""
-        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
-            cmd = self._call(("somepackage",))
-        assert "--torch-backend=cpu" in cmd
 
     def test_uv_torch_backend_empty(self):
         """UV_TORCH_BACKEND="" (empty string) should NOT add --torch-backend."""
@@ -71,11 +76,6 @@ class TestBuildUvCmdTorchBackend:
                 a.startswith("--torch-backend") for a in cmd
             ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
 
-    def test_uv_torch_backend_kept_for_unpinned(self):
-        """Non-pinned commands still honour UV_TORCH_BACKEND."""
-        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
-            cmd = self._call(("somepackage",))
-        assert "--torch-backend=cpu" in cmd
 
 
 class TestUvSafePath:
@@ -1568,52 +1568,34 @@ class TestDuplicateCoreMetadataRepair:
         cmd = calls[-1][0]
         assert cmd[cmd.index("--only-binary") + 1] == ":all:"
 
-    def test_the_annotated_index_is_recovered_with_its_credentials(self, monkeypatch):
-        """Measured on uv 0.10.7: the emitted index lines carry userinfo and the
-        `# from` annotation has it stripped. Taking the annotation at face value
-        hands pip an unauthenticated URL for a private index, which answers 401 and
-        aborts the repair."""
-        self._uv_only(monkeypatch)
-        self._uv_plan(
-            monkeypatch,
-            stdout = (
-                b"--index-url https://user:secret@private.corp/simple\n"
+    @pytest.mark.parametrize(
+        "_p0",
+        [
+            # Measured on uv 0.10.7: the emitted index lines carry userinfo and the
+            # `# from` annotation has it stripped. Taking the annotation at face value
+            # hands pip an unauthenticated URL for a private index, which answers 401 and
+            # aborts the repair.
+            pytest.param(b"--index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n"
-            ),
-        )
-        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
-        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
-
-    def test_an_authenticated_extra_index_is_recovered_too(self, monkeypatch):
-        """uv puts a credentialed --index on the extra line and leaves --index-url as
-        the public default, so reading only --index-url would name the wrong index."""
-        self._uv_only(monkeypatch)
-        self._uv_plan(
-            monkeypatch,
-            stdout = (
-                b"--index-url https://pypi.org/simple\n"
+                b"    # from https://private.corp/simple\n", id = "the_annotated_index_is_recovered_with_its_credentials"),
+            # uv puts a credentialed --index on the extra line and leaves --index-url as
+            # the public default, so reading only --index-url would name the wrong index.
+            pytest.param(b"--index-url https://pypi.org/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n"
-            ),
-        )
-        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
-        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
-
-    def test_the_credentialed_form_wins_over_a_bare_duplicate(self, monkeypatch):
-        self._uv_only(monkeypatch)
-        self._uv_plan(
-            monkeypatch,
-            stdout = (
-                b"--index-url https://private.corp/simple\n"
+                b"    # from https://private.corp/simple\n", id = "an_authenticated_extra_index_is_recovered_too"),
+            pytest.param(b"--index-url https://private.corp/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n"
-            ),
-        )
-        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
-        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
+                b"    # from https://private.corp/simple\n", id = "the_credentialed_form_wins_over_a_bare_duplicate"),
+        ],
+    )
+    def test_duplicate_core_metadata_repair_cases(self, monkeypatch, _p0):
+        self._uv_only(monkeypatch)
+        self._uv_plan(monkeypatch, stdout=_p0)
+        _requirement, overrides, _options = ips._uv_staging_plan('unsloth-zoo')
+        assert overrides['PIP_INDEX_URL'] == 'https://user:secret@private.corp/simple'
+
 
     @pytest.mark.parametrize(
         "url, bare",

@@ -42,14 +42,20 @@ def test_unknown_keys_are_ignored():
     assert p.profile.displayName == "Mike"
 
 
-def test_invalid_theme_rejected():
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2",
+    [
+        pytest.param("appearance", "theme", "neon", id = "invalid_theme_rejected"),
+        pytest.param("appearance", "palette", "neon", id = "invalid_palette_rejected"),
+        pytest.param("profile", "avatarDataUrl", "http://example.com/a.png", id = "avatar_must_be_image_data_url"),
+        pytest.param("profile", "avatarDataUrl", "/Sloth%20emojis/../secret.png", id = "bundled_avatar_traversal_rejected"),
+    ],
+)
+def test_module_cases(_p0, _p1, _p2):
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"theme": "neon"}})
+        PersonalizationPayload.model_validate({_p0: {_p1: _p2}})
 
 
-def test_invalid_palette_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"palette": "neon"}})
 
 
 def test_customization_defaults():
@@ -334,11 +340,6 @@ def test_imported_fonts_total_size_capped():
     )
 
 
-def test_avatar_must_be_image_data_url():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "http://example.com/a.png"}}
-        )
 
 
 def test_avatar_size_is_capped():
@@ -373,11 +374,6 @@ def test_bundled_avatar_subpath_allowed():
     assert "Sloth%20emojis" in p.profile.avatarDataUrl
 
 
-def test_bundled_avatar_traversal_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "/Sloth%20emojis/../secret.png"}}
-        )
 
 
 def test_get_read_errors_propagate(monkeypatch):

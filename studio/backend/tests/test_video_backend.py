@@ -1007,14 +1007,7 @@ def test_load_records_engaged_speed_optims(fake_runtime, tmp_path, monkeypatch):
 
 def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     # A distilled GGUF pick defaults to the few-step no-CFG schedule.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend.generate(prompt = "a sloth")
     call = backend._state.pipe.last_kwargs
     assert call["num_inference_steps"] == 8
@@ -1029,14 +1022,7 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
 def test_generate_seeds_metal_from_a_cpu_generator(fake_runtime, tmp_path, device, expected):
     # Metal reproduces a seed only through a CPU generator, and this also keeps the path off
     # whatever torch.Generator(device="mps") does on the older torch releases install.sh keeps.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend._state = dataclasses.replace(backend._state, device = device)
     backend.generate(prompt = "a sloth", seed = 7)
     assert backend._state.pipe.last_kwargs["generator"].device == expected
@@ -1078,14 +1064,7 @@ def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeyp
 
 def test_generate_distilled_custom_steps_keep_scheduler_spacing(fake_runtime, tmp_path):
     # A non-default step count has no calibrated list, so the scheduler spacing applies and no sigmas kwarg is injected.
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     backend.generate(prompt = "a sloth", steps = 12)
     call = backend._state.pipe.last_kwargs
     assert call["num_inference_steps"] == 12
@@ -1142,14 +1121,7 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
     # crash on stale state. generate must reset them when a cache is engaged, and transformer_2 too when present.
     import dataclasses
 
-    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
-    backend = VideoBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
-        base_repo = "Lightricks/LTX-2",
-        family_override = "ltx-2",
-    )
+    backend = _load_ltx23_from_dir(tmp_path)
     resets = []
     backend._state.pipe.transformer = types.SimpleNamespace(
         _reset_stateful_cache = lambda: resets.append("transformer")
@@ -2498,6 +2470,62 @@ _LTX23_REPO_SIBLINGS = [
 ]
 
 
+def _run_h3_native_load(backend = None):
+    """Drive the MiniMax-H3 native load path the way every H3 test does."""
+    backend = backend or VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+    return backend
+
+
+def _load_ltx23_from_dir(tmp_path):
+    """Materialize the LTX-2.3 GGUF in `tmp_path` and load a pipeline off it."""
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    return backend
+
+
+def _plan_api_ltx23(monkeypatch):
+    """The LTX-2.3 GGUF repo plus its LTX-2 base, the pair most plan tests resolve against."""
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+
+def _ltx23_download_plan(**kwargs):
+    return VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+        **kwargs,
+    )
+
+
+def _force_device_target(monkeypatch, video_mod, backend):
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = backend, device = backend, dtype = None),
+    )
+
+
 def _plan_api(monkeypatch, repos):
     class _Api:
         def model_info(
@@ -2535,20 +2563,10 @@ def _plan_cache(monkeypatch, cached):
 def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypatch):
     # The Video page plans every hub pick, so an unfiltered plan would re-stage a model that is
     # already on disk. required_bytes stays the full footprint either way.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert "ltx-2.3-22b-distilled.gguf" in staged, "the scoped claim stays stable as the repo warms"
@@ -2562,20 +2580,10 @@ def test_download_plan_omits_cached_video_files_but_keeps_the_footprint(monkeypa
 
 
 def test_download_plan_is_empty_when_the_whole_video_pick_is_cached(monkeypatch):
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: True)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     assert plan["entries"] == [] and plan["total_bytes"] == 0
     # Nothing to fetch, but the load still needs every one of those bytes on disk.
@@ -2590,13 +2598,7 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
     #
     # Every OTHER file here lives wholly in the import-time root, so the split branch cannot stage
     # anything on its own: only recognising the shadow makes this repo straddle the two roots.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     shadowed = "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
@@ -2616,11 +2618,7 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert shadowed in staged, "a shadowed file must be restaged, not trusted"
@@ -2636,13 +2634,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
     # base straddling both roots cannot be handed to from_pretrained as a snapshot:
     # _predownload_base returns nothing and the assembly is pinned to hub_cache_dir(), so the
     # other-root subset is refetched inline, or the load fails offline.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     live_root = "live"
@@ -2666,11 +2658,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: live_root)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     expected_scope = {s.rfilename for s in _LTX23_REPO_SIBLINGS} - {
@@ -2684,13 +2672,7 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
 def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(monkeypatch):
     # Not a split: reuse_other_cache_root resolves the whole repo from the other root, so staging
     # any of it would re-download a model that is entirely on disk.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setattr(
@@ -2704,11 +2686,7 @@ def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(mo
     )
     monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     assert plan["entries"] == [] and plan["required_bytes"] > 0
 
@@ -2718,20 +2696,10 @@ def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
     # extras missing, the stable download scope still names the checkpoint for job adoption,
     # but only the companion files contribute bytes. Labelling that work as the model file
     # would misdescribe what the panel is downloading.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
@@ -2741,20 +2709,10 @@ def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
 
 def test_the_checkpoint_entry_is_labelled_when_its_file_is_staged(monkeypatch):
     # The other half of the same rule: nothing cached, so the GGUF itself is in the entry.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
     _plan_cache(monkeypatch, lambda name: False)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
     assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
@@ -3239,11 +3197,7 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
 
     seen: list[tuple[str, ...]] = []
@@ -3400,16 +3354,7 @@ def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch
 
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     assert install_calls == [(False, "vulkan"), (False, "cpu")]
     assert backend._state is not None
@@ -3432,11 +3377,7 @@ def test_h3_native_cpu_fallback_releases_the_video_gpu_claim(monkeypatch, tmp_pa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3461,16 +3402,7 @@ def test_h3_native_cpu_fallback_releases_the_video_gpu_claim(monkeypatch, tmp_pa
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     assert backend._state is not None
     assert backend._state.device == "cpu"
@@ -3492,11 +3424,7 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3521,16 +3449,7 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     assert backend._state is not None
     assert backend._state.device == "cuda"
@@ -3564,11 +3483,7 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3606,16 +3521,7 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     # module; patching the video module misses it entirely and the test would pass vacuously.
     monkeypatch.setattr(sd_cpp_backend, "sd_cpp_lists_accelerator_device", _watching_probe)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     # First two entries are the load-time probe; the claimed recheck later in the load adds its
     # own pair, so assert on the opening ones rather than the whole list.
@@ -3649,11 +3555,7 @@ def _load_h3_native_offload(
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -3770,11 +3672,7 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     # The reuse itself: the already-installed binary comes back for every accelerator.
     monkeypatch.setattr(
@@ -3813,16 +3711,7 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
-    backend = VideoBackend()
-    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
-    assert fam is not None
-    backend._run_load_h3_native(
-        fam = fam,
-        token = None,
-        cancel_event = threading.Event(),
-        repo_id = "leejet/MiniMax-H3-GGUF",
-        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
-    )
+    backend = _run_h3_native_load()
 
     assert backend._state is not None
     assert backend._state.device == "cpu"
@@ -3855,11 +3744,7 @@ def _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, *, swap_on_fallback):
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cuda")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
 
     swapped: list = []
@@ -3963,11 +3848,7 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -4034,11 +3915,7 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -4114,11 +3991,7 @@ def test_h3_native_load_refuses_a_missing_binary_before_downloading(monkeypatch,
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: False)
     monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", lambda **_kwargs: None)
 
@@ -4156,11 +4029,7 @@ def test_h3_native_load_checks_cancellation_before_the_binary_preflight(monkeypa
     from core.inference import sd_cpp_backend
 
     ensures: list[str] = []
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(
         sd_cpp_backend,
         "ensure_h3_sd_cpp_binary",
@@ -4201,11 +4070,7 @@ def test_h3_native_load_refuses_a_binary_that_is_not_sd_cpp_before_downloading(
             return _PlanInfo([])
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(
-        video_mod,
-        "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
-    )
+    _force_device_target(monkeypatch, video_mod, "cpu")
     monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
     monkeypatch.setattr(
         sd_cpp_backend,
@@ -4476,19 +4341,9 @@ def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     # Checkpoint and extras share one repo, so they must be ONE entry: two jobs for the same repo would collide on the scoped job key.
@@ -4596,19 +4451,9 @@ def test_download_plan_keeps_dense_encoder_for_a_custom_family_pipeline(monkeypa
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request means the dense encoder IS the encoder: dropping it would break the load.
     _cuda_bf16_target(monkeypatch)
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
-    plan = VideoBackend().download_plan(
-        "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-distilled.gguf",
-        family_override = "ltx-2",
-    )
+    plan = _ltx23_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert "unsloth/LTX-2-FP8" not in by_repo
@@ -4618,13 +4463,7 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
 def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_missing(monkeypatch):
     # The hosted artifact can be unpublished, gated or renamed. That must neither drop the dense encoder nor sink the whole plan, which is what an unguarded lookup did.
     _cuda_bf16_target(monkeypatch)
-    _plan_api(
-        monkeypatch,
-        {
-            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
-        },
-    )
+    _plan_api_ltx23(monkeypatch)
 
     plan = VideoBackend().download_plan(
         "unsloth/LTX-2.3-GGUF",

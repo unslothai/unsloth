@@ -305,51 +305,38 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 # Routes-layer strip across the three new families
 
 
-def test_routes_layer_strip_removes_deepseek_envelope():
+@pytest.mark.parametrize(
+    "_p0",
+    [
+        pytest.param("before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            '<｜tool▁sep｜>{"city":"Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after", id = "routes_layer_strip_removes_deepseek_envelope"),
+        pytest.param("before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.web_search:0"
+            '<|tool_call_argument_begin|>{"q":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after", id = "routes_layer_strip_removes_kimi_section"),
+        # ``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern.
+        pytest.param("before "
+            "<tool_call>web_search\n"
+            "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+            "</tool_call>"
+            " after", id = "routes_layer_strip_removes_glm_block"),
+    ],
+)
+def test_module_cases(_p0):
     from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<｜tool▁calls▁begin｜>"
-        "<｜tool▁call▁begin｜>get_time"
-        '<｜tool▁sep｜>{"city":"Tokyo"}'
-        "<｜tool▁call▁end｜>"
-        "<｜tool▁calls▁end｜>"
-        " after"
-    )
+    text = _p0
     stripped = _routes_strip(text)
-    assert stripped == "before  after"
+    assert stripped == 'before  after'
 
 
-def test_routes_layer_strip_removes_kimi_section():
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<|tool_calls_section_begin|>"
-        "<|tool_call_begin|>functions.web_search:0"
-        '<|tool_call_argument_begin|>{"q":"x"}'
-        "<|tool_call_end|>"
-        "<|tool_calls_section_end|>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_glm_block():
-    """``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern."""
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<tool_call>web_search\n"
-        "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
-        "</tool_call>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
 
 
 # strip_tool_markup (parser-level finalise path) over the new families

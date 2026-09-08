@@ -14,6 +14,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
@@ -100,10 +101,19 @@ def test_allow_progress_bars_only_undoes_our_own_default(monkeypatch):
     assert os.environ[_HUB] == "1"
 
 
-def test_the_export_worker_keeps_its_progress_bars():
-    text = (_BACKEND / "core/export/worker.py").read_text(encoding = "utf-8")
-    assert "allow_progress_bars()" in text
-    assert "quiet_progress_bars = False" in text
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2",
+    [
+        pytest.param("core/export/worker.py", "allow_progress_bars()", "quiet_progress_bars = False", id = "the_export_worker_keeps_its_progress_bars"),
+        pytest.param("utils/datasets/llm_assist.py", "if not _bars_were_off:", "_bars_were_off = bool(are_progress_bars_disabled())", id = "the_precache_helper_restores_rather_than_enables"),
+        # _run_embedding_training bypasses UnslothTrainer entirely.
+        pytest.param("core/training/worker.py", '"disable_tqdm": _hf_stdout_progress_disabled(),', "_drop_hf_stdout_callbacks(trainer)", id = "the_embedding_trainer_is_quiet_too"),
+    ],
+)
+def test_module_cases(_p0, _p1, _p2):
+    text = (_BACKEND / _p0).read_text(encoding='utf-8')
+    assert _p1 in text
+    assert _p2 in text
 
 
 def test_the_datasets_bar_keeps_counting_but_writes_nothing(capfd):
@@ -188,10 +198,6 @@ def test_the_diffusion_trainers_quiet_diffusers_once_it_is_imported():
         assert body.index("from diffusers") < body.index("quiet_third_party_progress_bars()"), name
 
 
-def test_the_precache_helper_restores_rather_than_enables():
-    text = (_BACKEND / "utils/datasets/llm_assist.py").read_text(encoding = "utf-8")
-    assert "if not _bars_were_off:" in text
-    assert "_bars_were_off = bool(are_progress_bars_disabled())" in text
 
 
 def test_the_video_loader_quiets_diffusers_too():
@@ -211,11 +217,6 @@ def test_our_own_conversion_bars_are_redirected(monkeypatch):
     assert text.count("**_quiet_bar_kwargs(),") == 2
 
 
-def test_the_embedding_trainer_is_quiet_too():
-    # _run_embedding_training bypasses UnslothTrainer entirely.
-    text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
-    assert '"disable_tqdm": _hf_stdout_progress_disabled(),' in text
-    assert "_drop_hf_stdout_callbacks(trainer)" in text
 
 
 def test_the_diffusion_training_child_quiets_diffusers():

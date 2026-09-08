@@ -24,16 +24,22 @@ def _stub_transformers(monkeypatch, version):
     monkeypatch.setitem(sys.modules, "transformers", stub)
 
 
-def test_old_transformers_uses_torch_dtype(monkeypatch):
-    _stub_transformers(monkeypatch, "4.51.3")
-    assert _has_torch_dtype_kwarg() is True
-    assert dtype_kwargs("float16") == {"torch_dtype": "float16"}
+@pytest.mark.parametrize(
+    "_p0, _p1, _p2",
+    [
+        pytest.param("4.51.3", True, "torch_dtype", id = "old_transformers_uses_torch_dtype"),
+        pytest.param("4.57.6", False, "dtype", id = "new_transformers_uses_dtype"),
+        # A non-PEP440 __version__ raises InvalidVersion; the except branch must
+        # swallow it and default to the modern name rather than crash the embedder warm-up.
+        pytest.param("not-a-version", False, "dtype", id = "malformed_version_prefers_modern_name"),
+    ],
+)
+def test_module_cases(monkeypatch, _p0, _p1, _p2):
+    _stub_transformers(monkeypatch, _p0)
+    assert _has_torch_dtype_kwarg() is _p1
+    assert dtype_kwargs('float16') == {_p2: 'float16'}
 
 
-def test_new_transformers_uses_dtype(monkeypatch):
-    _stub_transformers(monkeypatch, "4.57.6")
-    assert _has_torch_dtype_kwarg() is False
-    assert dtype_kwargs("float16") == {"dtype": "float16"}
 
 
 def test_rename_boundary_uses_dtype(monkeypatch):
@@ -55,12 +61,6 @@ def test_rename_prerelease_uses_dtype(monkeypatch, version):
     assert _has_torch_dtype_kwarg() is False
 
 
-def test_malformed_version_prefers_modern_name(monkeypatch):
-    """A non-PEP440 __version__ raises InvalidVersion; the except branch must
-    swallow it and default to the modern name rather than crash the embedder warm-up."""
-    _stub_transformers(monkeypatch, "not-a-version")
-    assert _has_torch_dtype_kwarg() is False
-    assert dtype_kwargs("float16") == {"dtype": "float16"}
 
 
 def test_missing_transformers_prefers_modern_name(monkeypatch):
