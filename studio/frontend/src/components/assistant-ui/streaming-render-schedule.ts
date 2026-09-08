@@ -108,17 +108,24 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // reference present: 0.045ms over short lines and 0.026ms over citations, both
 // unchanged, against 2.45ms -> 11.95ms on one 50k line dense with `[`. That
 // last shape is the price, and it is the same shape the bound above exists for.
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/u;
+// `\\[\s\S]`, not `\\.`: `.` stops at a line ending even here, so a label whose
+// line ends in a backslash was rejected outright. Marked registers it
+// (`[foo\` + newline + `bar]: /url` -> `foo\ bar`), and a definition the probe
+// misses is the false negative direction that costs correctness.
+const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // The same probe plus the destination, for the remount key. Derived from
 // LINK_DEFINITION_RE, not written out again, so the key can never see fewer
 // definitions than the parity does: matching per line missed a label that spans
 // lines, and the key collapsed to a constant that no resolved definition moved.
-// The destination is what has to be in the key -- it is what turns a definition
-// valid -- and Marked reads it after an optional line break, `\]: *(?:\n[ \t]*)?`,
-// so the key follows it there. Text that is not a destination gets read in too
-// and costs a remount; missing one leaves a rendered reference literal.
+// The suffix is everything Marked stores about a definition after the label,
+// because that is what has to move the key: `\]: *(?:\n[ \t]*)?` before the
+// destination, then an optional title that may sit on the line after it. Line
+// breaks are `\r?\n` -- the cache normalises its own input, but the key is built
+// from `processedText`, which is still whatever the reply used. Text that is not
+// a destination gets read in too and costs a remount; missing one leaves a
+// rendered reference literal, so this is the direction to be wrong in.
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*`,
+  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\r?\\n[ \\t]*)?[^\\r\\n]*(?:\\r?\\n[ \\t]*["'(][^\\r\\n]*)?`,
   `g${LINK_DEFINITION_RE.flags}`,
 );
 const LINK_REFERENCE_RE =

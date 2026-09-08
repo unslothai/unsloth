@@ -114,6 +114,10 @@ const MARKDOWN_CASES = [
   // counts code points. Streaming it a character at a time also cuts surrogate
   // pairs in half, which the repair and the probe both have to survive.
   `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
+  // A backslash immediately before the label's line ending. Marked registers
+  // this as `foo\ bar`, so the escape has to admit a line ending like the class
+  // does; `.` never would.
+  `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
@@ -199,25 +203,37 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
-// Every definition Marked registers has to move the render key when its
-// destination arrives, or the reference that was rendered before it stays
-// literal. The labels sweep the two shapes this probe used to miss, and the
-// separators sweep both places Marked accepts the destination.
+// Everything Marked stores about a definition has to move the render key as it
+// arrives, or the reference that was rendered before it keeps the stale link.
+// The labels sweep the shapes this probe used to miss, the separators sweep both
+// places Marked accepts a destination, and each is run with LF and with CRLF,
+// because the key is built from text the cache has not normalised.
 test("a definition that spans lines still moves the render key", () => {
-  const usage = `Before [reference][foo bar].\n\n${paragraphs(20)}`;
+  const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
-  for (const label of ["foo", "x".repeat(250), "foo\nbar"]) {
-    for (const separator of [" ", "\n  "]) {
-      const partial = `${usage}[${label}]:${separator}`;
-      const complete = `${partial}https://example.com/reference`;
-      const shape = JSON.stringify(`[${label}]:${separator}`);
+  for (const newline of ["\n", "\r\n"]) {
+    const eol = (text: string) => text.replaceAll("\n", newline);
+    const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
 
-      assert.equal(markdownRenderScope(complete), "document", shape);
-      assert.notEqual(
-        markdownRenderKey(partial),
-        markdownRenderKey(complete),
-        `render key did not move for ${shape}`,
-      );
+    for (const label of labels) {
+      for (const separator of [" ", "\n  "]) {
+        const opened = `${usage}${eol(`[${label}]:${separator}`)}`;
+        const destined = `${opened}https://example.com/reference`;
+        const titled = `${destined}${eol('\n  "reference"')}`;
+        const shape = JSON.stringify(eol(`[${label}]:${separator}`));
+
+        assert.equal(markdownRenderScope(destined), "document", shape);
+        assert.notEqual(
+          markdownRenderKey(opened),
+          markdownRenderKey(destined),
+          `render key did not move for the destination of ${shape}`,
+        );
+        assert.notEqual(
+          markdownRenderKey(destined),
+          markdownRenderKey(titled),
+          `render key did not move for the title of ${shape}`,
+        );
+      }
     }
   }
 });
