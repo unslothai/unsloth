@@ -15,9 +15,7 @@ have `unsloth_cli` on sys.path. Keep the two in sync.
 from __future__ import annotations
 
 import ipaddress
-import logging
 import os
-import re
 import socket
 
 # Only the exact aliases the rest of the stack hard-codes for loopback: other 127.0.0.0/8 addresses are deliberately
@@ -265,35 +263,17 @@ def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
     return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
 
 
-def _usable_origin_regex(pattern: "str | None") -> "str | None":
-    """Drop an operator regex that does not compile, rather than hand it to Starlette.
-
-    Starlette compiles `allow_origin_regex` when it builds the middleware stack, and it
-    builds that stack lazily on the first request. A pattern with a typo therefore sails
-    past the "Unsloth Studio is running" banner and then 500s every route, `/api/health`
-    included, with the re.error only in the log. Dropping it leaves the default lockdown
-    in place, which is the safe direction to fail."""
-    if not pattern:
-        return None
-    try:
-        re.compile(pattern)
-    except re.error as error:
-        logging.getLogger(__name__).warning(
-            "Ignoring UNSLOTH_CORS_ORIGIN_REGEX, it is not a valid regex (%s): %s",
-            error,
-            pattern,
-        )
-        return None
-    return pattern
-
-
 def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
     """Origin regex for the lockdown, off by default so no page on another local port can
-    make credentialed calls. UNSLOTH_CORS_ALLOW_LOOPBACK=1 or a custom regex opts in."""
+    make credentialed calls. UNSLOTH_CORS_ALLOW_LOOPBACK=1 opts in.
+
+    The pattern is this constant and never an operator string. `Origin` is attacker
+    controlled and matched before route authentication, so an operator regex would let a
+    nested quantifier decide how long the event loop spends on an unauthenticated OPTIONS:
+    measured with `^https?://(a+)+\\.example$`, one request stalled the server past 30s and
+    no header length cap bounds it. Name the origins in UNSLOTH_CORS_ORIGINS instead."""
     if not _is_desktop_cors_lockdown(api_only, secure):
         return None
-    if custom_regex := _usable_origin_regex(os.environ.get("UNSLOTH_CORS_ORIGIN_REGEX")):
-        return custom_regex
     if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":
         return _LOOPBACK_ORIGIN_REGEX
     return None

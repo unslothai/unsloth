@@ -108,36 +108,37 @@ def test_cors_origin_regex_for_mode_opt_in(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
     assert cors_origin_regex_for_mode(api_only = True, secure = False) == _LOOPBACK_ORIGIN_REGEX
 
-    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", r"^https?://specific\.local$")
-    assert cors_origin_regex_for_mode(api_only = True, secure = False) == r"^https?://specific\.local$"
-
 
 @pytest.mark.parametrize("api_only,secure", [(False, False), (False, True), (True, True)])
 def test_cors_origin_regex_only_applies_to_the_desktop_lockdown(monkeypatch, api_only, secure):
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
-    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", r"^https?://specific\.local$")
     assert cors_origin_regex_for_mode(api_only = api_only, secure = secure) is None
 
 
-def test_a_malformed_origin_regex_is_dropped_not_handed_to_starlette(monkeypatch, caplog):
-    # Starlette compiles allow_origin_regex when it builds the middleware stack, and it
-    # builds that lazily on the first request, so a typo'd pattern gets past the "running"
-    # banner and then 500s every route including /api/health. Measured on a live api-only
-    # backend before this guard.
-    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", "^http://(localhost")
-    with caplog.at_level("WARNING"):
-        assert cors_origin_regex_for_mode(api_only = True, secure = False) is None
-    assert "UNSLOTH_CORS_ORIGIN_REGEX" in caplog.text
+def test_no_env_var_can_put_an_operator_regex_in_front_of_origin(monkeypatch):
+    # Origin is attacker controlled and matched before route authentication, so the only
+    # pattern Starlette may ever compile is the vetted constant. An operator regex with a
+    # nested quantifier stalled a live api-only server past 30s on ONE unauthenticated
+    # OPTIONS, and no header length cap bounds it.
+    for name in ("UNSLOTH_CORS_ORIGIN_REGEX", "UNSLOTH_CORS_REGEX", "UNSLOTH_CORS_ALLOW_REGEX"):
+        monkeypatch.setenv(name, r"^https?://(a+)+\.example$")
+    assert cors_origin_regex_for_mode(api_only = True, secure = False) is None
 
-    middleware = _middleware()
-    assert _preflight(middleware, "tauri://localhost").status_code == 200
-    assert _preflight(middleware, "http://localhost:3000").status_code == 400
-
-
-def test_a_malformed_origin_regex_still_leaves_the_loopback_flag_working(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", "^http://(localhost")
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
     assert cors_origin_regex_for_mode(api_only = True, secure = False) == _LOOPBACK_ORIGIN_REGEX
+
+
+def test_the_built_in_loopback_regex_is_linear_on_a_hostile_origin():
+    # The constant above is only safe because it has no nested quantifier: literal
+    # alternation plus one bounded optional group.
+    import re
+    import time
+
+    pattern = re.compile(_LOOPBACK_ORIGIN_REGEX)
+    hostile = "http://" + ("a" * 200_000) + "!"
+    started = time.perf_counter()
+    assert pattern.fullmatch(hostile) is None
+    assert time.perf_counter() - started < 0.5
 
 
 def test_main_passes_the_origin_regex_to_the_mounted_middleware():
