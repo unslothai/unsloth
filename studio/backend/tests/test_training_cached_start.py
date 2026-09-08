@@ -3423,3 +3423,27 @@ def test_a_run_stored_by_an_older_install_still_renders():
 
     assert config == {"eval_steps": None, "model_name": "unsloth/test"}
     JSONResponse(content = config).render(config)
+
+
+def test_a_json_integer_too_large_for_a_float_is_disabled_not_a_500():
+    """A JSON integer literal arrives as an arbitrary-precision int, and `float()` raises
+    OverflowError on one too large to represent. OverflowError is not a ValueError, so it would
+    escape the validator and the start endpoint would 500 instead of returning a request error."""
+    huge = "1" + "0" * 310
+    assert isinstance(json.loads(huge), int)
+    with pytest.raises(OverflowError):
+        float(json.loads(huge))
+
+    request = TrainingStartRequest.model_validate_json(
+        '{"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", '
+        '"format_type": "alpaca", "hf_dataset": "org/dataset", '
+        f'"eval_steps": {huge}}}'
+    )
+    assert request.eval_steps == 0.0
+
+
+def test_the_shared_cadence_gate_survives_an_unrepresentable_integer():
+    """`evaluation_enabled` caught only TypeError and ValueError, so the same value took down
+    every caller of it, including the route gate and the MLX worker."""
+    from core.training.eval_dataset import evaluation_enabled
+    assert evaluation_enabled(int("1" + "0" * 310)) is False

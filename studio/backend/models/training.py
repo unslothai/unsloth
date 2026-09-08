@@ -5,7 +5,6 @@
 Pydantic schemas for Training API
 """
 
-import contextlib
 import math
 import re
 from pathlib import Path, PureWindowsPath
@@ -219,9 +218,16 @@ class TrainingStartRequest(BaseModel):
         # Store it as the disabled value it already means, so it never reaches config_json: json
         # writes it as `Infinity` and Starlette renders responses with allow_nan = False, so the
         # run's own detail view would then 500.
-        with contextlib.suppress(TypeError, ValueError):
+        try:
             if not math.isfinite(float(value)):
                 return 0.0
+        except OverflowError:
+            # A JSON integer literal arrives as an arbitrary-precision int, and float() refuses one
+            # too large to represent. That is the same "not a usable cadence" case as inf, so it
+            # must not escape the validator as a 500.
+            return 0.0
+        except (TypeError, ValueError):
+            pass
         return value
 
     # pydantic runs all mode="after" validators in definition order and _check_steps_or_epochs is lower

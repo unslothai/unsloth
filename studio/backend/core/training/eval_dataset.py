@@ -18,7 +18,9 @@ def evaluation_enabled(value: Any) -> bool:
         return False
     try:
         interval = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError, not ValueError: json hands back an arbitrary-precision int for a JSON
+        # integer literal, and float() refuses one too large to represent.
         return False
     return math.isfinite(interval) and interval > 0
 
