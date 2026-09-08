@@ -4868,17 +4868,25 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 Assert-VenvActivated -VenvDir $VenvDir
 
 # pip does not understand uv's resolver flags. Drops them with any value that follows.
+# One of --prerelease's five values has a pip equivalent: allow is --pre. disallow is pip's
+# default, and if-necessary/explicit have no flag, so those three drop rather than invert.
 function Remove-UvOnlyResolverFlags {
     param([object[]]$Arguments)
     $kept = @()
-    $skipNext = $false
+    $valueOf = ""
     foreach ($arg in @($Arguments)) {
-        if ($skipNext) { $skipNext = $false; continue }
         $token = [string]$arg
-        if ($token -eq '--index-strategy') { $skipNext = $true; continue }
+        if ($valueOf) {
+            if ($valueOf -eq '--prerelease' -and $token -eq 'allow') { $kept += '--pre' }
+            $valueOf = ""
+            continue
+        }
+        if ($token -eq '--index-strategy' -or $token -eq '--prerelease') { $valueOf = $token; continue }
         if ($token -like '--index-strategy=*') { continue }
-        if ($token -eq '--prerelease') { $skipNext = $true; continue }
-        if ($token -like '--prerelease=*') { $kept += '--pre'; continue }
+        if ($token -like '--prerelease=*') {
+            if ($token -eq '--prerelease=allow') { $kept += '--pre' }
+            continue
+        }
         $kept += $token
     }
     return ,$kept

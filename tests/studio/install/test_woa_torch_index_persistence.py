@@ -2766,6 +2766,43 @@ class TestThePipFallbackKeepsTheIndexArguments:
         assert "--prerelease" not in got, "likewise the uv spelling"
         assert ("--pre" in got) is expect_pre, got
 
+    # Both call sites spell it --prerelease=allow, so the rest of the grammar is untested by
+    # the run above. uv accepts a space-separated value too, and five values, only one of
+    # which means what --pre means. The first spelling used to drop both tokens and lose the
+    # permission; every other value used to become --pre and invert it.
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["--prerelease=allow", "numpy"], ["--pre", "numpy"]),
+            (["--prerelease", "allow", "numpy"], ["--pre", "numpy"]),
+            (["--prerelease=disallow", "numpy"], ["numpy"]),
+            (["--prerelease", "disallow", "numpy"], ["numpy"]),
+            (["--prerelease=if-necessary", "numpy"], ["numpy"]),
+            (["--prerelease", "explicit", "numpy"], ["numpy"]),
+            (["--index-strategy=unsafe-best-match", "numpy"], ["numpy"]),
+            (["--index-strategy", "unsafe-best-match", "numpy"], ["numpy"]),
+            # The value is only swallowed by the flag it belongs to.
+            (["numpy", "allow"], ["numpy", "allow"]),
+            (
+                ["--prerelease", "allow", "--index-strategy", "first-index", "numpy"],
+                ["--pre", "numpy"],
+            ),
+        ],
+        ids = lambda v: " ".join(v),
+    )
+    def test_every_spelling_of_the_uv_only_flags(self, argv, expected):
+        quoted = ", ".join("'" + a + "'" for a in argv)
+        script = "\n".join(
+            [
+                _function_source(SETUP_SRC, "Remove-UvOnlyResolverFlags"),
+                f"$out = Remove-UvOnlyResolverFlags -Arguments @({quoted})",
+                "Write-Output ('[' + ($out -join ' ') + ']')",
+            ]
+        )
+        got = _ps_ok(script).stdout.strip().splitlines()[-1][1:-1]
+        assert got == " ".join(expected)
+
 
 class TestTheWoaIndexOutlivesTheManifest:
     """The dependency pass deletes the manifest before rebuilding it.
