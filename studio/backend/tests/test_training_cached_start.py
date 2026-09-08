@@ -14,6 +14,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from hub.utils import hf_cache_state
@@ -3317,20 +3318,16 @@ def test_numeric_eval_steps_still_accepted(value):
 
 
 def test_a_json_number_too_large_for_a_float_arrives_as_infinity():
-    """Pins the behaviour the route gate exists for. `1e309` is a plain JSON number, not one of
-    the non-standard `Infinity` / `NaN` literals, so a spec-conformant client can send it and
-    pydantic's non-strict `float` coerces it to inf."""
-    request = TrainingStartRequest.model_validate_json(
-        json.dumps(
-            {
-                "model_name": "unsloth/test",
-                "training_type": "LoRA/QLoRA",
-                "format_type": "alpaca",
-                "hf_dataset": "org/dataset",
-            }
-        ).replace("}", ', "eval_steps": 1e309}')
-    )
-    assert request.eval_steps == float("inf")
+    """Pins the library behaviour the gates exist for, so the premise cannot drift: `1e309` is a
+    plain JSON number, not one of the non-standard `Infinity` / `NaN` literals, so a
+    spec-conformant client can send it and pydantic's non-strict `float` coerces it to inf."""
+    from pydantic import BaseModel
+
+    class _Bare(BaseModel):
+        eval_steps: float = 0.0
+
+    assert json.loads("1e309") == float("inf")
+    assert _Bare.model_validate_json('{"eval_steps": 1e309}').eval_steps == float("inf")
 
 
 @pytest.mark.parametrize("cadence", [float("inf"), float("nan")])
@@ -3380,3 +3377,49 @@ def test_a_usable_cadence_still_demands_a_separate_streaming_eval_split():
     assert (
         exc_info.value.detail == "dataset_streaming with evaluation requires a separate eval_split."
     )
+
+
+@pytest.mark.parametrize("literal", ["1e309", "-1e309", "Infinity", "NaN"])
+def test_a_non_finite_cadence_is_stored_as_disabled(literal):
+    """inf and NaN survive `json.dumps` as the non-standard `Infinity` / `NaN` literals and parse
+    back fine, but Starlette renders with `allow_nan = False`, so a run that persisted one to
+    config_json would 500 its own detail view. Normalise at the boundary instead."""
+    request = TrainingStartRequest.model_validate_json(
+        '{"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", '
+        '"format_type": "alpaca", "hf_dataset": "org/dataset", '
+        f'"eval_steps": {literal}}}'
+    )
+    assert request.eval_steps == 0.0
+
+
+def test_the_persisted_config_never_carries_a_non_finite_value():
+    from core.training.training import _sanitize_db_config
+
+    sanitized = _sanitize_db_config(
+        {
+            "eval_steps": float("inf"),
+            "learning_rate": float("nan"),
+            "nested": {"a": [float("-inf"), 1.0]},
+            "keep": 0.25,
+            "flag": True,
+        }
+    )
+
+    assert sanitized["eval_steps"] is None
+    assert sanitized["learning_rate"] is None
+    assert sanitized["nested"] == {"a": [None, 1.0]}
+    assert sanitized["keep"] == 0.25
+    assert sanitized["flag"] is True
+    JSONResponse(content = sanitized).render(sanitized)
+
+
+def test_a_run_stored_by_an_older_install_still_renders():
+    """An install from before this change can already have `Infinity` in config_json, and no
+    change to the request model repairs that row."""
+    from utils.training_runs import drop_non_finite
+
+    stored = json.dumps({"eval_steps": float("inf"), "model_name": "unsloth/test"})
+    config = drop_non_finite(json.loads(stored))
+
+    assert config == {"eval_steps": None, "model_name": "unsloth/test"}
+    JSONResponse(content = config).render(config)

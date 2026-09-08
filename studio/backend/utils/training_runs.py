@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any, Optional
@@ -151,3 +152,21 @@ def extract_project_name(config: Any) -> Optional[str]:
     if not isinstance(config, dict):
         return None
     return normalize_project_name(config.get("project_name"))
+
+
+def drop_non_finite(value: Any) -> Any:
+    """Replace inf and NaN with None, recursively.
+
+    ``json.dumps`` writes them as the non-standard ``Infinity`` / ``NaN`` literals and reads them
+    back happily, but Starlette renders responses with ``allow_nan = False``, so anything that
+    reaches a stored config this way makes the view that returns it 500.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: drop_non_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [drop_non_finite(v) for v in value]
+    return value
