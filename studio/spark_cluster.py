@@ -3107,6 +3107,8 @@ def mtp_draft_n_max(users: Optional[int] = None) -> int:
         if rows >= key:
             depth = MTP_DRAFT_N_MAX_BY_ROWS[key]
     return depth
+
+
 # ── Pipeline groups AND speculative decoding on the same layer split ──────────────────
 # unslothai/llama.cpp PR #187 (feature/pipeline-groups, a1dd7c5e8) gives every pipeline group
 # its own speculative state, so --pipeline-groups N > 1 is now accepted together with
