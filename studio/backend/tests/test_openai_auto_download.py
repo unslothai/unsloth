@@ -877,7 +877,6 @@ def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
 
 def test_hook_prefers_the_hub_header_token(hub):
     from hub.dependencies import HUB_HF_TOKEN_HEADER
-
     with pytest.raises(HTTPException):
         _hook(
             "unsloth/x-GGUF",

@@ -549,7 +549,6 @@ def toggles(monkeypatch):
     """Drive the Model Memory settings the two policies read lazily."""
     import utils.model_memory_settings as mm
 
-
     def _set(keep_resident, no_ram_reserve):
         monkeypatch.setattr(
             mm, "get_model_memory_settings", lambda: (keep_resident, no_ram_reserve)

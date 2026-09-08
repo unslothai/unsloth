@@ -3396,7 +3396,6 @@ def test_a_stream_that_cannot_be_drained_does_not_stop_the_caller(monkeypatch):
     """A plain mx.new_stream raises when synchronized off its creating thread."""
     from core.inference import mlx_inference
 
-
     def synchronize(stream = None):
         if stream == "foreign":
             raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
@@ -3449,7 +3448,6 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
 
 def test_a_runtime_without_synchronize_is_not_an_error():
     from core.inference import mlx_inference
-
     mlx_inference._drain_generation_streams(types.SimpleNamespace())
 
 
@@ -3543,7 +3541,11 @@ def _count_route(
     )
 
 
-def _count_hi(*args, messages = [{"role": "user", "content": "hi"}], **kwargs):
+def _count_hi(
+    *args,
+    messages = [{"role": "user", "content": "hi"}],
+    **kwargs,
+):
     """_count_route over the one-message chat every case counts."""
     return _count_route(*args, messages = messages, **kwargs)
 
@@ -3971,7 +3973,6 @@ def test_the_mlx_module_imports_on_a_machine_with_no_mlx_wheels():
 def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
     """Nothing can be built to judge, which is "unknown", not "unbounded"."""
     from core.inference.mlx_inference import _kv_window_enforced
-
     with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
         assert _kv_window_enforced(SimpleNamespace(layers = [object()]), False, 4096) is None
 

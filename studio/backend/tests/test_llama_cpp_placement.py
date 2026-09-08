@@ -110,10 +110,13 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     return backend, gguf
 
 
-def _backend_non_vulkan(*args, vulkan = False, **kwargs):
+def _backend_non_vulkan(
+    *args,
+    vulkan = False,
+    **kwargs,
+):
     """_backend on a non-vulkan host."""
     return _backend(*args, vulkan = vulkan, **kwargs)
-
 
 
 def _launch(backend, gguf, **load_kwargs):
@@ -148,7 +151,12 @@ def _launch(backend, gguf, **load_kwargs):
     return captured
 
 
-def _launch_auto_8k(*args, n_ctx = 8192, speculative_type = "auto", **kwargs):
+def _launch_auto_8k(
+    *args,
+    n_ctx = 8192,
+    speculative_type = "auto",
+    **kwargs,
+):
     """_launch at 8k context with auto speculation.
 
     A caller passing ``n_ctx = 0`` means Auto context (the branch that caps); the native
@@ -157,11 +165,17 @@ def _launch_auto_8k(*args, n_ctx = 8192, speculative_type = "auto", **kwargs):
     return _launch(*args, n_ctx = n_ctx, speculative_type = speculative_type, **kwargs)
 
 
-
-def _launch_auto_spec(*args, n_ctx = 4096, n_parallel = 4, speculative_type = "auto", **kwargs):
+def _launch_auto_spec(
+    *args,
+    n_ctx = 4096,
+    n_parallel = 4,
+    speculative_type = "auto",
+    **kwargs,
+):
     """_launch with the 4k/4-slot auto-speculative load the placement cases share."""
-    return _launch(*args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs)
-
+    return _launch(
+        *args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs
+    )
 
 
 def _launch_warns(backend, gguf, **load_kwargs):
@@ -689,10 +703,23 @@ def _recorded_mtp_reserve(backend, gguf, **load_kwargs):
     return charged
 
 
-def _recorded_mtp_reserve_std(*args, extra_args = ["--spec-type", "draft-mtp"], n_ctx = 8192, n_parallel = 4, speculative_type = "auto", **kwargs):
+def _recorded_mtp_reserve_std(
+    *args,
+    extra_args = ["--spec-type", "draft-mtp"],
+    n_ctx = 8192,
+    n_parallel = 4,
+    speculative_type = "auto",
+    **kwargs,
+):
     """_recorded_mtp_reserve for the forced draft-mtp 8k/4-slot load."""
-    return _recorded_mtp_reserve(*args, extra_args = extra_args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs)
-
+    return _recorded_mtp_reserve(
+        *args,
+        extra_args = extra_args,
+        n_ctx = n_ctx,
+        n_parallel = n_parallel,
+        speculative_type = speculative_type,
+        **kwargs,
+    )
 
 
 def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
@@ -1528,10 +1555,17 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
     return backend, gguf
 
 
-def _offload_backend_std(*args, avail_mib = 10_000, free_mib = 4877, gguf_gb = 13.3, **kwargs):
+def _offload_backend_std(
+    *args,
+    avail_mib = 10_000,
+    free_mib = 4877,
+    gguf_gb = 13.3,
+    **kwargs,
+):
     """_offload_backend with the standard 13.3 GB weights against a 4877 MiB free budget."""
-    return _offload_backend(*args, avail_mib = avail_mib, free_mib = free_mib, gguf_gb = gguf_gb, **kwargs)
-
+    return _offload_backend(
+        *args, avail_mib = avail_mib, free_mib = free_mib, gguf_gb = gguf_gb, **kwargs
+    )
 
 
 def test_weights_larger_than_vram_plus_ram_still_load_with_a_warning(tmp_path, monkeypatch):

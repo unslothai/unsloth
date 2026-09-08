@@ -51,7 +51,6 @@ async def _boom(*a, **k):
     raise _Reached()
 
 
-
 def _reset_keepwarm():
     """Clear the keep-warm counters and mark the model long idle."""
     kw._inflight = 0
@@ -70,7 +69,6 @@ def _vision_gguf_cache_repo(tmp_path):
     newer = repo / "snapshots" / "companion-revision"
     newer.mkdir(parents = True)
     return repo, old, newer
-
 
 
 class _Reached(Exception):
@@ -232,13 +230,23 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
 
 
-def _wire_on(*args, enabled = True, **kwargs):
+def _wire_on(
+    *args,
+    enabled = True,
+    **kwargs,
+):
     """_wire with auto-switch enabled."""
     return _wire(*args, enabled = enabled, **kwargs)
 
 
-
-def _wired(monkeypatch, backend, resolves_to, *, enabled = True, fail = False):
+def _wired(
+    monkeypatch,
+    backend,
+    resolves_to,
+    *,
+    enabled = True,
+    fail = False,
+):
     """Load recorder + _wire around a backend: the setup nearly every test below repeats."""
     rec = _LoadRecorder(backend, fail = fail)
     _wire(monkeypatch, enabled = enabled, resolves_to = resolves_to, backend = backend, recorder = rec)
@@ -254,7 +262,12 @@ def _run_hook(model = "some/model"):
 
 
 def test_flag_off_never_loads(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", None, "unsloth/B-GGUF"), enabled = False)
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend("unsloth/A-GGUF"),
+        ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        enabled = False,
+    )
     # Off means no load, but A must not answer as B either: say why instead.
     with pytest.raises(HTTPException) as excinfo:
         _run_hook("unsloth/B-GGUF")
@@ -271,13 +284,17 @@ def test_unknown_model_falls_through(monkeypatch):
 
 def test_already_loaded_does_not_reload(monkeypatch):
     # Case-insensitive match against the loaded identifier.
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/a-gguf", None, "unsloth/a-gguf"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/a-gguf", None, "unsloth/a-gguf")
+    )
     _run_hook("unsloth/A-GGUF")
     assert rec.calls == []
 
 
 def test_known_unloaded_model_switches_once(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert len(rec.calls) == 1
     req = rec.calls[0]
@@ -332,7 +349,9 @@ def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
 
 
 def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL"), None)
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL"), None
+    )
     warmed = []
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
 
@@ -379,7 +398,9 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
 
 def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
     real_resolve = resolver.resolve_local_gguf
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF", "Q4_K_M"), None, enabled = False)
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF", "Q4_K_M"), None, enabled = False
+    )
     monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
     monkeypatch.setattr(
         inference_route,
@@ -478,7 +499,9 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
 
 
 def test_concurrent_same_target_loads_once(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", None, "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", None, "unsloth/B-GGUF")
+    )
 
     async def _race():
         await asyncio.gather(
@@ -491,14 +514,23 @@ def test_concurrent_same_target_loads_once(monkeypatch):
 
 
 def test_load_failure_propagates(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", None, "unsloth/B-GGUF"), fail = True)
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend("unsloth/A-GGUF"),
+        ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        fail = True,
+    )
     with pytest.raises(HTTPException):
         _run_hook("unsloth/B-GGUF")
 
 
 def test_same_repo_different_variant_switches(monkeypatch):
     # Q4_K_M loaded, Q8_0 requested: a different quant must trigger a reload.
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M"), ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M"),
+        ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"),
+    )
     _run_hook("unsloth/B-GGUF:Q8_0")
     assert len(rec.calls) == 1
     assert rec.calls[0].gguf_variant == "Q8_0"
@@ -1210,7 +1242,9 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
 
 def test_auto_switch_applies_model_override(monkeypatch):
     # A configured model loads with its saved launch flags, not bare defaults.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(
         settings,
         "get_model_override",
@@ -1228,7 +1262,9 @@ def test_auto_switch_applies_model_override(monkeypatch):
 
 def test_auto_switch_applies_partial_override(monkeypatch):
     # Only llama_extra_args is configured: it is applied, max_seq_length stays default.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(
         settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]}
     )
@@ -1376,7 +1412,6 @@ def test_model_override_rejects_zero_max_seq_length():
     # 0 is not a valid sequence length and the setter drops a falsy value, so the
     # payload must reject it at the boundary instead of accepting then discarding it.
     import pydantic
-
     with pytest.raises(pydantic.ValidationError):
         settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 0)
     assert settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 1).max_seq_length == 1
@@ -1533,7 +1568,11 @@ def test_count_tokens_is_tracked_as_inference_path():
 def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
     # Repo already loaded as Q4_K_M; a BARE request for the same repo (resolver
     # picks the largest local quant, Q8_0) must NOT reload a different quant.
-    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M"), ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M"),
+        ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"),
+    )
     _run_hook("unsloth/B-GGUF")  # bare, no :VARIANT
     assert rec.calls == []
     # An explicit :VARIANT request still honors the quant (reloads to Q8_0).
@@ -1810,7 +1849,9 @@ def test_auto_switch_waits_for_another_inference_to_finish(monkeypatch):
     # A cross-model swap queues while another request is generating, then loads
     # after that request drains. The requesting call itself is excluded.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M"), ("/p/B", "Q8_0", "org/B-GGUF")
+    )
     monkeypatch.setattr(kw, "_inflight", 2)  # this request + another active one
     monkeypatch.setattr(kw, "_pending", 0)
 
@@ -2174,7 +2215,11 @@ def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkey
     os.utime(old, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
 
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF"))
+    backend, recorder = _wired(
+        monkeypatch,
+        _FakeBackend("org/Other-GGUF", "Q4_K_M"),
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
 
     asyncio.run(
         inference_route._maybe_auto_switch_model(
@@ -2201,7 +2246,11 @@ def test_auto_switch_display_alias_keeps_repo_level_companion_scope(tmp_path, mo
     repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
 
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF", True))
+    backend, recorder = _wired(
+        monkeypatch,
+        _FakeBackend("org/Other-GGUF", "Q4_K_M"),
+        (str(old), "Q4_K_M", "org/Vision-GGUF", True),
+    )
 
     asyncio.run(
         inference_route._maybe_auto_switch_model(
@@ -2253,7 +2302,11 @@ def test_resident_repo_reloads_when_companion_finishes_in_existing_snapshot(
     if precreated:
         (companion / "mmproj-vision-model-F16.gguf").write_bytes(b"")
     (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(selected), "Q4_K_M", "org/Vision-GGUF", True))
+    backend, recorder = _wired(
+        monkeypatch,
+        _FakeBackend("org/Other-GGUF", "Q4_K_M"),
+        (str(selected), "Q4_K_M", "org/Vision-GGUF", True),
+    )
 
     async def run():
         await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
@@ -2271,7 +2324,11 @@ def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, mon
     repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
 
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF"))
+    backend, recorder = _wired(
+        monkeypatch,
+        _FakeBackend("org/Other-GGUF", "Q4_K_M"),
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
 
     asyncio.run(
         inference_route._maybe_auto_switch_model(
@@ -2369,7 +2426,11 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
     old.mkdir(parents = True)
     (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
 
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF"))
+    backend, recorder = _wired(
+        monkeypatch,
+        _FakeBackend("org/Other-GGUF", "Q4_K_M"),
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
     entered = threading.Event()
     release = threading.Event()
 
@@ -2606,7 +2667,11 @@ def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
     # returns the concrete load path. A request for that repo must count as already
     # serving (no reload, no 409) even with another inference active.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/Repo-GGUF", hf_variant = "Q4_K_M"), ("/cache/models--org--Repo-GGUF/snapshots/abc", "Q4_K_M", "org/Repo-GGUF"))
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend("org/Repo-GGUF", hf_variant = "Q4_K_M"),
+        ("/cache/models--org--Repo-GGUF/snapshots/abc", "Q4_K_M", "org/Repo-GGUF"),
+    )
     monkeypatch.setattr(kw, "_inflight", 2)
     monkeypatch.setattr(kw, "_pending", 0)
     _run_hook("org/Repo-GGUF:Q4_K_M")  # exact quant
@@ -2617,7 +2682,9 @@ def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
 def test_auto_switch_advertises_repo_id_after_load(monkeypatch):
     # After a load-by-path, the backend advertises the repo id (override key), not
     # the concrete path, so /v1/models and the idle stash stay name-based.
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B-snapshot", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B-snapshot", "Q8_0", "org/B-GGUF")
+    )
     _run_hook("org/B-GGUF:Q8_0")
     assert rec.calls[0].model_path == "/p/B-snapshot"  # loaded by concrete path
     assert backend._openai_advertised_id == "org/B-GGUF"  # advertised by repo id
@@ -3826,7 +3893,9 @@ def test_omitted_schema_model_skips_resolver(monkeypatch):
     # End to end: a schema request omitting `model` must not run the resolver, so a
     # GGUF named "default" is never swapped to; an explicit model still switches.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF")
+    )
     omitted = ChatCompletionRequest(messages = [_chat_msg()])
     asyncio.run(
         inference_route._maybe_auto_switch_model(
@@ -3858,7 +3927,9 @@ def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
     # Codex P2: a malformed function tool (no name) must 400 before the hook, so an
     # invalid /v1/responses request never switches or evicts the loaded model.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF")
+    )
     payload = _responses_payload(tools = [{"type": "function", "parameters": {}}])
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
@@ -3927,17 +3998,22 @@ def _chat_request(**kw):
     return ChatCompletionRequest(**kw)
 
 
-def _chat_request_b(*args, model = "org/B-GGUF", **kwargs):
+def _chat_request_b(
+    *args,
+    model = "org/B-GGUF",
+    **kwargs,
+):
     """_chat_request for the org/B-GGUF model these cases switch to."""
     return _chat_request(*args, model = model, **kwargs)
-
 
 
 def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
     # Codex P2: confirm_tool_calls=true + stream=false + local tools is an invalid
     # shape; it must 400 before the switch hook so it can't evict the resident model.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF")
+    )
     payload = _chat_request_b(enable_tools = True, confirm_tool_calls = True, stream = False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
@@ -4096,7 +4172,9 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
     # the switch. The old guard only checked explicit tool fields and missed it.
 
     monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)  # no CLI --disable-tools
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF")
+    )
     payload = _chat_request_b(mcp_enabled = True, confirm_tool_calls = True, stream = False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
@@ -4108,7 +4186,9 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
     # Codex P2: an image request naming a different text-only GGUF must 400 before
     # the swap, so the resident vision model is not evicted for a rejected request.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
     monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -4121,7 +4201,9 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
 
 
 def test_require_vision_allows_vision_target(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
     monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: True)
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
@@ -4144,7 +4226,9 @@ def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, t
         + struct.pack("<I", 7)
         + struct.pack("<?", True)
     )
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), (str(tmp_path), "Q4_K_M", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), (str(tmp_path), "Q4_K_M", "org/B-GGUF")
+    )
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             "org/B-GGUF", object(), "t", require_vision = True, require_image = False
@@ -4156,7 +4240,9 @@ def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, t
 def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
     # The resolver hands the gate a directory plus the quant to load, so the probe must
     # see the same pair the load does (#8772).
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/cache/snap", "UD-Q4_K_XL", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/cache/snap", "UD-Q4_K_XL", "org/B-GGUF")
+    )
     probed: list[tuple] = []
     monkeypatch.setattr(
         inference_route,
@@ -5237,6 +5323,7 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
 ):
     """The kwargs have to reach llama-server itself: /apply-template runs the same parser
     as /v1/chat/completions, so the rendered prompt only moves when they are in the body."""
+
     class _FakeResponse:
         status_code = 200
 
@@ -5293,6 +5380,7 @@ def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure
     """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating message
     text, dropping every role marker, special token and tool schema (~30% of a six-turn two-tool
     prompt). Strict callers publish what they get, so it must be an error, not an estimate."""
+
     class _FakeResponse:
         def __init__(
             self,
@@ -5482,7 +5570,9 @@ def test_non_gguf_load_clears_reload_stash():
 def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
     # Codex P2: a forcing object with no function name must 400 before the switch.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF")
+    )
     payload = _chat_request(model = "org/B-GGUF", tool_choice = {"type": "function", "function": {}})
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
@@ -6575,7 +6665,9 @@ def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     assert entry["max_seq_length"] == 32768
     assert entry["llama_extra_args"] == ["--ctx-size", "8192", "--top-k", "40"]
 
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
 
     _run_hook("unsloth/B-GGUF")
     request = rec.calls[0]
@@ -6595,7 +6687,9 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
         spec_draft_n_max = 3,
     )
 
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
 
     _run_hook("unsloth/B-GGUF")
     request = rec.calls[0]
@@ -6690,7 +6784,9 @@ def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
 
 def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     # Parallel decode slots are a per-model setting the picker sends on every GGUF load.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"n_parallel": 8})
 
     _run_hook("unsloth/B-GGUF")
@@ -6736,7 +6832,9 @@ def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(override
 
 def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
     # Settings are per quant; the bare repo id is only the fallback.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     stored = {
         "unsloth/B-GGUF": {"max_seq_length": 1024},
         "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192, "gpu_layers": 20},
@@ -6750,7 +6848,9 @@ def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
 
 
 def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     stored = {"unsloth/B-GGUF": {"max_seq_length": 1024}}
     monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
 
@@ -6773,7 +6873,11 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(ove
 
 def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
     # A local folder resolves to repo id + path; settings saved against the path must be found.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("/models/local/Qwen3-8B-Q4_K_M.gguf", "Q4_K_M", "unsloth/Qwen3-8B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(None),
+        ("/models/local/Qwen3-8B-Q4_K_M.gguf", "Q4_K_M", "unsloth/Qwen3-8B-GGUF"),
+    )
     stored = {"/models/local/Qwen3-8B-Q4_K_M.gguf:Q4_K_M": {"max_seq_length": 8192}}
     monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
 
@@ -6784,7 +6888,9 @@ def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
 def test_path_qualified_override_beats_repo_qualified(monkeypatch):
     # Most specific first: the settings page keys a local row by the path being loaded,
     # while the repo id is only the advertised alias. The row the user edited wins.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("/models/local/x.gguf", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("/models/local/x.gguf", "Q4_K_M", "unsloth/B-GGUF")
+    )
     stored = {
         "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192},
         "/models/local/x.gguf:Q4_K_M": {"max_seq_length": 1024},
@@ -6841,7 +6947,9 @@ def test_a_repo_save_retires_the_legacy_snapshot_path_entry(monkeypatch):
     assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
 
     # End to end: the load the request triggers carries the saved value, not the retired one.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), (_LEGACY_SNAPSHOT, "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), (_LEGACY_SNAPSHOT, "Q4_K_M", "unsloth/B-GGUF")
+    )
 
     _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert rec.calls[0].max_seq_length == 32768
@@ -7013,7 +7121,9 @@ def test_a_fill_never_creates_a_snapshot_path_key_over_a_repo_id_entry(override_
 
 def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
     # A two-GPU pin on a one-GPU box used to 400 the load; one dead field degrades to defaults.
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(
         settings,
         "get_model_override",
@@ -7033,7 +7143,9 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
 
 
 def test_usable_gpu_ids_are_kept(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7314,7 +7426,9 @@ def test_real_quant_suffix_on_a_path_still_carries_flags_over(override_store):
 def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
     # The pre-flight check can't mirror every loader rule, and a stale pin must not block a load.
 
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
@@ -7342,7 +7456,9 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
 
 
 def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -8711,7 +8827,9 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
 
 
 def _wire_refusing_switch(monkeypatch):
-    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF"))
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
     monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
     return rec
 
@@ -8848,7 +8966,9 @@ def test_a_video_request_never_switches_to_a_non_gguf_target():
 
 
 def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
-    backend, recorder = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", None, "org/B-GGUF"))
+    backend, recorder = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", None, "org/B-GGUF")
+    )
     inference_route._set_preview_resident("org/A-GGUF")
     asyncio.run(
         inference_route._maybe_auto_switch_model(

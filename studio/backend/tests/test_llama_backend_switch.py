@@ -94,10 +94,23 @@ def _write_install(dir_: Path, **marker_fields) -> str:
     return str(binary)
 
 
-def _write_vulkan_install(*args, asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz", backend = "vulkan", backend_request = "auto", install_kind = "linux-vulkan", **kwargs):
+def _write_vulkan_install(
+    *args,
+    asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+    backend = "vulkan",
+    backend_request = "auto",
+    install_kind = "linux-vulkan",
+    **kwargs,
+):
     """_write_install for the stock linux vulkan build."""
-    return _write_install(*args, asset = asset, backend = backend, backend_request = backend_request, install_kind = install_kind, **kwargs)
-
+    return _write_install(
+        *args,
+        asset = asset,
+        backend = backend,
+        backend_request = backend_request,
+        install_kind = install_kind,
+        **kwargs,
+    )
 
 
 @pytest.fixture(autouse = True)

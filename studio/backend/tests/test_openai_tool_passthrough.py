@@ -187,7 +187,6 @@ class TestFriendlyUpstreamError:
 
     def test_anthropic_upstream_error_leaves_other_failures_alone(self):
         from routes.inference import _anthropic_upstream_error
-
         assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
@@ -1406,9 +1405,7 @@ class TestChatCompletionRequestToolFields:
         client, backend = self._standard_vision_client(monkeypatch, monitor, is_vision = False)
         resp = client.post(
             "/v1/chat/completions",
-            json = {
-                "messages": _image_question_messages()
-            },
+            json = {"messages": _image_question_messages()},
         )
 
         assert resp.status_code == 400
@@ -1719,9 +1716,7 @@ class TestChatCompletionRequestToolFields:
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
             "/v1/chat/completions",
-            json = {
-                "messages": _image_question_messages()
-            },
+            json = {"messages": _image_question_messages()},
         )
 
         assert resp.status_code == 400
@@ -2904,7 +2899,9 @@ class TestOpenAICompatibilityHelpers:
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = _monitor_entry(monitor, endpoint = "/v1/completions", model = "m", context_length = 100)
+        monitor_id = _monitor_entry(
+            monitor, endpoint = "/v1/completions", model = "m", context_length = 100
+        )
         event = (
             b'data: {"id":"chatcmpl-test","choices":[{"text":"done","finish_reason":"stop"}],'
             b'"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}\n'
@@ -3024,9 +3021,7 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "BBBB"
 
     def test_single_image_still_returned(self):
-        payload = ChatCompletionRequest(
-            messages = _image_question_messages()
-        )
+        payload = ChatCompletionRequest(messages = _image_question_messages())
 
         _, _, image_b64 = _extract_content_parts(payload.messages)
 
@@ -3265,39 +3260,39 @@ from routes.inference import (  # noqa: E402
 def _image_question_messages():
     """One user turn holding a question and a tiny png."""
     return [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "what is this?"},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,AAAA"},
-                            },
-                        ],
-                    }
-                ]
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        }
+    ]
 
 
 def _stop_metadata():
     """The terminal usage frame the gguf generators yield."""
     return {
-                    "type": "metadata",
-                    "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                    "finish_reason": "stop",
-                }
+        "type": "metadata",
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        "finish_reason": "stop",
+    }
 
 
 def _lookup_tools():
     """The one-entry lookup tool list the passthrough tests advertise."""
     return [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "lookup",
-                                "parameters": {"type": "object"},
-                            },
-                        }
-                    ]
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
 
 
 def _omni_backend(calls):
@@ -4352,7 +4347,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -4416,7 +4410,6 @@ class TestGgufVisionToolRouting:
 
     def test_standard_gguf_stream_close_after_first_chunk_cleans_tracker(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             cancel_id = "standard-stream-close-cleanup"
 
@@ -4467,7 +4460,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             started = threading.Event()
             released = threading.Event()
@@ -4527,7 +4519,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_stream_queued_request_sends_keepalive_before_generation(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -4594,7 +4585,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_gated_tool_start_gets_a_separate_prompt_flush(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_select_tools(*_args, **_kwargs):
                 return [
@@ -4678,7 +4668,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             started = threading.Event()
             released = threading.Event()
@@ -5146,7 +5135,6 @@ class TestGgufVisionToolRouting:
 
     def test_standard_gguf_non_streaming_admission_timeout_before_generation(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -5199,7 +5187,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -5270,7 +5257,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             cancel_id = "standard-nonstream-task-cancel"
 
@@ -5319,7 +5305,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_non_streaming_admission_timeout_before_generation(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -5373,7 +5358,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_non_streaming_cancel_drains_worker_before_releasing_slot(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             started = threading.Event()
             released = threading.Event()
@@ -5546,7 +5530,6 @@ class TestGgufVisionToolRouting:
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             started = threading.Event()
             released = threading.Event()
@@ -5832,7 +5815,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
 
@@ -5862,7 +5844,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_forwards_backend_auth_headers(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             captured_headers = {}
 
@@ -5901,7 +5882,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_keepalive_while_upstream_headers_are_pending(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
 
@@ -5939,7 +5919,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_non_200_in_window(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(400, content = b'{"error":"bad"}')
@@ -5964,7 +5943,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_request_error_in_window(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_send(*_args, **_kwargs):
                 raise httpx.ConnectError("connectivity issue")
@@ -5989,7 +5967,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_delayed_non_200_returns_sse_error(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
 
@@ -6025,7 +6002,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
             ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
@@ -6079,7 +6055,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
             calls = []
@@ -6151,7 +6126,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
             calls = []
@@ -6237,7 +6211,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_delayed_request_error_cleans_up(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
             cancel_id = "delayed-request-error-cancel"
@@ -6279,7 +6252,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_cancel_cleans_pending_send(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             entered = asyncio.Event()
             cancelled = asyncio.Event()
@@ -6318,7 +6290,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             gate = asyncio.Event()
             returned = asyncio.Event()
@@ -6364,7 +6335,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class DummyExternalClient:
                 def __init__(self, **_kwargs):
@@ -6414,7 +6384,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_stream_clean_eof_flushes_pending_tool_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             lines = [
                 'data: {"choices":[{"index":0,"delta":{"tool_calls":['
@@ -6459,7 +6428,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_stream_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class DummyExternalClient:
                 def __init__(self, **_kwargs):
@@ -6504,7 +6472,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_preheader_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6539,7 +6506,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_stream_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6582,7 +6548,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6629,7 +6594,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6679,7 +6643,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # With no env knobs set, an omitted max_tokens must forward the
         # backend's context length, exactly as on main.
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6729,7 +6692,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_forwards_spec_valid_zero_max_tokens(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -6779,7 +6741,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_rejects_non_integer_max_tokens_before_forwarding(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -7510,7 +7471,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -7568,7 +7528,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
@@ -7622,7 +7581,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_cancel_check(*_args, **_kwargs):
                 raise asyncio.CancelledError()
@@ -7672,7 +7630,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -7777,7 +7734,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         import routes.inference as inf_mod
-
         async def _run():
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -7997,7 +7953,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -8058,7 +8013,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_timeout_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -8111,7 +8065,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_queue_full_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
@@ -8170,7 +8123,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_immediate_cancel_stops_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fail_upstream(*_args, **_kwargs):
                 raise AssertionError("upstream must not start after client cancellation")
@@ -8215,7 +8167,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_task_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_wait(*_args, **_kwargs):
                 raise asyncio.CancelledError()
@@ -8264,7 +8215,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class CancellingAsyncClient:
                 async def __aenter__(self):
@@ -8306,7 +8256,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_cancel_closes_blocked_upstream_post(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             client = HangingCancelableClient()
             monitor = ApiMonitor(max_entries = 3)
@@ -8349,7 +8298,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_route_registers_cancel_id(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -8415,7 +8363,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_disconnect_closes_blocked_upstream_post(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 def __init__(self):
@@ -8467,7 +8414,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_forwards_backend_auth_headers(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             captured = {}
 
@@ -8518,7 +8464,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_forces_upstream_stream_false(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             captured = {}
 
@@ -8607,7 +8552,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # stream open without sending [DONE]; the terminal classifier must end
         # the client stream promptly instead of hanging on the open socket.
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_items(
                 *_args,
@@ -8661,7 +8605,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # the usage chunk; if that never arrives, the post-terminal grace path
         # must close with a clean [DONE], not an in-band error.
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
@@ -8703,7 +8646,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_stall_after_data_emits_error(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
@@ -8755,7 +8697,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_keeps_event_loop_responsive(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             generation_started = threading.Event()
             generation_finished = threading.Event()
@@ -8824,7 +8765,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_records_usage(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class DummyBackend:
                 active_model_name = "safe-model"
@@ -8886,7 +8826,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_tool_cancel_records_cancelled(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             reset_tool_policy()
 
@@ -8957,7 +8896,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             reset_tool_policy()
             reset_called = False
@@ -9067,7 +9005,6 @@ class TestApiMonitorAudioInput:
 
     def test_audio_input_non_streaming_records_active_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             inf_mod = self._patch_audio_backend(monkeypatch, ["hello", " world"])
             monitor = ApiMonitor(max_entries = 3)
@@ -9101,7 +9038,6 @@ class TestApiMonitorAudioInput:
 
     def test_audio_input_non_streaming_keeps_event_loop_responsive(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             generation_started = threading.Event()
             generation_finished = threading.Event()
@@ -9154,7 +9090,6 @@ class TestApiMonitorAudioInput:
 
     def test_audio_input_streaming_records_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             inf_mod = self._patch_audio_backend(monkeypatch, ["hello", " world"])
             monitor = ApiMonitor(max_entries = 3)
@@ -9218,7 +9153,6 @@ class TestApiMonitorAudioInput:
 
     def test_non_gguf_tts_auto_route_records_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class DummyTtsBackend:
                 active_model_name = "tts-model"
@@ -9285,7 +9219,6 @@ class TestApiMonitorAudioInput:
 
     def test_non_gguf_tts_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             class DummyTtsBackend:
                 active_model_name = "tts-model"
@@ -9339,7 +9272,6 @@ class TestApiMonitorAudioInput:
 
     def test_gguf_tts_auto_route_records_monitor(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fake_generate_audio(
                 _payload,
@@ -9467,7 +9399,6 @@ class TestResponsesChatTemplateKwargs:
 
     def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fail_send(*_args, **_kwargs):
                 raise AssertionError("responses upstream must not start while queued")
@@ -9522,7 +9453,6 @@ class TestResponsesChatTemplateKwargs:
 
     def test_responses_stream_cancel_after_created_finalizes_monitor_and_slot(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             async def fail_send(*_args, **_kwargs):
                 raise AssertionError("responses upstream must not start after created cancel")
@@ -9928,7 +9858,6 @@ class TestPassthroughImageNormalization:
     def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
         from PIL import Image
         from io import BytesIO
-
         for mode, colour in (("RGB", (10, 20, 30)), ("RGBA", (10, 20, 30, 255)), ("L", 77)):
             buf = BytesIO()
             Image.new(mode, (4, 4), colour).save(buf, format = "PNG")

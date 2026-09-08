@@ -118,7 +118,12 @@ class FakeTransport:
         return _gen()
 
 
-def _tool_end(result, *, tool_call_id = "hosted-1", tool_name = "web_search"):
+def _tool_end(
+    result,
+    *,
+    tool_call_id = "hosted-1",
+    tool_name = "web_search",
+):
     """The hosted tool_end frame the replay cases send."""
     return _hosted_event(
         {
@@ -133,7 +138,6 @@ def _tool_end(result, *, tool_call_id = "hosted-1", tool_name = "web_search"):
 def _one_turn_transport(*events):
     """One assistant turn of `events`, then the tool call, the finish and the close-out."""
     return FakeTransport([[*events, _call_line(), _finish()], [_finish("stop")], [_DONE]])
-
 
 
 @pytest.fixture
@@ -306,7 +310,9 @@ def test_a_frontend_image_sentinel_is_not_replayed(executed):
     """
     huge = "data:image/png;base64," + ("A" * 20000)
     transport = _one_turn_transport(
-        _tool_end('4\n__IMAGES__:["' + huge + '"]', tool_call_id = "hosted-1", tool_name = "code_execution"),
+        _tool_end(
+            '4\n__IMAGES__:["' + huge + '"]', tool_call_id = "hosted-1", tool_name = "code_execution"
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)

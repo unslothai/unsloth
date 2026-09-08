@@ -53,7 +53,6 @@ def _web_search_tool():
     }
 
 
-
 def _render_html_tools():
     """The one-entry render_html tool list the tool-loop tests advertise."""
     return [
@@ -72,13 +71,16 @@ def _render_html_tools():
     ]
 
 
-
 def fake_execute_tool(name, arguments, **_kwargs):
     raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
 
-
-def _tool_call_sse(tool_name: str, arguments: dict, call_id: str, index: int = 0) -> str:
+def _tool_call_sse(
+    tool_name: str,
+    arguments: dict,
+    call_id: str,
+    index: int = 0,
+) -> str:
     """One tool-call delta frame: the twelve-line literal the streams below repeat."""
     return _sse(
         {
@@ -94,8 +96,14 @@ def _tool_call_sse(tool_name: str, arguments: dict, call_id: str, index: int = 0
     )
 
 
-
-def _run_tool_loop(backend, messages, tools, *, max_tool_iterations = 1, **kwargs):
+def _run_tool_loop(
+    backend,
+    messages,
+    tools,
+    *,
+    max_tool_iterations = 1,
+    **kwargs,
+):
     """Drain the tool loop into a list, the seven-line call nearly every test below repeats."""
     return list(
         backend.generate_chat_completion_with_tools(
@@ -105,7 +113,6 @@ def _run_tool_loop(backend, messages, tools, *, max_tool_iterations = 1, **kwarg
             **kwargs,
         )
     )
-
 
 
 def _sse(delta: dict) -> str:
@@ -218,8 +225,6 @@ def _record_tool_calls(monkeypatch, result):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
     return calls
-
-
 
 
 def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(monkeypatch):
@@ -343,7 +348,10 @@ def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatc
     backend = _make_backend(monkeypatch, [stream], payloads)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "benchmark"}], [{"type": "function", "function": {"name": "web_search"}}], perf_callback = samples.append
+        backend,
+        [{"role": "user", "content": "benchmark"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        perf_callback = samples.append,
     )
 
     assert payloads[0]["return_progress"] is True
@@ -558,7 +566,11 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     tool_call_id = "call_render_late"
     first_stream = [
         _sse({"content": "Here is the canvas.\n\n"}),
-        _tool_call_sse("render_html", {"code": "<html><body><div>red</div></body></html>", "title": "Simple Red Square"}, tool_call_id),
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body><div>red</div></body></html>", "title": "Simple Red Square"},
+            tool_call_id,
+        ),
         _done(),
     ]
     second_stream = [
@@ -617,7 +629,9 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
     _patch_monotonic(monkeypatch, [100.0, 110.0, 172.0, 172.0])
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "answer"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "answer"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
@@ -651,7 +665,9 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
     _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "think then answer"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "think then answer"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     reasoning_stage = [
@@ -684,7 +700,9 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     _patch_monotonic(monkeypatch, [1.0, 5.0, 5.0])
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "just think"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "just think"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
@@ -704,7 +722,10 @@ def _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatc
 
     if with_tools:
         items = _run_tool_loop(
-            backend, [{"role": "user", "content": "capital of France?"}], [{"type": "function", "function": {"name": "web_search"}}], promote_reasoning_only = False
+            backend,
+            [{"role": "user", "content": "capital of France?"}],
+            [{"type": "function", "function": {"name": "web_search"}}],
+            promote_reasoning_only = False,
         )
         cumulatives = [item["text"] for item in items if item.get("type") == "content"]
     else:
@@ -751,7 +772,9 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
@@ -882,7 +905,9 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
@@ -1414,7 +1439,9 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "render then answer"}], [{"type": "function", "function": {"name": "render_html"}}]
+        backend,
+        [{"role": "user", "content": "render then answer"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
     )
 
     summaries = [event for event in events if event["type"] == "reasoning_summary"]
@@ -1432,15 +1459,25 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     """A repeated render_html call is an internal no-op, not a visible card."""
 
     first_stream = [
-        _tool_call_sse("render_html", {"code": "<html><body>first</body></html>", "title": "First"}, "call_first"),
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>first</body></html>", "title": "First"},
+            "call_first",
+        ),
         _done(),
     ]
     repeat_stream = [
-        _tool_call_sse("render_html", {"code": "<html><body>repeat</body></html>", "title": "Repeat"}, "call_repeat"),
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>repeat</body></html>", "title": "Repeat"},
+            "call_repeat",
+        ),
         _done(),
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
-    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, repeat_stream, final_stream])
+    backend, payloads = _backend_and_payloads(
+        monkeypatch, [first_stream, repeat_stream, final_stream]
+    )
 
     calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: First.")
 
@@ -1515,7 +1552,10 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Render this."}], [{"type": "function", "function": {"name": "render_html"}}], max_tool_iterations = 3
+        backend,
+        [{"role": "user", "content": "Render this."}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        max_tool_iterations = 3,
     )
 
     assert len(payloads) == 2
@@ -1556,7 +1596,10 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
     ]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search gpus in 2026 prices and use python"}], tools, max_tool_iterations = 3
+        backend,
+        [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+        tools,
+        max_tool_iterations = 3,
     )
 
     assert calls == [
@@ -1619,7 +1662,10 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     ]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search gpus in 2026 prices and use python"}], tools, max_tool_iterations = 4
+        backend,
+        [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+        tools,
+        max_tool_iterations = 4,
     )
 
     assert calls == [
@@ -1676,7 +1722,10 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search gpus"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 10
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
@@ -1725,7 +1774,10 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "search-result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search gpus"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
@@ -1783,7 +1835,10 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 3
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 3,
     )
 
     # Both distinct calls ran; the duplicate did not (old `break` dropped search(b)).
@@ -1842,7 +1897,10 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
     calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: One.")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "render html"}], [{"type": "function", "function": {"name": "render_html"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "render html"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [("render_html", {"code": "<html>one</html>"})]
@@ -1887,7 +1945,9 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "run python"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "run python"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
@@ -1928,7 +1988,11 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     """
 
     first_stream = [
-        _tool_call_sse("render_html", {"code": "<html><body>first</body></html>", "title": "First"}, "call_first"),
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>first</body></html>", "title": "First"},
+            "call_first",
+        ),
         _done(),
     ]
     post_tool_stream = [
@@ -1992,12 +2056,14 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
 
     calls = _record_tool_calls(monkeypatch, "Search results: red is #f00.")
 
-    tools = [
-        _web_search_tool()
-    ]
+    tools = [_web_search_tool()]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Make a red square."}], tools, max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 4
@@ -2030,9 +2096,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    tools = [
-        _web_search_tool()
-    ]
+    tools = [_web_search_tool()]
 
     list(
         backend.generate_chat_completion_with_tools(
@@ -2070,12 +2134,14 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    tools = [
-        _web_search_tool()
-    ]
+    tools = [_web_search_tool()]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Make a red square."}], tools, max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 4
@@ -2198,12 +2264,14 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
         lambda *_a, **_k: "Search results: Tokyo.",
     )
 
-    tools = [
-        _web_search_tool()
-    ]
+    tools = [_web_search_tool()]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What is the capital of Japan?"}], tools, max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "What is the capital of Japan?"}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 3
@@ -2228,12 +2296,14 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        _web_search_tool()
-    ]
+    tools = [_web_search_tool()]
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What is the capital of Japan?"}], tools, max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "What is the capital of Japan?"}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     # Initial turn plus the three pre-tool nudges.
@@ -2294,7 +2364,10 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     tools = _render_html_tools()
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Make a red square."}], tools, auto_heal_tool_calls = False
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        auto_heal_tool_calls = False,
     )
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
@@ -2313,7 +2386,11 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
     tools = _render_html_tools()
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Make a red square."}], tools, auto_heal_tool_calls = True, nudge_tool_calls = False
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        auto_heal_tool_calls = True,
+        nudge_tool_calls = False,
     )
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
@@ -2337,7 +2414,10 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}], auto_heal_tool_calls = False
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        auto_heal_tool_calls = False,
     )
 
     assert calls == [("web_search", {"query": "x"})]
@@ -2358,7 +2438,9 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})]
@@ -2387,7 +2469,9 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": big_query})]
@@ -2419,7 +2503,9 @@ def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})]
@@ -2494,7 +2580,11 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What colour is the square?"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     statuses = _status_texts(events)
@@ -2515,7 +2605,11 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What colour is the square?"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2, nudge_tool_calls = True
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     statuses = _status_texts(events)
@@ -2532,7 +2626,10 @@ def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What colour is the square?"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -2577,7 +2674,11 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What colour is the square?"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2, nudge_tool_calls = False
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = False,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -2588,7 +2689,10 @@ def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, _nudge_then_search_streams())
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "What colour is the square?"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -2718,7 +2822,12 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "summarize the docs"}], [{"type": "function", "function": {"name": "search_knowledge_base"}}], max_tool_iterations = 2, nudge_tool_calls = True, rag_scope = {"thread_id": "t1"}
+        backend,
+        [{"role": "user", "content": "summarize the docs"}],
+        [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
+        rag_scope = {"thread_id": "t1"},
     )
 
     # Initial turn plus one retry; read as pre-tool it would spend the full budget.
@@ -2873,7 +2982,9 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "write code"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -2914,7 +3025,11 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "write code"}], [{"type": "function", "function": {"name": "python"}}], confirm_tool_calls = True, permission_mode = "ask"
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -2945,7 +3060,11 @@ def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeyp
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "make a card"}], [{"type": "function", "function": {"name": "render_html"}}], confirm_tool_calls = True, permission_mode = "auto"
+        backend,
+        [{"role": "user", "content": "make a card"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        confirm_tool_calls = True,
+        permission_mode = "auto",
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -2969,7 +3088,9 @@ def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -3160,7 +3281,9 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     respawn_calls = _patch_successful_respawn(monkeypatch, backend, port = 49999)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "hello"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "hello"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     assert respawn_calls == [True]
@@ -3518,7 +3641,9 @@ def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(mon
 
 def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
     for max_tool_iterations in (1, 0):
-        backend, payloads = _backend_and_payloads(monkeypatch, [httpx.ConnectError("server is down")])
+        backend, payloads = _backend_and_payloads(
+            monkeypatch, [httpx.ConnectError("server is down")]
+        )
         backend._effective_context_length = 100
         count_calls = 0
 
@@ -3818,7 +3943,10 @@ def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypa
         monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
         events = _run_tool_loop(
-            backend, [{"role": "user", "content": "print one"}], [{"type": "function", "function": {"name": "python"}}], max_tool_iterations = max_tool_iterations
+            backend,
+            [{"role": "user", "content": "print one"}],
+            [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = max_tool_iterations,
         )
 
         assert respawn_calls == [True]
@@ -3874,7 +4002,9 @@ def test_pre_header_transport_errors_also_respawn(monkeypatch):
         respawn_calls = _patch_successful_respawn(monkeypatch, backend)
 
         events = _run_tool_loop(
-            backend, [{"role": "user", "content": "hello"}], [{"type": "function", "function": {"name": "python"}}]
+            backend,
+            [{"role": "user", "content": "hello"}],
+            [{"type": "function", "function": {"name": "python"}}],
         )
 
         assert respawn_calls == [True], type(exc).__name__
@@ -3886,6 +4016,7 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     """A closing server can beat its own exit status, so poll() briefly reports it
     alive. Without a grace wait _respawn_if_dead hands back the stale _healthy and the
     single retry is spent on the corpse rather than on a replacement."""
+
     class _Dying:
         # reapable only from the 4th poll, mimicking teardown lagging the socket close
         def __init__(self):
@@ -3946,7 +4077,9 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     monkeypatch.setattr(backend, "load_model", fake_load)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "hello"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "hello"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     assert len(loads) == 1
@@ -4018,7 +4151,9 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "write code"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     # No provisional card (empty-args tool_start) was surfaced for the empty id.
@@ -4046,7 +4181,9 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "Weather: sunny, 22C.")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather in Sydney?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather in Sydney?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     # The tool ran with the parsed arguments.
@@ -4078,7 +4215,9 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "give me a person record"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "give me a person record"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4100,7 +4239,9 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -4125,7 +4266,9 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "start a person record"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "start a person record"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4147,7 +4290,9 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "give json"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "give json"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4169,7 +4314,9 @@ def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -4194,7 +4341,9 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "long json"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "long json"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4216,7 +4365,9 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
     calls = _record_tool_calls(monkeypatch, "Weather: sunny, 22C.")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "weather in Sydney?"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "weather in Sydney?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "weather in Sydney"})]
@@ -4305,7 +4456,9 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     calls = _record_tool_calls(monkeypatch, "result")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search cats"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -4336,7 +4489,9 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search cats"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -4368,7 +4523,9 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search cats"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -4396,7 +4553,9 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "advise"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "advise"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4426,7 +4585,9 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "go"}], [{"type": "function", "function": {"name": name}}]
+        backend,
+        [{"role": "user", "content": "go"}],
+        [{"type": "function", "function": {"name": name}}],
     )
 
     assert calls == [(name, {"x": 1})], calls
@@ -4456,7 +4617,9 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4484,7 +4647,10 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     # No tool executed for the inactive name; a spurious no-op re-prompt would exhaust the
@@ -4514,7 +4680,9 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search cats"}], [{"type": "function", "function": {"name": "web_search"}}]
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     # The real call runs; ``foo`` is not executed as a phantom disabled call.
@@ -4569,7 +4737,9 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     )
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "run"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "run"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -4677,7 +4847,10 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
             lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
         )
         events = _run_tool_loop(
-            backend, [{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "web_search"}}], auto_heal_tool_calls = auto_heal
+            backend,
+            [{"role": "user", "content": "x"}],
+            [{"type": "function", "function": {"name": "web_search"}}],
+            auto_heal_tool_calls = auto_heal,
         )
         contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
         return calls, contents
@@ -4858,7 +5031,9 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
     stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
-    events = _run_tool_loop(backend, [{"role": "user", "content": "give me json"}], _python_tool_schema())
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "give me json"}], _python_tool_schema()
+    )
 
     assert not [e for e in events if e.get("type") == "tool_args"]
     assert not [e for e in events if e.get("type") == "tool_start"]
@@ -4889,7 +5064,10 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "run it"}], _python_tool_schema(), auto_heal_tool_calls = False
+        backend,
+        [{"role": "user", "content": "run it"}],
+        _python_tool_schema(),
+        auto_heal_tool_calls = False,
     )
 
     starts = [e for e in events if e.get("type") == "tool_start"]
@@ -4920,7 +5098,9 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "file a bug"}], [{"type": "function", "function": {"name": tool_name}}]
+        backend,
+        [{"role": "user", "content": "file a bug"}],
+        [{"type": "function", "function": {"name": tool_name}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -4944,7 +5124,9 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "write code"}], [{"type": "function", "function": {"name": "python"}}]
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
     provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1, events
@@ -5008,7 +5190,10 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search twice"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "search twice"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [
@@ -5058,7 +5243,10 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search twice"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "search twice"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [
@@ -5108,7 +5296,10 @@ def test_structured_call_id_arriving_after_the_opening_delta_updates_that_call(m
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [{"name": "web_search", "arguments": {"query": "late"}}]
@@ -5142,7 +5333,10 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "search three times"}], [{"type": "function", "function": {"name": "web_search"}}], max_tool_iterations = 2
+        backend,
+        [{"role": "user", "content": "search three times"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
@@ -5336,7 +5530,12 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
         {"role": "user", "content": "keep going"},
     ]
     events = _run_tool_loop(
-        backend, branch, [{"type": "function", "function": {"name": "python"}}], max_tool_iterations = calls + 1, max_tokens = 400, context_overflow = "truncate_oldest"
+        backend,
+        branch,
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = calls + 1,
+        max_tokens = 400,
+        context_overflow = "truncate_oldest",
     )
 
     notices = [
@@ -5570,7 +5769,11 @@ def test_an_unservable_tool_call_is_refused_before_it_runs(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": immovable}], [{"type": "function", "function": {"name": "edit_file"}}], max_tool_iterations = 2, max_tokens = 512
+        backend,
+        [{"role": "user", "content": immovable}],
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == [], "the side effect was spent on an unservable turn"
@@ -5635,7 +5838,11 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, history, [{"type": "function", "function": {"name": "edit_file"}}], max_tool_iterations = 2, max_tokens = 512
+        backend,
+        history,
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == ["edit_file"], [e.get("type") for e in events]
@@ -5790,7 +5997,11 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
-        backend, [{"role": "user", "content": "Create a Flappy Bird game in HTML"}], [{"type": "function", "function": {"name": "edit_file"}}], max_tool_iterations = 2, max_tokens = 512
+        backend,
+        [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == ["edit_file"], "the call was refused instead of run"

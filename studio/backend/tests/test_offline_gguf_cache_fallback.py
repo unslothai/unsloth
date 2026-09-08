@@ -809,7 +809,6 @@ class TestListGgufVariantsOffline:
 
     def test_api_exception_with_no_cache_reraises(self, hf_cache, clean_offline_env):
         from utils.models.model_config import list_gguf_variants
-
         with patch("huggingface_hub.model_info", boom):
             with pytest.raises(OSError, match = "network down"):
                 list_gguf_variants("unsloth/never-cached")
@@ -1497,12 +1496,10 @@ class TestAllProxyIsHonoured:
 
     def test_direct_egress_resolves_to_none(self):
         from utils.utils import hf_proxy_for_endpoint
-
         assert hf_proxy_for_endpoint() is None
 
     def test_connect_target_follows_all_proxy(self, monkeypatch):
         from utils.utils import hf_connect_target
-
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         assert hf_connect_target() == ("proxy.internal", 3128)
 
@@ -1786,7 +1783,6 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
     ):
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
-
         with force_hf_offline():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             with child_environment_for_spawn({}):
@@ -1811,7 +1807,6 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
     def test_nested_spawn_contexts_remain_reentrant(self, monkeypatch, clean_offline_env):
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
-
         with force_hf_offline():
             with child_environment_for_spawn({}):
                 with child_environment_for_spawn({}):
@@ -1982,7 +1977,6 @@ class TestIpv6Endpoint:
     def test_ipv6_literal_resolves(self):
         """gethostbyname is IPv4-only and would call an AAAA-only mirror dead."""
         from utils.utils import dns_host_dead
-
         assert dns_host_dead("::1", timeout = 2.0) is False
 
     def test_unresolvable_host_still_dead(self, monkeypatch):
@@ -2016,7 +2010,6 @@ class TestCallWithDeadline:
 
     def test_a_completed_call_returns_its_value(self):
         from utils.utils import call_with_deadline
-
         assert call_with_deadline(lambda: "done", 5.0) == "done"
 
     def test_slow_but_finished_work_is_not_cut_off(self):
@@ -2080,7 +2073,6 @@ class TestGuardSkipsLocalPaths:
 
     def test_remote_id_still_guarded(self, monkeypatch, clean_offline_env):
         import core.inference.llama_cpp as lc
-
         monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
         with lc._hf_offline_if_unreachable_for("unsloth/Qwen3.5-4B-GGUF") as engaged:
             assert engaged is True
@@ -2141,7 +2133,6 @@ class TestHfUnreachableProbe:
 
     def _patch_probe(self, monkeypatch, result, calls):
         import utils.transformers_version as tv
-
         def _probe(*_a, **_k):
             calls.append(1)
             if isinstance(result, Exception):
@@ -2215,7 +2206,6 @@ class TestHfUnreachableProbe:
         """Stale either way is a bug: a stale 'reachable' hides the plug being pulled,
         a stale 'unreachable' fails a download after the user reconnects."""
         import utils.utils as uu
-
         assert uu._HF_REACHABILITY_TTL_S <= 10.0
 
     def test_verdict_expires_so_a_disconnect_is_noticed(self, monkeypatch, clean_offline_env):
@@ -2940,13 +2930,11 @@ class TestHttpsProxyDefaultPort:
 
     def test_https_proxy_defaults_to_443(self, monkeypatch):
         from utils.utils import hf_connect_target
-
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.internal")
         assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 443]
 
     def test_http_proxy_defaults_to_80(self, monkeypatch):
         from utils.utils import hf_connect_target
-
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal")
         assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 80]
 
@@ -3855,7 +3843,6 @@ class TestPinnedReachability:
 
     def test_nothing_is_pinned_until_something_probes(self, probe):
         import utils.utils as uu
-
         with uu.pinned_hf_reachability():
             # A block that never reaches the Hub pays nothing, and reports no verdict.
             assert uu.hf_reachability_memo() is None

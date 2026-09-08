@@ -713,10 +713,15 @@ def _drafter_gate(
     return scope["launch_mtp_draft_path"], scope["extra_args"], log.warnings
 
 
-def _paravirtual_gate(*args, caps = {}, drafter = None, paravirtual = True, **kwargs):
+def _paravirtual_gate(
+    *args,
+    caps = {},
+    drafter = None,
+    paravirtual = True,
+    **kwargs,
+):
     """_drafter_gate on a paravirtual host with no drafter and no probed caps."""
     return _drafter_gate(*args, caps = caps, drafter = drafter, paravirtual = paravirtual, **kwargs)
-
 
 
 @pytest.fixture(autouse = True)
@@ -1314,10 +1319,21 @@ def _target_state(backend, gguf, **overrides):
     return backend.adopt_load_intent_if_matched(llama_cpp.GgufLoadIntent(**kwargs))
 
 
-def _target_state_auto(*args, gpu_layers = -1, gpu_memory_mode = "auto", speculative_type = "auto", **kwargs):
+def _target_state_auto(
+    *args,
+    gpu_layers = -1,
+    gpu_memory_mode = "auto",
+    speculative_type = "auto",
+    **kwargs,
+):
     """_target_state for a full-offload auto load, the shape every case here starts from."""
-    return _target_state(*args, gpu_layers = gpu_layers, gpu_memory_mode = gpu_memory_mode, speculative_type = speculative_type, **kwargs)
-
+    return _target_state(
+        *args,
+        gpu_layers = gpu_layers,
+        gpu_memory_mode = gpu_memory_mode,
+        speculative_type = speculative_type,
+        **kwargs,
+    )
 
 
 def _gpu_pin_recorders():
@@ -1845,10 +1861,7 @@ def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "40"])
     assert _route_matches(request, backend) is False
-    assert (
-        _target_state_auto(backend, gguf, extra_args = ["--top-k", "40"])
-        is False
-    )
+    assert _target_state_auto(backend, gguf, extra_args = ["--top-k", "40"]) is False
 
 
 def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
@@ -1858,10 +1871,7 @@ def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "20"])
     assert _route_matches(request, backend) is False
-    assert (
-        _target_state_auto(backend, gguf, extra_args = ["--top-k", "20"])
-        is False
-    )
+    assert _target_state_auto(backend, gguf, extra_args = ["--top-k", "20"]) is False
 
 
 def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch, tmp_path):
@@ -1889,10 +1899,7 @@ def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatc
     )
     request = _load_request(gguf, llama_extra_args = list(asked))
     assert _route_matches(request, backend) is True
-    assert (
-        _target_state_auto(backend, gguf, extra_args = list(asked))
-        is True
-    )
+    assert _target_state_auto(backend, gguf, extra_args = list(asked)) is True
 
 
 def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
@@ -1930,8 +1937,7 @@ def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, 
     request = _load_request(gguf, llama_extra_args = ["--draft-max", "4", "--top-k", "40"])
     assert _route_matches(request, backend) is False
     assert (
-        _target_state_auto(backend, gguf, extra_args = ["--draft-max", "4", "--top-k", "40"])
-        is False
+        _target_state_auto(backend, gguf, extra_args = ["--draft-max", "4", "--top-k", "40"]) is False
     )
 
 

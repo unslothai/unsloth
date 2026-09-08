@@ -44,7 +44,6 @@ def _boom(**kw):
     raise RuntimeError("no")
 
 
-
 # --------------------------------------------------------------------------------------------
 # Transport selection
 # --------------------------------------------------------------------------------------------
@@ -526,7 +525,6 @@ def test_both_loaders_share_one_env_lock():
     """The cross-loader guarantee, checked structurally. Two separate locks would each be correct in
     isolation and still allow the interleave that leaves the override set permanently."""
     import inspect
-
     for fn in (shim._load_shared, shim._load_optional):
         source = inspect.getsource(fn)
         assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" in source

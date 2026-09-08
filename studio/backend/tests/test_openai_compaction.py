@@ -71,10 +71,13 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
     return captured
 
 
-def _capture_at_threshold(*args, threshold = 200_000, **kwargs):
+def _capture_at_threshold(
+    *args,
+    threshold = 200_000,
+    **kwargs,
+):
     """_capture at the shared 200k compaction threshold."""
     return _capture(*args, threshold = threshold, **kwargs)
-
 
 
 # ── cloud OpenAI carries the compaction field verbatim ──────────────

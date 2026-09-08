@@ -179,7 +179,6 @@ class TestPersistence:
     @pytest.mark.parametrize("value", ["banana", 2.5, object()])
     def test_rejects_non_boolean(self, value):
         import utils.model_memory_settings as mm
-
         with pytest.raises(ValueError):
             mm.set_model_memory_settings(keep_resident = value)
 
@@ -254,7 +253,6 @@ class TestMemoryEnv:
     @pytest.fixture
     def toggles(self, monkeypatch):
         import utils.model_memory_settings as mm
-
         def set(keep, no_res):
             monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
             monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -819,7 +817,6 @@ class TestFullOffloadDetection:
     @staticmethod
     def _backend(n_layers, n_cpu_moe = 0):
         from core.inference.llama_cpp import LlamaCppBackend
-
         return type(
             "_B",
             (),
@@ -1209,7 +1206,6 @@ class TestVulkanIgpuDetection:
     @staticmethod
     def _probe(monkeypatch, rows):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -1545,7 +1541,6 @@ class TestTheRetryCanReadTheGate:
 
     def test_every_writer_of_the_gate_can_also_read_it(self):
         import ast
-
         outer = self._load_model_ast()
         for inner in ast.walk(outer):
             if not isinstance(inner, ast.FunctionDef) or inner is outer:
@@ -2008,7 +2003,6 @@ class TestResidencyDoesNotBlockReload:
 
     def test_but_idle_unload_is_still_configured(self, idle_env):
         import utils.openai_auto_switch_settings as aus
-
         idle_env(True)
         assert aus.idle_unload_is_configured() is True
 

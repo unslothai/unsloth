@@ -191,7 +191,6 @@ class TestTheRouteHelpers:
     def test_an_unreadable_context_length_means_no_budget(self):
         from types import SimpleNamespace
         import routes.inference as routes_inference
-
         for value in (None, 0, -1, "nonsense"):
             backend = SimpleNamespace(context_length = value)
             assert routes_inference._openai_llama_admission_budget(backend) is None
@@ -349,7 +348,6 @@ class TestTheWholeRenderedPromptIsCounted:
         capacity = 4,
     ):
         import routes.inference as routes_inference
-
         return routes_inference._openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -398,7 +396,6 @@ class TestTheWholeRenderedPromptIsCounted:
 
     def test_a_capped_request_is_unaffected(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 128,
@@ -445,7 +442,6 @@ class TestTheWholeRenderedPromptIsCounted:
 
     def test_an_unserialisable_extra_does_not_break_admission(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -479,7 +475,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
         tool_loop = False,
     ):
         import routes.inference as routes_inference
-
         return routes_inference._openai_llama_admission_tokens(
             payload,
             budget = budget,
@@ -565,7 +560,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
 
     def test_an_empty_tool_list_is_not_a_tool_loop(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,

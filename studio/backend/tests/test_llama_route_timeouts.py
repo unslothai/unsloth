@@ -19,7 +19,6 @@ class _Request:
         return False
 
 
-
 def test_non_streaming_generation_timeout_has_read_deadline():
     timeout = inf_mod._llama_non_streaming_generation_timeout()
     assert timeout.read == inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S

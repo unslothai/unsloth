@@ -283,6 +283,7 @@ class TestMediaIsCharged:
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("media")
             config = LlamaAdmissionConfig()
@@ -322,6 +323,7 @@ class TestMediaIsCharged:
 
     def test_two_image_chats_are_not_both_admitted(self):
         """The live failure, with images instead of text."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("media")
             config = LlamaAdmissionConfig()

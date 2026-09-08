@@ -156,10 +156,21 @@ def _call_route(
     )
 
 
-def _call_std_route(*args, repo_id = "org/repo", speculative_type = None, weights_bytes = 4096, **kwargs):
+def _call_std_route(
+    *args,
+    repo_id = "org/repo",
+    speculative_type = None,
+    weights_bytes = 4096,
+    **kwargs,
+):
     """_call_route with the fixed repo and weight size shared by every case below."""
-    return _call_route(*args, repo_id = repo_id, speculative_type = speculative_type, weights_bytes = weights_bytes, **kwargs)
-
+    return _call_route(
+        *args,
+        repo_id = repo_id,
+        speculative_type = speculative_type,
+        weights_bytes = weights_bytes,
+        **kwargs,
+    )
 
 
 class TestMtpReserveFollowsTheLoader:
@@ -879,26 +890,17 @@ class TestTheInheritedEnvironmentIsPriced:
         # irreducible floor, which is a comfortable fit for a load that OOMs.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
-        assert (
-            _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"]
-            is True
-        )
+        assert _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"] is True
 
     def test_an_omitted_context_with_no_inheritance_is_not_pinned(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
-        assert (
-            _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"]
-            is False
-        )
+        assert _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"] is False
 
     def test_an_explicit_context_is_pinned(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
-        assert (
-            _call_std_route(monkeypatch, path = gguf, n_ctx = 8192)["context_is_pinned"]
-            is True
-        )
+        assert _call_std_route(monkeypatch, path = gguf, n_ctx = 8192)["context_is_pinned"] is True
 
     def test_an_inherited_device_pin_is_reported(self, monkeypatch, tmp_path):
         # The child is confined to the cards LLAMA_ARG_DEVICE names and an
@@ -907,10 +909,7 @@ class TestTheInheritedEnvironmentIsPriced:
         # environment, so the route has to say.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
-        assert (
-            _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"]
-            is True
-        )
+        assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is True
 
     @pytest.mark.parametrize("value", ["", "none", "NONE"])
     def test_no_usable_pin_is_not_reported_as_one(self, monkeypatch, tmp_path, value):
@@ -919,7 +918,4 @@ class TestTheInheritedEnvironmentIsPriced:
         # would blank the row for a second, unrelated reason.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
-        assert (
-            _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"]
-            is False
-        )
+        assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is False

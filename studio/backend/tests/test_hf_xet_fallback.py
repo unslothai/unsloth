@@ -185,6 +185,7 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
 def test_degrades_gracefully_without_shared_helper(monkeypatch):
     """On an older unsloth_zoo lacking the shared helper, the shim still imports (Unsloth
     boots) and exposes stub API doing plain HF downloads with the watchdog disabled."""
+
     class _BlockShared:
         def find_spec(
             self,
@@ -261,6 +262,7 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
     """When unsloth_zoo is absent entirely, the import raises
     ModuleNotFoundError(name='unsloth_zoo') (top-level package). Guard that the shim still
     degrades and does not re-raise, breaking every Unsloth import that pulls it in."""
+
     class _BlockZoo:
         def find_spec(
             self,
@@ -301,6 +303,7 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
 def test_degrades_when_shared_helper_import_raises_importerror():
     """unsloth_zoo can be installed yet fail to import when torch is missing (llama.cpp/GGUF-only
     Unsloth), raising ImportError not ModuleNotFoundError. The shim must degrade for that too."""
+
     class _BlockWithImportError:
         def find_spec(
             self,

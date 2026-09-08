@@ -878,7 +878,6 @@ def test_the_offline_anonymous_rule_is_stated_once(hf_token, offline, denied, mo
 def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
     """The three routes that reach disk offline all consult the shared rule."""
     from hub.services.datasets import formatting
-
     for owner, name in (
         (models_routes.get_model_config, "/config"),
         (models_routes.scan_model_remote_code, "scan-remote-code"),

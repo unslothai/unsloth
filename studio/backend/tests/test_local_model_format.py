@@ -533,6 +533,7 @@ def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
 
 def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
     """Cloud placeholders stay discoverable by name without opening their data."""
+
     def forbidden(*_args, **_kwargs):
         raise AssertionError("local GGUF listing touched placeholder contents")
 
@@ -629,6 +630,7 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
     """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
     is not reachable from the one page whose pick would pull it down, and lists in Chat
     instead. The filename carries the family, and it is read without opening the file."""
+
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
 
@@ -655,6 +657,7 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
     segment of it. With an architecture that mismatch only picks the wrong family; for a
     placeholder the name is the entire case, so a shelf named after a family would file every
     chat GGUF stored under it as an image or video model."""
+
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
 

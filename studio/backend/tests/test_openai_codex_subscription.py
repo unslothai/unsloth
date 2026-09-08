@@ -2764,6 +2764,7 @@ def test_a_boolean_context_window_is_not_reported_as_a_length(monkeypatch):
 
 def _gated_models_client(gate, slug):
     """A models endpoint whose response the test releases, not the network."""
+
     class Gated:
         async def get(
             self,
@@ -2960,6 +2961,7 @@ def test_upstream_error_code_survives_a_body_that_cannot_be_read():
     """Parsing a body whose read failed raises StreamError, which is not an HTTPError. The
     classification runs after a failed read, so an uncaught one would replace the quota error
     the caller is supposed to see."""
+
     class _FailingStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             raise httpx.ReadTimeout("body read died mid-flight")

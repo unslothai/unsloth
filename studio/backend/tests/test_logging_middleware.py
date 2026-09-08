@@ -24,7 +24,6 @@ async def send(message):
     pass
 
 
-
 class _LogCapture:
     def __init__(self):
         self.events = []

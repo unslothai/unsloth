@@ -541,14 +541,12 @@ def test_mcp_specs_skip_oversized_names():
 
 def test_execute_tool_malformed_mcp_name():
     from core.inference.tools import execute_tool
-
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
 
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     from core.inference.tools import execute_tool
-
     _reset_db(tmp_path, monkeypatch)
     assert (
         execute_tool("mcp__missing__do_thing", {})
@@ -930,7 +928,6 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
 
 def test_tool_healing_strip_handles_gemma_native_tool_call():
     from core.tool_healing import strip_tool_call_markup
-
     out = strip_tool_call_markup(
         'before <|tool_call>call:mcp__srv__list-issues{repo:"octocat/hello"}<tool_call|> after'
     )
@@ -939,7 +936,6 @@ def test_tool_healing_strip_handles_gemma_native_tool_call():
 
 def test_tool_healing_strip_handles_gemma_close_only_marker():
     from core.tool_healing import strip_tool_call_markup
-
     assert strip_tool_call_markup("before <tool_call|> after") == "before  after"
     assert strip_tool_call_markup("before <tool_call|> after", final = True) == "before  after"
 

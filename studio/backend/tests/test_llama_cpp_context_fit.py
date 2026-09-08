@@ -274,10 +274,14 @@ def _drive(
     }
 
 
-def _drive_native(*args, n_ctx = 0, native_ctx = 131072, **kwargs):
+def _drive_native(
+    *args,
+    n_ctx = 0,
+    native_ctx = 131072,
+    **kwargs,
+):
     """_drive with n_ctx = 0, which is Auto context: the branch that caps to native_ctx."""
     return _drive(*args, n_ctx = n_ctx, native_ctx = native_ctx, **kwargs)
-
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,6 @@ async def run():
     )
 
 
-
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 

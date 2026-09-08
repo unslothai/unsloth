@@ -1267,10 +1267,16 @@ def _windows_amd_host(**overrides):
     return ilp.HostInfo(**defaults)
 
 
-def _windows_gfx803_host(*args, rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx1201", "gfx803"], **kwargs):
+def _windows_gfx803_host(
+    *args,
+    rocm_gfx_target = "gfx803",
+    rocm_gfx_targets = ["gfx1201", "gfx803"],
+    **kwargs,
+):
     """_windows_amd_host with the gfx803 target list these cases share."""
-    return _windows_amd_host(*args, rocm_gfx_target = rocm_gfx_target, rocm_gfx_targets = rocm_gfx_targets, **kwargs)
-
+    return _windows_amd_host(
+        *args, rocm_gfx_target = rocm_gfx_target, rocm_gfx_targets = rocm_gfx_targets, **kwargs
+    )
 
 
 def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
