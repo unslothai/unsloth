@@ -34,16 +34,7 @@ from transformers.models.qwen3_moe.modeling_qwen3_moe import (
 )
 
 # For Pytorch 2.1.1
-# TODO: Transformers moved to `attention_interface`. So we might not need these anymore
-# try:
-#     from transformers.models.qwen3_moe.modeling_qwen3_moe import (
-#         Qwen3SdpaAttention,
-#         Qwen3FlashAttention2,
-#     )
-# except:
-#     Qwen3SdpaAttention   = Qwen3Attention
-#     Qwen3FlashAttention2 = Qwen3Attention
-# pass
+# Transformers moved to attention_interface, so the Sdpa/FlashAttention2 aliases may no longer be needed.
 from unsloth_zoo.utils import Version, _get_dtype
 
 
@@ -56,7 +47,7 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
     temp_gate = None,
     temp_up = None,
 ):
-    # adapted from https://github.com/huggingface/transformers/pull/36878/files#diff-0855b77fc27ad9449158a1c74953f909b011c00de7125f7c8e68d0ff209c092aR356-R370
+    # Adapted from huggingface/transformers#36878 (modeling change R356-R370).
 
     bsz, seq_len, hd = X.shape
     X = X.view(-1, hd)
@@ -68,11 +59,11 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
     routing_weights = torch_nn_functional_softmax(router_logits, dim = -1, dtype = torch.float32)
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
-    # cast back to the input dtype
+    # Cast back to the input dtype.
     routing_weights = routing_weights.to(X.dtype)
     final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
 
-    # One-hot the selected experts into a mask to index which expert is used
+    # One-hot the selected experts into a mask indexing which expert is used.
     expert_mask = torch.nn.functional.one_hot(
         selected_experts, num_classes = self.num_experts
     ).permute(2, 1, 0)
@@ -81,13 +72,13 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
         expert_layer = self.experts[expert_idx]
         idx, top_x = torch.where(expert_mask[expert_idx])
 
-        # Index hidden states for this expert and scale by routing_weights
+        # Index hidden states for this expert and scale by routing_weights.
         current_state = X[None, top_x].reshape(-1, hd)
         current_X = (
             expert_layer(current_state) * routing_weights[top_x, idx, None]
         )  # Qwen3MoeMLP.forward = fast_swiglu_inference speeds this up
 
-        # index_add_ needs a tensor index, so use top_x
+        # index_add_ needs a tensor index, so use top_x.
         final_X.index_add_(0, top_x, current_X.to(X.dtype))
     final_X = final_X.reshape(bsz, seq_len, hd)
     return final_X, router_logits
@@ -110,7 +101,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
 ):
     residual = hidden_states
 
-    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -127,7 +118,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # MoE Router MLP
+        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
@@ -148,7 +139,7 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # MoE Router MLP
+        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states, router_logits = self.mlp(hidden_states)
@@ -177,8 +168,6 @@ class FastQwen3MoeModel(FastQwen3Model):
             exec(function, globals())
             Qwen3MoeAttention.__init__ = eval(init_name)
         Qwen3MoeAttention.forward = Qwen3Attention_fast_forward
-        # Qwen3SdpaAttention   .forward = Qwen3Attention_fast_forward
-        # Qwen3FlashAttention2 .forward = Qwen3Attention_fast_forward
         Qwen3MoeSparseMoeBlock.forward = Qwen3MoeSparseMoeBlock_fast_forward
         Qwen3MoeMLP.forward = fast_swiglu_inference  # This is analogous to Dense models' MLP
         Qwen3MoeDecoderLayer.forward = Qwen3MoeDecoderLayer_fast_forward
@@ -187,11 +176,8 @@ class FastQwen3MoeModel(FastQwen3Model):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3MoeForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py\
+        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
+        # huggingface/transformers#27931), so the old rotary embeddings are retained.
         import transformers.models.qwen3_moe.modeling_qwen3_moe
 
         transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeRotaryEmbedding = (

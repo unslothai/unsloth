@@ -155,6 +155,71 @@ def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_p
     assert echoed == ["[TAURI:STEP] clone", "[TAURI:STEP] update", "[TAURI:STEP] verify"]
 
 
+def test_an_accepted_stage_publishes_the_uv_cache_it_used(monkeypatch, tmp_path):
+    """The staged child cannot write the live marker: STUDIO_HOME names the install it is
+    replacing, and the stage may never activate. It parks the choice, and acceptance is
+    what publishes it, or a desktop-only install never records one at all."""
+    home = tmp_path / "studio"
+    _make_venv(home)
+    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+
+    def fake_update(root: Path, args: list[str]) -> int:
+        (root / _studio_stage.UV_CACHE_MARKER).write_text("/warm/uv\n", encoding = "utf-8")
+        return 0
+
+    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
+    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
+    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
+
+    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = fake_update)
+
+    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
+    assert live.read_text(encoding = "utf-8").strip() == "/warm/uv"
+
+
+def test_a_rejected_stage_publishes_nothing(monkeypatch, tmp_path):
+    """Verification is the acceptance point, so a stage that parks a choice and then fails
+    its probes must leave the live install pointing where it already pointed."""
+    home = tmp_path / "studio"
+    _make_venv(home)
+    (home / "cache").mkdir(parents = True)
+    (home / "cache" / _studio_stage.UV_CACHE_MARKER).write_text("/live/uv\n", encoding = "utf-8")
+    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+
+    def fake_update(root: Path, args: list[str]) -> int:
+        (root / _studio_stage.UV_CACHE_MARKER).write_text("/staged/uv\n", encoding = "utf-8")
+        return 0
+
+    def refuse(venv, env):
+        raise _studio_stage.StageError("staged environment failed to start")
+
+    monkeypatch.setattr(_studio_stage, "probe_cli", refuse)
+
+    with pytest.raises(_studio_stage.StageError):
+        _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = fake_update)
+
+    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
+    assert live.read_text(encoding = "utf-8").strip() == "/live/uv"
+
+
+def test_a_stage_that_parks_nothing_leaves_the_live_marker_alone(monkeypatch, tmp_path):
+    """Nothing to promote is the normal case for a caller-pinned UV_CACHE_DIR, and it must
+    not blank the marker an installer wrote."""
+    home = tmp_path / "studio"
+    _make_venv(home)
+    (home / "cache").mkdir(parents = True)
+    (home / "cache" / _studio_stage.UV_CACHE_MARKER).write_text("/live/uv\n", encoding = "utf-8")
+    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
+    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
+    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
+
+    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0)
+
+    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
+    assert live.read_text(encoding = "utf-8").strip() == "/live/uv"
+
+
 def test_stage_discards_the_tree_when_the_update_fails(monkeypatch, tmp_path):
     home = tmp_path / "studio"
     _make_venv(home)
@@ -221,8 +286,8 @@ def test_stage_refuses_when_the_previous_stage_could_not_be_cleared(monkeypatch,
     _make_venv(tmp_path)
     stale = _studio_stage.stage_root(tmp_path)
     (stale / "leftover").mkdir(parents = True)
-    # discard() swallows its errors, so a locked or undeletable tree would otherwise
-    # be staged into and shipped as if it were a fresh clone.
+    # discard() swallows its errors, so a locked or undeletable tree would otherwise be staged into and
+    # shipped as if it were a fresh clone.
     monkeypatch.setattr(_studio_stage, "discard", lambda root: None)
 
     with pytest.raises(_studio_stage.StageError, match = "could not clear"):
@@ -357,8 +422,8 @@ def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
     stage_venv = home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME
 
     def reinstalling_update(root: Path, args: list[str]) -> int:
-        # What pip/uv do on every upgrade: rewrite the console script with the
-        # interpreter named by absolute path, inside the stage.
+        # What pip/uv do on every upgrade: rewrite the console script with the interpreter named by
+        # absolute path, inside the stage.
         (root / _studio_stage.VENV_NAME / "bin" / "unsloth").write_text(
             f"#!{root / _studio_stage.VENV_NAME}/bin/python\nprint('cli')\n", encoding = "utf-8"
         )
@@ -371,8 +436,8 @@ def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
     _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = reinstalling_update)
 
     launcher = (stage_venv / "bin" / "unsloth").read_text(encoding = "utf-8")
-    # Activation moves the venv out of .update-stage, so an absolute shebang into
-    # it would leave the activated backend unable to start at all.
+    # Activation moves the venv out of .update-stage, so an absolute shebang into it would leave the
+    # activated backend unable to start at all.
     assert launcher.startswith(_studio_stage.RELOCATABLE_SHEBANG)
     assert str(_studio_stage.STAGE_DIR_NAME) not in launcher.splitlines()[1]
 

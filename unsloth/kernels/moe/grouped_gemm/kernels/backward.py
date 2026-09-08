@@ -46,9 +46,9 @@ TODO:
 
 @triton.jit
 def _grouped_gemm_dX_kernel(
-    dY_ptr,  # [M_total, N]
-    w_ptr,  # [E, N, K]
-    dX_ptr,  # [M_total, K]
+    dY_ptr,
+    w_ptr,
+    dX_ptr,
     gather_indices_ptr,
     m_sizes_ptr,
     # problem sizes
@@ -73,14 +73,12 @@ def _grouped_gemm_dX_kernel(
     output_dtype = dX_ptr.dtype.element_ty
 
     tidx = tl.program_id(0)
-    # This removes the need for predication along N in the GEMM main loop
+    # Removes the need for predication along N in the GEMM main loop.
     tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
     tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
 
-    # Create TMA descriptors for loading sorted tokens
-    # When using TMA load, we don't permute_x, so shape should be [TOTAL_TOKENS, K]
-    # Also, we are defining a single global descriptor with single block shape
-    # Need to check that this does not result in errors when crossing expert boundaries
+    # A single global TMA descriptor with one block shape; TMA load never permutes x, so the shape is
+    # [TOTAL_TOKENS, K]. Unverified across expert boundaries.
     if USE_TMA_LOAD_dY:
         dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
@@ -110,16 +108,14 @@ def _grouped_gemm_dX_kernel(
         m_end = m_start + m_size
 
         if m_size > 0:
-            # Advance n offset to the weights for that respective expert
             n_start = expert_idx * N
-            # N_start_offset = g.to(tl.int64) * N
-            # tiles for this group's GEMM
+            # N_start_offset = g.to(tl.int64) * N tiles for this group's GEMM
             num_m_tiles = tl.cdiv(m_size, BLOCK_SIZE_M)
             num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
             num_tiles_per_expert = num_m_tiles * num_k_tiles
 
             if USE_TMA_STORE:
-                # Need to define descript within loop to predicate store along M
+                # Define the descriptor inside the loop to predicate the store along M.
                 tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
                 dX_desc = tl.make_tensor_descriptor(
                     dX_ptr,
@@ -128,8 +124,8 @@ def _grouped_gemm_dX_kernel(
                     block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
                 )
 
-            # Bounds are relative to tiles processed so far, so we only handle
-            # this expert's tiles and never exceed the total across experts.
+            # Bounds are relative to tiles processed so far, so only this expert's tiles are handled and the
+            # total across experts is never exceeded.
             while tidx >= processed_tiles and tidx < (processed_tiles + num_tiles_per_expert):
                 group_index = tidx - processed_tiles
 
@@ -140,7 +136,6 @@ def _grouped_gemm_dX_kernel(
                 if PERMUTE_X or PERMUTE_Y:
                     # These will be used for loading and storing in permuted order
                     gather_offsets = tile_m_idx * BLOCK_SIZE_M + m_block_range
-                    # indices_to_gather = m_start + gather_offsets
                     indices_to_gather = m_start + tl.max_contiguous(
                         tl.multiple_of(gather_offsets % m_size, BLOCK_SIZE_M),
                         BLOCK_SIZE_M,
@@ -155,35 +150,27 @@ def _grouped_gemm_dX_kernel(
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
 
-                    # We only take into account the following two cases: (PERMUTE_X and NOT PERMUTE_Y) and (NOT PERMUTE_X and PERMUTE_Y)
-                    # Hence, we can make the following simplifying assumptions when loading and storing
-                    # Note the different strides between the two cases: the offsets for loading and storing are flipped and the strides must also be adjusted
+                    # Only (PERMUTE_X and not PERMUTE_Y) and (not PERMUTE_X and PERMUTE_Y) occur, so load/store offsets
+                    # are simply flipped between the two cases, with the strides adjusted to match.
 
                     if PERMUTE_X:
-                        # Case where we permuted on load in the forward pass (typically first grouped GEMM in MoE MLP)
-                        load_a_idx = (
-                            indices_to_gather[:, None] * N
-                        )  # Load in contiguous (expert grouped) order
-                        store_idx = (
-                            expert_token_offsets * K
-                        )  # Permute on store from expert -> token order
+                        # Permuted on load in the forward pass (typically the first grouped GEMM in the MoE
+                        # MLP), so load
+                        # contiguous and permute on store.
+                        load_a_idx = indices_to_gather[:, None] * N
+                        store_idx = expert_token_offsets * K
                     else:
-                        # Case where we permuted on store in the forward pass (typically second grouped GEMM in MoE MLP)
-                        load_a_idx = (
-                            expert_token_offsets * N
-                        )  # Permute on load from token -> expert order
-                        store_idx = indices_to_gather[:, None] * K  # Store in contiguous order
+                        # Permuted on store in the forward pass (typically the second grouped GEMM), so permute
+                        # on load and
+                        # store contiguous.
+                        load_a_idx = expert_token_offsets * N
+                        store_idx = indices_to_gather[:, None] * K
                 else:
-                    # # Position in full matrix - needed for TMA
-                    # m_offset = (M_start + (tile_m_idx * BLOCK_SIZE_M)).to(tl.int32)
-                    # k_offset = (tile_k_idx * BLOCK_SIZE_K).to(tl.int32)
-                    # Offsets *relative* to the *current* expert -- m_start will then advance to this expert's start token
+                    # Offsets relative to the CURRENT expert; m_start then advances to this expert's start token.
                     offs_am = tile_m_idx * BLOCK_SIZE_M + m_block_range
 
-                    # [M, N] @ [N, K] -> [M, K] => Stride for A is N, stride for B is K
-                    # We need two additional offsets:
-                    # 1. For A, m_start to advance to this expert's start token
-                    # 2. For B, n_start to advance to this expert's weights since we are passing in an [E, N, K] weight matrix
+                    # [M, N] @ [N, K] -> [M, K], so A strides by N and B by K, plus m_start for A's expert start token
+                    # and n_start for B's slice of the [E, N, K] weight matrix.
                     row_offsets_a = m_start + offs_am[:, None]
                     load_a_idx = row_offsets_a * N
                     store_idx = row_offsets_a * K
@@ -195,13 +182,9 @@ def _grouped_gemm_dX_kernel(
                 offs_bk = tile_k_idx * BLOCK_SIZE_K + k_block_range
                 if not USE_TMA_LOAD_W:
                     row_offsets_b = n_start + n_block_range
-                    # offs_bn = n_start + n_block_range
-                    # row_offsets_b = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
                     w_ptrs = w_ptr + row_offsets_b[:, None] * K + offs_bk[None, :]
 
-                # TODO: check whether predication along K is needed since we checked that K is divisible by BLOCK_SIZE_K in the forward kernel
-                # col_mask = offs_bk[None, :] < K
-                store_mask = row_mask  # & col_mask
+                store_mask = row_mask
 
                 accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype = tl.float32)
 
@@ -214,30 +197,29 @@ def _grouped_gemm_dX_kernel(
                         dY = dY_desc.load([m_start + tile_m_idx * BLOCK_SIZE_M, n_offset])
 
                     if not USE_TMA_LOAD_W:
-                        w = tl.load(w_ptrs)  # , mask=col_mask)
+                        w = tl.load(w_ptrs)
                     else:
                         w = w_desc.load([expert_idx, n_offset, tile_k_idx * BLOCK_SIZE_K])
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
-                    # TODO: check if predication along K is needed since we checked that K is divisible by BLOCK_SIZE_K in the forward kernel
 
                     # [M, N] @ [N, K] -> [M, K]
                     dY = dY.to(w.dtype)
-                    accumulator += tl.dot(dY, w)  # NOTE: no transpose of b
+                    accumulator += tl.dot(dY, w)
 
                     # Advance A along contiguous dimension
                     if not USE_TMA_LOAD_dY:
                         dY_ptrs += BLOCK_SIZE_N
-                    # Note we are no longer advancing B along contiguous dimension since weights are arranged as [N, K]
-                    # Instead, we need to stride by K to advance to the [N_BLOCK_SIZE, K_BLOCK_SIZE] tile
+                    # B is no longer advanced along the contiguous dimension: weights are [N, K], so stride by K to
+                    # reach the next [N_BLOCK_SIZE, K_BLOCK_SIZE] tile.
                     if not USE_TMA_LOAD_W:
                         w_ptrs += BLOCK_SIZE_N * K
 
                 dX = accumulator.to(output_dtype)
 
-                # Writing out a BLOCK_M x BLOCK_K tile, so we need to stride by K
+                # A BLOCK_M x BLOCK_K tile is written out, so stride by K.
                 if USE_TMA_STORE:
-                    offset_m = tile_m_idx * BLOCK_SIZE_M  # .to(tl.int32)
-                    offset_k = tile_k_idx * BLOCK_SIZE_K  # .to(tl.int32)
+                    offset_m = tile_m_idx * BLOCK_SIZE_M
+                    offset_k = tile_k_idx * BLOCK_SIZE_K
                     dX_desc.store([m_start + offset_m, offset_k], dX)
                 else:
                     tl.store(
@@ -256,7 +238,7 @@ def _grouped_gemm_dX_kernel(
 _autotuned_grouped_gemm_dX_kernel = triton.autotune(
     configs = get_dX_kernel_configs(),
     prune_configs_by = {"early_config_prune": prune_dX_configs},
-    # NOTE: NUM_TOKENS removed from key to avoid recompilation for every sequence length
+    # NUM_TOKENS is left out of the key to avoid recompiling for every sequence length.
     key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
 )(_grouped_gemm_dX_kernel)
 
@@ -327,7 +309,7 @@ def _grouped_gemm_dW_kernel(
             strides = [K, 1],
             block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
         )
-    # Output tiles per expert, since each expert weight matrix is [N, K]
+    # Output tiles per expert, since each expert weight matrix is [N, K].
     num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
     num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     output_tiles_per_expert = num_n_tiles * num_k_tiles
@@ -336,7 +318,7 @@ def _grouped_gemm_dW_kernel(
     block_range_n = tl.arange(0, BLOCK_SIZE_N)
     block_range_k = tl.arange(0, BLOCK_SIZE_K)
 
-    # NOTE: Important that N % BLOCK_SIZE_N == 0 and K % BLOCK_SIZE_K == 0 when using TMA store
+    # N % BLOCK_SIZE_N == 0 and K % BLOCK_SIZE_K == 0 are required when using TMA store.
     if USE_TMA_STORE:
         tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
         tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
@@ -347,7 +329,7 @@ def _grouped_gemm_dW_kernel(
             block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
         )
 
-    for tile_idx in range(tidx, output_tiles_per_expert, NUM_SMS):  # , flatten=FLATTEN):
+    for tile_idx in range(tidx, output_tiles_per_expert, NUM_SMS):
         # Output tile index
         tile_n_idx = tile_idx % num_n_tiles
         tile_k_idx = tile_idx // num_n_tiles
@@ -356,24 +338,23 @@ def _grouped_gemm_dW_kernel(
         n_offset = tile_n_idx * BLOCK_SIZE_N
         k_offset = tile_k_idx * BLOCK_SIZE_K
 
-        # For storing
-        # TODO: Check whether the k mask is needed since we statically check that K is divisible by BLOCK_SIZE_K in the forward kernel
-        # ditto for n_mask
         n_mask = block_range_n + n_offset < N
         k_mask = block_range_k + k_offset < K
         nk_mask = n_mask[:, None] & k_mask[None, :]
 
         m_end = 0
         for expert_idx in range(NUM_EXPERTS):
-            # We need to instantiate a fresh accumulator for each expert
+            # A fresh accumulator per expert.
             accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K), dtype = acc_dtype)
 
             m_start = m_end
-            # Need to figure out why this cast is needed, otherwise compiler complains about mismatching types
+            # The cast is needed or the compiler complains about mismatching types; reason unknown.
             m_size = tl.load(m_sizes_ptr + expert_idx).to(tl.int32)
             m_end = m_start + m_size
 
-            # NOTE: when storing the result, we need to offset by n_start since we are storing the result for this expert to the global [E, N, K] weight matrix
+            # Offset by n_start: the result goes into this expert's slice of the global [E, N, K] weight matrix.
+            # NOTE: when storing the result, we need to offset by n_start since we are storing the result for
+            # this expert to the global [E, N, K] weight matrix
             n_start = expert_idx * N
             store_row_offs = n_start + n_offset + block_range_n
 
@@ -403,15 +384,12 @@ def _grouped_gemm_dW_kernel(
 
                         if PERMUTE_X or PERMUTE_Y:
                             # These will be used for loading and storing in permuted order
-                            gather_offsets = (
-                                tile_m_idx + block_range_m
-                            )  # NOTE: tile_m_idx is already strided by BLOCK_SIZE_M
+                            gather_offsets = tile_m_idx + block_range_m
 
                             indices_to_gather = m_start + tl.max_contiguous(
                                 tl.multiple_of(gather_offsets % m_size, BLOCK_SIZE_M),
                                 BLOCK_SIZE_M,
                             )
-                            # indices_to_gather = m_start + gather_offsets
                             expert_token_idx = tl.load(
                                 gather_indices_ptr + indices_to_gather,
                                 mask = indices_to_gather < TOTAL_TOKENS,
@@ -421,18 +399,16 @@ def _grouped_gemm_dW_kernel(
                             # Masks for permuted load and store
                             row_load_mask = gather_offsets < m_size
 
-                            # We only take into account the following two cases: (PERMUTE_X and NOT PERMUTE_Y) and (NOT PERMUTE_X and PERMUTE_Y)
-                            # Hence, we can make the following simplifying assumptions when loading and storing
-                            # Note the different strides between the two cases: the offsets for loading and storing are flipped and the strides must also be adjusted
+                            # Only (PERMUTE_X and not PERMUTE_Y) and (not PERMUTE_X and PERMUTE_Y) occur, so
+                            # load/store offsets
+                            # are flipped between the two cases, with the strides adjusted.
                             if PERMUTE_X:
                                 x_row_load_idx = (
                                     (expert_token_offsets // TOPK) * K
-                                )  # Permute on load from token -> expert order, divide by TOPK to index from original number of tokens
+                                )  # Permute on load: token to expert order, /TOPK for the original count.
                                 dY_row_load_idx = m_offsets[:, None] * N
                             else:
-                                x_row_load_idx = (
-                                    indices_to_gather[:, None] * K
-                                )  # Load in contiguous order (no permutation on load)
+                                x_row_load_idx = indices_to_gather[:, None] * K
                                 dY_row_load_idx = expert_token_offsets * N
 
                         else:
@@ -460,21 +436,18 @@ def _grouped_gemm_dW_kernel(
                             )
 
                         accumulator += tl.dot(
-                            dY.T.to(x.dtype),  # [BLOCK_N, BLOCK_M]
-                            x,  # [BLOCK_M, BLOCK_K]
+                            dY.T.to(x.dtype),
+                            x,
                         )
 
                 y = accumulator.to(output_dtype)
                 if USE_TMA_STORE:
-                    # Need to expand dims to match [E, N, K] shape
+                    # Expand dims to match the [E, N, K] shape.
                     y = tl.expand_dims(y, 0)
                     dW_desc.store([expert_idx, n_offset, k_offset], y)
                 else:
                     tl.store(
-                        dW_ptr
-                        # + (n_offset + offs_n)[:, None] * K
-                        + store_row_offs[:, None] * K
-                        + (k_offset + block_range_k)[None, :],
+                        dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
                         y,
                         mask = nk_mask,
                     )
@@ -483,6 +456,6 @@ def _grouped_gemm_dW_kernel(
 _autotuned_grouped_gemm_dW_kernel = triton.autotune(
     configs = get_dW_kernel_configs(),
     prune_configs_by = {"early_config_prune": prune_kernel_configs_backward_dW},
-    # NOTE: NUM_TOKENS removed from key to avoid recompilation for every sequence length
+    # NUM_TOKENS is left out of the key to avoid recompiling for every sequence length.
     key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
 )(_grouped_gemm_dW_kernel)

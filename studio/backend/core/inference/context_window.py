@@ -16,11 +16,10 @@ _UNPRICED_MEDIA_TYPES = frozenset(
     ("image_url", "input_audio", "audio", "input_image", "input_video")
 )
 
-# How far BELOW the prompt budget a compaction trims, as a fraction of that budget.
-# Trimming to exactly the budget puts the next turn over it again, so the boundary creeps
-# forward every turn: llama-server's prefix cache dies each time and there is no discrete
-# compaction event to report. Taking a chunk out in one go buys a stretch of turns with a
-# fixed head, at the cost of the headroom itself, hence a minority of the budget.
+# How far BELOW the prompt budget a compaction trims, as a fraction of that budget. Trimming to exactly the budget puts
+# the next turn over it again, so the boundary creeps forward every turn: llama-server's prefix cache dies each time and
+# there is no discrete compaction event to report. Taking a chunk out in one go buys a stretch of turns with a fixed
+# head, at the cost of the headroom itself, hence a minority of the budget.
 _COMPACTION_HEADROOM_RATIO = max(
     0.0, min(0.9, float(os.environ.get("ROLLING_COMPACTION_HEADROOM_RATIO", "0.25")))
 )
@@ -87,24 +86,19 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     return total
 
 
-# ASCII that runs this far without a break is not prose. Measured with Qwen3 over 16-20k
-# character samples, in characters per token: base64 1.35, hex 1.13, minified JSON 2.75,
-# against English prose at 3.27 and Python source at 4.38. The estimate above charges all
-# of them the English four, so a pasted blob is priced at a third of what it costs, and a
-# caller sizing the room LEFT then hands out room that is already occupied.
-#
-# The rule is per RUN rather than per message, so a blob pasted into a sentence is priced
-# as a blob: a run this long is the thing itself. 64 characters rather than a rounder
-# number because base64 is conventionally wrapped at 76, and at a threshold of 80 a
-# wrapped blob scores as ordinary prose. Measured on the samples above, runs of 64+
-# non-space characters cover 100% of an unwrapped blob, 98.6% of a wrapped one, 0% of the
-# Python source and 23.5% of a README -- and that 23.5% is its URLs and table rules, which
-# tokenise near this rate themselves rather than at the prose rate.
+# ASCII that runs this far without a break is not prose. Measured with Qwen3 over 16-20k character samples, in
+# characters per token: base64 1.35, hex 1.13, minified JSON 2.75, against English prose at 3.27 and Python source at
+# 4.38. The estimate above charges all of them the English four, so a pasted blob is priced at a third of what it costs,
+# and a caller sizing the room LEFT then hands out room that is already occupied. The rule is per RUN rather than per
+# message, so a blob pasted into a sentence is priced as a blob: a run this long is the thing itself. 64 characters
+# rather than a rounder number because base64 is conventionally wrapped at 76, and at a threshold of 80 a wrapped blob
+# scores as ordinary prose. Measured on the samples above, runs of 64+ non-space characters cover 100% of an unwrapped
+# blob, 98.6% of a wrapped one, 0% of the Python source and 23.5% of a README -- and that 23.5% is its URLs and table
+# rules, which tokenise near this rate themselves rather than at the prose rate.
 _DENSE_RUN_CHARS = 64
-# Two characters per token, not one. It stays BELOW the measured cost of every sample, so
-# no turn is priced above what it really costs: over-pricing a turn spends the very room
-# this budget exists to hand out, and a result cut to pay for room that was never occupied
-# is the same waste from the other side.
+# Two characters per token, not one. It stays BELOW the measured cost of every sample, so no turn is priced above what
+# it really costs: over-pricing a turn spends the very room this budget exists to hand out, and a result cut to pay for
+# room that was never occupied is the same waste from the other side.
 _DENSE_RUN_CHARS_PER_TOKEN = 2
 _DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
 
@@ -137,8 +131,8 @@ def estimate_messages_tokens_conservative(
         if dense_ascii:
             total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
             continue
-        # ASCII only: a run of CJK is already charged a token a character above, and
-        # charging it here as well would price it twice.
+        # ASCII only: a run of CJK is already charged a token a character above, and charging it here as well would
+        # price it twice.
         runs = sum(
             sum(1 for char in match.group(0) if ord(char) <= 127)
             for match in _DENSE_RUN_RE.finditer(text)
@@ -264,8 +258,8 @@ def truncate_oldest_messages(
     for index, group in enumerate(groups):
         if index not in dropped_groups:
             if kept and kept[-1].get("role") == "user" and group and group[0].get("role") == "user":
-                # Strict chat templates reject adjacent user turns, which an internal
-                # tool re-prompt after an evicted exchange would produce.
+                # Strict chat templates reject adjacent user turns, which an internal tool re-prompt after an evicted
+                # exchange would produce.
                 kept.append({"role": "assistant", "content": _OMITTED_TOOL_EXCHANGE})
             kept.extend(group)
     return kept, dropped
@@ -301,8 +295,9 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
 # Cap a tool-loop retrieval without reducing the allowance of smaller results.
 _RETRIEVAL_BUDGET_SHARE = 0.5
 
-# The least reply room a rescued prompt must leave, as a fraction of the window. Small on
-# purpose: missing the reserve is survivable, so this only rules out the stub-answer end.
+# small on purpose: missing the reserve is survivable
+# The least reply room a rescued prompt must leave, as a fraction of the window. Small on purpose: missing the reserve
+# is survivable, so this only rules out the stub-answer end.
 _RESCUE_REPLY_FLOOR_DIVISOR = 16
 
 
@@ -327,22 +322,20 @@ def retrieval_budget(
     return room
 
 
-# Headroom against the tokenizer disagreeing with the estimate that sized a result. A
-# result is measured in characters and spent in tokens, so the conversion is the thing
-# that can be wrong; 1% of the budget absorbs that without noticeably shortening output.
+# a result is measured in characters and spent in tokens
+# Headroom against the tokenizer disagreeing with the estimate that sized a result. A result is measured in characters
+# and spent in tokens, so the conversion is the thing that can be wrong; 1% of the budget absorbs that without
+# noticeably shortening output.
 _TOOL_RESULT_BUDGET_BUFFER = 0.99
 
-# What a truncated result costs BESIDES its body: the notice naming the cut, the spill
-# path and the command that resumes it. Measured at 60-85 tokens, held clear of that.
-# Reserved rather than ignored because the body is sized and the notice appended after,
-# so a budget spent entirely on the body overshoots by the notice every time, and at zero
-# room, where the notice IS the message, by the whole of it.
-#
-# Charged by `tools._truncate`, at the point it knows the result really is being cut, and
-# NOT subtracted from the room below. A result that fits carries no notice, so holding
-# this back up front would cut a result that would have fitted whole and then spend more
-# than it saved: 200 tokens of room, a 100-token result, and reserving first leaves 72 for
-# the body and appends ~70 tokens of notice explaining the 28 that were dropped.
+# What a truncated result costs BESIDES its body: the notice naming the cut, the spill path and the command that resumes
+# it. Measured at 60-85 tokens, held clear of that. Reserved rather than ignored because the body is sized and the
+# notice appended after, so a budget spent entirely on the body overshoots by the notice every time, and at zero room,
+# where the notice IS the message, by the whole of it. Charged by `tools._truncate`, at the point it knows the result
+# really is being cut, and NOT subtracted from the room below. A result that fits carries no notice, so holding this
+# back up front would cut a result that would have fitted whole and then spend more than it saved: 200 tokens of room, a
+# 100-token result, and reserving first leaves 72 for the body and appends ~70 tokens of notice explaining the 28 that
+# were dropped.
 _RESULT_NOTICE_RESERVE = 128
 
 
@@ -412,21 +405,19 @@ def _reply_floor(context_length: int) -> int:
     return max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR)
 
 
-# How much of a completed call's arguments has to be at stake before replacing them with a
-# receipt is worth the edit. Below this the placeholder is a wash against what it removes,
-# and the model loses sight of its own last action for nothing.
-# Fields naming the call's destination rather than its payload.
+# How much of a completed call's arguments has to be at stake before replacing them with a receipt is worth the edit.
+# Below this the placeholder is a wash against what it removes, and the model loses sight of its own last action for
+# nothing. Fields naming the call's destination rather than its payload.
 _PATH_KEYS = frozenset({"path", "file_path", "filePath"})
 # Longest path worth repeating inside every elided leaf's receipt.
 _RECEIPT_PATH_MAX_CHARS = 120
 
 _ARG_COMPACTION_FLOOR_CHARS = 1024
-# Once the arguments AS A WHOLE are worth reclaiming, the bar each string has to clear
-# drops to this. Not zero: a receipt is about 100 characters, so eliding anything shorter
-# grows the call it is meant to shrink.
+# Once the arguments AS A WHOLE are worth reclaiming, the bar each string has to clear drops to this. Not zero: a
+# receipt is about 100 characters, so eliding anything shorter grows the call it is meant to shrink.
 _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR = 256
-# When the total of every string reaches this, the call is worth compacting even though no
-# single string does. Matches the per-leaf floor: the same amount of window either way.
+# When the total of every string reaches this, the call is worth compacting even though no single string does. Matches
+# the per-leaf floor: the same amount of window either way.
 _ARG_COMPACTION_TOTAL_FLOOR_CHARS = 1024
 
 
@@ -470,58 +461,50 @@ def _compacted_arguments(
     file it just wrote and go and read it. A bare "[omitted]" reads as a failed call and
     is answered with a retry of the same oversized write.
     """
-    # Resolved here, not as a default: the constant is defined below this function, and a
-    # literal default silently kept the OLD wording on this path while the executed and
-    # refused paths moved to the new one -- the same receipt the model misread as tool
-    # output, still being emitted by the most common caller.
+    # Resolved here, not as a default: the constant is defined below this function, and a literal default silently kept
+    # the OLD wording on this path while the executed and refused paths moved to the new one -- the same receipt the
+    # model misread as tool output, still being emitted by the most common caller.
     phrase = phrase or _completed_phrase_for(name, reply)
     if not isinstance(arguments, str):
         return None
-    # The general floor exists so a receipt is not bigger than what it replaces, and for
-    # ordinary history compaction a call under it is not worth the churn. A REFUSED call
-    # is the opposite case: the refusal message itself is about to be added to a prompt
-    # that already does not fit, so any reduction at all is the difference between the
-    # user reading the refusal and reading llama-server's context error. The size check
-    # at the end still guarantees the receipt never grows the prompt.
+    # The general floor exists so a receipt is not bigger than what it replaces, and for ordinary history compaction a
+    # call under it is not worth the churn. A REFUSED call is the opposite case: the refusal message itself is about to
+    # be added to a prompt that already does not fit, so any reduction at all is the difference between the user reading
+    # the refusal and reading llama-server's context error. The size check at the end still guarantees the receipt never
+    # grows the prompt.
     refused = phrase == _REFUSED_PHRASE
     if not refused and len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
         return None
     try:
         parsed = json.loads(arguments)
     except Exception:
-        # Unparseable arguments still cost the window, and a call that has already run
-        # cannot be re-issued from them, so the size alone is an honest receipt.
-        #
-        # Worded from `phrase` like every other receipt. Hardcoding "after the call ran"
-        # meant a REFUSED call with 1024+ characters of malformed JSON was replayed as
-        # having run, next to the tool message saying nothing was written: two
-        # contradictory accounts of the same call, one of which invites the model to
-        # reason from a side effect that never happened.
+        # Unparseable arguments still cost the window, and a call that has already run cannot be re-issued from them, so
+        # the size alone is an honest receipt. Worded from `phrase` like every other receipt. Hardcoding "after the call
+        # ran" meant a REFUSED call with 1024+ characters of malformed JSON was replayed as having run, next to the tool
+        # message saying nothing was written: two contradictory accounts of the same call, one of which invites the
+        # model to reason from a side effect that never happened.
         _unparseable = json.dumps(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
         )
-        # Checked here as well as at the end: without the general floor in front of it,
-        # a short refused call can have a receipt longer than the arguments it replaces.
+        # Checked here as well as at the end: without the general floor in front of it, a short refused call can have a
+        # receipt longer than the arguments it replaces.
         return _unparseable if len(_unparseable) < len(arguments) else None
     if not isinstance(parsed, dict):
         return None
     path = parsed.get("path") or parsed.get("file_path") or parsed.get("filePath")
     elided = 0
 
-    # Per-leaf or aggregate, whichever lets this call be reclaimed. A batched refactor of
-    # fifty 800-character edits is forty thousand characters of window with no single
-    # string over the floor, so a per-leaf test compacted NOTHING and the call sat in the
-    # prompt permanently -- the pre-execution gate then had nothing to reclaim and refused
-    # a turn it could have served. The floor exists so a receipt is not bigger than what
-    # it replaces, and the final size check below still enforces that.
-    # Chosen from the TOTAL, not the largest leaf. Keying on the largest meant one
-    # 1100-character edit beside fifty 800-character ones stayed in per-leaf mode and
-    # compacted only the first, leaving about 40 KB replayed -- the mixed payload is
-    # exactly the shape a batched refactor produces.
+    # Per-leaf or aggregate, whichever lets this call be reclaimed. A batched refactor of fifty 800-character edits is
+    # forty thousand characters of window with no single string over the floor, so a per-leaf test compacted NOTHING and
+    # the call sat in the prompt permanently -- the pre-execution gate then had nothing to reclaim and refused a turn it
+    # could have served. The floor exists so a receipt is not bigger than what it replaces, and the final size check
+    # below still enforces that. Chosen from the TOTAL, not the largest leaf. Keying on the largest meant one
+    # 1100-character edit beside fifty 800-character ones stayed in per-leaf mode and compacted only the first, leaving
+    # about 40 KB replayed -- the mixed payload is exactly the shape a batched refactor produces.
     _leaf_floor = (
-        # A refused call takes whatever it can get, floored only at the point where a
-        # leaf is longer than the receipt describing it, so eliding cannot lose ground.
+        # A refused call takes whatever it can get, floored only at the point where a leaf is longer than the receipt
+        # describing it, so eliding cannot lose ground.
         _REFUSED_LEAF_FLOOR
         if refused
         else _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
@@ -539,28 +522,26 @@ def _compacted_arguments(
         only the tests noticed they had stopped meeting.
         """
         nonlocal elided
-        # The destination is never expendable: it is the one field that says WHICH file
-        # the call touched, and the receipt promises the content can be found there. A
-        # deeply nested path over the aggregate floor was being elided like content,
-        # leaving later turns unable to name the file they had just changed.
+        # The destination is never expendable: it is the one field that says WHICH file the call touched, and the
+        # receipt promises the content can be found there. A deeply nested path over the aggregate floor was being
+        # elided like content, leaving later turns unable to name the file they had just changed.
         if key in _PATH_KEYS:
             return value
         if isinstance(value, str) and len(value) >= _leaf_floor:
             elided += len(value)
-            # Named in the receipt only when repeating it is cheaper than the field it
-            # points at. Every elided leaf embeds this, so a 500-character path across
-            # four leaves costs more than the content removed and the whole compaction
-            # is rejected by the size check below. The `path` field is preserved
-            # verbatim either way, so nothing is lost by leaving it out here.
+            # Named in the receipt only when repeating it is cheaper than the field it points at. Every elided leaf
+            # embeds this, so a 500-character path across four leaves costs more than the content removed and the whole
+            # compaction is rejected by the size check below. The `path` field is preserved verbatim either way, so
+            # nothing is lost by leaving it out here.
             where = (
                 f" to {path}"
                 if path and key not in _PATH_KEYS and len(str(path)) <= _RECEIPT_PATH_MAX_CHARS
                 else ""
             )
-            # `old_string` names text the edit REMOVED. The completed phrase says the
-            # content is already written and the file on disk holds it, which of the two
-            # halves of a replacement is true only of `new_string`; said of the old text
-            # it points the model at content the edit has just taken out.
+            # `old_string` names text the edit REMOVED, and the completed phrase says the content is already written
+            # `old_string` names text the edit REMOVED. The completed phrase says the content is already written and the
+            # file on disk holds it, which of the two halves of a replacement is true only of `new_string`; said of the
+            # old text it points the model at content the edit has just taken out.
             leaf_phrase = _COMPLETED_NEUTRAL_PHRASE if key == "old_string" else phrase
             return f"<{len(value)} chars {leaf_phrase.format(where = where)}>"
         if isinstance(value, dict):
@@ -576,52 +557,47 @@ def _compacted_arguments(
         compacted = json.dumps(kept, ensure_ascii = False)
     except Exception:
         return None
-    # Never grow the prompt to describe it: a call whose bulk is spread across many small
-    # fields leaves nothing to elide and the receipts cost more than the fields did.
+    # Never grow the prompt to describe it: a call whose bulk is spread across many small fields leaves nothing to elide
+    # and the receipts cost more than the fields did.
     return compacted if len(compacted) < len(arguments) else None
 
 
-# A leaf shorter than its own receipt costs room to elide, so this is the break-even
-# point for the refusal wording rather than a judgement about what is worth compacting.
+# A leaf shorter than its own receipt costs room to elide, so this is the break-even point for the refusal wording
+# rather than a judgement about what is worth compacting.
 _REFUSED_LEAF_FLOOR = 110
 _REFUSED_PHRASE = (
     "of arguments you sent, elided; this call was refused before it ran and nothing was written"
 )
-# Worded so the model cannot mistake it for the tool's OUTPUT. The first version read
-# "<2581 chars written; re-read the file to see it>" and was quoted straight back in
-# the model's reasoning as "the tool result says ... the output was omitted" -- it
-# concluded the sandbox had mangled its file and abandoned a working approach. Says
-# "you sent" so the owner of the text is unambiguous, and says what it is not.
-# The tail once read "read the file back if you need the content", which contradicted
-# every other line this PR added: `edit_file` now says not to read back what you just
-# wrote, and the starved and repeated-result notices both say reading again will not help.
-# Three messages discouraging a re-read and one inviting it is worse than either rule
-# alone, and the re-read is the loop that cost eighteen calls in one turn.
+# Worded so the model cannot mistake it for the tool's OUTPUT. The first version read "<2581 chars written; re-read the
+# file to see it>" and was quoted straight back in the model's reasoning as "the tool result says ... the output was
+# omitted" -- it concluded the sandbox had mangled its file and abandoned a working approach. Says "you sent" so the
+# owner of the text is unambiguous, and says what it is not. The tail once read "read the file back if you need the
+# content", which contradicted every other line this PR added: `edit_file` now says not to read back what you just
+# wrote, and the starved and repeated-result notices both say reading again will not help. Three messages discouraging a
+# re-read and one inviting it is worse than either rule alone, and the re-read is the loop that cost eighteen calls in
+# one turn.
 _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
-# The same receipt for a tool that writes no file. `python`, `terminal`, the search
-# tools and every MCP tool are selected by size and by having been answered, exactly
-# like `edit_file`, so a 2000-character `code` argument was handed a receipt saying it
-# was "already written" and that "the file on disk holds it" -- a file the model can
-# then set out to read, or reason from as persisted, when nothing was persisted at all.
-# Neither claim about the filesystem, for every case where the reply does not settle it.
-# Says only what is certainly true: these are the model's own arguments, the call ran, and
-# this is not the tool's output.
+# The same receipt for a tool that writes no file. `python`, `terminal`, the search tools and every MCP tool are
+# selected by size and by having been answered, exactly like `edit_file`, so a 2000-character `code` argument was handed
+# a receipt saying it was "already written" and that "the file on disk holds it" -- a file the model can then set out to
+# read, or reason from as persisted, when nothing was persisted at all. Neither claim about the filesystem, for every
+# case where the reply does not settle it. Says only what is certainly true: these are the model's own arguments, the
+# call ran, and this is not the tool's output.
 _COMPLETED_NEUTRAL_PHRASE = (
     "of arguments you sent, elided to save room; the call already ran. Not tool output"
 )
 # Tools whose completed call really does leave the content in a file.
 _FILE_WRITING_TOOLS = frozenset({"edit_file"})
 
-# A reply that opens like this reports a call that ran and did NOT do what was asked, so
-# the file wording would describe a write that never landed.
+# A reply that opens like this reports a call that ran and did NOT do what was asked, so the file wording would describe
+# a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
-# A reply the WINDOW replaced, not one the tool wrote. Under a near-zero result budget
-# `_fit_result_to_room` swaps the real answer -- including an `Error: ...` -- for a stub
-# saying there was no room for it, and that stub carries none of the markers above. Read
-# as proof of a write, it tells the model an edit landed when the edit may have failed,
-# under exactly the tight context that makes compaction run in the first place. Absence
-# of evidence, so the neutral wording applies.
+# A reply the WINDOW replaced, not one the tool wrote. Under a near-zero result budget `_fit_result_to_room` swaps the
+# real answer -- including an `Error: ...` -- for a stub saying there was no room for it, and that stub carries none of
+# the markers above. Read as proof of a write, it tells the model an edit landed when the edit may have failed, under
+# exactly the tight context that makes compaction run in the first place. Absence of evidence, so the neutral wording
+# applies.
 _INCONCLUSIVE_REPLY_MARKERS = ("no context room left", "chars for the model;")
 
 
@@ -668,9 +644,8 @@ def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[
     recovered, ending in a one-character reply. Running the call and compacting it costs
     the same tokens once and leaves the file written.
     """
-    # None, not the constant: the receipt is chosen per tool, so a completed `python`
-    # call is not told its arguments are on disk. `edit_file` still gets the wording
-    # this path was built and proven against.
+    # None, not the constant: the receipt is chosen per tool, so a completed `python` call is not told its arguments are
+    # on disk. `edit_file` still gets the wording this path was built and proven against.
     return _compact_one_call(messages, call_id, None)
 
 
@@ -769,10 +744,9 @@ def _compact_one_call(
     return out
 
 
-# A `role=tool` reply proves an ANSWER, not an execution. The approval gate answers a
-# declined call with exactly such a message, and an unreadable call is answered without
-# running either. Compacting those to the completed receipt tells the model a file was
-# written that the user refused, which it may then report or reason from.
+# A `role=tool` reply proves an ANSWER, not an execution. The approval gate answers a declined call with exactly such a
+# message, and an unreadable call is answered without running either. Compacting those to the completed receipt tells
+# the model a file was written that the user refused, which it may then report or reason from.
 _DID_NOT_RUN_MARKERS = (
     "the user declined to run this tool call",
     "could not be read",
@@ -820,10 +794,9 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
         sites = pending.get(str(call_id))
         if not sites:
             continue
-        # NEWEST pending announcement, not the oldest. Textual parsers number from
-        # `call_0` every turn, so an interrupted call that never got a result leaves a
-        # stale site under the same id; pairing this reply with THAT one marks the stale
-        # arguments executed and leaves the call that actually ran uncompactable.
+        # NEWEST pending announcement, not the oldest. Textual parsers number from `call_0` every turn, so an
+        # interrupted call that never got a result leaves a stale site under the same id; pairing this reply with THAT
+        # one marks the stale arguments executed and leaves the call that actually ran uncompactable.
         site = sites.pop()
         if _reply_shows_execution(message.get("content")):
             executed[(site, str(call_id))] = message.get("content")
@@ -894,15 +867,12 @@ def _blamed_role(message: dict) -> str:
     """
     role = str(message.get("role") or "")
     if role == "assistant" and message.get("tool_calls"):
-        # Split again by whether a FILE is involved. The file wording reached an
-        # oversized `python`, `terminal`, web or MCP call and told the user to ask for a
-        # smaller file when the payload was a program, a command or a query -- naming the
-        # wrong cause and offering an action that cannot shrink it.
-        # From the call that accounts for the turn's SIZE, not from whichever call
-        # happens to be a file tool. A parallel batch holding a small `edit_file` beside
-        # an oversized `python` or MCP payload was diagnosed as a file that is too large,
-        # so the advice was to ask for a smaller file -- an action that cannot shrink the
-        # payload that actually caused the refusal.
+        # Split again by whether a FILE is involved. The file wording reached an oversized `python`, `terminal`, web or
+        # MCP call and told the user to ask for a smaller file when the payload was a program, a command or a query --
+        # naming the wrong cause and offering an action that cannot shrink it. From the call that accounts for the
+        # turn's SIZE, not from whichever call happens to be a file tool. A parallel batch holding a small `edit_file`
+        # beside an oversized `python` or MCP payload was diagnosed as a file that is too large, so the advice was to
+        # ask for a smaller file -- an action that cannot shrink the payload that caused the refusal.
         _dominant = None
         _dominant_size = -1
         for call in message.get("tool_calls") or []:
@@ -938,8 +908,8 @@ def _blamed_role_for_turn(messages: list[dict]) -> str:
     for message in reversed(messages[:-1]):
         role = str(message.get("role") or "")
         if role != "assistant":
-            # Only the call immediately preceding this reply is paired with it; anything
-            # else between them means this reply does not belong to a call at all.
+            # Only the call immediately preceding this reply is paired with it; anything else between them means this
+            # reply does not belong to a call at all.
             if role == "tool":
                 continue
             break
@@ -950,10 +920,9 @@ def _blamed_role_for_turn(messages: list[dict]) -> str:
             for call in message.get("tool_calls") or []
         ):
             break
-        # Only when the CALL is the bigger half. A dominant tool result still gets the
-        # tool advice, which is right and is what the existing cases assert: the reply is
-        # the thing the user can ask for less of. Blaming the call unconditionally
-        # reversed that and told them to shrink a payload that was not the problem.
+        # Only when the CALL is the bigger half. A dominant tool result still gets the tool advice, which is right and
+        # is what the existing cases assert: the reply is the thing the user can ask for less of. Blaming the call
+        # unconditionally reversed that and told them to shrink a payload that was not the problem.
         _call_chars = sum(
             len(str((call.get("function") or {}).get("arguments") or ""))
             for call in message.get("tool_calls") or []
@@ -1002,7 +971,6 @@ def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
     try:
         return max(0, int(count_tokens([])))
     except Exception:
-        # No measurable floor; zero leaves the diagnosis as it was before this existed.
         return 0
 
 
@@ -1057,7 +1025,6 @@ def turn_diagnosis(
     guessed.
     """
     if not messages:
-        # Vacuously exact: nothing was estimated, and a zero count is ignored anyway.
         return {
             "latest_turn_tokens": 0,
             "latest_turn_role": "",
@@ -1067,31 +1034,27 @@ def turn_diagnosis(
     latest, exact = _latest_turn_count(messages, count_tokens)
     shared = _shared_prompt_tokens(count_tokens) if exact else 0
     if exact and latest <= shared:
-        # Counted, and yet no bigger than the empty prompt: the template rendered the turn
-        # as nothing. Both bundled Gemma-4 templates do exactly that to a `role: tool`
-        # message on its own -- `{%- if message['role'] != 'tool' -%}` skips it, and the
-        # result is emitted only while scanning forward from the assistant tool call that
-        # asked for it, which a one-message slice does not contain. So the number is the
-        # floor and nothing else, and subtracting the floor from it would leave the turn
-        # contributing ~0 and blame the conversation.
-        #
-        # Price it by DIFFERENCE against the prompt that was measured instead: the slice
-        # is unrenderable, the contribution is not. Reported floor-inclusive, so the
-        # consumer's existing subtraction of `shared` leaves exactly the marginal and the
-        # ratio still compares two tokenizer counts.
+        # Counted, and yet no bigger than the empty prompt: the template rendered the turn as nothing. Both bundled
+        # Gemma-4 templates do exactly that to a `role: tool` message on its own -- `{%- if message['role'] != 'tool'
+        # -%}` skips it, and the result is emitted only while scanning forward from the assistant tool call that asked
+        # for it, which a one-message slice does not contain. So the number is the floor and nothing else, and
+        # subtracting the floor from it would leave the turn contributing ~0 and blame the conversation. Price it by
+        # DIFFERENCE against the prompt that was measured instead: the slice is unrenderable, the contribution is not.
+        # Reported floor-inclusive, so the consumer's existing subtraction of `shared` leaves exactly the marginal and
+        # the ratio still compares two tokenizer counts.
         marginal = _marginal_turn_count(
             fitted if fitted is not None else messages, count_tokens, irreducible_tokens
         )
         if marginal is not None and marginal > 0:
             latest = marginal + shared
         else:
-            # Nothing countable left: same remedy as a template that refuses the slice
-            # outright -- price the message's own JSON, and record no floor, because that
-            # estimate does not carry one.
+            # nothing countable left: price the message's own JSON
+            # Nothing countable left: same remedy as a template that refuses the slice outright -- price the message's
+            # own JSON, and record no floor, because that estimate does not carry one.
             latest = int(estimate_messages_tokens(messages[-1:]))
             shared = 0
-            # What is REPORTED is now the estimate, and that is what the flag describes.
-            # Leaving it True would be the worse half of the bug.
+            # What is REPORTED is now the estimate, and that is what the flag describes. Leaving it True would be the
+            # worse half of the bug.
             exact = False
     # Never all of either side: a floor at or above them would leave no ratio to compare.
     shared = max(0, min(shared, latest - 1, int(irreducible_tokens) - 1))
@@ -1164,10 +1127,9 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    # Phase one: put the boundary back where this thread already had it, so a compacted
-    # thread stops compacting further every turn. Gated on the prompt not already
-    # fitting: a saved boundary describes the branch it was measured on, and after a
-    # rollback it would evict most of a chat that comfortably fits.
+    # Phase one: put the boundary back where this thread already had it, so a compacted thread stops compacting further
+    # every turn. Gated on the prompt not already fitting: a saved boundary describes the branch it was measured on, and
+    # after a rollback it would evict most of a chat that comfortably fits.
     if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, dropped = truncate_oldest_messages(
             fitted,
@@ -1181,23 +1143,20 @@ def fit_rolling_context(
             dropped_total = dropped
             current_tokens = count_tokens(fitted)
 
-    # Phase two, only if what is left still does not fit: move the boundary, taking a
-    # chunk out rather than skimming to the brim so it can stay put for a while.
+    # Phase two, only if what is left still does not fit: move the boundary, taking a chunk out rather than skimming to
+    # the brim so it can stay put for a while.
     trim_target = prompt_target
-    # The 5% floor on each eviction bite, given up only by a caller that asked for no
-    # extra trim. Keyed on the ratio and not on `headroom`, which `keeps_boundary = False`
-    # zeroes for every threadless and incognito request, none of which chose anything.
+    # The 5% floor on each eviction bite, given up only by a caller that asked for no extra trim. Keyed on the ratio and
+    # not on `headroom`, which `keeps_boundary = False` zeroes for every threadless and incognito request, none of which
+    # chose anything.
     min_bite = True
     if current_tokens > prompt_target:
-        # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
-        # counting it as headroom would hand back room that is already taken.
-        #
-        # And only for a caller that can put the boundary back next request. The headroom
-        # buys quiet turns between compactions by cutting deeper than needed, which is a
-        # bargain only if the deeper cut is remembered. An incognito chat, an API request
-        # with no persisted thread, or a request whose turns are not saved gets neither
-        # the boundary nor a recall of what went, so there it is simply 25% less history
-        # than plain eviction would have kept.
+        # Summed, not max()'d: the reserve is spent immediately on recalled passages, so counting it as headroom would
+        # hand back room that is already taken. And only for a caller that can put the boundary back next request. The
+        # headroom buys quiet turns between compactions by cutting deeper than needed, which is a bargain only if the
+        # deeper cut is remembered. An incognito chat, an API request with no persisted thread, or a request whose turns
+        # are not saved gets neither the boundary nor a recall of what went, so there it is 25% less history than plain
+        # eviction would have kept.
         ratio = clamp_compaction_headroom_ratio(headroom_ratio)
         if ratio is None:
             ratio = _COMPACTION_HEADROOM_RATIO
@@ -1222,11 +1181,10 @@ def fit_rolling_context(
         current_tokens = count_tokens(fitted)
 
     if current_tokens > prompt_target:
-        # Missing the prompt target only loses reserved reply room, so keep the original
-        # if it fits the physical window, else an eviction that does. Strictly under on
-        # both sides: llama-server refuses at `n_ctx` exactly. But not under by one token,
-        # which would lose the history AND answer in one token, worse than the refusal it
-        # replaces. Capped by the reserve, so the floor demands no room the target did not.
+        # Missing the prompt target only loses reserved reply room, so keep the original if it fits the physical window,
+        # else an eviction that does. Strictly under on both sides: llama-server refuses at `n_ctx` exactly. But not
+        # under by one token, which would lose the history AND answer in one token, worse than the refusal it replaces.
+        # Capped by the reserve, so the floor demands no room the target did not.
         reply_floor = min(
             max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR),
             context_length - prompt_target,
@@ -1241,11 +1199,10 @@ def fit_rolling_context(
             "dropped_messages": dropped_total if rescued else 0,
             "prompt_tokens_before": initial_tokens,
             "prompt_tokens_after": current_tokens if rescued else initial_tokens,
-            # Floor for the conversation, and how much of it is the message just sent:
-            # together they say whether the chat or the single message is the problem.
+            # Floor for the conversation, and how much of it is the message just sent: together they say whether the
+            # chat or the single message is the problem.
             "irreducible_tokens": current_tokens,
-            # `fitted` is what `current_tokens` prices, so the turn can be counted by
-            # difference against it rather than estimated.
+            # `fitted` is what `current_tokens` prices, so the turn can be counted by difference rather than estimated
             **turn_diagnosis(
                 messages, count_tokens, irreducible_tokens = current_tokens, fitted = fitted
             ),
