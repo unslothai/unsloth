@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import types
@@ -57,7 +58,17 @@ def _the_account_this_process_runs_as(monkeypatch):
     environment fallback, for a uid with no passwd entry, has its own test.
     """
     import pwd
-    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_name = "ada"))
+
+    # A real struct_passwd, not a SimpleNamespace: getpass.getuser() falls through to
+    # pwd.getpwuid(os.getuid())[0] when none of LOGNAME/USER/LNAME/USERNAME is set, and
+    # pytest calls it while building tmp_path. A non-subscriptable stub raises TypeError
+    # there, which is not among the exceptions pytest catches, so on a runner with no
+    # username in the environment every tmp_path test would die in fixture setup rather
+    # than run.
+    _record = pwd.struct_passwd(
+        ("ada", "x", os.getuid(), os.getgid(), "", "/home/ada", "/bin/sh")
+    )
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _record)
 
 
 @pytest.fixture
@@ -2363,6 +2374,61 @@ def test_the_installer_also_adds_the_account_for_unnamed_gids(tmp_path):
     assert "create a group for each" in out
 
 
+def _install_sh_classify(stat_line: str, *, self_uid: str = "4242") -> str:
+    """One classified line from the real _amd_node_repairs, for a synthetic stat record.
+
+    The awk program is lifted whole, and only ``stat`` and ``ls`` are stubbed, because the
+    cases that matter cannot be built as files: a node whose GID has no group entry needs a
+    GID this host does not name, and a root-owned one needs root. The record is exactly what
+    `stat -c '%a|%G|%g|%n|%u'` prints, so the input under test is the shipped format.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    script = "\n".join(
+        [
+            f"stat() {{ printf '%s\\n' {shlex.quote(stat_line)}; }}",
+            "ls() { printf '%s\\n' '-rw-rw---- 1 root root 0 Jan 1 00:00 node'; }",
+            f"id() {{ echo {self_uid}; }}",
+            _shell_fn(lines, "_amd_node_repairs"),
+            "_amd_node_repairs /dev/kfd",
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+def _install_sh_diag_route(leaf: str) -> str:
+    """Whether install.sh routes a given torch index leaf into the AMD node diagnosis.
+
+    The case statement is lifted whole rather than re-expressed, so the globs under test
+    are the shipped ones; only the leaf it reads is supplied, through a stubbed extractor,
+    because the URL-to-leaf step has its own tests.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf=")
+    )
+    end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
+    script = "\n".join(
+        [
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            f"_torch_index_url_leaf() {{ printf '%s' {shlex.quote(leaf)}; }}",
+            "TORCH_INDEX_URL=stub",
+            "\n".join(lines[start : end + 1]),
+            'printf "%s" "$_amd_node_diag_route"',
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
 def _install_sh_kfd_scope(
     closed_nodes: str,
     *,
@@ -2996,3 +3062,129 @@ def test_a_rocm_torch_index_is_unaffected_by_a_vulkan_bundle():
     )
     assert "cannot open its device nodes" in out
     assert "/dev/kfd" in out
+
+
+
+def test_an_unnamed_gid_zero_is_the_root_group_not_a_group_to_create(monkeypatch, linux):
+    """A minimal container can own the node root:root and carry no group database entry for
+    gid 0. The name lookup raises there, and filing that as an ordinary unnamed GID produced
+    `sudo groupadd -g 0 amdgpu0` plus a usermod into the ROOT group -- a grant far beyond the
+    GPU, and exactly what the privileged branch below the lookup exists to refuse. gid 0 is
+    the root group whether or not the database can name it."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (0, 0o660, 0)}, {})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert privileged == ["root"]
+    assert unnamed == [] and joinable == []
+
+
+def test_an_unnamed_ordinary_gid_is_still_a_group_to_create(monkeypatch, linux):
+    """The control, and the reason the rule is keyed on gid 0 rather than on the lookup
+    failing: an unnamed NON-privileged GID is the documented container case, and it must
+    still get its groupadd pair."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert unnamed == [993]
+    assert privileged == [] and joinable == []
+
+
+def test_the_installer_also_refuses_an_unnamed_gid_zero():
+    """The shell twin, run through the real classifier rather than a stubbed repair line.
+    `stat -c %G` prints UNKNOWN for a gid the group database cannot name, and the unnamed
+    test ran first, so a root-owned node in a minimal container came back as `gid:0` and the
+    installer printed groupadd -g 0 plus a usermod into the root group."""
+    assert _install_sh_classify("660|UNKNOWN|0|/dev/kfd|0") == "privileged:root"
+
+
+def test_the_installer_still_names_an_ordinary_unnamed_gid():
+    """The control: the same shape one GID up is the documented container case and must
+    still come back as a GID to create a group for."""
+    assert _install_sh_classify("660|UNKNOWN|993|/dev/kfd|0") == "gid:993"
+
+
+def test_the_installer_keeps_the_name_of_a_named_root_group():
+    """The second control: gid 0 WITH an entry keeps the name it has, so the reordering did
+    not turn every privileged node into the literal word root."""
+    assert _install_sh_classify("660|wheel|0|/dev/kfd|0") == "privileged:wheel"
+
+
+def test_a_vulkan_probe_ignores_a_hip_mask_when_a_sibling_is_open(monkeypatch, linux):
+    """HIP's selectors are HIP's. Vulkan reads none of them -- which is what needs_kfd is
+    for -- so a Vulkan caller on a masked host is still free to use the open sibling, and
+    returning the permission hint as the sole cause would send an empty Vulkan probe after
+    a group change that cannot fix it."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/dri/renderD129"},
+    )
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert amd.amd_closed_nodes_block_the_runtime(needs_kfd = False) is False
+
+
+def test_a_hip_caller_on_the_same_masked_host_still_blocks(monkeypatch, linux):
+    """The control: the same host, the same mask, asked by the caller the mask applies to.
+    Without this the rule could be "ignore selectors", which undoes the fix that added
+    them."""
+    # /dev/kfd present AND open, or this returns True on the missing-node branch and says
+    # nothing about the mask at all -- which is how the first version of this passed.
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert amd.amd_closed_nodes_block_the_runtime(needs_kfd = True) is True
+
+
+def test_gpu_device_ordinal_is_a_selector_too(monkeypatch, linux):
+    """ROCm's fourth visibility variable, which this repository already models in
+    test_amd_smi_inventory_matches_hip.py and in llama_cpp.py's own selector check. Omitting
+    it left one of the four narrowing the runtime while the open sibling was still credited
+    as a way in."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
+    assert amd.amd_closed_nodes_block_the_runtime() is True
+
+
+def test_a_suffixed_rocm_rel_leaf_is_somebody_elses_mirror():
+    """repo.radeon.com publishes rocm-rel-6.4, rocm-rel-6.5.0, rocm-rel-7.2.1 -- digits and
+    dots after the prefix, nothing else. A pin that merely starts with it is a mirror, and
+    it may serve wheels that open no AMD node, so it gets the same anchoring the sibling
+    rocm[0-9]* arm already applies to rocm7.2-private."""
+    assert _install_sh_diag_route("rocm-rel-7.0-private") == "false"
+    assert _install_sh_diag_route("rocm-rel-7.0.beta") == "false"
+
+
+def test_every_real_rocm_rel_leaf_still_takes_the_amd_route():
+    """The control, and the reason this is anchored on the character class rather than on a
+    fixed version shape: all six rocm-rel leaves this repository names must keep routing, two
+    and three components alike."""
+    for _leaf in ("rocm-rel-6.1", "rocm-rel-6.4", "rocm-rel-6.5.0", "rocm-rel-7.0",
+                  "rocm-rel-7.2.1", "rocm-rel-7.3.1"):
+        assert _install_sh_diag_route(_leaf) == "true", _leaf
+
+
+def test_a_suffixed_gfx_leaf_is_not_narrowed_the_same_way():
+    """The second control, and the reason the gfx family was deliberately left alone: AMD's
+    own indexes are gfx110X-all, gfx120X-all and gfx103X-all, so a suffix there is the
+    naming convention. Anchoring gfx the way rocm-rel is anchored would drop the routes this
+    repository ships."""
+    for _leaf in ("gfx110X-all", "gfx120X-all", "gfx103X-all", "gfx1151"):
+        assert _install_sh_diag_route(_leaf) == "true", _leaf
+
+
+def test_the_passwd_stub_answers_a_positional_read(monkeypatch):
+    """getpass.getuser() reads pwd.getpwuid(os.getuid())[0] once none of LOGNAME, USER,
+    LNAME or USERNAME is set, and pytest calls it while building tmp_path. A stub that only
+    carries pw_name raises TypeError there, which pytest does not catch, so the whole suite
+    would die in fixture setup on a runner with no username in its environment rather than
+    run. Reproduced by clearing all four, which is the only thing that makes it reachable."""
+    import getpass
+
+    for _var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.delenv(_var, raising = False)
+    assert getpass.getuser() == "ada"

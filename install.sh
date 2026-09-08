@@ -3466,15 +3466,21 @@ _amd_node_repairs() {
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
             if (g != 6 && g != 7) { print "mode:" $4; next }
-            if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
             # Joining one of these would open the node and hand over a great deal besides,
             # so a device node owned by one is a udev misconfiguration to report rather
             # than a membership to prescribe. gid 0 as well as the name, since a renamed
             # root group is still root. Mirrors _PRIVILEGED_GROUPS in utils/hardware/amd.py.
+            # ABOVE the unnamed test, not below it: stat prints UNKNOWN for a gid the group
+            # database cannot name, so in a minimal container with no entry for gid 0 the
+            # node was filed as an ordinary unnamed GID and the repair became groupadd -g 0
+            # plus a usermod into the root group -- the grant this test exists to refuse.
             if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow|docker|lxd)$/) {
-                if (!pseen[$2]++) print "privileged:" $2
+                pname = $2
+                if (pname == "" || pname ~ /^UNKNOWN/) { pname = "root" }
+                if (!pseen[pname]++) print "privileged:" pname
                 next
             }
+            if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
             if (!nseen[$2]++) print "join:" $2
         }'
 }
@@ -5599,6 +5605,13 @@ _run_may_open_a_gpu_node() {
 # and not a pip family, so the family test alone would drop it.
 _amd_node_diag_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL")
 case "$_amd_node_diag_leaf" in
+    # A repo.radeon.com leaf is rocm-rel-X.Y or rocm-rel-X.Y.Z and nothing else, so anchor
+    # it the way the sibling rocm[0-9]* arm of _is_pip_rocm_family_leaf already anchors its
+    # own: a pin that merely STARTS with it (rocm-rel-7.0-private) is somebody's mirror and
+    # may serve wheels that open no AMD node. The gfx family is deliberately NOT narrowed
+    # this way -- AMD's own indexes are gfx110X-all, gfx120X-all, gfx103X-all, so a suffix
+    # there is the convention rather than a sign of a custom pin.
+    rocm-rel-*[!0-9.]*) _amd_node_diag_route=false ;;
     cpu|rocm-rel-[0-9]*) _amd_node_diag_route=true ;;
     *)
         if _is_pip_rocm_family_leaf "$_amd_node_diag_leaf"; then

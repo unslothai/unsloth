@@ -891,15 +891,26 @@ def _groups_that_own(paths: list) -> tuple:
             import grp
             name = grp.getgrgid(_st.st_gid).gr_name
         except Exception:  # noqa: BLE001 -- no group database, or no entry for this gid
+            name = ""
+        # Asked of the GID, and BEFORE the name is required, because the lookup above is
+        # exactly what fails in a minimal container: with no entry for gid 0 it raised, the
+        # node was filed as an ordinary unnamed GID, and the repair became `groupadd -g 0`
+        # plus a usermod into the root group -- the grant this branch exists to refuse.
+        # gid 0 is the root group whether or not the database names it.
+        if _st.st_gid == 0:
+            _root = name or "root"
+            if _root not in privileged:
+                privileged.append(_root)
+            continue
+        if not name:
             if _st.st_gid not in unnamed:
                 unnamed.append(_st.st_gid)
             continue
         # Joining one of these would open the node and hand over a great deal else with
         # it, so a device node owned by one is a udev misconfiguration to report rather
-        # than a membership to prescribe. gid 0 as well as the name, since a renamed
-        # root group is still root.
-        if _st.st_gid == 0 or name in _PRIVILEGED_GROUPS:
-            if name and name not in privileged:
+        # than a membership to prescribe.
+        if name in _PRIVILEGED_GROUPS:
+            if name not in privileged:
                 privileged.append(name)
             continue
         if name and name not in joinable:
@@ -958,7 +969,11 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     # particular GPUs may well have selected the CLOSED one, and this cannot tell which,
     # so the sibling stops being evidence: fail closed, as this already does for a host it
     # cannot read, rather than suppressing the repair for the node the run will use.
-    if _a_per_gpu_mask_is_set():
+    # HIP's selectors only, so only for a caller that goes through HIP. Vulkan reads none
+    # of these -- which is the whole reason needs_kfd exists -- so a Vulkan probe is still
+    # free to use the open sibling, and returning the permission hint as its sole cause
+    # would send a Vulkan failure after a group change that cannot empty-probe it.
+    if needs_kfd and _a_per_gpu_mask_is_set():
         return True
     return not an_amd_render_node_is_open()
 
@@ -972,7 +987,16 @@ def _a_per_gpu_mask_is_set() -> bool:
     """
     return any(
         os.environ.get(_name, "").strip()
-        for _name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        for _name in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            # ROCm's fourth visibility variable, modelled elsewhere in this tree
+            # (tests/test_amd_smi_inventory_matches_hip.py, llama_cpp.py's own selector
+            # check). Omitting it left one of the four selectors crediting a sibling the
+            # runtime had been narrowed away from.
+            "GPU_DEVICE_ORDINAL",
+        )
     )
 
 
