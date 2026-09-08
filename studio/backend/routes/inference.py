@@ -2188,13 +2188,18 @@ def _openai_llama_admission_share(
     return None if share >= window else share
 
 
+# The media parts whose bytes ride in the message list. `image_url` is excluded because
+# `_openai_llama_admission_messages_for_estimate` compacts it and returns a count that is
+# priced as a bounded per-image allowance; nothing prices the rest.
+_TRANSPORT_MEDIA_TYPES = _UNPRICED_MEDIA_TYPES - {"image_url"}
+
+
 def _openai_llama_admission_messages_without_transport(conversation):
     """``conversation`` with the media parts the text estimator cannot price removed.
 
     ``_UNPRICED_MEDIA_TYPES`` names them; ``image_url`` is the exception, compacted and
     counted by ``_openai_llama_admission_messages_for_estimate`` instead.
     """
-    dropped = _UNPRICED_MEDIA_TYPES - {"image_url"}
     stripped = []
     for message in conversation or []:
         message_dict = (
@@ -2205,7 +2210,9 @@ def _openai_llama_admission_messages_without_transport(conversation):
             stripped.append(message_dict)
             continue
         kept = [
-            part for part in content if not (isinstance(part, dict) and part.get("type") in dropped)
+            part
+            for part in content
+            if not (isinstance(part, dict) and part.get("type") in _TRANSPORT_MEDIA_TYPES)
         ]
         stripped.append(
             {**message_dict, "content": kept} if len(kept) != len(content) else message_dict
@@ -2213,11 +2220,35 @@ def _openai_llama_admission_messages_without_transport(conversation):
     return stripped
 
 
+def _openai_llama_admission_unpriceable_media(payload, conversation = None) -> bool:
+    """Audio or video, whose prompt KV nobody can size yet.
+
+    Admission charges their transport bytes. That is a usable LEDGER figure, deliberately
+    far above the truth, but as a prompt count it is nonsense: subtracting a megabyte of
+    base64 from a share leaves the one-token floor for an ordinary voice message. The
+    encoders produce embeddings whose count follows the loaded projector and the clip
+    duration, and there is no estimate for either here, so a request carrying one is left
+    unenforced rather than bounded on a number that does not describe it. Images are
+    different: ``_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS`` is a real per-image bound.
+    """
+    for attribute in ("audio_base64", "video_base64"):
+        value = getattr(payload, attribute, None)
+        if isinstance(value, str) and value:
+            return True
+    for message in conversation or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _TRANSPORT_MEDIA_TYPES:
+                return True
+    return False
+
+
 def _openai_llama_admission_wire_prompt_tokens(
     conversation,
     *,
     llama_backend,
-    payload = None,
     injected_tools = None,
 ) -> int:
     """What the NEXT request carries, which is not what the ledger charges.
@@ -2236,23 +2267,25 @@ def _openai_llama_admission_wire_prompt_tokens(
     and a catalogue only where one is actually sent.
 
     Transport bytes are dropped first. An injected ``input_audio`` part rides in the
-    message list and is charged from the payload's own field, so leaving it in the text
-    estimate prices a 25 MB upload as millions of prompt tokens and floors the answer at
-    one. ``image_url`` stays, since the estimator compacts it and returns the count this
-    then prices as an image.
+    message list, so leaving it in the text estimate prices a 25 MB upload as millions of
+    prompt tokens; ``_openai_llama_admission_unpriceable_media`` turns enforcement off for
+    such a request instead. ``image_url`` stays, since the estimator compacts it and
+    returns the count this then prices as a bounded image allowance.
+
+    Media comes from the CONVERSATION alone, not from
+    ``_openai_llama_admission_media_tokens``: that also charges the legacy top-level
+    image, which the GGUF builder has already spliced into these very messages, so on
+    finalized messages the two would charge one image twice.
     """
     conversation = _openai_llama_admission_messages_without_transport(conversation)
     estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
         conversation
     )
-    tokens = estimate_messages_tokens_dense(estimate_messages)
-    tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-    tokens += _openai_llama_admission_media_tokens(
-        payload,
-        message_image_parts = message_image_parts,
-        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+    return (
+        estimate_messages_tokens_dense(estimate_messages)
+        + _openai_llama_admission_injected_tool_tokens(injected_tools)
+        + max(0, message_image_parts) * _openai_llama_admission_image_tokens(llama_backend)
     )
-    return tokens
 
 
 def _openai_llama_admission_enforced_max_tokens(
@@ -2297,6 +2330,8 @@ def _openai_llama_admission_enforced_max_tokens(
     share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
     if share is None:
         return None
+    if _openai_llama_admission_unpriceable_media(payload, conversation):
+        return None
     cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
     window = _openai_llama_admission_context_window(
         llama_backend
@@ -2307,7 +2342,6 @@ def _openai_llama_admission_enforced_max_tokens(
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             llama_backend = llama_backend,
-            payload = payload,
             injected_tools = injected_tools,
         )
     if prompt_tokens is None:
@@ -2349,7 +2383,6 @@ def _openai_llama_admission_retry_max_tokens(
     prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
         retry_body.get("messages") or [],
         llama_backend = llama_backend,
-        payload = payload,
         injected_tools = injected_tools,
     )
     bound = max(1, share - prompt_tokens)
@@ -2468,7 +2501,6 @@ def _openai_llama_admission_recost(
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             llama_backend = llama_backend,
-            payload = payload,
             injected_tools = injected_tools if wire_sends_tools else None,
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
@@ -2493,6 +2525,10 @@ def _openai_llama_admission_recost(
             payload,
             request = request,
             llama_backend = llama_backend,
+            # Already priced, so this is only what the media gate reads. The charge above
+            # still happens either way: a run whose media cannot be priced is left
+            # unenforced, not uncharged.
+            conversation = conversation,
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
         )

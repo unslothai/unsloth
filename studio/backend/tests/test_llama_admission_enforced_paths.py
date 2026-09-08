@@ -45,6 +45,7 @@ from fastapi.responses import JSONResponse
 
 from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from routes.inference import (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     _build_openai_passthrough_body,
     _openai_llama_admission_retry_max_tokens,
     _openai_llama_admission_wire_prompt_tokens,
@@ -703,13 +704,23 @@ class TestWhatTheWireActuallyCarries:
             <= 16384 // 4
         )
 
-    def test_audio_transport_is_not_priced_as_prompt_text(self):
-        """`_inject_audio_part` puts the upload in the message list, and admission charges
-        it from the payload's own field. Priced as text as well, a 25 MB clip swamps any
-        share and the answer floors at one token."""
+    def test_audio_and_video_are_left_unenforced(self):
+        """Nothing here can size their prompt KV.
+
+        The bytes ride in the message list and admission charges them by transport length,
+        which is a deliberately high LEDGER figure and nonsense as a prompt count: any
+        real recording exceeds a share on its own and would floor the answer at one token.
+        Images are different, since a per-image allowance is a real bound.
+        """
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         clip = "A" * 200000
-        payload = _Payload(messages = [{"role": "user", "content": "listen"}], max_tokens = 16384)
+        text_only = _chat("listen", max_tokens = 16384)
+        assert (
+            _openai_llama_admission_enforced_max_tokens(
+                text_only, request = None, llama_backend = backend
+            )
+            is not None
+        )
         with_audio = [
             {
                 "role": "user",
@@ -719,10 +730,63 @@ class TestWhatTheWireActuallyCarries:
                 ],
             }
         ]
-        bound = _openai_llama_admission_enforced_max_tokens(
-            payload, request = None, llama_backend = backend, conversation = with_audio
+        assert (
+            _openai_llama_admission_enforced_max_tokens(
+                text_only,
+                request = None,
+                llama_backend = backend,
+                conversation = with_audio,
+            )
+            is None
         )
-        assert bound is not None and bound > 1000, bound
+        assert (
+            _openai_llama_admission_enforced_max_tokens(
+                _Payload(
+                    messages = [{"role": "user", "content": "listen"}],
+                    audio_base64 = clip,
+                    max_tokens = 16384,
+                ),
+                request = None,
+                llama_backend = backend,
+            )
+            is None
+        )
+
+    def test_a_legacy_image_already_spliced_in_is_charged_once(self):
+        """`_openai_messages_for_gguf_chat` splices the top-level `image_base64` into the
+        messages, so on finalized messages the per-part count already covers it and the
+        separate legacy charge would price one image as two."""
+        backend = _backend_stub(window = 32768, total = 32768, slots = 4)
+        image = "iVBORw0KGgo="
+        payload = _Payload(
+            messages = [{"role": "user", "content": "what is this?"}],
+            image_base64 = image,
+            max_tokens = 32768,
+        )
+        spliced = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image}"},
+                    },
+                ],
+            }
+        ]
+        one_image = _openai_llama_admission_wire_prompt_tokens(spliced, llama_backend = backend)
+        text_only = _openai_llama_admission_wire_prompt_tokens(
+            [{"role": "user", "content": "what is this?"}], llama_backend = backend
+        )
+        assert one_image - text_only < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            one_image,
+            text_only,
+        )
+        bound = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = spliced
+        )
+        assert bound is not None and bound > 1
 
 
 class TestARetryThatGrewItsPrompt:
