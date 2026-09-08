@@ -115,6 +115,16 @@ def test_safetensors_optimizer_sidecar_is_bookkeeping(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 7000
 
 
+def test_sharded_optimizer_state_is_bookkeeping(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 4000)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 3000)
+    _write(tmp_path / "optimizer-00001-of-00002.bin", 8000)
+    _write(tmp_path / "optimizer-00002-of-00002.bin", 8000)
+    _write(tmp_path / "rng_state_0.pth", 100)
+    _write(tmp_path / "rng_state_1.pth", 100)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 7000
+
+
 def test_precision_variant_beside_canonical_weights_charges_one_copy(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "model.fp16.safetensors", 500)

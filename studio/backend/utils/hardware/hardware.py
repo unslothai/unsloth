@@ -5689,14 +5689,10 @@ def _resolve_model_identifier_for_gpu_estimate(
         return model_name
 
 
-_TRAINER_BOOKKEEPING_PREFIXES = (
-    "optimizer.",
-    "optimizer_",
-    "scheduler.",
-    "scaler.",
-    "rng_state",
-    "training_args.",
-    "trainer_state.",
+# Trainer state saved beside the weights, in any format and with any shard counter:
+# optimizer.pt, optimizer-00001-of-00002.bin, optimizer.safetensors, rng_state_0.pth.
+_TRAINER_BOOKKEEPING = re.compile(
+    r"^(optimizer|scheduler|scaler|rng_state|training_args|trainer_state)(?:[._-]|$)"
 )
 # A shard counter sits at the end of the stem or, with a variant, just before it:
 # model-00001-of-00004, model.fp16-00001-of-00002, model-00001-of-00002.fp16, consolidated.00.
@@ -5729,7 +5725,7 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        if file.name.startswith(_TRAINER_BOOKKEEPING_PREFIXES):
+        if _TRAINER_BOOKKEEPING.match(file.name):
             continue
         stem, ext = os.path.splitext(file.name)
         if ext == ".safetensors":
