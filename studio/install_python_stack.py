@@ -3065,7 +3065,19 @@ def _ensure_cuda_torch() -> None:
     # reads the requested wheel as poisoning, and reinstalls the CUDA trio just for
     # _ensure_rocm_torch to force ROCm back (#10450). An explicit CUDA pin still wins
     # below, since naming an index is the more specific instruction.
-    if _rocm_torch_explicitly_requested() and _explicit_cuda_torch_index_url() is None:
+    #
+    # Standing down needs an AMD card to stand down FOR, and that is the shell
+    # selector's rule too: a request with no AMD GPU present selects nothing and falls
+    # through to CUDA. Without the second test, leaving the variable set on a host
+    # whose AMD card has since been removed silences this repair while
+    # _ensure_rocm_torch also finds no target, and a stale HIP build is left on a
+    # working NVIDIA GPU with nothing to fix it. The probe runs only under the
+    # request, so an ordinary install pays nothing for it.
+    if (
+        _rocm_torch_explicitly_requested()
+        and _explicit_cuda_torch_index_url() is None
+        and _has_rocm_gpu()
+    ):
         return
     # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
     _cuda_pinned = _explicit_cuda_torch_index_url() is not None

@@ -206,6 +206,9 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch):
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    # The request stands down only for a card that is actually there, so the mixed
+    # host this describes has to say so.
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     probed = {"ran": False}
     monkeypatch.setattr(
@@ -265,3 +268,113 @@ def test_windows_is_not_swapped_by_the_request_alone(stack, monkeypatch):
     )
     stack._ensure_rocm_torch()
     assert detected["ran"] is False
+
+
+def _nvidia_wins(env: str, stubs: str) -> bool:
+    """_nvidia_gpu_wins_over_amd() under a stubbed host.
+
+    This is the predicate the two per-arch reroutes consult. They run at TOP LEVEL and
+    probe the host afresh, so get_torch_index_url clearing its own _nvidia_detected
+    never reaches them; the request has to be asked here as well or a mixed host takes
+    the cpu index the reroute exists to rewrite.
+    """
+    import subprocess
+
+    script = "\n".join([
+        _shell_function("_rocm_torch_explicitly_requested"),
+        stubs,
+        _shell_function("_nvidia_gpu_wins_over_amd"),
+        f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
+    ])
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.stdout.strip() in ("NVIDIA", "AMD"), out
+    return out.stdout.strip() == "NVIDIA"
+
+
+_PURE_NVIDIA = "\n".join([
+    "_has_usable_nvidia_gpu() { return 0; }",
+    "_has_amd_rocm_gpu() { return 1; }",
+])
+
+_PURE_AMD = "\n".join([
+    "_has_usable_nvidia_gpu() { return 1; }",
+    "_has_amd_rocm_gpu() { return 0; }",
+])
+
+_MIXED = "\n".join([
+    "_has_usable_nvidia_gpu() { return 0; }",
+    "_has_amd_rocm_gpu() { return 0; }",
+])
+
+
+def test_the_reroute_predicate_yields_to_the_request_on_a_mixed_host():
+    """The #10450 gap the selector fix alone left open: an unreadable ROCm version
+    makes get_torch_index_url return the cpu index deliberately, for the per-arch
+    reroute to rewrite. A reroute that still asked the bare NVIDIA probe declined,
+    and the request finished with CPU torch beside a working NVIDIA card."""
+    assert not _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _MIXED)
+
+
+def test_the_same_mixed_host_without_the_request_keeps_cuda():
+    """The control, differing only in the environment."""
+    assert _nvidia_wins("", _MIXED)
+
+
+def test_the_request_does_not_yield_a_pure_nvidia_host():
+    """It relaxes which vendor wins, not whether there is a card to serve. Without
+    this a request set on a box with no AMD card would reroute it to AMD wheels."""
+    assert _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _PURE_NVIDIA)
+
+
+def test_a_host_with_no_nvidia_card_is_unchanged_either_way():
+    """The automatic path is untouched: with no NVIDIA GPU the answer never depended
+    on the request, and must not start to."""
+    assert not _nvidia_wins("", _PURE_AMD)
+    assert not _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _PURE_AMD)
+
+
+def test_the_reroutes_ask_the_request_aware_predicate():
+    """The predicate is only worth testing if the reroutes actually consult it.
+
+    Read off install.sh rather than assumed: a bare _has_usable_nvidia_gpu at either
+    site would restore the gap while every test above still passed.
+    """
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    body = install_sh.read_text(encoding = "utf-8")
+    marker = "_amd_no_rocm_version_reroute=false"
+    tail = body[body.index(marker):]
+    assert "! _nvidia_gpu_wins_over_amd" in tail
+    assert "! _has_usable_nvidia_gpu" not in tail, (
+        "a per-arch reroute still asks the bare NVIDIA probe, so the explicit "
+        "request cannot reach the AMD wheels it selected"
+    )
+
+
+def test_the_cuda_repair_still_runs_when_the_request_finds_no_amd_card(stack, monkeypatch):
+    """Standing down needs a card to stand down FOR, which is the shell selector's
+    rule too: a request on a box with no AMD GPU selects nothing and falls through to
+    CUDA. Leaving the variable set on a host whose AMD card has since been removed
+    must not silence this repair, because _ensure_rocm_torch then finds no target
+    either and a stale HIP build would be left on a working NVIDIA GPU with nothing
+    to fix it."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    probed = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
+    )
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
+    stack._ensure_cuda_torch()
+    assert probed["ran"] is True

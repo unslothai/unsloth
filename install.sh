@@ -3367,6 +3367,23 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
+# One place answers "does the NVIDIA card still win here", so the index selection and
+# the per-arch reroutes cannot disagree about it. The reroutes below run at top level
+# and probe afresh, so get_torch_index_url clearing its own _nvidia_detected does not
+# reach them: without this, a request on a mixed host whose ROCm version is unreadable
+# takes the cpu index that the reroute exists to rewrite, and the reroute then declines,
+# leaving CPU torch beside a working NVIDIA card (#10450).
+#
+# The AMD presence test is kept, so a request on a pure NVIDIA box still answers "NVIDIA
+# wins" and the CUDA path is unchanged.
+_nvidia_gpu_wins_over_amd() {
+    _has_usable_nvidia_gpu || return 1
+    if _rocm_torch_explicitly_requested && _has_amd_rocm_gpu; then
+        return 1
+    fi
+    return 0
+}
+
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
 # (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
 # hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
@@ -4658,7 +4675,7 @@ case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
            [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
-           ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
+           ! _nvidia_gpu_wins_over_amd && _has_amd_rocm_gpu; then
             _amd_probe_out=$(_probe_amd_gfx_arch)
             # HSA_OVERRIDE_GFX_VERSION=11.0.0 is the standard Strix Halo workaround, and
             # ROCr then reports the spoofed gfx1100. The llama.cpp path corrects that
@@ -4703,7 +4720,7 @@ case "$TORCH_INDEX_URL" in
         ;;
 esac
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
-   ! _has_usable_nvidia_gpu && \
+   ! _nvidia_gpu_wins_over_amd && \
    { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu || \
      [ -z "$(_probe_amd_gfx_arch)" ] || \
      [ "${_amd_no_rocm_version_reroute:-false}" = true ]; } && \
@@ -5237,7 +5254,9 @@ _amd_smi_gpu_records() {
 }
 
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
-if _has_usable_nvidia_gpu; then
+# The same question the index answered: under the request this host is being served as
+# an AMD one, so reporting the NVIDIA card here would contradict the wheels just chosen.
+if _nvidia_gpu_wins_over_amd; then
     step "gpu" "NVIDIA GPU detected"
 elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
