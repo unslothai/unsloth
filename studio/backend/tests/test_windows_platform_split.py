@@ -84,3 +84,34 @@ def test_windows_warm_and_concurrent_probe_cache(monkeypatch):
     assert srt_probe.probe()[0]
     assert len(count) == 2
     srt_probe.invalidate_cache()
+
+
+@pytest.mark.parametrize("mode", ["auto", "required"])
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_available_windows_launch_executes_once(monkeypatch, tmp_path, mode, kind):
+    from core.inference import sandbox_windows, srt_adapter
+    monkeypatch.setattr(sys, "platform", "win32")
+    capability = os_sandbox.SandboxCapability("srt", True, "passed", environment="win32")
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **kwargs: capability)
+    monkeypatch.setattr(srt_adapter, "request_for", lambda *args: {})
+    starts = []
+    monkeypatch.setattr(srt_adapter, "spawn", lambda *args, **kwargs: starts.append(1) or object())
+    monkeypatch.setattr(srt_adapter, "release_control", lambda proc: None)
+    plan = os_sandbox.ToolLaunchPlan((sys.executable,), str(tmp_path), {}, requested_mode=mode, execution_kind=kind)
+    prepared = tools._prepare_tool_launch(plan)
+    os_sandbox.spawn_prepared_launch(prepared)
+    assert starts == [1]
+    assert prepared.execution_record.os_isolation
+    assert prepared.execution_record.requested_mode == mode
+    prepared.cleanup()
+
+
+def test_isolation_failure_stops_model_retries():
+    from core.inference.tool_loop_controller import ToolLoopController
+    controller = ToolLoopController(tools=None)
+    call = {"id":"one", "function":{"name":"python", "arguments":{"code":"print(1)"}}}
+    decision = controller.prepare_call(call)
+    controller.record_result(decision, tools._sandbox_refusal(os_sandbox.SandboxBuildError("startup failed")))
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
+    assert controller.prepare_call(call).action == "disabled"

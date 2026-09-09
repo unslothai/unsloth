@@ -2,6 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+test("new profiles use Auto and obsolete selections retain Required while clearing grants", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  try {
+    for (const [saved, expected, reselect] of [[null, "auto", false], ["required", "required", false], ["os_isolation_required", "required", false], ["limited", "required", true], ["container_isolation", "required", true]] as const) {
+      const removed: string[] = [];
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => saved, removeItem: (key: string) => removed.push(key) } });
+      const module = loadWithStubs<{ useIsolationStore: { mode: string; reselect: boolean } }>(new URL("../src/features/chat/tool-isolation.ts", import.meta.url), {
+        zustand: { create: (factory: () => unknown) => factory() }, "@/features/auth": {},
+      });
+      assert.equal(module.useIsolationStore.mode, expected);
+      assert.equal(module.useIsolationStore.reselect, reselect);
+      assert.equal(removed.length, 2);
+    }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
 test("serialized tool mode is refreshed after waits and an actual 401 refresh", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Record<string, unknown>[] = [];
