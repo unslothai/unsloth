@@ -680,6 +680,81 @@ def load_metadata(install_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _file_record(path: Path) -> dict | None:
+    """size, mtime_ns and sha256 for one file, or None when it cannot be read."""
+    try:
+        info = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": digest}
+
+
+def _file_record_matches(path: Path, recorded: object) -> bool:
+    """Whether *path* is still the file *recorded* describes.
+
+    size and mtime_ns only. The digest is recorded too, and deliberately not compared
+    here: this runs on every launch of the installer, node is ~110 MB, and a rewrite
+    that preserved both the byte count and the nanosecond timestamp is not a failure
+    mode a re-download would fix anyway. The digest is there so a support log can say
+    which binary this is.
+    """
+    if not isinstance(recorded, dict):
+        return False
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return info.st_size == recorded.get("size") and info.st_mtime_ns == recorded.get("mtime_ns")
+
+
+def record_runtime_verification(
+    install_dir: Path, host: HostInfo, *, version: str, npm_major: int
+) -> None:
+    """Remember that THESE bytes answered `node -v` and `npm --version`.
+
+    Read-modify-write, never raises: a marker that cannot be refreshed only costs the
+    two spawns again next time.
+    """
+    meta = load_metadata(install_dir)
+    if meta is None:
+        return
+    node_record = _file_record(node_binary_path(install_dir, host))
+    npm_record = _file_record(npm_cli_path(install_dir, host))
+    if node_record is None or npm_record is None:
+        return
+    meta.update(
+        {
+            "node_binary": node_record,
+            "npm_cli": npm_record,
+            "node_version_checked": version,
+            "npm_major_checked": npm_major,
+        }
+    )
+    try:
+        metadata_path(install_dir).write_text(json.dumps(meta, indent = 2) + "\n", encoding = "utf-8")
+    except OSError:
+        pass
+
+
+def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, version: str) -> bool:
+    """Whether a previous run already proved these exact bytes run this exact version.
+
+    `node -v` and `npm --version` are two interpreter starts of a 110 MB runtime, run on
+    every install and every update to re-derive an answer that cannot have changed while
+    the binaries have not. Absent records mean an install made before this existed, so
+    it pays the spawns once and then records them.
+    """
+    if meta.get("node_version_checked") != version:
+        return False
+    npm_major = meta.get("npm_major_checked")
+    if not isinstance(npm_major, int) or npm_major < NPM_MIN_MAJOR:
+        return False
+    return _file_record_matches(
+        node_binary_path(install_dir, host), meta.get("node_binary")
+    ) and _file_record_matches(npm_cli_path(install_dir, host), meta.get("npm_cli"))
+
+
 def existing_install_matches(
     install_dir: Path,
     host: HostInfo,
@@ -695,10 +770,16 @@ def existing_install_matches(
         return False
     if expected_sha is not None and meta.get("sha256") != expected_sha:
         return False
+    if _recorded_runtime_matches(install_dir, host, meta, version):
+        return True
     if installed_node_version(install_dir, host) != version:
         return False
     npm_major = installed_npm_major(install_dir, host)
-    return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+    if npm_major is None or npm_major < NPM_MIN_MAJOR:
+        return False
+    # The spawns just answered, so the next run does not have to ask again.
+    record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    return True
 
 
 def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
@@ -892,6 +973,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         raise PrebuiltFallback(
             f"post-install verification failed: node={final_version} npm_major={npm_major}"
         )
+    # After the swap, not before: _ensure_npm_floor rewrites npm inside the staged tree,
+    # and the records have to describe the bytes that are live.
+    record_runtime_verification(install_dir, host, version = final_version, npm_major = npm_major)
     log(f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}")
     return EXIT_SUCCESS
 

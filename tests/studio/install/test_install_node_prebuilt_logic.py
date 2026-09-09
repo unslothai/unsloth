@@ -848,3 +848,113 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(M.os, "replace", flaky)
     M._swap_into_place(extracted, install_dir)
     assert (install_dir / "marker.txt").read_text(encoding = "utf-8") == "node"
+
+
+# ── the recorded runtime check: two 110 MB interpreter starts per run ──
+def _real_node_tree(root: Path, host) -> None:
+    """The two files existing_install_matches spawns, as real bytes on disk."""
+    node = M.node_binary_path(root, host)
+    npm = M.npm_cli_path(root, host)
+    node.parent.mkdir(parents = True, exist_ok = True)
+    npm.parent.mkdir(parents = True, exist_ok = True)
+    node.write_bytes(b"node" * 64)
+    npm.write_bytes(b"npm" * 64)
+
+
+def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
+    """`node -v` and `npm --version` are two interpreter starts of a 110 MB runtime,
+    run on every install and every update to re-derive an answer that cannot have
+    changed while the binaries have not."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+
+    spawns = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: (spawns.append("node"), "24.17.0")[1]
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (spawns.append("npm"), 11)[1])
+    # First call has nothing recorded, so it spawns -- and writes down what it learned.
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == ["node", "npm"]
+
+    spawns.clear()
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == [], "the recorded verification was not believed"
+
+
+def test_a_replaced_binary_is_probed_again(tmp_path: Path, monkeypatch):
+    """The record describes bytes, not a directory: a node swapped underneath us has
+    to answer for itself."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+
+    spawns = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: (spawns.append("node"), "24.17.0")[1]
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (spawns.append("npm"), 11)[1])
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == []
+
+    M.node_binary_path(tmp_path, host).write_bytes(b"a different node")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == ["node", "npm"]
+
+
+def test_a_deleted_binary_is_not_a_match(tmp_path: Path, monkeypatch):
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    M.npm_cli_path(tmp_path, host).unlink()
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: None)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_a_recorded_verification_never_outranks_the_version_or_the_pin(tmp_path: Path, monkeypatch):
+    """The short-circuit is only about the two spawns. Version and digest are still
+    what decide whether this is the install that was asked for."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "pinned")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_matches(tmp_path, host, version = "24.18.0") is False
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "other") is False
+    )
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "pinned") is True
+    )
+
+
+def test_a_recorded_npm_below_the_floor_is_probed_again(tmp_path: Path, monkeypatch):
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 10)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_the_record_survives_an_unwritable_marker(tmp_path: Path):
+    """A marker that cannot be refreshed costs the two spawns again, never the install."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.load_metadata(tmp_path) is None
+
+
+def test_the_record_is_written_after_the_swap_not_before() -> None:
+    """_ensure_npm_floor rewrites npm inside the staged tree, so a record taken there
+    describes bytes that are about to be replaced."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    swap = source.index("_swap_into_place(extracted_root, install_dir)")
+    record = source.index("record_runtime_verification(install_dir, host, version = final_version")
+    assert swap < record
