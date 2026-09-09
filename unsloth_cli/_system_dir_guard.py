@@ -343,6 +343,9 @@ _RELATIVE_PATH_ENV = (
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    # transformers appends this to sys.path, so a relative value would import a different
+    # generated module after the move.
+    "HF_MODULES_CACHE",
     # The credential file: a relative value would follow the child and lose access to gated repos.
     "HF_TOKEN_PATH",
     # Authoritative when non-blank (storage_roots.py), so `unsloth studio update` would install

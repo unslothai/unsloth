@@ -1008,6 +1008,21 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
+# The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit BESIDE
+# studio/ under it, so installing them under $STUDIO_HOME would put them one level below where
+# every runtime resolver looks. Captured here because section 7 assigns over UNSLOTH_HOME.
+_MASTER_ROOT=""
+if [ -n "${UNSLOTH_HOME:-}" ]; then
+    _MASTER_ROOT="$UNSLOTH_HOME"
+    case "$_MASTER_ROOT" in
+        "~") _MASTER_ROOT="$HOME" ;;
+        "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#\~/}" ;;
+    esac
+    if [ -d "$_MASTER_ROOT" ]; then
+        _MASTER_ROOT=$(CDPATH= cd -P -- "$_MASTER_ROOT" 2>/dev/null && pwd -P) \
+            || _MASTER_ROOT="$UNSLOTH_HOME"
+    fi
+fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
 # for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
@@ -1206,6 +1221,8 @@ decide_node_source() {
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ -n "$STAGE_ROOT" ]; then
     _NODE_PARENT="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    _NODE_PARENT="$_MASTER_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
@@ -2559,6 +2576,8 @@ fi
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ -n "$_MASTER_ROOT" ]; then
+    UNSLOTH_HOME="$_MASTER_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else

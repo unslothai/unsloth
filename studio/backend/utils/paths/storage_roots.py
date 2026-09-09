@@ -498,14 +498,17 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     if not portable_mode():
         return {}
     if _user_set_hf_home():
-        # Assets and datasets derive from an explicit HF_HOME, so pinning them here would split
-        # one deliberately chosen cache across two volumes.
+        # Assets, datasets and modules derive from an explicit HF_HOME, so pinning them here
+        # would split one deliberately chosen cache across two volumes.
         return {"TORCH_HOME": str(root / "torch")}
     return {
         "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
-        # Derived as <HF_HOME>/assets otherwise, which stays on the host: the one HF root that
-        # would still write outside the volume.
+        # These two derive from <HF_HOME>, which stays on the host, so they are the HF roots
+        # that would otherwise still write outside the volume.
         "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
+        # transformers.utils.hub reads this at import and appends it to sys.path, so a
+        # trust_remote_code load leaves generated modules on the host without it.
+        "HF_MODULES_CACHE": str(root / "huggingface" / "modules"),
         "TORCH_HOME": str(root / "torch"),
     }
 

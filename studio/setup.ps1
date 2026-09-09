@@ -513,12 +513,31 @@ function Test-UnslothCmdShimFile {
     return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
-# Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+# The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+# BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+# where every runtime resolver looks.
+function Get-MasterRootOverride {
+    if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+    $value = $env:UNSLOTH_HOME.Trim()
+    if ($value -eq "~") {
+        $value = $env:USERPROFILE
+    } elseif ($value -like "~/*" -or $value -like "~\*") {
+        $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+    }
+    return (Get-CanonicalDir -Path $value)
+}
+
+# Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+# home's tree.
 function Get-ManagedLlamaCppDir {
     param([AllowNull()][string]$StagingRoot = $null)
 
     if ($StagingRoot) {
         return (Join-Path $StagingRoot "llama.cpp")
+    }
+    $masterRoot = Get-MasterRootOverride
+    if ($masterRoot) {
+        return (Join-Path $masterRoot "llama.cpp")
     }
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -3497,8 +3516,12 @@ $NodeSource = $null
 if (-not $IsPipInstall) {
     # Put Node beside the Unsloth root. OXC can still need npm when the
     # frontend build is skipped.
+    $_masterRoot = Get-MasterRootOverride
     if ($StageRoot) {
         $NodeParent = $StageRoot
+    } elseif ($_masterRoot) {
+        # Same derivation as Get-ManagedLlamaCppDir: beside studio\, not inside it.
+        $NodeParent = $_masterRoot
     } else {
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
         elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }

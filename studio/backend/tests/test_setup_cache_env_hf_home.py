@@ -72,6 +72,7 @@ def _clear_hf_env(monkeypatch):
         "HUGGINGFACE_HUB_CACHE",
         "HF_DATASETS_CACHE",
         "HF_ASSETS_CACHE",
+        "HF_MODULES_CACHE",
     ):
         monkeypatch.delenv(key, raising = False)
 
@@ -172,6 +173,7 @@ def test_explicit_hf_home_keeps_the_datasets_and_assets_caches(monkeypatch, tmp_
     assert os.environ["HF_XET_CACHE"] == str(chosen / "xet")
     assert "HF_DATASETS_CACHE" not in os.environ
     assert "HF_ASSETS_CACHE" not in os.environ
+    assert "HF_MODULES_CACHE" not in os.environ
     # Containment is only given up for the root the user named.
     assert os.environ["TORCH_HOME"].startswith(str(master))
 
@@ -205,6 +207,38 @@ def test_portable_mode_without_an_explicit_hf_home_still_contains_them(monkeypat
 
     assert os.environ["HF_DATASETS_CACHE"].startswith(str(master))
     assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
+    # transformers derives this from HF_HOME, which stays on the host, and appends it to
+    # sys.path, so a trust_remote_code load would leave generated modules outside the volume.
+    assert os.environ["HF_MODULES_CACHE"].startswith(str(master))
+
+
+def test_a_normal_install_leaves_the_modules_cache_where_transformers_looks(monkeypatch, tmp_path):
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert "HF_MODULES_CACHE" not in os.environ
+
+
+def test_an_explicit_modules_cache_outranks_the_portable_default(monkeypatch, tmp_path):
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _portable_install(monkeypatch, tmp_path)
+    mine = tmp_path / "mine" / "modules"
+    monkeypatch.setenv("HF_MODULES_CACHE", str(mine))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_MODULES_CACHE"] == str(mine)
 
 
 @pytest.mark.parametrize("hub_variable", ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"])

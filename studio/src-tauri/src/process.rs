@@ -1909,6 +1909,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
+    // transformers appends this to sys.path, so a relative value would import a
+    // different generated module after the move.
+    "HF_MODULES_CACHE",
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
