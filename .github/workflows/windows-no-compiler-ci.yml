@@ -4,39 +4,33 @@
 # The behavioural half of "the installer does not run a compiler".
 #
 # tests/studio/test_installer_av_shapes.py reads the scripts and fails on an
-# Add-Type that is not -AssemblyName. That is a text check, and text checks are
-# blind to the two ways this regresses in practice: a compile reached through a
-# module, a dot-sourced file or a generated here-string, and a compile that some
-# dependency performs on our behalf while our own process tree is what a scanner
-# scores. Bitdefender flagged the chain, not the bytes:
+# Add-Type that is not -AssemblyName. Text checks are blind to the two ways this
+# regresses in practice: a compile reached through a module, a dot-sourced file or
+# a generated here-string, and a compile a dependency performs on our behalf while
+# our own process tree is what a scanner scores. Bitdefender flagged the chain:
 #
 #     unsloth-studio.exe -> powershell.exe -> csc.exe -> %TEMP%\<random>.dll
 #
 # so the assertion that matters is about processes, not source. This job turns on
 # 4688 process-creation auditing with command lines, runs the real installer, and
-# fails if csc.exe, vbc.exe or cvtres.exe ever appears, or if a DLL lands in a
-# temporary directory while the installer is running.
+# fails if csc.exe, vbc.exe or cvtres.exe appears, or if a DLL lands in a temporary
+# directory while the installer is running.
 #
-# The positive control is not optional and runs FIRST. A detector that sees
-# nothing is indistinguishable from a clean run, and every part of this is
-# something that can silently fail to apply: auditpol can be overridden by a
-# machine policy, the Security log can be full, command-line capture can be off.
-# So the job deliberately compiles one throwaway type with Add-Type and REQUIRES
-# both signals to fire. If they do not, the job fails as a broken detector and
-# never reaches the real measurement.
+# The positive control is not optional and runs FIRST, because a detector that sees
+# nothing looks exactly like a clean run and every part of this can silently fail to
+# apply: auditpol overridden by machine policy, a full Security log, command-line
+# capture off. So the job compiles one throwaway type with Add-Type and REQUIRES both
+# signals to fire, failing as a broken detector before the real measurement.
 #
-# Scope, stated because a green run here does not mean more than it means: this
-# proves nothing about a machine where App Control or Smart App Control is
-# enforcing, since a hosted runner has neither. It proves that the shipped
-# install path spawns no compiler and drops no temporary DLL, which is the shape
-# that was reported.
+# Scope: this proves nothing about a machine where App Control or Smart App Control
+# is enforcing, since a hosted runner has neither. It proves the shipped install path
+# spawns no compiler and drops no temporary DLL, which is the reported shape.
 #
-# Which revision of studio/setup.ps1 each leg measures is also part of that scope.
-# The installer delegates setup to the managed CLI, so a default run executes the
-# setup.ps1 inside the released package, not the one in the checkout. The shell leg
-# is therefore a measurement of the release; the desktop leg passes --local, which
-# overlays the checkout as an editable install, and refuses to report a result
-# unless the overlay is in the log.
+# Which revision of studio/setup.ps1 each leg measures is part of that scope. The
+# installer delegates setup to the managed CLI, so a default run executes the
+# setup.ps1 inside the released package, not the checkout. The shell leg therefore
+# measures the release; the desktop leg passes --local to overlay the checkout as an
+# editable install, and refuses to report a result unless the overlay is in the log.
 
 name: Windows No Compiler CI
 
@@ -49,8 +43,8 @@ on:
       - 'studio/src-tauri/src/install.rs'
       - 'studio/src-tauri/src/process.rs'
       - 'tests/studio/test_installer_av_shapes.py'
-      # The watcher implements both detectors. A PR touching only it could disable the
-      # detection without ever running the positive control that would catch that.
+      # The watcher implements both detectors, so a PR touching only it could disable
+      # detection without running the positive control that would catch that.
       - '.github/scripts/Watch-ForCompiler.ps1'
       - '.github/workflows/windows-no-compiler-ci.yml'
   push:
@@ -71,8 +65,8 @@ jobs:
     timeout-minutes: 60
 
     env:
-      # Outside any user profile, for the same reason the Application Control leg
-      # pins it: the paths under test must not depend on whose profile ran.
+      # Outside any user profile, like the Application Control leg: the paths under
+      # test must not depend on whose profile ran.
       UNSLOTH_STUDIO_HOME: 'C:\Users\Public\no-compiler-home'
       UNSLOTH_EVIDENCE: 'C:\Users\Public\no-compiler-evidence'
 
@@ -85,26 +79,26 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:UNSLOTH_EVIDENCE | Out-Null
 
-          # 4688 with the command line, which is what distinguishes "csc.exe ran"
-          # from "csc.exe ran for us". Both are needed: the subcategory produces
-          # the event, the policy value fills in the command line.
+          # 4688 with the command line, which distinguishes "csc.exe ran" from
+          # "csc.exe ran for us". The subcategory produces the event, the policy
+          # value fills in the command line.
           auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
           $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
           New-Item -Path $auditKey -Force | Out-Null
           New-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' `
               -Value 1 -PropertyType DWord -Force | Out-Null
 
-          # A Security log large enough that the installer's own noise cannot roll
-          # the window under test off the end.
+          # Large enough that the installer's own noise cannot roll the window under
+          # test off the end of the Security log.
           wevtutil sl Security /ms:268435456
 
           $state = auditpol /get /subcategory:"Process Creation"
           $state | Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\auditpol.txt"
-          # Joined to one string, and matched on the subcategory line rather than the bare
-          # word. auditpol returns an ARRAY of lines, and -notmatch on an array is a filter,
-          # not a test: it returns the elements that do not match, so on a runner where
-          # auditing turned on correctly it still returned the three header lines, and a
-          # non-empty array is truthy. This threw on every healthy machine.
+          # Joined to one string, and matched on the subcategory line rather than the
+          # bare word: auditpol returns an ARRAY of lines, and -notmatch on an array
+          # filters rather than tests, so a healthy runner still returned the three
+          # header lines and a non-empty array is truthy. This threw on every healthy
+          # machine.
           if (($state | Out-String) -notmatch 'Process Creation\s+Success') {
               throw "process creation auditing did not turn on; this job cannot measure anything"
           }
@@ -116,9 +110,8 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
 
           $probe = {
-              # One throwaway type, compiled the way the installer used to. This is
-              # the only Add-Type in this repository's CI and it exists to prove the
-              # measurement works.
+              # One throwaway type, compiled the way the installer used to: the only
+              # Add-Type in this repository's CI, here to prove the detector works.
               Add-Type -TypeDefinition 'public static class UnslothCompilerProbe { public static int N() { return 1; } }'
               [UnslothCompilerProbe]::N() | Out-Null
           }
@@ -144,11 +137,10 @@ jobs:
 
           $install = {
               # Spawned the way the desktop spawns it, not dot-sourced: the shape
-              # under test is a child powershell.exe, and a compile started by the
-              # installer's own children is exactly what a dot-source would hide
-              # from the 4688 ancestry. --no-torch for time; the native
-              # declarations are made before any of that. Not --tauri, which
-              # refuses UNSLOTH_STUDIO_HOME, and the pinned home is what keeps
+              # under test is a child powershell.exe, and a dot-source would hide a
+              # compile started by the installer's own children from the 4688
+              # ancestry. --no-torch for time; the native declarations happen before
+              # that. Not --tauri, which refuses the UNSLOTH_STUDIO_HOME that keeps
               # every step reading one tree.
               New-Item -ItemType Directory -Force -Path logs | Out-Null
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -182,21 +174,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
 
-          # --tauri is what the launcher actually passes: install.rs initialises its
-          # argument list with it unconditionally. The step above runs the shell mode
-          # because that is the one that honours a pinned UNSLOTH_STUDIO_HOME, and the
-          # desktop mode refuses it; running only that left a compile reached through a
-          # Tauri-only branch invisible to a job whose whole claim is the desktop shape.
-          # So both modes run, and the home is unpinned here rather than the mode changed.
+          # --tauri is what the launcher passes: install.rs initialises its argument
+          # list with it unconditionally. The step above runs shell mode because only
+          # that honours a pinned UNSLOTH_STUDIO_HOME; running only it left a compile
+          # reached through a Tauri-only branch invisible to a job whose claim is the
+          # desktop shape. So both modes run, with the home unpinned here.
           #
-          # --local, which is the only thing that makes this leg measure the setup.ps1 in
-          # THIS checkout. Without it the installer installs the released unsloth and
-          # delegates setup to the copy inside that release (install.ps1 hands the work to
-          # the managed CLI), so a PR touching only studio/setup.ps1 triggered this workflow
-          # and then measured a different revision of the file it changed. --local overlays
-          # the checkout as an editable install, so the delegated `studio setup` runs the
-          # bytes under review. The gate below is what proves the overlay took; a run that
-          # fell back to the release is void here, not clean.
+          # --local is the only thing that makes this leg measure the setup.ps1 in THIS
+          # checkout. Without it install.ps1 hands the work to the managed CLI, which
+          # runs the setup.ps1 inside the released package, so a PR touching only
+          # studio/setup.ps1 measured a different revision of the file it changed. The
+          # gate below proves the overlay took; a run that fell back to the release is
+          # void, not clean.
           $desktop = {
               Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -204,15 +193,14 @@ jobs:
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
               $exit = $LASTEXITCODE
               $global:LASTEXITCODE = 0
-              # Not gated on exit 0. A desktop-mode install can decline for reasons that
-              # have nothing to do with this measurement, and the question here is only
-              # whether a compiler ran on the way.
+              # Not gated on exit 0: a desktop-mode install can decline for unrelated
+              # reasons, and the question is only whether a compiler ran on the way.
               Write-Host "install.ps1 --tauri exited $exit"
-              # It IS gated on having got as far as the work. A run that stopped at
-              # argument validation spawns nothing at all, so both detectors come back
-              # empty and this step prints "no compiler" having measured nothing. The
-              # STEP line is emitted after the install lock is taken, which is where the
-              # native declarations happen, so seeing it means the branch under test ran.
+              # It IS gated on reaching the work. A run that stopped at argument
+              # validation spawns nothing, so both detectors come back empty and the
+              # step prints "no compiler" having measured nothing. This STEP line is
+              # emitted after the install lock is taken, where the native declarations
+              # happen, so seeing it means the branch under test ran.
               $log = ""
               if (Test-Path "$env:UNSLOTH_EVIDENCE\install-tauri.log") {
                   $log = Get-Content -Raw "$env:UNSLOTH_EVIDENCE\install-tauri.log"
@@ -221,15 +209,15 @@ jobs:
                   throw ("the desktop-mode install stopped before it reached any install " +
                          "work (exit $exit), so this measurement is void rather than clean.")
               }
-              # And that the checkout is what setup ran from. This line is printed by the
-              # installer's --local overlay step; without it the delegated setup came out of
-              # the released package and this leg measured someone else's file.
+              # And that setup ran from the checkout. This line is printed by the
+              # --local overlay step; without it the delegated setup came out of the
+              # released package.
               if ($log -notmatch 'overlaying local repo') {
                   throw ("the local overlay never ran (exit $exit), so the setup.ps1 that " +
                          "executed was not the one in this checkout. Void, not clean.")
               }
-              # Which revision, recorded rather than asserted, so the artifact says what was
-              # measured instead of leaving it to be inferred from the commit.
+              # Which revision, recorded rather than asserted, so the artifact says
+              # what was measured instead of leaving it inferred from the commit.
               $setup = Join-Path $env:GITHUB_WORKSPACE 'studio\setup.ps1'
               "path=$setup" | Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8
               "sha256=$((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash)" |
