@@ -2119,6 +2119,99 @@ class TestWhatTheLoopAppendsIsPricedToo:
         assert self._fitted(monkeypatch, "Alpha: ") == self._fitted(monkeypatch, "Bravo: ")
 
 
+class TestATimedOutCallIsPricedWithItsStatusLine:
+    """A timed-out `python` or `terminal` call hands back the output it had already
+    printed with the status line after it. The two are fitted separately against the same
+    `_request_result_room`, so without a reserve the output takes all of it and the line
+    is spent on top -- and `python` and `terminal` are the tools that cap themselves, so
+    no `_fit_result_to_room` downstream corrects the overspend.
+
+    Measured the way the retry nudge is: the same captured output, fitted once with a
+    status line coming after it and once without, and the difference is what the line
+    costs.
+    """
+
+    PRINTED = 40_000
+
+    def _completed(self, monkeypatch, room: int) -> str:
+        """The same output from a run that finished, so nothing is appended to it."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        return tools.execute_tool(
+            "python", {"code": f"print('x' * {self.PRINTED})"}, result_budget_tokens = room
+        )
+
+    def _timed_out(self, monkeypatch, room: int) -> str:
+        """The same output, from a run that then overran its limit."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        code = f"print('x' * {self.PRINTED})\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
+        return tools.execute_tool(
+            "python", {"code": code}, timeout = 1, result_budget_tokens = room
+        )
+
+    def _captured_everything(self, out: str) -> None:
+        """The notice counts the whole captured text, so this is what says the drain got
+        all of it. Without it a short capture would satisfy the size comparison below for
+        the wrong reason."""
+        assert f"{self.PRINTED + 1} chars total" in out, out[-200:]
+
+    def test_the_status_line_is_deducted_from_what_the_output_may_take(self, monkeypatch):
+        completed = self._completed(monkeypatch, 400)
+        timed_out = self._timed_out(monkeypatch, 400)
+        self._captured_everything(completed)
+        self._captured_everything(timed_out)
+
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
+
+        # In characters, at the rate the fixture's counter charges them.
+        assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
+
+    def test_the_terminal_side_pays_for_it_too(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        printing = f"awk 'BEGIN {{ for (i = 0; i < {self.PRINTED}; i++) printf \"x\" }}'"
+
+        completed = tools.execute_tool(
+            "terminal", {"command": printing}, result_budget_tokens = 400
+        )
+        timed_out = tools.execute_tool(
+            "terminal", {"command": f"{printing}; sleep 30"},
+            timeout = 1, result_budget_tokens = 400,
+        )
+        assert f"{self.PRINTED} chars total" in completed
+        assert f"{self.PRINTED} chars total" in timed_out
+
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
+
+        assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
+
+    def test_the_output_and_the_status_line_fit_the_room_together(self, monkeypatch):
+        """The invariant the deduction buys: what the model is handed is inside the room."""
+        out = self._timed_out(monkeypatch, 400)
+
+        assert out.endswith("Execution timed out after 1 seconds.")
+        assert "x" in out, "the captured output was dropped, so nothing was measured"
+        _within_room(out, 400)
+
+    def test_a_silent_timeout_pays_nothing_for_output_it_never_had(self, monkeypatch):
+        """The control: charged to the calls that carry output, and a command that printed
+        nothing still gets exactly the sentence it always did."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+
+        out = tools.execute_tool(
+            "python", {"code": "import time\ntime.sleep(30)\n"},
+            timeout = 1, result_budget_tokens = 400,
+        )
+
+        assert out == "Execution timed out after 1 seconds."
+
+
 class TestTheResultIsFittedAsItIsReplayed:
     """`_defuse_sentinels` inserts a space into every line that opens with a frontend
     marker. Applied after the fit, output full of such lines grows once it has been
