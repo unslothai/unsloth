@@ -6968,12 +6968,66 @@ def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> 
         groups.append(["llama-server.exe"])
         build = _release_build_number(tag)
         if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            # Both halves of the split, not just the server's. llama-quantize.exe
+            # links against llama-quantize-impl.dll exactly as llama-server.exe
+            # links against llama-server-impl.dll, and a b10798 windows-x64-rocm
+            # bundle ships both; requiring only one let a quarantined quantize
+            # implementation read as healthy while quantization could not start.
             groups.append(["llama-server-impl.dll"])
+            groups.append(["llama-quantize-impl.dll"])
         groups.append(["ggml.dll"])
         groups.append(["ggml-base.dll"])
         groups.append(["ggml-cpu*.dll"])
         groups.append(["mtmd.dll"])
     return groups
+
+
+"""The CUDA runtime a windows-cuda bundle pairs with, installed and removed together."""
+_CUDA_RUNTIME_TRIO = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
+
+
+def _has_a_paired_cuda_runtime(install_dir: Path) -> bool:
+    """Whether a windows-cuda tree carries any member of that trio.
+
+    A marker written before ``runtime_asset`` existed names no paired archive, so the
+    trio was dropped from the table entirely and losing one member read as healthy while
+    llama-server.exe died in the loader with no repair offered and no marker backfilled.
+    The three arrive and go together, so one of them still being there is what says this
+    install was paired; a machine running on a system CUDA toolkit has none and is asked
+    for none.
+    """
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    return any(
+        any(_payload_match_is_loadable(match) for match in runtime_dir.glob(pattern))
+        for pattern in _CUDA_RUNTIME_TRIO
+    )
+
+
+def _linux_split_entrypoint_groups(
+    source_label: str | None, tag: str | None = None
+) -> list[list[str]]:
+    """The impl libraries a Linux entrypoint links against, when the release has them.
+
+    The same upstream split that gave Windows ``llama-server-impl.dll`` gives Linux
+    ``libllama-server-impl.so``: ``llama-server`` and ``llama-quantize`` carry no
+    entry code of their own any more and load these by DT_NEEDED. The library
+    groups above name only the shared libraries, so quarantining one of these left
+    every group satisfied while ``llama-server`` died in the loader and
+    ``_existing_install_runs`` returned false, which is the disagreement this whole
+    probe exists to prevent. Measured on a b10360 managed install: removing either
+    one leaves ``installed_runtime_health`` answering ``(True, "")`` and
+    ``_existing_install_runs`` answering false.
+
+    Gated exactly as the Windows side is, and on the same build for the same
+    reason: an older monolithic archive is healthy without them, and requiring one
+    a bundle does not carry would reinstall on every check forever.
+    """
+    if source_label not in {"published", "upstream"}:
+        return []
+    build = _release_build_number(tag)
+    if build is not None and build < LLAMA_SERVER_IMPL_SPLIT_BUILD:
+        return []
+    return [["libllama-server-impl.so*"], ["libllama-quantize-impl.so*"]]
 
 
 def runtime_payload_health_groups(
@@ -6982,8 +7036,13 @@ def runtime_payload_health_groups(
     source_label: str | None = None,
     runtime_name: str | None = None,
     tag: str | None = None,
+    install_dir: Path | None = None,
 ) -> list[list[str]]:
-    """Return required runtime file groups for an install kind."""
+    """Return required runtime file groups for an install kind.
+
+    ``install_dir`` is read only where the marker cannot answer on its own, which today
+    is the windows-cuda trio a legacy marker does not name.
+    """
     if install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
@@ -6992,7 +7051,7 @@ def runtime_payload_health_groups(
             ["libggml-base.so*"],
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
@@ -7002,12 +7061,32 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"macos-arm64", "macos-x64"}:
+        # One group per library, not three broad alternatives. A real bundle
+        # ships libggml, libggml-base, libggml-blas, libggml-cpu, libggml-metal
+        # and libggml-rpc, so a single libggml*.dylib group stayed satisfied by
+        # the siblings after the one the loader needs was quarantined, and the
+        # tree reported healthy while llama-server died in dyld. The names are
+        # taken from the shipped macos-arm64 bundle rather than guessed. The dot
+        # is what keeps each pattern off its siblings: libggml.* cannot match
+        # libggml-base. Each library is a symlink chain onto one versioned file
+        # (libggml.dylib -> libggml.0.dylib -> libggml.0.23.0.dylib). Losing the
+        # target is caught by the resolved is_file test in
+        # _payload_match_is_loadable, and losing the middle link, which is the
+        # install name dyld actually asks for, by the version-depth test there:
+        # libggml.0.23.0.dylib cannot satisfy the group on its own.
+        #
+        # blas, metal and rpc are deliberately absent: they are the accelerator
+        # and transport backends, the way libggml-cuda is on Linux, and requiring
+        # one a bundle does not carry would reinstall every install that lacks it.
         return [
-            ["libllama*.dylib"],
-            ["libggml*.dylib"],
-            ["libmtmd*.dylib"],
+            ["libllama-common.dylib", "libllama-common.*.dylib"],
+            ["libllama.dylib", "libllama.*.dylib"],
+            ["libggml.dylib", "libggml.*.dylib"],
+            ["libggml-base.dylib", "libggml-base.*.dylib"],
+            ["libggml-cpu.dylib", "libggml-cpu.*.dylib"],
+            ["libmtmd.dylib", "libmtmd.*.dylib"],
         ]
     if install_kind == "linux-rocm":
         return [
@@ -7018,7 +7097,7 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind == "linux-vulkan":
         groups = [
             ["libllama-common.so*"],
@@ -7035,19 +7114,24 @@ def runtime_payload_health_groups(
         ]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server"])
-        return groups
+        return groups + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"windows-cpu", "windows-arm64"}:
         return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
         groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
-        if runtime_name:
+        if runtime_name or (install_dir is not None and _has_a_paired_cuda_runtime(install_dir)):
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
+        # ggml-hip.dll by name. A real ROCm bundle carries amdhip64_7.dll,
+        # hipblas.dll and libhipblaslt.dll beside it, all of which match a
+        # "*hip*.dll" group, so quarantining the one module ggml actually loads
+        # left the group satisfied by three libraries that cannot stand in for it.
+        # Measured on app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip.
+        return _windows_shared_groups(source_label, tag) + [["ggml-hip*.dll"]]
     if install_kind == "windows-vulkan":
         groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
@@ -7062,6 +7146,125 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
+"""``libfoo.so``, or ``libfoo.so.0``, but not ``libfoo.so.0.0.10360``."""
+_LINKER_NAME_RE = re.compile(r"^.+\.so(?P<version>(?:\.\d+)*)$")
+"""``libfoo.dylib``, or ``libfoo.0.dylib``, but not ``libfoo.0.23.0.dylib``."""
+_DYLIB_NAME_RE = re.compile(r"^.+?(?P<version>(?:\.\d+)*)\.dylib$")
+
+
+def _family_base(name: str) -> str | None:
+    """``libllama`` for every spelling of the libllama family, or None if not one."""
+    if name.endswith(".dylib"):
+        stem = name[: -len(".dylib")]
+        return re.sub(r"(?:\.\d+)+$", "", stem) or None
+    at = name.find(".so")
+    if at <= 0:
+        return None
+    if name[at + 3 :] and not re.fullmatch(r"(?:\.\d+)+", name[at + 3 :]):
+        return None
+    return name[:at]
+
+
+def _has_versioned_siblings(path: Path) -> bool:
+    """Whether a versionless library sits beside versioned copies of itself.
+
+    A family that only ever ships one unversioned file (``libggml-cpu-x64.so``) is
+    loadable under that name, and the versionless member of a versioned family is
+    not: the loader asks for the SONAME, one component deep. Reading the directory
+    is the only way to tell those apart, since both are the same name.
+    """
+    base = _family_base(path.name)
+    if base is None:
+        return False
+    try:
+        siblings = list(path.parent.iterdir())
+    except OSError:
+        # Unreadable directory: keep the older, more permissive answer rather than
+        # calling a tree broken over something that was never inspected.
+        return False
+    for sibling in siblings:
+        if sibling.name == path.name or _family_base(sibling.name) != base:
+            continue
+        match = _LINKER_NAME_RE.match(sibling.name) or _DYLIB_NAME_RE.match(sibling.name)
+        if match is not None and match.group("version"):
+            return True
+    return False
+
+
+def _is_nonempty_file(path: Path) -> bool:
+    """A regular file with something in it.
+
+    Length is the one property of a file's contents this probe may read: it executes
+    nothing, and a zero-length library or entrypoint is not a thing any loader can use.
+    An interrupted extraction and security software that empties a file in place both
+    leave the directory entry, so ``is_file()`` and the execute bit stayed true while
+    ``_existing_install_runs`` rejected the tree on ENOEXEC or a loader failure. No real
+    payload file is empty, so nothing shipped is refused by this.
+    """
+    try:
+        status = path.stat()
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and status.st_size > 0
+
+
+def _payload_match_is_loadable(path: Path) -> bool:
+    """Whether a glob match is a file the loader would actually resolve.
+
+    ``Path.glob`` does not follow links, so a dangling link (or a directory)
+    still matches the pattern; ``is_file()`` drops both.
+
+    A release ships ``libllama.so.0`` (the SONAME the binary asks for) beside
+    ``libllama.so.0.0.10360``, and ``libllama.so*`` matches both, so quarantining
+    the SONAME left the group satisfied by the twin while ``llama-server
+    --version`` exited 127. A name with more version components than a SONAME can
+    only be the twin, so it does not count on its own.
+
+    macOS names the same pair the other way round, and needs the same rule: the
+    shipped bundle carries ``libggml.dylib -> libggml.0.dylib ->
+    libggml.0.23.0.dylib``, and ``llama-server``'s LC_LOAD_DYLIB entry is
+    ``@rpath/libggml.0.dylib`` (the install name recorded in the terminal file's
+    own LC_ID_DYLIB), so losing the middle link is fatal to dyld while
+    ``libggml.*.dylib`` stays satisfied by the terminal file. ``.dll`` names and
+    bare executables are unaffected.
+    """
+    if not _is_nonempty_file(path):
+        return False
+    match = _LINKER_NAME_RE.match(path.name) or _DYLIB_NAME_RE.match(path.name)
+    if match is None:
+        # A name carrying ``.so`` whose tail is not a version is not a name any
+        # loader asks for. The Linux groups all end in ``.so*``, so quarantine
+        # that renames in place rather than deleting left the group satisfied by
+        # its own victim: renaming libggml-base.so.0 to libggml-base.so.0.vir on
+        # a b10840 install kept this answering healthy while llama-server exited
+        # with "cannot open shared object file". Windows and macOS groups end in
+        # the extension itself, so a suffixed name misses them already.
+        return ".so" not in path.name
+    depth = match.group("version").count(".")
+    if depth > 1:
+        # More components than a SONAME can carry, so this is the terminal file
+        # and never what a DT_NEEDED entry or an LC_LOAD_DYLIB names.
+        return False
+    if depth == 1:
+        return True
+    # Versionless. Whether that is the loadable name depends on the family around
+    # it, which is why this is not a decision the name alone can make: b10840
+    # ships libllama.so, libllama.so.0 and libllama.so.0.4.0, and copy_globs
+    # flattens all three into regular files because shutil.copy2 follows the
+    # links the tarball uses. Quarantining libllama.so.0 then left libllama.so
+    # standing, the group satisfied, and llama-server dying in the loader.
+    #
+    # Any versioned sibling is enough to disqualify it, not only a SONAME-shaped
+    # one. Asking for a SONAME specifically would read the family as versionless
+    # again the moment the SONAME is the file that went missing, which is the
+    # case this exists to catch. The cost is that a bundle shipping a versionless
+    # name beside a fully versioned one and no SONAME at all would be called
+    # broken; no release ships that, and the answer a directory listing can give
+    # ends here, since what the loader asks for lives in the dependent binary's
+    # DT_NEEDED rather than in any of these names.
+    return not _has_versioned_siblings(path)
+
+
 def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[str]]) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
@@ -7069,7 +7272,7 @@ def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[st
     for pattern_group in groups:
         matched = False
         for pattern in pattern_group:
-            if any(runtime_dir.glob(pattern)):
+            if any(_payload_match_is_loadable(path) for path in runtime_dir.glob(pattern)):
                 matched = True
                 break
         if not matched:
@@ -7086,7 +7289,45 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
             tag = choice.tag,
+            install_dir = install_dir,
         ),
+    )
+
+
+"""Files only a published bundle ships, per platform.
+
+A source build links these into its binaries: ``setup.ps1`` builds statically, and
+no source tree produces a per-binary ``-impl`` library. So finding one is evidence
+that the tree came from a release even when the marker cannot say so.
+"""
+_PREBUILT_TREE_EVIDENCE = {
+    "windows": ["llama-common.dll", "mtmd.dll", "llama-server-impl.dll"],
+    "linux": ["libllama-server-impl.so*", "libmtmd.so*"],
+    "macos": ["libllama-server-impl*.dylib", "libmtmd*.dylib"],
+}
+
+
+def _tree_looks_prebuilt(install_dir: Path, host: HostInfo) -> bool:
+    """Whether the runtime tree carries a file only a published bundle ships.
+
+    An unparseable marker names no source, and grading such a tree as though it
+    might be a source build drops every source-gated group: on Windows that left
+    ``llama.dll`` alone standing for the whole payload, so an interrupted marker
+    plus a quarantined ``ggml-base.dll`` still answered healthy and the runtime
+    launched into the loader error this check exists to pre-empt.
+
+    Reading the tree rather than assuming either answer keeps the other half
+    honest too: a statically linked source build ships none of these names, and
+    requiring a published payload of it would fail health on a tree the setup
+    scripts keep, which is the repair loop the docstring above forbids. When
+    quarantine has taken the evidence as well, the lenient answer stands, and the
+    entrypoint checks below still grade the tree.
+    """
+    key = "windows" if host.is_windows else "macos" if host.is_macos else "linux"
+    runtime_dir = install_runtime_dir(install_dir, host)
+    return any(
+        any(_payload_match_is_loadable(match) for match in runtime_dir.glob(pattern))
+        for pattern in _PREBUILT_TREE_EVIDENCE[key]
     )
 
 
@@ -7106,6 +7347,9 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    if not isinstance(source_label, str) or not source_label:
+        # No marker to read, or one that parsed without a source. Ask the tree.
+        source_label = "published" if _tree_looks_prebuilt(install_dir, host) else None
     marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(
@@ -7116,12 +7360,138 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
                     source_label = source_label,
                     runtime_name = runtime_asset,
                     tag = marker_tag if isinstance(marker_tag, str) else None,
+                    install_dir = install_dir,
                 )
             }
             for kind in kinds
         )
     )
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
+
+
+def platform_only_host() -> HostInfo:
+    """A HostInfo carrying platform facts and nothing probed.
+
+    detect_host() costs over a second shelling out to nvidia-smi and friends. The
+    payload health checks read only the platform booleans and the marker's own
+    backend, never a probed GPU field, so they should not pay for that. A parity
+    test against detect_host() holds this to it. macos_version is derived from
+    platform.mac_ver() rather than probed.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+    is_macos = system == "Darwin"
+    return HostInfo(
+        system = system,
+        machine = machine,
+        is_windows = system == "Windows",
+        is_linux = system == "Linux",
+        is_macos = is_macos,
+        is_x86_64 = machine in {"x86_64", "amd64"},
+        is_arm64 = machine in {"arm64", "aarch64"},
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None,
+    )
+
+
+def installed_runtime_health(
+    install_dir: Path | None = None, *, host: HostInfo | None = None
+) -> tuple[bool, str] | None:
+    """(ok, reason) for the managed llama.cpp runtime, or None when none is installed.
+
+    Smart App Control and antivirus quarantine individual files out of a tree
+    that is otherwise present, so "the marker says installed" is not "the binaries
+    are still there". Launch preflight asks this so such a runtime is offered for
+    repair instead of failing later at model load.
+
+    Must stay no stricter than the setup scripts' own keep-or-reinstall decision:
+    a tree rejected here but kept by ``_existing_install_runs`` would be repaired,
+    left unchanged, and rejected again next launch, a loop with no way out. Every
+    check below has a counterpart there. Nothing is executed, only looked for,
+    since preflight is on the launch path.
+    """
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    if load_prebuilt_metadata(root) is None:
+        # An absent marker means nobody installed a runtime. A marker that is
+        # present but unparseable is a real tree, and answering None for it would
+        # leave preflight Ready with the repair unoffered, the exact failure this
+        # catches, so fall through and grade it instead.
+        # _kept_install_payload_is_healthy treats such a marker as an unknown
+        # backend and checks only the payload every kind on the platform shares,
+        # so the no-stricter rule still holds.
+        if not (root / "UNSLOTH_PREBUILT_INFO.json").is_file():
+            return None
+    host = host if host is not None else platform_only_host()
+    runtime_dir = install_runtime_dir(root, host)
+    if not runtime_dir.is_dir():
+        return False, "llama_runtime_dir_missing"
+    if not _kept_install_payload_is_healthy(root, host):
+        return False, "llama_runtime_payload_incomplete"
+    # The payload groups name libraries only, so on Linux and macOS a quarantined
+    # llama-server would otherwise read as a complete install.
+    # _existing_install_runs requires both of these too, and asks for the execute
+    # bit rather than mere presence, so this asks the same way: extraction damage
+    # or security software that clears the bit without deleting the file leaves
+    # _find_llama_server_binary rejecting the tree (os.access X_OK, "non
+    # executable", no fallback) while an exists() check here still answered Ready.
+    # Windows has no execute bit, and the host is a parameter here, so the check
+    # follows the tree being graded rather than the interpreter doing the grading:
+    # a Windows bundle unpacked on a POSIX filesystem is not a broken install. The
+    # reason stays llama_runtime_binaries_missing: the repair is the same
+    # reinstall, and the frontend renders that reason already.
+    # A regular file first: a directory of that name is searchable, so os.access
+    # X_OK answers true for it and exists() does too, while _file_status in the
+    # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
+    # that.
+    if _damaged_entrypoint(root, host) is not None:
+        return False, "llama_runtime_binaries_missing"
+    return True, ""
+
+
+def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
+    """The first runtime entrypoint the loader would not start, or None.
+
+    build/bin, and the install root's own copy when one is there:
+    ``_find_llama_server_binary`` reaches the root first, and a wrapper
+    ``create_exec_entrypoint`` had to write instead of a symlink rots on its own. An
+    absent root copy is not a pin and the finder falls through, which is also what a
+    link whose target went looks like to ``exists()``.
+
+    One owner for the question, so the launch verdict and both keep decisions cannot
+    answer it differently: a tree one rejects and another keeps is repaired by
+    changing nothing and rejected again on the next launch.
+    """
+    runtime_dir = install_runtime_dir(install_dir, host)
+    ext = ".exe" if host.is_windows else ""
+    for name in ("llama-server", "llama-quantize"):
+        binary = runtime_dir / f"{name}{ext}"
+        if not _entrypoint_is_runnable(binary, host):
+            return binary
+        root_binary = install_dir / f"{name}{ext}"
+        if root_binary.exists() and not _entrypoint_is_runnable(root_binary, host):
+            return root_binary
+    return None
+
+
+def _entrypoint_is_runnable(binary: Path, host: HostInfo) -> bool:
+    """Whether a runtime entrypoint is a file the loader would start.
+
+    Shared with ``_existing_install_runs`` so the keep-or-reinstall decision and
+    the launch-time verdict cannot disagree: a tree this rejects but that one
+    keeps would be repaired, left unchanged and rejected again next launch.
+
+    Empty is not runnable, whatever its mode bits say. A truncated entrypoint keeps
+    its execute bit, so os.access answered true while the exec of it dies on ENOEXEC,
+    which is what _binary_image_runs sees over in the keep decision.
+    """
+    if not _is_nonempty_file(binary):
+        return False
+    return True if host.is_windows else os.access(binary, os.X_OK)
 
 
 # SIGKILL is absent: that is an OOM, not a broken image.
@@ -7185,7 +7555,7 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
-    if not all(os.access(binary, os.X_OK) for binary in binaries):
+    if _damaged_entrypoint(install_dir, host) is not None:
         return False
     try:
         # Each preflight is a no-op outside its platform.
@@ -7213,6 +7583,23 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     )
 
 
+def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
+    """Whether setup.sh may keep this tree instead of building llama.cpp from source.
+
+    Only reached once the prebuilt path has failed, so a tree that cannot load a
+    model is never worth keeping. The shell test was just "both entrypoints are
+    executable", which a quarantine that took a library leaves untouched: the
+    rebuild was skipped, the tree came back identical, and an update that repaired
+    nothing reported success while preflight kept flagging it.
+
+    A tree with no marker is a genuine source build, which ships none of the
+    prebuilt payload (setup.ps1 links statically), so it keeps the old test.
+    """
+    if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+        return True
+    return _existing_install_runs(install_dir, host)
+
+
 def existing_install_matches_choice(
     install_dir: Path,
     host: HostInfo,
@@ -7237,12 +7624,17 @@ def existing_install_matches_choice(
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
 
-    # Verify primary executables still exist (catches partial deletion)
+    # Verify primary executables are still startable (catches partial deletion, and
+    # damage that leaves the name behind). The same test _existing_install_runs and
+    # installed_runtime_health use, deliberately: this is the keep-or-reinstall
+    # decision, and a tree the probe rejects but this one keeps is repaired by
+    # downloading nothing and rejected again on the next launch. exists() was that
+    # tree: security software or a bad extraction that clears the execute bit
+    # leaves the file in place, and ldd reads a non-executable ELF quite happily,
+    # so both gates here passed while the probe said llama_runtime_binaries_missing.
+    if _damaged_entrypoint(install_dir, host) is not None:
+        return False
     runtime_dir = install_runtime_dir(install_dir, host)
-    ext = ".exe" if host.is_windows else ""
-    for binary in ("llama-server", "llama-quantize"):
-        if not (runtime_dir / f"{binary}{ext}").exists():
-            return False
     if host.is_linux:
         try:
             preflight_linux_installed_binaries(
@@ -9156,6 +9548,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--check-existing-install",
+        default = None,
+        metavar = "DIR",
+        help = (
+            "Exit 0 when setup.sh may reuse DIR instead of building from source, "
+            "1 when it must not. Prints nothing."
+        ),
+    )
+    parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
         default = "plain",
@@ -9312,6 +9713,10 @@ def resolve_backends_payload(
 
 def main() -> int:
     args = parse_args()
+    if args.check_existing_install is not None:
+        install_dir = Path(args.check_existing_install)
+        return EXIT_SUCCESS if reusable_existing_install(install_dir, detect_host()) else 1
+
     if args.validate_install is not None:
         try:
             validate_existing_install(

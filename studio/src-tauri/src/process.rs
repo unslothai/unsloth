@@ -2254,6 +2254,58 @@ fn expand_windows_user(
     format!("{}{}", base, rest)
 }
 
+/// `~`, `~/rest` and `~name/rest` off Windows, the way posixpath.expanduser reads
+/// them, which is what the CLI this pins for reads them with.
+///
+/// The named form is the one that used to get away: `expand_windows_user` leaves
+/// `~alice` alone off Windows, so it fell through to the anchoring below and the
+/// child was handed `<cwd>/~alice/llama.cpp`, while the fingerprint in
+/// preflight::managed resolved the same value through getpwnam_r and watched
+/// Alice's tree. The two halves of one launch then graded different trees, so
+/// quarantining a file from the tree actually in use left the cached verdict
+/// standing. Same lookup here as there, so they cannot disagree.
+///
+/// An unknown name is left exactly as it arrived, which is also what
+/// expanduser does, and it is then anchored like any other relative value; both
+/// halves agree on that too.
+fn expand_posix_user(value: &str, home: Option<&std::path::Path>) -> String {
+    if !value.starts_with('~') {
+        return value.to_string();
+    }
+    let end = value[1..].find('/').map_or(value.len(), |offset| offset + 1);
+    let (name, rest) = (&value[1..end], &value[end..]);
+    if name.is_empty() {
+        // Bare `~`, which HOME answers.
+        return match home {
+            Some(home) => format!("{}{}", home.to_string_lossy(), rest),
+            None => value.to_string(),
+        };
+    }
+    match crate::preflight::managed::named_user_home(value, home) {
+        Some(resolved) => resolved.to_string_lossy().into_owned(),
+        None => value.to_string(),
+    }
+}
+
+/// Windows rules on Windows, the native ones off it, the same split every other
+/// reader in this function makes. Reading a POSIX value the Windows way is what
+/// left `~alice` unresolved.
+fn expand_user(
+    value: &str,
+    home: Option<&std::path::Path>,
+    username: Option<&str>,
+    windows: bool,
+) -> String {
+    if windows {
+        match home {
+            Some(home) => expand_windows_user(value, home, username),
+            None => value.to_string(),
+        }
+    } else {
+        expand_posix_user(value, home)
+    }
+}
+
 fn relative_override_pins_from(
     cwd: Option<std::path::PathBuf>,
     work_dir: &std::path::Path,
@@ -2332,10 +2384,7 @@ fn relative_override_pins_from(
                 // that decides nothing here (an expanded %LOCALAPPDATA%, inline
                 // JSON, a 0/1 toggle) would be read as relative and refuse
                 // every spawn over a value no directory ever decided.
-                let entry = match home {
-                    Some(home) => expand_windows_user(entry, home, username.as_deref()),
-                    None => entry.to_string(),
-                };
+                let entry = expand_user(entry, home, username.as_deref(), windows);
                 let Some(entry) = expanded(name, &entry)? else {
                     continue;
                 };
@@ -2380,10 +2429,7 @@ fn relative_override_pins_from(
         let original = value.trim().to_string();
         // The tilde first and the variables second, the order the CLI guard uses,
         // so a value that names a folder through both reaches the same one.
-        let value = match home {
-            Some(home) => expand_windows_user(&original, home, username.as_deref()),
-            None => original.clone(),
-        };
+        let value = expand_user(&original, home, username.as_deref(), windows);
         let Some(value) = expanded(name, &value)? else {
             continue;
         };
@@ -2492,7 +2538,10 @@ fn relative_override_pins(
         // GetFullPathNameW on Windows, which is what knows each drive's own
         // current directory.
         |value| std::path::absolute(value).ok(),
-        dirs::home_dir().as_deref(),
+        // preflight::managed's own reader, not dirs::home_dir(): ntpath.expanduser
+        // answers USERPROFILE and dirs reads the known folder, so an overridden
+        // profile pinned the child to one tree while the fingerprint watched another.
+        crate::preflight::managed::tilde_home().as_deref(),
         skipped,
         cfg!(windows),
     )
@@ -4737,6 +4786,120 @@ mod managed_cli_working_dir_tests {
         // STUDIO_LOCAL_REPO stays: the update is the one child that reads it.
         assert!(!skipped.contains(&"STUDIO_LOCAL_REPO"));
         assert!(child_skipped_env().contains(&"STUDIO_LOCAL_REPO"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_user_override_is_pinned_where_the_fingerprint_watches() {
+        // Codex 3962298677, P2. The two halves of one launch resolved ~name
+        // differently: preflight::managed::llama_runtime_override_from reads it out
+        // of the password database, while this path read it with the Windows rule,
+        // which leaves it alone off Windows, so it was anchored under the directory
+        // being left. The child then graded <cwd>/~root/llama.cpp while the cache
+        // fingerprinted root's own tree, and quarantine under the tree actually in
+        // use never invalidated a Ready verdict.
+        //
+        // root is the one account every unix box has, which makes this checkable
+        // anywhere, and it is the account preflight::managed's own test uses.
+        let cwd = PathBuf::from("/mnt/work/session");
+        let work_dir = PathBuf::from("/home/me/.unsloth");
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            |name: &str| {
+                (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| "~root/llama.cpp".to_string())
+            },
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        let pinned = pins
+            .iter()
+            .find(|(name, _)| *name == "UNSLOTH_LLAMA_CPP_PATH")
+            .map(|(_, path)| path.clone())
+            .expect("the override has to be pinned, not dropped");
+        assert!(
+            !pinned.starts_with(&cwd),
+            "a named-user override was anchored under the directory being left: {}",
+            pinned.display()
+        );
+        // The same answer the fingerprint side reaches, through the same lookup.
+        let watched = crate::preflight::managed::named_user_home(
+            "~root/llama.cpp",
+            Some(std::path::Path::new("/home/me")),
+        )
+        .expect("root must resolve, or the lookup is not answering at all");
+        assert_eq!(pinned, watched, "the child and the cache must grade one tree");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_named_user_is_left_alone_and_anchored_by_both_halves() {
+        // expanduser leaves a name it cannot resolve exactly as it arrived, so both
+        // halves fall through to anchoring it, and they still agree. Guessing here
+        // instead would invent a path neither the child nor the cache would use.
+        let cwd = PathBuf::from("/mnt/work/session");
+        let value = "~no-such-account-anywhere/llama.cpp";
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            std::path::Path::new("/home/me/.unsloth"),
+            |name: &str| (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| value.to_string()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![("UNSLOTH_LLAMA_CPP_PATH", cwd.join(value))],
+            "an unresolvable name is anchored, the way the fingerprint anchors it"
+        );
+    }
+
+    #[test]
+    fn the_child_and_the_fingerprint_expand_a_bare_tilde_to_one_home() {
+        // Codex 3973890105, P2, right about the disagreement and wrong about where it
+        // was: this caller passed dirs::home_dir(), not USERPROFILE, so the POSIX side
+        // already agreed. Windows was the odd one: ntpath.expanduser answers USERPROFILE
+        // and dirs reads the known folder, so an overridden profile pinned the child to
+        // one tree while preflight::managed fingerprinted another, and quarantine in the
+        // tree in use never invalidated a cached healthy result. One reader now.
+        let home = crate::preflight::managed::tilde_home();
+        let pinned = expand_user("~/llama.cpp", home.as_deref(), None, cfg!(windows));
+        let watched = crate::preflight::managed::llama_runtime_override_from(
+            Some("~/llama.cpp"),
+            home.as_deref(),
+            Some(std::path::Path::new("/nowhere-relative")),
+        );
+        assert_eq!(
+            Some(std::path::PathBuf::from(pinned)),
+            watched,
+            "the tree the child is pinned to and the tree the cache watches must be one"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_tilde_override_still_reaches_home_off_windows() {
+        // The form that already worked has to keep working: this used to go through
+        // expand_windows_user, whose empty-name arm answers home on any platform.
+        let pins = relative_override_pins_from(
+            Some(PathBuf::from("/mnt/work/session")),
+            std::path::Path::new("/home/me/.unsloth"),
+            |name: &str| (name == "UNSLOTH_LLAMA_CPP_PATH").then(|| "~/llama.cpp".to_string()),
+            |value: &str| panic!("unexpected value needing the OS: {value}"),
+            Some(std::path::Path::new("/home/me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![("UNSLOTH_LLAMA_CPP_PATH", PathBuf::from("/home/me/llama.cpp"))]
+        );
     }
 
     #[test]

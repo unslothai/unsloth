@@ -127,18 +127,32 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The Linux half of the same impl split as llama-server-impl.dll below;
+        # llama-server and llama-quantize load these by DT_NEEDED.
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     # Written unconditionally: the check is "has", not "has only".
     "windows": [
         "llama.dll",
         "llama-common.dll",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu.dll",
         "mtmd.dll",
     ],
-    "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
+    # The names the real macos-arm64 bundle ships, one per library the runtime
+    # links against.
+    "macos": [
+        "libllama-common.dylib",
+        "libllama.dylib",
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libmtmd.dylib",
+    ],
 }
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],
@@ -218,16 +232,16 @@ def build_install(
 
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         if payload_backend != "unset":
             for name in _BACKEND_PAYLOAD.get((platform, payload_backend), ()):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
         if visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
         if cudart:
             for name in _CUDART_TRIO:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
     return install_dir
 
 

@@ -4156,6 +4156,189 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
 
+def _managed_llama_runtime_is_the_active_one() -> bool:
+    """Whether preflight has a managed tree to grade at all.
+
+    Kept as the yes/no question the name asks; ``_llama_runtime_to_grade`` answers
+    which tree, and the two cannot disagree.
+    """
+    return _llama_runtime_to_grade() is not None
+
+
+def _llama_runtime_to_grade() -> Path | None:
+    """The llama.cpp tree preflight should grade, or None when the runtime the
+    backend would load is one the user chose and this PR does not grade.
+
+    ``_find_llama_server_binary`` prefers ``LLAMA_SERVER_PATH``, then
+    ``UNSLOTH_LLAMA_CPP_PATH``, then Studio's settings folder, and only then the
+    managed install. Grading the managed tree regardless would send a user who
+    runs their own build into repair over a leftover install their backend never
+    opens, and offline that repair cannot even succeed.
+
+    ``UNSLOTH_LLAMA_CPP_PATH`` needs no skip: it moves the managed root itself, so
+    ``default_managed_llama_dir`` already grades the tree it names.
+    """
+    pinned = os.environ.get("LLAMA_SERVER_PATH", "").strip()
+    # Nonblank is not the test: _scan_pinned treats an absent pin as no pin and
+    # falls through to the managed tree, so suppressing the verdict for a path
+    # that was deleted would leave a quarantined managed runtime reporting Ready.
+    # The line is the finder's own _file_status, not the directory entry: a pin
+    # that exists but is denied or not executable does stop the finder, while a
+    # symlink whose target was deleted or quarantined is is_file() False, reads as
+    # "absent" there, and falls through like any missing pin. lexists called that
+    # a pin and left the managed tree the backend really loads ungraded.
+    if pinned:
+        try:
+            stops_the_finder = Path(pinned).is_file()
+        except PermissionError:
+            # is_file raises rather than answering for a locked file on Windows;
+            # _file_status retries and then calls it "denied", which halts the
+            # finder with no fallback.
+            stops_the_finder = True
+        except OSError:
+            stops_the_finder = False
+        if stops_the_finder:
+            return None
+    # studio/backend on sys.path first. llama_cpp_path_settings imports
+    # storage.studio_db as a top level package and swallows the failure, so
+    # without this the stored selection always reads as absent and a user whose
+    # custom folder is set in Studio would be sent to repair a tree their backend
+    # never opens. Mirrors the backend_dir insert the other commands here do.
+    backend_dir = _PACKAGE_ROOT / "studio" / "backend"
+    if backend_dir.is_dir() and str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    try:
+        from studio.backend.utils.llama_cpp_path_settings import (
+            expanded_user_path,
+            get_stored_custom_llama_cpp_path,
+            llama_server_candidates,
+        )
+        from studio.install_llama_prebuilt import default_managed_llama_dir
+    except Exception:
+        # No settings module means no stored selection to honour, and no way to
+        # ask whether a folder holds a server, so the managed root stands.
+        from studio.install_llama_prebuilt import default_managed_llama_dir
+        return default_managed_llama_dir()
+    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
+    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
+    # to grade even when an older selection is still in the settings database.
+    # Reading the setting first left the tree the backend actually opens ungraded.
+    # The managed marker is the exception: the finder skips the override when the
+    # desktop set it, so the stored folder wins again.
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    # Classified, not merely read off the marker. studio/backend/main.py calls
+    # mark_managed_llama_cpp_path(managed) before discovery, which marks any
+    # override equal to the managed tree however it got there, and the finder then
+    # skips it. _ensure_studio_env_exported writes exactly that value under a
+    # custom STUDIO_HOME and sets no marker, so trusting the marker alone made
+    # this grade the managed tree as a user pin while the backend walked past it
+    # to the stored selection: a damaged managed tree blocked launch and was sent
+    # for repair though nothing would ever open it.
+    managed_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+    if override and not managed_override:
+        # Against the tree the studio home names with the override out of the way,
+        # never default_managed_llama_dir(): that reads the override first and
+        # would call every user pin managed. The backend compares against exactly
+        # this value, STUDIO_ROOT/llama.cpp computed before it exported anything.
+        managed_override = _same_runtime_tree(
+            expanded_user_path(override), _managed_llama_dir_ignoring_the_override()
+        )
+    if override and not managed_override:
+        # Only a folder that holds a server stops discovery. _scan_pinned finds no
+        # candidate under an empty or missing override and walks on, so a tree behind
+        # it is still ours to grade; one that holds a server is not.
+        # Not graded, because nothing can repair it: setup.sh derives LLAMA_CPP_DIR
+        # from STUDIO_HOME and setup.ps1 from Get-ManagedLlamaCppDir, and neither
+        # reads UNSLOTH_LLAMA_CPP_PATH at all, so an update sent here would rebuild a
+        # different tree, report success, and leave the next launch offering the same
+        # repair forever. LLAMA_SERVER_PATH is skipped for the same reason.
+        # expanded_user_path, not Path.expanduser: the finder reads the same
+        # variable through it, and a "~name" naming no account makes expanduser
+        # raise RuntimeError out of a doctor whose whole job is to answer.
+        if _layout_stops_discovery(llama_server_candidates(expanded_user_path(override))):
+            return None
+    if get_stored_custom_llama_cpp_path() is not None:
+        return None
+    if managed_override:
+        # The finder skips an override that names the managed tree, and that tree
+        # is the one this install owns, so it is still the answer.
+        return default_managed_llama_dir()
+    # The finder has walked past the override, so the tree it reaches is the one
+    # the managed root names with that override out of the way. Reading it with
+    # the variable still set would name the folder just ruled out.
+    return _managed_llama_dir_ignoring_the_override()
+
+
+def _same_runtime_tree(left: Path, right: Path) -> bool:
+    """Whether two runtime paths name one tree, the way the backend compares them.
+
+    ``mark_managed_llama_cpp_path`` resolves both sides non-strictly and swallows
+    the same errors, so a path that has not been created yet still compares, and
+    an unreadable one answers "different" rather than raising out of the doctor.
+    """
+    try:
+        return left.resolve(strict = False) == right.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _layout_stops_discovery(candidates) -> bool:
+    """Whether a pinned folder ends ``_find_llama_server_binary``'s search.
+
+    Presence, not usability: ``_scan_pinned`` returns a hit for an executable
+    candidate, and for one that is merely present it returns the path as
+    ``non_executable`` or ``denied``, which the caller turns into ``_unavailable``
+    and a refusal to fall back. Only a layout holding no server at all is walked
+    past. Asking for the execute bit here would send preflight off to grade a
+    different tree in exactly the case where the pinned one needs repair.
+    """
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return True
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _managed_llama_dir_ignoring_the_override() -> Path:
+    """default_managed_llama_dir with UNSLOTH_LLAMA_CPP_PATH out of the way, and the
+    inferred studio home put back.
+
+    The desktop scrubs UNSLOTH_STUDIO_HOME and STUDIO_HOME before it spawns this
+    (MANAGED_CHILD_SCRUBBED_ENV), so default_managed_llama_dir reads an empty
+    environment and answers the legacy ~/.unsloth/llama.cpp. _resolve_studio_home has
+    already recovered the real root off sys.prefix by then, and preflight::managed's
+    inferred_studio_llama_root fingerprints <root>/llama.cpp on the strength of the
+    same inference, so reading only the environment here graded the legacy tree while
+    the cache watched the custom one: quarantine in the runtime actually in use
+    reported Ready and failed at model load.
+
+    Exported rather than computed, because _ensure_studio_env_exported writes exactly
+    this value and there should be one rule for it, not two that can drift.
+    """
+    from studio.install_llama_prebuilt import default_managed_llama_dir
+
+    saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
+    had_home = "UNSLOTH_STUDIO_HOME" in os.environ
+    saved_home = os.environ.get("UNSLOTH_STUDIO_HOME")
+    # Truthy-check, not a bare presence one, the way _ensure_studio_env_exported reads
+    # it: a blank UNSLOTH_STUDIO_HOME= is not a root either.
+    if _STUDIO_HOME_IS_CUSTOM and not (saved_home or "").strip():
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
+    try:
+        return default_managed_llama_dir()
+    finally:
+        if saved is not None:
+            os.environ["UNSLOTH_LLAMA_CPP_PATH"] = saved
+        if had_home:
+            os.environ["UNSLOTH_STUDIO_HOME"] = saved_home
+        else:
+            os.environ.pop("UNSLOTH_STUDIO_HOME", None)
+
+
 @studio_app.command("desktop-capabilities", hidden = True)
 def desktop_capabilities(
     json_output: bool = typer.Option(
@@ -4175,8 +4358,39 @@ def desktop_capabilities(
         # Did the install finish and are the backend boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
+        # And is the llama.cpp runtime the backend loads still intact. Null when
+        # nothing is installed yet (NotInstalled, not a broken install). Older
+        # desktops ignore both keys.
+        "llama_runtime_ok": None,
+        "llama_runtime_reason": "",
         "version": "unknown",
     }
+    # Best effort: a probe that cannot answer must not turn a working install into
+    # a stale one, so a failure here leaves llama_runtime_ok null.
+    try:
+        from studio.install_llama_prebuilt import installed_runtime_health
+        runtime_root = _llama_runtime_to_grade()
+        if runtime_root is not None:
+            health = installed_runtime_health(runtime_root)
+            if health is not None:
+                payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
+        else:
+            # Null with a reason, because the two nulls are not the same thing.
+            # Nothing installed is a fact about the machine and stays true until
+            # the tree changes, so the desktop may cache it. This one is a fact
+            # about a selection the desktop's fingerprint does not watch, so the
+            # answer expires the moment the user clears their custom folder, and
+            # managed.rs declines to cache it on the strength of this reason.
+            # The verdict itself is still null, so nothing turns stale on it.
+            payload["llama_runtime_reason"] = "llama_runtime_not_managed"
+    except Exception:
+        # The third null, and the one that must not be kept. Nothing-installed is a
+        # fact about the machine; this is a fact about one attempt, and it shares the
+        # damaged tree's fingerprint, so caching it froze a Ready that was never
+        # reached over a runtime the probe would have rejected. Same reason string
+        # shape as the skip, so managed.rs refuses both without a second rule.
+        payload["llama_runtime_ok"] = None
+        payload["llama_runtime_reason"] = "llama_runtime_probe_failed"
     try:
         from importlib.metadata import version as package_version
         payload["version"] = package_version("unsloth")
