@@ -22,17 +22,46 @@ pub fn new_update_state() -> UpdateState {
 }
 
 const UPDATE_ARGS: &[&str] = &["studio", "update"];
+const PREFETCH_ARGS: &[&str] = &["studio", "prefetch-update"];
+const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
+
+/// typer answers an unknown subcommand with click's usage exit, so a backend that
+/// predates PR C fails the prefetch this way and only this way. Paired with the
+/// message below, because 2 on its own is also how a bad option exits.
+const PREFETCH_UNSUPPORTED_EXIT: i32 = 2;
+const PREFETCH_UNSUPPORTED_MESSAGE: &str = "No such command";
+/// `_studio_prefetch.EXIT_BUSY`: a prefetch is already running, which is not a
+/// failure to report to anyone.
+const PREFETCH_BUSY_EXIT: i32 = 3;
+
+/// The offer stands and the swap is the classic update; there is nothing to say.
+pub const PREFETCH_UNSUPPORTED: &str = "prefetch-unsupported";
+/// Another prefetch owns the work. Whatever it produces is what gets adopted.
+pub const PREFETCH_BUSY: &str = "prefetch-busy";
 
 pub(crate) enum UpdateKind {
     Backend,
     Repair(String),
+    /// Background download into the uv cache. Touches no installed file, so it
+    /// carries none of the protections the two above need.
+    Prefetch {
+        shell_version: Option<String>,
+    },
 }
 
 impl UpdateKind {
+    fn args(&self) -> &'static [&'static str] {
+        match self {
+            UpdateKind::Prefetch { .. } => PREFETCH_ARGS,
+            _ => UPDATE_ARGS,
+        }
+    }
+
     fn progress_event(&self) -> &'static str {
         match self {
             UpdateKind::Backend => "update-progress",
             UpdateKind::Repair(_) => "repair-progress",
+            UpdateKind::Prefetch { .. } => "prefetch-progress",
         }
     }
 
@@ -40,7 +69,15 @@ impl UpdateKind {
         match self {
             UpdateKind::Backend => Some(("update-complete", "update-failed")),
             UpdateKind::Repair(_) => None,
+            UpdateKind::Prefetch { .. } => Some(("prefetch-complete", "prefetch-failed")),
         }
+    }
+
+    /// False for the prefetch, and that is the whole reason it is a separate
+    /// command: no runtime gate, no idle scan, no handoff env, so it can run
+    /// beside a working backend without blocking anything or being blocked.
+    fn mutates_live_environment(&self) -> bool {
+        !matches!(self, UpdateKind::Prefetch { .. })
     }
 }
 
@@ -81,23 +118,15 @@ fn configure_runtime_gate_environment(cmd: &mut Command) {
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 }
 
-fn spawn_update(
-    bin: &std::path::Path,
-    state: &UpdateState,
-) -> Result<
-    (
-        Option<std::process::ChildStdout>,
-        Option<std::process::ChildStderr>,
-    ),
-    String,
-> {
-    let mut update = state.lock().map_err(|e| e.to_string())?;
-    if update.child.is_some() {
-        return Err("Update is already running.".to_string());
-    }
-    update.intentional_stop = false;
+type ChildStreams = (
+    Option<std::process::ChildStdout>,
+    Option<std::process::ChildStderr>,
+);
 
-    let mut cmd = build_update_command(bin, UPDATE_ARGS)?;
+/// Everything an update child and a prefetch child both need. The gate handoff is
+/// deliberately NOT here: it is the one thing the two do not share.
+fn prepare_child_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
+    let mut cmd = build_update_command(bin, args)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
@@ -116,7 +145,6 @@ fn spawn_update(
 
     // Keep the update on the desktop-managed install and skip assets already in the bundle.
     configure_tauri_update_environment(&mut cmd);
-    configure_runtime_gate_environment(&mut cmd);
 
     // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
     #[cfg(windows)]
@@ -125,6 +153,13 @@ fn spawn_update(
         cmd.env("PYTHONIOENCODING", "utf-8");
     }
 
+    Ok(cmd)
+}
+
+/// Start the prepared command and hand its pipes back, with the caller's lock on
+/// the slot still held so nothing can take it in between.
+#[cfg_attr(not(windows), allow(unused_mut))]
+fn spawn_prepared(mut cmd: Command, update: &mut UpdateProcess) -> Result<ChildStreams, String> {
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
@@ -150,6 +185,68 @@ fn spawn_update(
     Ok((stdout, stderr))
 }
 
+fn spawn_update(bin: &std::path::Path, state: &UpdateState) -> Result<ChildStreams, String> {
+    spawn_child(
+        bin,
+        state,
+        &UpdateKind::Backend,
+        "Update is already running.",
+    )
+}
+
+/// The prefetch child: same isolation and the same managed install, minus the gate.
+fn spawn_prefetch(
+    bin: &std::path::Path,
+    state: &UpdateState,
+    kind: &UpdateKind,
+) -> Result<ChildStreams, String> {
+    spawn_child(bin, state, kind, "A prefetch is already running.")
+}
+
+/// The one place a managed CLI child is started for either flow.
+fn spawn_child(
+    bin: &std::path::Path,
+    state: &UpdateState,
+    kind: &UpdateKind,
+    busy: &str,
+) -> Result<ChildStreams, String> {
+    let mut update = state.lock().map_err(|e| e.to_string())?;
+    if update.child.is_some() {
+        return Err(busy.to_string());
+    }
+    update.intentional_stop = false;
+
+    spawn_prepared(build_child_command(bin, kind)?, &mut update)
+}
+
+/// The child's whole command, decided by the kind and nothing else.
+///
+/// Split out from the spawn so both shapes can be asserted without starting a
+/// process: whether the gate handoff is set is the difference between an update
+/// and a prefetch, and that is exactly the sort of thing that is only ever wrong
+/// once, in a release.
+fn build_child_command(bin: &std::path::Path, kind: &UpdateKind) -> Result<Command, String> {
+    let mut cmd = prepare_child_command(bin, kind.args())?;
+    if kind.mutates_live_environment() {
+        configure_runtime_gate_environment(&mut cmd);
+    } else {
+        // Removed rather than left alone: this process may itself have been
+        // started with a handoff, and a prefetch that inherited it would tell the
+        // CLI it is holding a gate that nothing is holding for it.
+        cmd.env_remove(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV);
+    }
+    // The version the prefetch records in its marker, so a later reader can tell
+    // whether the cache was warmed for the offer it is looking at.
+    if let UpdateKind::Prefetch {
+        shell_version: Some(version),
+    } = kind
+    {
+        cmd.env(SHELL_VERSION_ENV, version);
+    }
+    Ok(cmd)
+}
+
+// ── Stream ──
 
 fn read_lossy_lines<R: std::io::Read>(
     stream: R,
@@ -399,6 +496,163 @@ fn run_update(
     }
 }
 
+// ── Prefetch ──
+
+/// The prefetch slot, kept apart from the update slot on purpose.
+///
+/// `is_update_running` and the quit dialog both read `UpdateState`, and a
+/// background download is not a reason to warn anyone about quitting or to refuse
+/// a real update. Sharing one slot would make it both.
+#[derive(Clone)]
+pub struct PrefetchState(pub UpdateState);
+
+pub fn new_prefetch_state() -> PrefetchState {
+    PrefetchState(new_update_state())
+}
+
+pub fn is_prefetch_running(state: &PrefetchState) -> bool {
+    is_update_running(&state.0)
+}
+
+pub fn stop_prefetch(state: &PrefetchState) -> Result<(), String> {
+    stop_update(&state.0)
+}
+
+/// What the child said about why it stopped, gathered while it was still running.
+#[derive(Default)]
+struct PrefetchOutcome {
+    explicit_error: Option<String>,
+    unsupported: bool,
+}
+
+fn stream_prefetch_output(
+    app: &AppHandle,
+    outcome: Arc<Mutex<PrefetchOutcome>>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+) -> Vec<std::thread::JoinHandle<()>> {
+    let mut threads = Vec::new();
+
+    // No diagnostics attempt for either stream: this runs on a timer in the
+    // background, and filling the support bundle with hourly downloads would
+    // push out the update the user actually wants read back to them.
+    if let Some(out) = stdout {
+        let app_clone = app.clone();
+        let outcome_clone = outcome.clone();
+        threads.push(std::thread::spawn(move || {
+            if let Err(e) = read_lossy_lines(out, |text| {
+                if let Some(message) = structured_update_error(&text) {
+                    if let Ok(mut outcome) = outcome_clone.lock() {
+                        outcome.explicit_error = Some(message);
+                    }
+                }
+                info!("[prefetch][stdout] {}", text);
+                let _ = app_clone.emit("prefetch-progress", &text);
+            }) {
+                warn!("[prefetch] Error reading stdout: {}", e);
+            }
+        }));
+    }
+
+    if let Some(err) = stderr {
+        let app_clone = app.clone();
+        let outcome_clone = outcome.clone();
+        threads.push(std::thread::spawn(move || {
+            if let Err(e) = read_lossy_lines(err, |text| {
+                // typer prints the usage error here, and only the pair of exit
+                // code and message identifies a backend that has no such command.
+                if text.contains(PREFETCH_UNSUPPORTED_MESSAGE) {
+                    if let Ok(mut outcome) = outcome_clone.lock() {
+                        outcome.unsupported = true;
+                    }
+                }
+                info!("[prefetch][stderr] {}", text);
+                let _ = app_clone.emit("prefetch-progress", &text);
+            }) {
+                warn!("[prefetch] Error reading stderr: {}", e);
+            }
+        }));
+    }
+
+    threads
+}
+
+/// Map a non-zero prefetch exit onto something the desktop can act on.
+fn prefetch_failure(code: i32, outcome: &PrefetchOutcome) -> String {
+    if code == PREFETCH_BUSY_EXIT {
+        return PREFETCH_BUSY.to_string();
+    }
+    if code == PREFETCH_UNSUPPORTED_EXIT && outcome.unsupported {
+        return PREFETCH_UNSUPPORTED.to_string();
+    }
+    outcome
+        .explicit_error
+        .clone()
+        .unwrap_or_else(|| format!("Prefetch exited with code {}", code))
+}
+
+/// Warm the uv cache for the next update, in the background.
+///
+/// Deliberately not routed through `run_update`: that function takes the runtime
+/// gate and runs the idle scan around its child, which is exactly what a
+/// background download must not do.
+pub(crate) fn run_prefetch_update(
+    app: AppHandle,
+    state: PrefetchState,
+    shell_version: Option<String>,
+) -> Result<(), String> {
+    let kind = UpdateKind::Prefetch { shell_version };
+    let bin = match crate::process::find_unsloth_binary() {
+        Some(bin) => bin,
+        None => return Err("Unsloth binary not found. Cannot prepare an update.".to_string()),
+    };
+
+    info!("[prefetch] Preparing the next update via {:?}", bin);
+    let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
+    let (stdout, stderr) =
+        spawn_prefetch(&bin, &state.0, &kind).map_err(|msg| format!("spawn_prefetch: {msg}"))?;
+    let threads = stream_prefetch_output(&app, outcome.clone(), stdout, stderr);
+
+    let result = wait_for_exit(&state.0);
+    for handle in threads {
+        let _ = handle.join();
+    }
+    // Read only after both readers are joined, so the last line still counts.
+    let outcome = outcome
+        .lock()
+        .map(|guard| PrefetchOutcome {
+            explicit_error: guard.explicit_error.clone(),
+            unsupported: guard.unsupported,
+        })
+        .unwrap_or_default();
+
+    let (complete, failed) = kind
+        .terminal_events()
+        .expect("a prefetch always has terminal events");
+    match result {
+        Ok((status, _)) if status.success() => {
+            info!("[prefetch] Update prepared");
+            let _ = app.emit(complete, ());
+            Ok(())
+        }
+        Ok((_, intentional)) if intentional => {
+            info!("[prefetch] Prefetch stopped intentionally");
+            Err(UPDATE_STOPPED.to_string())
+        }
+        Ok((status, _)) => {
+            let msg = prefetch_failure(status.code().unwrap_or(-1), &outcome);
+            info!("[prefetch] {}", msg);
+            let _ = app.emit(failed, &msg);
+            Err(msg)
+        }
+        Err(msg) => {
+            warn!("[prefetch] {}", msg);
+            let _ = app.emit(failed, &msg);
+            Err(msg)
+        }
+    }
+}
+
 fn clear_current_attempt(state: &UpdateState) {
     if let Ok(mut update) = state.lock() {
         update.current_attempt = None;
@@ -530,6 +784,33 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// A directory that looks enough like a managed install for
+    /// `build_update_command` to resolve an interpreter beside the launcher.
+    fn managed_binary_for_test(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-update-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        });
+        let bin = dir.join(if cfg!(windows) {
+            "unsloth.exe"
+        } else {
+            "unsloth"
+        });
+        std::fs::write(&python, b"").unwrap();
+        std::fs::write(&bin, b"").unwrap();
+        bin
+    }
 
     #[test]
     fn tauri_backend_update_skips_the_web_frontend_build() {
@@ -665,6 +946,138 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()));
         }
+    }
+
+    #[test]
+    fn the_prefetch_is_a_separate_command_with_its_own_events() {
+        let kind = UpdateKind::Prefetch {
+            shell_version: Some("0.1.900-beta".to_string()),
+        };
+
+        assert_eq!(kind.args(), &["studio", "prefetch-update"]);
+        assert_eq!(kind.progress_event(), "prefetch-progress");
+        assert_eq!(
+            kind.terminal_events(),
+            Some(("prefetch-complete", "prefetch-failed"))
+        );
+        // The whole point of the separate command: nothing it does needs the gate,
+        // the idle scan, or the launcher transaction on the CLI side.
+        assert!(!kind.mutates_live_environment());
+        assert!(UpdateKind::Backend.mutates_live_environment());
+        assert_eq!(UpdateKind::Backend.args(), &["studio", "update"]);
+    }
+
+    /// A prefetch that claimed the parent's gate would tell the CLI it is covered
+    /// by a lock nothing is holding, and a real update starting beside it would
+    /// then find the environment "idle" while a download is writing the cache.
+    #[test]
+    fn the_prefetch_child_never_inherits_the_runtime_gate() {
+        use std::ffi::OsStr;
+
+        let bin = managed_binary_for_test("prefetch-gate");
+        let prefetch = build_child_command(
+            &bin,
+            &UpdateKind::Prefetch {
+                shell_version: Some("0.1.900-beta".to_string()),
+            },
+        )
+        .unwrap();
+
+        let handoff = prefetch
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV));
+        assert_eq!(handoff.map(|(_, value)| value), Some(None));
+        assert!(prefetch.get_envs().any(|(key, value)| {
+            key == OsStr::new(SHELL_VERSION_ENV) && value == Some(OsStr::new("0.1.900-beta"))
+        }));
+
+        let update = build_child_command(&bin, &UpdateKind::Backend).unwrap();
+        assert!(update.get_envs().any(|(key, value)| {
+            key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV)
+                && value == Some(OsStr::new("1"))
+        }));
+        // The shell version belongs to the marker a prefetch writes; an update
+        // has nothing to record it in.
+        assert!(!update
+            .get_envs()
+            .any(|(key, _)| key == OsStr::new(SHELL_VERSION_ENV)));
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_prefetch_without_an_offered_version_sets_no_shell_version() {
+        use std::ffi::OsStr;
+
+        let bin = managed_binary_for_test("prefetch-no-version");
+        let cmd = build_child_command(
+            &bin,
+            &UpdateKind::Prefetch {
+                shell_version: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!cmd
+            .get_envs()
+            .any(|(key, _)| key == OsStr::new(SHELL_VERSION_ENV)));
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    /// The quit dialog and `is_update_running` both read `UpdateState`, so a
+    /// prefetch in its own slot cannot make either of them fire.
+    #[test]
+    fn a_running_prefetch_is_invisible_to_the_update_state() {
+        let update = new_update_state();
+        let prefetch = new_prefetch_state();
+
+        let mut command = Command::new(if cfg!(windows) { "cmd" } else { "/bin/sh" });
+        if cfg!(windows) {
+            command.args(["/C", "ping -n 30 127.0.0.1 > NUL"]);
+        } else {
+            command.args(["-c", "sleep 30"]);
+        }
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut wrapped = CommandWrap::from(command);
+        #[cfg(unix)]
+        wrapped.wrap(ProcessGroup::leader());
+        prefetch.0.lock().unwrap().child = Some(wrapped.spawn().unwrap());
+
+        assert!(is_prefetch_running(&prefetch));
+        assert!(!is_update_running(&update));
+
+        stop_prefetch(&prefetch).unwrap();
+        assert!(!is_prefetch_running(&prefetch));
+    }
+
+    #[test]
+    fn a_backend_without_the_command_is_reported_as_unsupported_not_failed() {
+        let unsupported = PrefetchOutcome {
+            explicit_error: None,
+            unsupported: true,
+        };
+        assert_eq!(
+            prefetch_failure(PREFETCH_UNSUPPORTED_EXIT, &unsupported),
+            PREFETCH_UNSUPPORTED
+        );
+        // Exit 2 alone is also how a bad option exits, so the message has to be there.
+        assert_eq!(
+            prefetch_failure(PREFETCH_UNSUPPORTED_EXIT, &PrefetchOutcome::default()),
+            "Prefetch exited with code 2"
+        );
+        assert_eq!(
+            prefetch_failure(PREFETCH_BUSY_EXIT, &PrefetchOutcome::default()),
+            PREFETCH_BUSY
+        );
+        assert_eq!(
+            prefetch_failure(
+                1,
+                &PrefetchOutcome {
+                    explicit_error: Some("no space left".to_string()),
+                    unsupported: false,
+                }
+            ),
+            "no space left"
+        );
     }
 
     // POSIX updates fail "busy" against the shell's own retained flock unless the child

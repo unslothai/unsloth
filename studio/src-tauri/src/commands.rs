@@ -1,5 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
+use crate::prefetch;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
@@ -785,6 +786,7 @@ pub async fn start_backend_update(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
@@ -806,6 +808,17 @@ pub async fn start_backend_update(
         return Err("Update is already running.".to_string());
     }
 
+    // The real update takes the runtime gate the prefetch deliberately does not,
+    // so the two would not deadlock -- but they would both be resolving against
+    // the same index and writing the same cache, and the update is the one the
+    // user is waiting on. Stop the background work first and let it be redone.
+    if update::is_prefetch_running(&prefetch_state) {
+        info!("Stopping the background prefetch before the update");
+        if let Err(error) = update::stop_prefetch(&prefetch_state) {
+            warn!("Could not stop the background prefetch: {error}");
+        }
+    }
+
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
     if has_owned {
@@ -825,6 +838,76 @@ pub async fn start_backend_update(
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
+}
+
+/// Warm the uv cache for the next update, in the background.
+///
+/// Fire and forget from the renderer's point of view: every failure here is a
+/// reason to fall back to the classic update, never a reason to stop offering one.
+#[tauri::command]
+pub async fn start_prefetch_update(
+    app: AppHandle,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+    shell_version: Option<String>,
+) -> Result<(), String> {
+    info!("start_prefetch_update command called");
+
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot prepare an update while installation is in progress.".to_string());
+    }
+    // A real update owns the environment and the cache; preparing beside it would
+    // download what it is installing.
+    if update::is_update_running(&update_state) {
+        return Err("Update is already running.".to_string());
+    }
+    if update::is_prefetch_running(&prefetch_state) {
+        return Err(update::PREFETCH_BUSY.to_string());
+    }
+
+    let state = prefetch_state.inner().clone();
+    tokio::task::spawn_blocking(move || update::run_prefetch_update(app, state, shell_version))
+        .await
+        .map_err(|e| format!("Prefetch task panicked: {e}"))?
+}
+
+/// Stop a running prefetch. Nothing to undo: the cache keeps whatever it fetched.
+#[tauri::command]
+pub fn cancel_prefetch_update(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    if !update::is_prefetch_running(&prefetch_state) {
+        return Ok(());
+    }
+    update::stop_prefetch(&prefetch_state)
+}
+
+#[tauri::command]
+pub fn prefetch_status(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> prefetch::PrefetchStatus {
+    let mut status = prefetch::status(&diagnostics::studio_dir());
+    status.running = update::is_prefetch_running(&prefetch_state);
+    status
+}
+
+/// Drop a prepared update the desktop no longer wants (a newer offer, or none).
+#[tauri::command]
+pub fn discard_prefetch(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    // Stop first: deleting the directory a running prefetch is writing into
+    // leaves it recreating what this call is removing.
+    if update::is_prefetch_running(&prefetch_state) {
+        update::stop_prefetch(&prefetch_state)?;
+    }
+    prefetch::discard(&diagnostics::studio_dir());
+    Ok(())
 }
 
 /// Repair a stale managed Unsloth install.
