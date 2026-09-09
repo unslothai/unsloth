@@ -2315,7 +2315,11 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
     them in whatever order the two queries happened to return them: the anchor's hits
     first, then the follow-up's. `_conversation_order` breaks exactly this tie with
     `created_at`, and the merged path has to agree with it or the block contradicts its own
-    oldest-first header on an upgraded database."""
+    oldest-first header on an upgraded database.
+
+    Sorted through `_order_key`, the function the product sorts with, rather than through a
+    copy of its key written out here. A copy passes for as long as nobody edits one side of
+    it, which is the failure this test exists to catch."""
     from core.rag import conversation_archive
 
     merged = [
@@ -2324,21 +2328,60 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
         {"turn": 3, "createdAt": "2026-01-03T00:00:00Z", "chunkIndex": 0, "text": "numbered"},
     ]
     merged.sort(
-        key = lambda source: (
-            source.get("turn") is not None,
-            source.get("turn") or 0,
-            source.get("createdAt") or "",
-            source.get("chunkIndex") or 0,
+        key = lambda source: conversation_archive._order_key(
+            source.get("turn"),
+            source.get("createdAt"),
+            source.get("documentRowid"),
+            source.get("chunkIndex"),
         )
     )
 
     assert [m["text"] for m in merged] == ["earlier", "later", "numbered"]
 
 
+def test_both_recall_paths_order_by_the_same_key():
+    """The single-query path reads snake_case columns and the merge reads camelCase keys.
+
+    They are only "the same key" while both call `_order_key`; two hand-written five-part
+    tuples agree until one of them is edited, and the merged block then contradicts the
+    unmerged one on exactly the archives this ordering exists for.
+    """
+    from core.rag import conversation_archive
+
+    for ordinal in (None, 0, 4):
+        for created in ("", "2026-01-01T00:00:00Z"):
+            for rowid in (None, 0, 12):
+                for index in (None, 0, 3):
+                    row = {
+                        "archive_ordinal": ordinal,
+                        "created_at": created,
+                        "document_rowid": rowid,
+                        "chunk_index": index,
+                    }
+                    source = {
+                        "turn": ordinal,
+                        "createdAt": created,
+                        "documentRowid": rowid,
+                        "chunkIndex": index,
+                    }
+                    assert conversation_archive._conversation_order(row) == (
+                        conversation_archive._order_key(
+                            source.get("turn"),
+                            source.get("createdAt"),
+                            source.get("documentRowid"),
+                            source.get("chunkIndex"),
+                        )
+                    ), row
+
+
 def test_recall_sources_carry_the_fields_the_merge_orders_by():
     """The sort above is only as good as the field it reads, and nothing RENDERS
-    `createdAt` or `chunkIndex`, so an unused-looking key is exactly the sort of thing a
-    later cleanup deletes. This pins the producer."""
+    `createdAt`, `documentRowid` or `chunkIndex`, so an unused-looking key is exactly the
+    sort of thing a later cleanup deletes. This pins the producer.
+
+    `documentRowid` most of all: it is the component that decides the order once the clock
+    has stopped separating rows, and it is the newest and least obviously load-bearing of
+    the three."""
     from types import SimpleNamespace
 
     from core.rag import tool
@@ -2351,6 +2394,7 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
             "archive_ordinal": None,
             "chunk_index": 2,
             "created_at": "2026-01-01T00:00:00Z",
+            "document_rowid": 41,
         },
     }
     hits = [SimpleNamespace(chunk_id = "c1", score = 0.5)]
@@ -2359,6 +2403,7 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
 
     assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
     assert sources[0]["chunkIndex"] == 2
+    assert sources[0]["documentRowid"] == 41
     assert sources[0]["turn"] is None
 
 

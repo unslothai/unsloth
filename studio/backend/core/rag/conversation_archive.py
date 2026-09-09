@@ -2119,6 +2119,22 @@ def _document_matches_one_run(
     return any(_one_run_from(start) for start in range(len(transcript)))
 
 
+def _order_key(ordinal, created_at, document_rowid, chunk_index) -> tuple:
+    """The recall order, from the four values it reads, whatever they were spelled.
+
+    One definition because there are two callers: the single-query path reads a row's
+    snake_case columns and the two-query merge reads a source's camelCase keys. They must
+    agree component for component, and a second copy of a five-part key agrees only until
+    someone edits one of them.
+    """
+    created = created_at or ""
+    rowid = document_rowid or 0
+    index = chunk_index or 0
+    if ordinal is None:
+        return (0, 0, created, rowid, index)
+    return (1, int(ordinal), created, rowid, index)
+
+
 def _conversation_order(row) -> tuple:
     """Sort key putting recalled turns in the order they were said.
 
@@ -2149,13 +2165,12 @@ def _conversation_order(row) -> tuple:
     """
     if row is None:
         return (2, 0, "", 0, 0)
-    ordinal = tool._row_value(row, "archive_ordinal")
-    created = tool._row_value(row, "created_at") or ""
-    index = tool._row_value(row, "chunk_index") or 0
-    rowid = tool._row_value(row, "document_rowid") or 0
-    if ordinal is None:
-        return (0, 0, created, rowid, index)
-    return (1, int(ordinal), created, rowid, index)
+    return _order_key(
+        tool._row_value(row, "archive_ordinal"),
+        tool._row_value(row, "created_at"),
+        tool._row_value(row, "document_rowid"),
+        tool._row_value(row, "chunk_index"),
+    )
 
 
 def _above_floor(hits: list, min_dense_score: float) -> list:
@@ -2489,20 +2504,17 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # The same key `_conversation_order` uses on the single-query path, component
-            # for component: a turn with no ordinal predates every numbered one, and
-            # `chunkIndex` keeps a long turn's pieces in writing order rather than in the
-            # order the two queries returned them, which a stable sort would otherwise
-            # preserve. It has to stay in that order too, `documentRowid` above
-            # `chunkIndex`, or two tied documents interleave here while the single-query
+            # Literally the key `_conversation_order` uses, not a second copy of it that
+            # agrees today: `chunkIndex` keeps a long turn's pieces in writing order rather
+            # than in the order the two queries returned them, and it has to stay UNDER
+            # `documentRowid`, or two tied documents interleave here while the single-query
             # path groups them and the merged block disagrees with the unmerged one.
             merged.sort(
-                key = lambda source: (
-                    source.get("turn") is not None,
-                    source.get("turn") or 0,
-                    source.get("createdAt") or "",
-                    source.get("documentRowid") or 0,
-                    source.get("chunkIndex") or 0,
+                key = lambda source: _order_key(
+                    source.get("turn"),
+                    source.get("createdAt"),
+                    source.get("documentRowid"),
+                    source.get("chunkIndex"),
                 )
             )
             kept = merged[:limit]
