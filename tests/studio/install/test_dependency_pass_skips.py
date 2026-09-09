@@ -22,6 +22,7 @@ import importlib.util
 import json
 import pathlib
 import platform
+import re
 import sys
 
 import pytest
@@ -605,3 +606,263 @@ def test_the_plan_is_read_before_the_manifest_is_dropped() -> None:
     plan = source.index("_PASS_EVIDENCE = _plan_pass(")
     drop = source.index("install_manifest.remove_manifest()")
     assert plan < drop
+
+
+# -- the finalizing tail -------------------------------------------------------
+#
+# Three fixed costs at the end of every pass that a settled install has no reason to
+# pay: a subprocess that rewrites three METADATA files it already rewrote, a full
+# metadata resolve of the venv by `pip check` whose result is discarded, and an out of
+# process probe that imports torch, mlx, mlx_lm and mlx_vlm to reprint the same verdict.
+
+
+class _FakePatchModule:
+    """Stands in for requirements/single-env/patch_metadata.py."""
+
+    TARGETS = ("data-designer",)
+    PATCHES = ((re.compile(r"^Requires-Dist: huggingface-hub<2,>=1\.0\.1$", re.MULTILINE), "x"),)
+
+    def __init__(
+        self,
+        path,
+        *,
+        raise_on_lookup = False,
+        raise_on_main = False,
+    ):
+        self._path = path
+        self._raise_on_lookup = raise_on_lookup
+        self._raise_on_main = raise_on_main
+        self.main_calls = 0
+
+    def metadata_path(self, _name):
+        if self._raise_on_lookup:
+            raise RuntimeError("distribution metadata is unreadable")
+        return self._path
+
+    def main(self):
+        self.main_calls += 1
+        if self._raise_on_main:
+            raise RuntimeError("cannot patch in process")
+        return 0
+
+
+PATCHED = "Requires-Dist: huggingface-hub<2,>=0.34.0\n"
+UNPATCHED = "Requires-Dist: huggingface-hub<2,>=1.0.1\n"
+
+
+def _patch_module(
+    monkeypatch,
+    tmp_path,
+    text = PATCHED,
+    **kwargs,
+):
+    metadata = tmp_path / "METADATA"
+    if text is not None:
+        metadata.write_text(text, encoding = "utf-8")
+    fake = _FakePatchModule(metadata if text is not None else None, **kwargs)
+    monkeypatch.setattr(stack, "SINGLE_ENV", tmp_path)
+    # The real import is cached in sys.modules after the first pass, so this is also
+    # how the second install_python_stack() call in one interpreter sees it.
+    monkeypatch.setitem(sys.modules, "patch_metadata", fake)
+    return fake
+
+
+def test_a_settled_install_does_not_re_run_the_metadata_patch(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, PATCHED)
+    assert stack._patch_metadata_is_pending() is False
+
+
+def test_an_unpatched_metadata_file_is_still_pending(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_a_distribution_that_is_not_installed_needs_no_patch(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, None)
+    assert stack._patch_metadata_is_pending() is False
+
+
+@pytest.mark.parametrize("kwargs", [{"raise_on_lookup": True}])
+def test_anything_it_cannot_answer_runs_the_patch(monkeypatch, tmp_path, kwargs) -> None:
+    """Unknown means do the work: this replaces an unconditional run, so the failure
+    mode of the question must be the old behaviour, not a skip."""
+    _patch_module(monkeypatch, tmp_path, PATCHED, **kwargs)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_an_unimportable_patch_module_runs_the_patch(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(stack, "SINGLE_ENV", tmp_path / "gone")
+    monkeypatch.delitem(sys.modules, "patch_metadata", raising = False)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_the_patch_applies_in_process(monkeypatch, tmp_path) -> None:
+    fake = _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    ran = []
+    monkeypatch.setattr(stack, "run", lambda *a, **k: ran.append(a))
+    stack._run_patch_metadata()
+    assert fake.main_calls == 1
+    assert ran == []
+
+
+def test_the_patch_still_falls_back_to_the_subprocess(monkeypatch, tmp_path) -> None:
+    """It is a supported standalone entry point, and an import failure inside the
+    installer must not turn into a failed install."""
+    fake = _patch_module(monkeypatch, tmp_path, UNPATCHED, raise_on_main = True)
+    ran = []
+    monkeypatch.setattr(stack, "run", lambda *a, **k: ran.append(a))
+    stack._run_patch_metadata()
+    assert fake.main_calls == 1
+    assert len(ran) == 1 and str(tmp_path / "patch_metadata.py") in [str(x) for x in ran[0][1]]
+
+
+@pytest.mark.parametrize("fn", ["_patch_metadata_is_pending", "_run_patch_metadata"])
+def test_neither_helper_leaves_single_env_on_sys_path(monkeypatch, tmp_path, fn) -> None:
+    """sys.path.insert(0, SINGLE_ENV) that outlives the call shadows stdlib names for
+    the rest of the install."""
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    monkeypatch.setattr(stack, "run", lambda *a, **k: None)
+    before = list(sys.path)
+    getattr(stack, fn)()
+    assert sys.path == before
+
+
+def test_the_metadata_patch_still_runs_whenever_data_designer_did() -> None:
+    """The pending scan reads the METADATA of packages the data-designer steps just
+    wrote, so a fresh install must not be gated on it at all."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "_finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()" in source
+
+
+def test_pip_check_is_gated_on_this_pass_having_changed_something() -> None:
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    gate = source.index('_pip_check_ok = (_PASS_EVIDENCE or {}).get("pip_check_ok")')
+    tail = source[gate : gate + 400]
+    # Both halves: a pass that installed anything re-checks, and so does one whose last
+    # recorded answer was not a clean True (missing, False, or never recorded).
+    assert "if _INSTALL_ACTIONS > 0 or _pip_check_ok is not True:" in tail
+    assert '"pip_check_ok": _pip_check_ok,' in source
+
+
+# -- the MLX verdict -----------------------------------------------------------
+
+
+class _FakeSubprocess:
+    def __init__(self, stdout = "[]"):
+        self.calls = 0
+        self._stdout = stdout
+
+    def run(self, *args, **kwargs):
+        self.calls += 1
+        return type("R", (), {"stdout": self._stdout, "stderr": "", "returncode": 0})()
+
+
+@pytest.fixture
+def mlx(monkeypatch):
+    fake = _FakeSubprocess()
+    monkeypatch.setattr(stack, "subprocess", fake)
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
+    steps: list[tuple[str, str]] = []
+    monkeypatch.setattr(stack, "_step", lambda label, value, *a: steps.append((label, value)))
+    written: list[dict] = []
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "update_manifest",
+        lambda **kw: written.append(kw.get("mlx_health")) or True,
+    )
+    healthy = {**stack._mlx_health_fingerprint(), "ok": True}
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"mlx_health": healthy})
+    return fake, steps, written, healthy
+
+
+def test_a_recorded_healthy_stack_is_not_re_probed(mlx) -> None:
+    fake, steps, written, _ = mlx
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 0
+    assert steps == [("mlx", "training stack ready")]
+    # Rewritten so the record does not age out of the manifest this pass just wrote.
+    assert written and written[0]["ok"] is True
+
+
+def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
+    fake, steps, _written, _ = mlx
+    stack._report_mlx_stack_health(skipped = False)
+    assert fake.calls == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"ok": False},
+        {"ok": None},
+        {"pins": ["mlx==0.0.1"]},
+        {"python": "39"},
+        {"mlx_vlm": "0.4.4"},
+    ],
+)
+def test_a_verdict_that_no_longer_describes_this_install_is_re_probed(mlx, mutation) -> None:
+    fake, _steps, _written, healthy = mlx
+    stack._PASS_EVIDENCE = {"mlx_health": {**healthy, **mutation}}
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 1
+
+
+def test_no_evidence_at_all_is_probed(mlx, monkeypatch) -> None:
+    fake, _steps, _written, _ = mlx
+    for evidence in (None, {}, {"mlx_health": "yes"}, {"mlx_health": {}}):
+        fake.calls = 0
+        monkeypatch.setattr(stack, "_PASS_EVIDENCE", evidence)
+        stack._report_mlx_stack_health(skipped = True)
+        assert fake.calls == 1, evidence
+
+
+def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> None:
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
+    fingerprint = stack._mlx_health_fingerprint()
+    assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._MLX_VLM_SPEC]
+    assert fingerprint["python"] == stack._installer_python_tag()
+    # mlx-vlm floats inside a range, so the pin string alone does not identify what is
+    # installed -- and it is the package whose half-install the probe exists to catch.
+    assert fingerprint["mlx_vlm"] == "0.4.5"
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
+    assert stack._mlx_health_fingerprint()["mlx_vlm"] == ""
+
+
+def test_a_probe_verdict_is_recorded_for_next_time(mlx) -> None:
+    fake, steps, written, _ = mlx
+    stack._report_mlx_stack_health(skipped = False)
+    assert written and written[0]["ok"] is True
+    fake._stdout = '["mlx-lm is not importable"]'
+    written.clear()
+    stack._report_mlx_stack_health(skipped = False)
+    assert written and written[0]["ok"] is False
+    assert ("", "mlx-lm is not importable") in steps
+
+
+def test_a_probe_that_cannot_answer_records_nothing(mlx) -> None:
+    fake, _steps, written, _ = mlx
+    fake._stdout = "null"
+    stack._report_mlx_stack_health(skipped = False)
+    assert written == []
+
+
+def test_the_verdict_is_recorded_after_the_manifest_is_written() -> None:
+    """The probe has a 180 s timeout. Writing through write_manifest would make a kill
+    during it lose a finished install; update_manifest never creates one."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    # rindex: the definition comes first in the file, the call site is what is ordered.
+    assert source.index("install_manifest.write_manifest(") < source.rindex(
+        "_report_mlx_stack_health("
+    )
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "_report_mlx_stack_health":
+            called = {
+                child.func.attr
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+            }
+            assert "write_manifest" not in called
+            assert "update_manifest" in called
+            break
+    else:  # pragma: no cover - the function is the subject of this file
+        raise AssertionError("_report_mlx_stack_health is gone")
