@@ -1415,9 +1415,9 @@ def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
     By pid, never by name: a pattern kill on a shared machine can take out something else that
     happens to match. A dead pid makes this a no-op, so it is safe on the success path too."""
     command = (
-        f'p=$(cat {_NCCL_PROBE_PID} 2>/dev/null); '
+        f"p=$(cat {_NCCL_PROBE_PID} 2>/dev/null); "
         f'if [ -n "$p" ]; then kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; fi; '
-        f'rm -f {_NCCL_PROBE_PID}'
+        f"rm -f {_NCCL_PROBE_PID}"
     )
     try:
         subprocess.run(

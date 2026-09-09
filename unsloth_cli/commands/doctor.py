@@ -257,7 +257,7 @@ def _relative_to_home(probe: dict) -> dict:
         if not (key.startswith("which_") or key == "executable"):
             continue
         if isinstance(value, str) and value.startswith(home + "/"):
-            out[key] = "~" + value[len(home):]
+            out[key] = "~" + value[len(home) :]
     return out
 
 

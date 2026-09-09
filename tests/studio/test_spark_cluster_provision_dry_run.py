@@ -256,9 +256,9 @@ def test_the_launch_records_a_pid_to_stop() -> None:
 @pytest.mark.parametrize(
     "local,expected",
     [
-        ("192.168.200.12", "192.168.200.13"),   # node 0 looks up
-        ("192.168.200.13", "192.168.200.12"),   # node 1 looks DOWN, the case that was wrong
-        ("10.0.5.12", "10.0.5.13"),             # the subnet is not assumed
+        ("192.168.200.12", "192.168.200.13"),  # node 0 looks up
+        ("192.168.200.13", "192.168.200.12"),  # node 1 looks DOWN, the case that was wrong
+        ("10.0.5.12", "10.0.5.13"),  # the subnet is not assumed
         ("10.0.5.13", "10.0.5.12"),
     ],
 )
@@ -299,9 +299,7 @@ def _fast(cluster, monkeypatch, config: dict):
     monkeypatch.setattr(cluster, "is_dgx_spark", lambda: True)
     monkeypatch.setattr(cluster.platform, "system", lambda: "Linux")
     monkeypatch.setattr(cluster, "load_config", lambda: config)
-    return cluster.fast_path_decision(
-        "192.168.200.13", env = {}, local_ip = "192.168.200.12"
-    )
+    return cluster.fast_path_decision("192.168.200.13", env = {}, local_ip = "192.168.200.12")
 
 
 def test_a_two_node_direct_rail_still_uses_the_fast_path(monkeypatch) -> None:
@@ -315,8 +313,8 @@ def test_a_two_node_direct_rail_still_uses_the_fast_path(monkeypatch) -> None:
     "config",
     [
         {"n_nodes": 3, "switched": True},
-        {"n_nodes": 2, "switched": True},    # switched even at two nodes is a shared fabric
-        {"n_nodes": 4, "switched": False},   # more than a pair cannot be point-to-point
+        {"n_nodes": 2, "switched": True},  # switched even at two nodes is a shared fabric
+        {"n_nodes": 4, "switched": False},  # more than a pair cannot be point-to-point
     ],
 )
 def test_a_shared_fabric_falls_back_to_ssh(monkeypatch, config: dict) -> None:

@@ -122,4 +122,6 @@ def test_a_dataset_with_rows_is_accepted(tmp_path) -> None:
 def test_the_check_runs_before_the_model_is_built() -> None:
     """A late check costs the most expensive part of the run to reach an input error."""
     source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
-    assert source.index("dataset_problem(args.data)") < source.index("model, cfg, _ = build_stage_model(")
+    assert source.index("dataset_problem(args.data)") < source.index(
+        "model, cfg, _ = build_stage_model("
+    )
