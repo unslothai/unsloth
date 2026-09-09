@@ -1131,3 +1131,46 @@ def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path,
         sandbox_linux, "_host_mount_points", lambda: (str(host / "hub" / "nested"),)
     )
     assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
+def _fake_editable(tmp_path, monkeypatch, source: str):
+    """A dist-info recording an editable install, the way an installer writes it."""
+    site_dir = tmp_path / "sitepkgs"
+    info = site_dir / "demo-1.0.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text("Name: demo\nVersion: 1.0\n", encoding = "utf-8")
+    (info / "RECORD").write_text("", encoding = "utf-8")
+    (info / "direct_url.json").write_text(
+        json.dumps({"url": f"file://{source}", "dir_info": {"editable": True}}),
+        encoding = "utf-8",
+    )
+    monkeypatch.syspath_prepend(str(site_dir))
+    os_sandbox.editable_source_roots.cache_clear()
+    return site_dir
+
+
+def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
+    """Its code lives OUTSIDE site-packages, so without this a sandboxed
+    `import unsloth` fails where the same environment imported it a moment
+    earlier. Read from PEP 610's direct_url.json rather than by parsing .pth
+    files, because that record is written whichever mechanism the installer used:
+    a PEP 660 finder keeps its mapping in a module and puts nothing on sys.path."""
+    source = tmp_path / "checkout"
+    (source / "demo").mkdir(parents = True)
+    _fake_editable(tmp_path, monkeypatch, str(source))
+    try:
+        assert str(source) in os_sandbox.editable_source_roots()
+        roots = tuple(p for p in sandbox_linux._SYSTEM_ROOTS if os.path.isdir(p))
+        assert str(source) in sandbox_linux._runtime_read_paths(str(tmp_path / "wd"), roots)
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatch):
+    """The negative control. An editable install rooted at / or /usr would hand
+    back most of the host, which is the guard the runtime paths already apply."""
+    _fake_editable(tmp_path, monkeypatch, "/usr")
+    try:
+        assert os_sandbox.editable_source_roots() == ()
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()

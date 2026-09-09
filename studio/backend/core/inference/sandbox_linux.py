@@ -30,6 +30,7 @@ from .os_sandbox import (
     ToolLaunchPlan,
     WorkdirUnsafeError,
     cache_share_hazard,
+    editable_source_roots,
     scan_workdir_for_host_channels,
 )
 
@@ -284,6 +285,11 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         )
     except (KeyError, OSError):
         pass
+    # An editable install keeps its code outside site-packages, so without this a
+    # sandboxed `import unsloth` fails where the same environment imported it a
+    # moment earlier. Added as CANDIDATES, so the workdir exclusion, the
+    # filesystem-root refusal and the dual-spelling handling below all apply.
+    candidates.extend(editable_source_roots())
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:

@@ -538,3 +538,61 @@ def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_
         workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ()
     )
     assert not any(line.startswith("(deny file-write* ") for line in profile.splitlines())
+
+
+def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
+    """A locally managed OpenSSL keeps private keys in a directory beside the
+    certificates, so a recursive rule over /etc/ssl is an exfiltratable key with
+    the network open. Linux names the public components one by one; this asserts
+    macOS does too. The ancestor `file-read-metadata` literals are the exception:
+    they carry no contents, and every allowed path needs them."""
+    for spelling in ("/etc/ssl", "/private/etc/ssl"):
+        for line in profile.splitlines():
+            if line.startswith("(allow file-read-metadata"):
+                continue
+            assert f'(subpath "{spelling}")' not in line, line
+            assert f'(literal "{spelling}")' not in line, line
+    # The components are optional paths, dropped from the profile on a host that
+    # lacks them, so the trust list itself is what carries the assertion.
+    assert "/private/etc/ssl" not in backend._TLS_TRUST_PATHS
+    for component in ("cert.pem", "certs", "openssl.cnf"):
+        assert f"/private/etc/ssl/{component}" in backend._TLS_TRUST_PATHS
+
+
+def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
+    """`xcode-select -p` honours $DEVELOPER_DIR, so a Studio started with that
+    aimed at a directory under $HOME would otherwise hand recursive file-read*
+    over a home subtree to a profile whose claim is that $HOME is unreadable.
+    The variable is stripped from the subprocess, and the answer is checked
+    rather than trusted, which is what this pins."""
+    mine = tmp_path / "FakeXcode.app" / "Contents" / "Developer"
+    mine.mkdir(parents = True)
+    assert backend._trusted_system_dir(str(mine)) is False
+    assert backend._trusted_system_dir(str(tmp_path / "absent")) is False
+    missing_file = tmp_path / "Developer"
+    missing_file.write_text("", encoding = "utf-8")
+    assert backend._trusted_system_dir(str(missing_file)) is False
+    # The positive control, so the check above is not passing because it always
+    # says no: a root-owned system directory is accepted.
+    assert backend._trusted_system_dir("/usr") is True
+
+
+def test_the_developer_dir_variable_never_reaches_xcode_select(monkeypatch, tmp_path):
+    mine = tmp_path / "Developer"
+    mine.mkdir()
+    monkeypatch.setenv("DEVELOPER_DIR", str(mine))
+    monkeypatch.setattr(backend.sys, "platform", "darwin")
+    monkeypatch.setattr(backend.os.path, "exists", lambda path: True)
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout = str(mine), stderr = "")
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend, "_developer_paths_cache", None)
+    try:
+        assert backend._developer_paths() == ()
+    finally:
+        backend._developer_paths_cache = None
+    assert "DEVELOPER_DIR" not in seen["env"]

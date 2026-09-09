@@ -31,6 +31,7 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     WorkdirUnsafeError,
+    editable_source_roots,
     scan_workdir_for_host_channels,
 )
 
@@ -85,7 +86,14 @@ _READ_ROOTS = (
 )
 # SYSTEM keychains only; the login keychain stays unreadable.
 _TLS_TRUST_PATHS = (
-    "/private/etc/ssl",
+    # The PUBLIC components one by one, never /etc/ssl whole. A locally managed
+    # OpenSSL keeps its private keys in a directory beside the certificates, and
+    # this grants recursive file-read* while the network stays open, so a whole
+    # -tree rule is an exfiltratable key. The Linux backend names them separately
+    # for exactly this reason and macOS did not, which is the asymmetry here.
+    "/private/etc/ssl/cert.pem",
+    "/private/etc/ssl/certs",
+    "/private/etc/ssl/openssl.cnf",
     "/System/Library/Keychains",
     "/Library/Keychains",
     "/System/Library/Security",
@@ -319,6 +327,22 @@ def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
     return filters
 
 
+def _trusted_system_dir(path: str) -> bool:
+    """A real directory owned by root that no one else can write.
+
+    The toolchain is granted recursive reads, so "it exists" is not enough: the
+    point of the check is that a path the invoking user controls cannot be turned
+    into a read rule over their own home.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
 def _developer_paths() -> tuple[str, ...]:
     """Versioned on many hosts (/Applications/Xcode_16.4.app), so the static list
     above cannot name it."""
@@ -329,6 +353,13 @@ def _developer_paths() -> tuple[str, ...]:
         found: list[str] = []
         if sys.platform == "darwin" and os.path.exists("/usr/bin/xcode-select"):
             try:
+                # DEVELOPER_DIR is stripped, and the answer is then checked
+                # rather than trusted. xcode-select honours that variable, so a
+                # Studio started with it aimed at a toolchain under $HOME would
+                # otherwise return a home directory that this grants recursive
+                # file-read* over, including its enclosing .app -- in a profile
+                # whose whole claim is that $HOME is not readable.
+                environment = {k: v for k, v in os.environ.items() if k != "DEVELOPER_DIR"}
                 result = subprocess.run(
                     ["/usr/bin/xcode-select", "-p"],
                     capture_output = True,
@@ -336,9 +367,10 @@ def _developer_paths() -> tuple[str, ...]:
                     encoding = "utf-8",
                     timeout = 10,
                     check = False,
+                    env = environment,
                 )
                 candidate = result.stdout.strip()
-                if result.returncode == 0 and candidate and os.path.isdir(candidate):
+                if result.returncode == 0 and candidate and _trusted_system_dir(candidate):
                     for spelling in (os.path.realpath(candidate), candidate):
                         if spelling not in found:
                             found.append(spelling)
@@ -384,6 +416,9 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         )
     except (KeyError, OSError):
         pass
+    # Same as the Linux backend: an editable install's source root is outside
+    # site-packages, and a candidate here inherits every guard below.
+    candidates.extend(editable_source_roots())
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:

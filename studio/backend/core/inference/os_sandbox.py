@@ -287,6 +287,54 @@ def _linux_userns_blocked_by_apparmor() -> bool:
     return probe.returncode != 0
 
 
+@functools.lru_cache(maxsize = 1)
+def editable_source_roots() -> tuple[str, ...]:
+    """Source directories of editable installs, so `import unsloth` still works.
+
+    An editable install leaves the package's code OUTSIDE site-packages, and the
+    interpreter paths the backends bind do not reach it, so a sandboxed tool call
+    could not import a package the same environment imported a moment earlier.
+
+    Read from PEP 610's direct_url.json rather than by parsing .pth files,
+    because that record is written whichever mechanism the installer used: the
+    classic path-in-a-.pth and the PEP 660 finder with its MAPPING both appear
+    here, and only one of them is on sys.path.
+
+    Filesystem root and /usr are refused: an editable install rooted there would
+    hand back most of the host, which is the same guard the runtime paths apply.
+    """
+    roots: list[str] = []
+    try:
+        from importlib import metadata
+        import json
+        from urllib.parse import unquote, urlparse
+    except Exception:  # noqa: BLE001 - never fail a launch over this
+        return ()
+    try:
+        distributions = list(metadata.distributions())
+    except Exception:  # noqa: BLE001
+        return ()
+    for distribution in distributions:
+        try:
+            raw = distribution.read_text("direct_url.json")
+            if not raw:
+                continue
+            record = json.loads(raw)
+            if not record.get("dir_info", {}).get("editable"):
+                continue
+            parsed = urlparse(record.get("url", ""))
+            if parsed.scheme != "file":
+                continue
+            path = os.path.abspath(unquote(parsed.path))
+        except Exception:  # noqa: BLE001 - a malformed record is not a launch failure
+            continue
+        if path in ("/", "/usr") or not os.path.isdir(path):
+            continue
+        if path not in roots:
+            roots.append(path)
+    return tuple(roots)
+
+
 def linux_unavailable_remediation() -> str:
     missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
     if missing:
