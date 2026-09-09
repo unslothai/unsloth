@@ -2858,3 +2858,67 @@ def test_every_tool_loop_round_names_the_same_conversation():
     # Each payload the tool loop sends is tagged.
     assert body.count("tag_conversation(payload, thread_id)") >= 1
     assert body.count("tag_conversation(stream_payload, thread_id)") >= 1
+
+
+def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
+    cluster, monkeypatch, tmp_path
+):
+    # The replica is launched from the primary's complete argv, so an older peer build rejects
+    # a flag the primary was given and the advertised replica never comes up, and two builds
+    # that both start can answer the same request differently.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+
+    monkeypatch.setattr(ss, "local_llama_server_version", lambda binary = None: "6109 (aaaaaaa)")
+    real_ssh_calls: list = []
+
+    def _remote(peer, remote, timeout = 20.0):
+        real_ssh_calls.append(remote)
+
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+    outer = ss.ssh_run
+
+    async def versioned_ssh(peer, remote, timeout = 20.0):
+        if "--version" in remote:
+            return 0, "version: 5000 (bbbbbbb)\nbuilt with gcc\n", ""
+        return await outer(peer, remote, timeout = timeout)
+
+    monkeypatch.setattr(ss, "ssh_run", versioned_ssh)
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert not started, "no replica from a different build"
+    assert ss.state().topology == "single"
+    assert "different llama-server build" in ss.state().reason
+    assert "6109 (aaaaaaa)" in ss.state().reason and "5000 (bbbbbbb)" in ss.state().reason
+
+    # The same build is admitted.
+    async def matching_ssh(peer, remote, timeout = 20.0):
+        if "--version" in remote:
+            return 0, "version: 6109 (aaaaaaa)\n", ""
+        return await outer(peer, remote, timeout = timeout)
+
+    monkeypatch.setattr(ss, "ssh_run", matching_ssh)
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert started and ss.state().topology == "replicas"
+
+
+def test_an_unreadable_build_is_not_evidence_of_a_mismatch(cluster, monkeypatch, tmp_path):
+    # A version that cannot be read on either end is not evidence, and refusing on it would
+    # drop the pair to one node whenever a probe is slow.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+    monkeypatch.setattr(ss, "local_llama_server_version", lambda binary = None: None)
+
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert started and ss.state().topology == "replicas"
+
+    assert ss.parse_llama_server_version("version: 6109 (a1b2c3d)") == "6109 (a1b2c3d)"
+    assert ss.parse_llama_server_version("no version here") is None

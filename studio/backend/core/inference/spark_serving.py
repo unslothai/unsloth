@@ -862,6 +862,54 @@ def argv_or_env_rpc(argv: Sequence[str], env: Optional[Dict[str, str]] = None) -
     return bool(str(source.get("LLAMA_ARG_RPC") or "").strip())
 
 
+_VERSION_LINE = re.compile(r"version:\s*(\S+)\s*\(([0-9a-f]+)\)", re.IGNORECASE)
+
+
+def parse_llama_server_version(text: str) -> Optional[str]:
+    """``<build> (<commit>)`` out of ``llama-server --version``, or None if it is not there."""
+    match = _VERSION_LINE.search(str(text or ""))
+    return f"{match.group(1)} ({match.group(2)})" if match else None
+
+
+def local_llama_server_version(binary: Optional[str] = None) -> Optional[str]:
+    path = binary or llama_server_binary()
+    if not path:
+        return None
+    try:
+        done = subprocess.run(
+            [str(path), "--version"],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            timeout = HELP_PROBE_TIMEOUT_S,
+        )
+    except Exception:
+        return None
+    return parse_llama_server_version((done.stdout or b"").decode("utf-8", "replace"))
+
+
+async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
+    """The two builds, when they are KNOWN to differ, or None.
+
+    The replica is launched from the primary's complete argv, so an older peer build rejects a
+    flag the primary was given and the advertised replica never comes up, and two builds that
+    both start can answer the same request differently. The layer split compares the RPC
+    protocol before it commits; replicas compared nothing and took any executable with the
+    right name, including one off the PATH.
+
+    Known mismatch only, for the same reason as the GPU probe: a version that cannot be read
+    on either end is not evidence, and refusing on it would drop the pair to one node whenever
+    a probe is slow."""
+    local = await asyncio.to_thread(local_llama_server_version)
+    if not local:
+        return None
+    rc, out, _err = await ssh_run(peer, f"{shlex.quote(peer_binary)} --version 2>&1", timeout = 25.0)
+    remote = parse_llama_server_version(out) if rc == 0 else None
+    if not remote or remote == local:
+        return None
+    return f"this node runs llama-server {local} and {peer} runs {remote}"
+
+
 def redacted_argv(argv: List[str]) -> List[str]:
     out = list(argv)
     for index, arg in enumerate(out):
@@ -2394,6 +2442,18 @@ class SparkServing:
                 "single",
                 (
                     f"peer {peer} has no llama-server at the bundle path; run `unsloth spark provision`"
+                ),
+            )
+            logger.warning("spark serving: %s", self.reason)
+            return
+        mismatch = await replica_build_mismatch(peer, binary)
+        if mismatch:
+            self.topology, self.reason = (
+                "single",
+                (
+                    f"peer {peer} has a different llama-server build ({mismatch}); the replica "
+                    f"is launched from this node's argv, so run `unsloth spark provision` to "
+                    f"put the same build on both"
                 ),
             )
             logger.warning("spark serving: %s", self.reason)
