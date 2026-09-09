@@ -33,7 +33,12 @@ import numpy as np
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 from . import config
 from utils.paths.path_utils import is_appledouble_metadata
@@ -819,6 +824,10 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu, model_name)
         except RuntimeError:
+            # A shutdown refusal is terminal: the CPU fallback would just spawn into the
+            # same latch and be refused again.
+            if is_process_shutting_down():
+                raise
             if use_gpu and not config.embed_device_requires_gpu():
                 logger.warning("embed server GPU start failed; falling back to CPU")
                 self._force_cpu = True
@@ -842,6 +851,11 @@ class LlamaServerBackend:
             " ".join(cmd),
         )
         self._stdout_lines = []
+        # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
+        # encode still resolving or downloading its model as the app quits would
+        # otherwise Popen a server after terminate_all had taken its snapshot.
+        if is_process_shutting_down():
+            raise RuntimeError("Studio is shutting down; not starting the embed server")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -857,6 +871,14 @@ class LlamaServerBackend:
         # child_popen_kwargs() is empty on macOS, so the crash record is the only thing that can reap it
         # after a force quit.
         adopt_pid(proc.pid)
+        # Recheck once the pid is recorded, as the llama-server and inference worker
+        # spawns do: the latch can be set between the gate above and this record, and
+        # the child would then sit outside a sweep that has already finished. Adoption
+        # runs first either way, so a child killed here is still in the sweep record.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; killing the new embed server")
+            self._kill_process()
+            raise RuntimeError("Studio is shutting down; not starting the embed server")
         self._port = port
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout,

@@ -12,7 +12,9 @@ the skip-link / nav / footer furniture, and the README rendered inside
 
 from __future__ import annotations
 
+import email
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -705,13 +707,302 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.tools._validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
     err, body, content_type = _fetch_url_raw("https://example.com/")
     assert err is None
     assert "hello" in body
     assert content_type == ""
+
+
+def _four_address_getaddrinfo(hostname, port, *args, **kwargs):
+    import socket as _socket
+    return [
+        (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::1", port, 0, 0)),
+        (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::2", port, 0, 0)),
+        (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("104.16.0.1", port)),
+        (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("104.16.0.2", port)),
+    ]
+
+
+def test_validate_and_resolve_host_returns_every_validated_address(monkeypatch):
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _four_address_getaddrinfo)
+    ok, reason, ips = tools_mod._validate_and_resolve_host("example.com", 443)
+
+    assert (ok, reason) == (True, "")
+    assert ips == ["2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2"]
+
+
+class _FakeSocket:
+    def __init__(self, address):
+        self.address = address
+
+    def settimeout(self, value):
+        self.timeout = value
+
+
+def _recording_create_connection(
+    monkeypatch,
+    unreachable = (),
+    stall = (),
+    answers_above = None,
+    overrun = 1.0,
+):
+    """``socket.create_connection`` on a virtual clock: a dial charges its timeout
+    rather than sleeping it. *stall* burns the whole dial (*overrun* times it),
+    *answers_above* is an ``(ip, seconds)`` that connects only when given more."""
+    calls = []
+    spent = [0.0]
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + spent[0])
+
+    def create(
+        address,
+        timeout = None,
+        source_address = None,
+    ):
+        calls.append((address[0], timeout))
+        if address[0] in stall:
+            spent[0] += timeout * overrun
+            raise TimeoutError("timed out")
+        if address[0] in unreachable:
+            raise OSError(101, f"unreachable {address[0]}")
+        if answers_above is not None and address[0] == answers_above[0]:
+            if timeout is None or timeout <= answers_above[1]:
+                spent[0] += timeout
+                raise TimeoutError("timed out")
+            spent[0] += answers_above[1]
+        return _FakeSocket(address)
+
+    return calls, create
+
+
+@pytest.mark.parametrize("timeout", [30, None])
+def test_pinned_dial_walks_to_the_next_address_when_first_is_unreachable(monkeypatch, timeout):
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    # Only the third answers, so trying just the ends cannot pass.
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
+    unreachable = set(addresses) - {addresses[2]}
+    calls, create = _recording_create_connection(monkeypatch, unreachable = unreachable)
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    sock = dial((addresses[0], 443), timeout)
+
+    assert sock.address == (addresses[2], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses[:3])
+    capped = tools_mod._PINNED_DIAL_TIMEOUT if timeout else None
+    assert [dialled for _ip, dialled in calls] == [capped] * 3
+
+    calls.clear()
+    assert dial(("proxy.corp", 3128), timeout).address == ("proxy.corp", 3128)
+    assert [ip for ip, _timeout in calls] == ["proxy.corp"]
+
+    calls.clear()
+    with pytest.raises(OSError):
+        tools_mod._pinned_create_connection(addresses[:2])((addresses[0], 443), timeout)
+    assert len(calls) == (2 if timeout is None else 4)
+
+
+@pytest.mark.parametrize("overrun,budget", [(1.0, 0.3), (4.0, 0.001)])
+def test_pinned_dial_asks_for_no_more_than_the_callers_timeout(monkeypatch, overrun, budget):
+    # One budget for both passes; an overrunning dial still leaves the rest an attempt.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1")
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        stall = set(addresses),
+        overrun = overrun,
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    with pytest.raises(OSError):
+        dial((addresses[0], 443), budget)
+
+    assert sum(timeout for _ip, timeout in calls) <= budget
+    assert all(timeout >= 0 for _ip, timeout in calls)
+    assert [ip for ip, _timeout in calls] == list(addresses) * 2
+
+
+def test_pinned_dial_probe_stays_affordable_for_many_records(monkeypatch):
+    # A share of what is left compounds: half the remainder each time spent three
+    # quarters of a 31-record budget on probing alone.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = tuple(f"198.51.100.{i}" for i in range(31))
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        stall = set(addresses[:-1]),
+        unreachable = {addresses[-1]},
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    with pytest.raises(OSError, match = addresses[-1]):
+        dial((addresses[0], 443), 1.0)
+
+    probes = [timeout for _ip, timeout in calls[: len(addresses)]]
+    assert sum(probes) == pytest.approx(tools_mod._PINNED_PROBE_BUDGET)
+    assert calls[len(addresses)][1] == pytest.approx(
+        (1 - tools_mod._PINNED_PROBE_BUDGET) / len(addresses),
+        rel = 0.05,
+    )
+
+
+def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypatch):
+    # The probe is a first look, not a verdict.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_PINNED_DIAL_TIMEOUT", 0.02)
+    addresses = ("192.0.2.1", "2606:4700::2", "104.16.0.1")
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        unreachable = {addresses[0]},
+        stall = {addresses[1]},
+        answers_above = (addresses[2], 0.05),
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    sock = dial((addresses[0], 443), 0.6)
+
+    assert sock.address == (addresses[2], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses) * 2
+    assert [timeout for _ip, timeout in calls[:3]] == [0.02] * 3
+    # The first fails for free, so the next share rises from a third to a half.
+    assert calls[3][1] == pytest.approx((0.6 - 0.04) / 3, rel = 0.01)
+    assert calls[4][1] == pytest.approx(calls[3][1] * 3 / 2, rel = 0.01)
+    assert sock.timeout == 0.6
+
+
+def test_pinned_https_connection_walks_a_bracketed_ipv6_host(monkeypatch):
+    # http.client strips the brackets; the walk must still see a pinned address.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:2800:220:1::1", "93.184.216.34")
+    calls, create = _recording_create_connection(monkeypatch, unreachable = {addresses[0]})
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    handler = tools_mod._SNIHTTPSHandler("example.com", addresses)
+    conn = handler._sni_connection(f"[{addresses[0]}]", timeout = 30)
+    sock = conn._create_connection((conn.host, conn.port), conn.timeout, None)
+
+    assert sock.address == (addresses[1], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses)
+
+
+def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
+    # urllib reaches the walk itself, through http_open; only the dial is faked.
+    import socket as _socket
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "2606:4700::2", "203.0.113.9")
+    dialled = []
+    real_create_connection = _socket.create_connection
+    server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def create(
+        address,
+        timeout = None,
+        source_address = None,
+    ):
+        dialled.append(address[0])
+        if address[0] != addresses[2]:
+            raise OSError(101, "Network is unreachable")
+        sock = real_create_connection(server.getsockname(), timeout)
+        conn, _addr = server.accept()
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nthird one ok")
+        return sock
+
+    monkeypatch.setattr(_socket, "create_connection", create)
+    opener = urllib.request.build_opener(
+        tools_mod._PinnedHTTPHandler(addresses),
+        urllib.request.ProxyHandler({}),
+    )
+    with opener.open(f"http://[{addresses[0]}]/page", timeout = 5) as resp:
+        body = resp.read()
+    server.close()
+
+    assert body == b"third one ok"
+    assert dialled == list(addresses)
+
+
+def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypatch):
+    # The URL pins one address, all of them reach the connection, response keeps all.
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"slow origin answered"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    seen = {"timeouts": []}
+
+    class _SlowOriginOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            seen["timeouts"].append(timeout)
+            seen["url"] = req.full_url
+            if timeout is not None and timeout < 9:
+                raise urllib.error.URLError(TimeoutError("timed out"))
+            return _FakeResp()
+
+    def fake_build_opener(*handlers):
+        seen["handlers"] = handlers
+        return _SlowOriginOpener()
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _four_address_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        timeout = 30,
+        deadline = time.monotonic() + 30,
+    )
+
+    assert err is None
+    assert "slow origin answered" in body
+    assert seen["url"] == "https://[2606:4700::1]/"
+    assert seen["timeouts"] == [pytest.approx(30, abs = 1)]
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
+    for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
+        handler = next(h for h in seen["handlers"] if isinstance(h, handler_type))
+        assert handler._addresses == addresses
 
 
 @pytest.mark.parametrize(
@@ -758,11 +1049,17 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     def resolve(host, port):
         resolved.append((host, port))
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    built = []
+
+    def fake_build_opener(*handlers):
+        built.append(handlers)
+        return _FakeOpener()
+
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
     # Patch the lookups rather than the env: getproxies/proxy_bypass read system
     # settings on macOS and Windows.
     monkeypatch.setattr(
@@ -781,6 +1078,9 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     assert resolved == [("example.com", 8443)]
     assert [req.full_url for req in requested] == [expected_url]
     assert requested[0].get_header("Host") == "example.com:8443"
+    for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
+        handler = next(h for h in built[0] if isinstance(h, handler_type))
+        assert handler._addresses == (() if proxied else ("203.0.113.7",))
 
 
 def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
@@ -818,7 +1118,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"HTTPS": "http://proxy.corp:3128"})
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
@@ -891,7 +1191,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
 
@@ -1166,7 +1466,7 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _RedirectingOpener())
 
@@ -1204,7 +1504,7 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1279,7 +1579,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1306,7 +1606,7 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
     def slow_resolve(host, port):
         release.wait(5.0)  # block until released; the budget should abort first
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", slow_resolve)
 
