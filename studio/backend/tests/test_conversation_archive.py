@@ -2347,7 +2347,6 @@ def test_both_recall_paths_order_by_the_same_key():
     unmerged one on exactly the archives this ordering exists for.
     """
     from core.rag import conversation_archive
-
     for ordinal in (None, 0, 4):
         for created in ("", "2026-01-01T00:00:00Z"):
             for rowid in (None, 0, 12):
