@@ -43,7 +43,10 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
         Path(name).write_text(script, encoding = "utf-8-sig")
         result = subprocess.run(
             [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
-            check = True,
+            # check = False, then asserted below with the output attached. With check = True the
+            # only thing a failing run reports is "exit status 1" and the PowerShell error that
+            # caused it is discarded, which on a CI runner is the whole diagnosis gone.
+            check = False,
             capture_output = True,
             text = True,
             # utf-8 with replacement: cp1252 cannot decode what PowerShell writes.
@@ -57,6 +60,10 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             os.unlink(name)
         except OSError:
             pass
+    assert result.returncode == 0, (
+        f"{shell} exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    )
     return result.stdout.strip()
 
 
@@ -76,7 +83,12 @@ _FINAL_PATH_CHAIN = (
     "New-StudioPrivateTempDirectory",
     "Initialize-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
+    "Test-StudioCanDefineNativeTypes",
+    "Test-StudioEmitInChildProcess",
+    "New-StudioDynamicAssembly",
+    "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType",
+    "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
     "Get-StudioLexicalPath",
@@ -107,6 +119,11 @@ def _mutex_helpers(source: str) -> str:
             "Initialize-StudioTempEnvironment",
             "Write-StudioFinalPathDegraded",
             "Initialize-StudioFinalPathNativeType",
+            "Test-StudioCanDefineNativeTypes",
+            "Test-StudioEmitInChildProcess",
+            "New-StudioDynamicAssembly",
+            "New-StudioEmittedNativeType",
+            "Get-StudioNativeFinalPath",
             "Resolve-StudioLinkTarget",
             "Get-StudioSubstTarget",
             "Get-StudioLexicalPath",
@@ -139,12 +156,19 @@ def _process_helpers(source: str) -> str:
             "Initialize-StudioTempEnvironment",
             "Write-StudioFinalPathDegraded",
             "Initialize-StudioFinalPathNativeType",
+            "Test-StudioCanDefineNativeTypes",
+            "Test-StudioEmitInChildProcess",
+            "New-StudioDynamicAssembly",
+            "New-StudioEmittedNativeType",
+            "Get-StudioNativeFinalPath",
             "Resolve-StudioLinkTarget",
             "Get-StudioSubstTarget",
             "Get-StudioLexicalPath",
             "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
             "Test-StudioProtectedPathMatch",
+            "Initialize-StudioProcessImageNativeType",
+            "Get-StudioNativeProcessImagePath",
             "Get-StudioProcessImagePath",
             "Get-RunningStudioVenvProcesses",
         )
@@ -346,9 +370,9 @@ public static class UnslothStudioFinalPath
 }}
 '@
 {final_path_helper}
-Get-StudioFinalPath -Path $env:SystemRoot | Out-Null
-Write-Output ([bool]("UnslothStudioFinalPathV2" -as [type]))
-Write-Output ([bool]([UnslothStudioFinalPathV2]::GetProcessImagePath($PID)))
+$resolved = Get-StudioFinalPath -Path $env:SystemRoot
+Write-Output ([bool]("UnslothStudioFinalPathV3" -as [type]))
+Write-Output ([bool]($resolved -and (Test-Path -LiteralPath $resolved)))
 """
     assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["True", "True"]
 
@@ -1067,8 +1091,8 @@ def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
 
 @pytest.mark.parametrize(
     "helpers",
-    [_mutex_helpers, _process_helpers],
-    ids = ["mutex", "process"],
+    [_mutex_helpers, _process_helpers, _final_path_helpers],
+    ids = ["mutex", "process", "final-path"],
 )
 def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     """Every installer function these harnesses reach must be in the harness: the scripts run under

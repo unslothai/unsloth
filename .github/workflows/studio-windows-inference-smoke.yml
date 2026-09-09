@@ -135,6 +135,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # test_native_path_resolver_degrades.ps1 is deliberately NOT here. Its whole
+          # premise is a host where the emit succeeds and kernel32 does not resolve, so
+          # it asserts that the native rung answers null and the ladder reports the
+          # result inexact. On a healthy Windows runner those calls SUCCEED and every one
+          # of those assertions is false. It runs on the Linux leg of
+          # cross-platform-parity-ci.yml, which is the host it describes.
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.
