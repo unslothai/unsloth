@@ -387,6 +387,37 @@ def test_adapter_dual_format_charges_one_copy(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 300
 
 
+def test_an_adapter_is_charged_on_top_of_the_base_model_it_adapts(tmp_path):
+    # peft loads the adapter onto a base already resident, so both are needed.
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "adapter_model.safetensors", 50)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
+def test_an_adapter_never_stands_in_for_bare_shards_beside_it(tmp_path):
+    # The shards carry no index, so nothing opens them by name. The adapter does, and
+    # charging it alone reports a 50-byte model where a 1000-byte one sits.
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    _write(tmp_path / "adapter_model.safetensors", 50)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
+def test_an_unreadable_index_does_not_let_an_adapter_outrank_the_shards(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    (tmp_path / "model.safetensors.index.json").write_text("{ truncated")
+    _write(tmp_path / "adapter_model.bin", 50)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
+def test_an_adapter_beside_legacy_shards_is_charged_with_them(tmp_path):
+    _write(tmp_path / "pytorch_model-00001-of-00002.bin", 600)
+    _write(tmp_path / "pytorch_model-00002-of-00002.bin", 400)
+    _write(tmp_path / "adapter_model.safetensors", 50)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
 def test_index_decides_which_shards_are_loaded(tmp_path):
     _write(tmp_path / "model-00001-of-00002.safetensors", 600)
     _write(tmp_path / "model-00002-of-00002.safetensors", 400)

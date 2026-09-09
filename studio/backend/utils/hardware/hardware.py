@@ -5697,14 +5697,19 @@ _TRAINER_BOOKKEEPING = re.compile(
     r"(?:[-_]\d+(?:-of-\d+)?)?$"
 )
 # The order from_pretrained tries, the direct file ahead of the index within each spelling.
-_WEIGHT_ARCHIVES = (
+_MODEL_ARCHIVES = (
     ("model", ".safetensors"),
     ("pytorch_model", ".bin"),
     ("consolidated", ".safetensors"),
     ("consolidated", ".pth"),
+)
+# peft's own order, in a table of its own: an adapter is not another spelling of the base
+# model but a second payload loaded on top of it, so it never stands in for one.
+_ADAPTER_ARCHIVES = (
     ("adapter_model", ".safetensors"),
     ("adapter_model", ".bin"),
 )
+_WEIGHT_ARCHIVES = _MODEL_ARCHIVES + _ADAPTER_ARCHIVES
 
 
 def _index_targets(index: Path, directory: Path) -> set:
@@ -5736,10 +5741,10 @@ def _indexed_archive(directories: list, base: str, ext: str, tree: dict) -> tupl
     return chosen, every
 
 
-def _archive_candidates(directories: list, pool: dict, tree: dict) -> list:
+def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple) -> list:
     """Every spelling of the weights present here, in the order from_pretrained tries them."""
     candidates = []
-    for base, ext in _WEIGHT_ARCHIVES:
+    for base, ext in table:
         direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
         indexed, all_indexed = _indexed_archive(directories, base, ext, tree)
         # No index names these, but a pruned or unwritten index is still that model.
@@ -5755,19 +5760,16 @@ def _archive_candidates(directories: list, pool: dict, tree: dict) -> list:
     return candidates
 
 
-def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -> tuple:
-    """What one directory costs, and every file its spellings account for.
-
-    ``homes`` are the ``(folder, is_vendor)`` pairs answering to it, decided together because
-    splitting them lets a single archive lose in halves. ``tree`` carries every file, since an
-    index may name a shard below itself; the second return is what it accounted for.
-    """
+def _selected_archive(homes: list, sizes: dict, tree: dict, vendor: set, table: tuple) -> tuple:
+    """The one archive from ``table`` these folders open, and every spelling of it."""
     directories = [folder for folder, _ in homes]
-    candidates = _archive_candidates(directories, sizes, tree)
+    candidates = _archive_candidates(directories, sizes, tree, table)
     # A vendor copy never outranks weights a directory has of its own, and its folder drops out
     # whole: an index is one archive, so half of one must not outrank a complete candidate.
     native_pool = {path: size for path, size in sizes.items() if path not in vendor}
-    native = _archive_candidates([f for f, is_vendor in homes if not is_vendor], native_pool, tree)
+    native = _archive_candidates(
+        [f for f, is_vendor in homes if not is_vendor], native_pool, tree, table
+    )
 
     archive: dict = {}
     for choices in (native, candidates):
@@ -5776,7 +5778,23 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
             archive = (opens or choices)[0][0]
             break
 
-    alternatives = {path for *_, held in candidates for path in held}
+    return archive, {path for *_, held in candidates for path in held}
+
+
+def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -> tuple:
+    """What one directory costs, and every file its spellings account for.
+
+    ``homes`` are the ``(folder, is_vendor)`` pairs answering to it, decided together because
+    splitting them lets a single archive lose in halves. ``tree`` carries every file, since an
+    index may name a shard below itself; the second return is what it accounted for.
+    """
+    # Two tables, resolved apart: a base model and an adapter saved beside it are both
+    # loaded, so an 80 MB adapter must never stand in for the 8 GB model it adapts.
+    model, model_held = _selected_archive(homes, sizes, tree, vendor, _MODEL_ARCHIVES)
+    adapter, adapter_held = _selected_archive(homes, sizes, tree, vendor, _ADAPTER_ARCHIVES)
+    archive = {**model, **adapter}
+
+    alternatives = model_held | adapter_held
     rest = {path: size for path, size in sizes.items() if path not in alternatives}
     if archive:
         rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
@@ -5784,7 +5802,7 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     ordered = sorted(rest.items(), key = lambda i: (i[0].suffix != ".safetensors", i[0].name))
     for path, size in ordered:
         components.setdefault(path.stem, size)
-    here = set(directories)
+    here = {folder for folder, _ in homes}
     return sum(archive.values()) + sum(components.values()), {
         path for path in alternatives if path.parent in here
     } | set(archive)
