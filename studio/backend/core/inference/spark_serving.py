@@ -852,9 +852,25 @@ _REPLICA_ENV_DENY = frozenset({"LLAMA_ARG_HOST", "LLAMA_ARG_PORT"})
 # Normalised the way the backend normalises them before spawning, because llama.cpp compares
 # the raw string against ggml_type_name and throws on anything else, whitespace included.
 _REPLICA_ENV_LOWERED = frozenset({"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"})
+# The env twins of _SIDECAR_FLAGS: llama.cpp reads the same file from either route, so a path
+# that has to be absolutised in the argv has to be absolutised here too, or the fix only covers
+# whichever route this particular caller happened to use. Taken from the server's own --help,
+# which prints the env name beside each flag, rather than guessed from the flag spelling.
+# Deliberately not here: LLAMA_ARG_MMPROJ_URL and LLAMA_ARG_SPEC_DRAFT_HF_REPO name a URL and a
+# repo id, not a local file, and LLAMA_ARG_MODEL* / SSL / API_KEY_FILE are already refused
+# outright by DENIED_ENV_VARS below.
+_REPLICA_ENV_PATHS = frozenset(
+    {
+        "LLAMA_ARG_MMPROJ",
+        "LLAMA_ARG_SPEC_DRAFT_MODEL",
+        "LLAMA_ARG_CHAT_TEMPLATE_FILE",
+    }
+)
 
 
-def replica_env(source: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def replica_env(
+    source: Optional[Dict[str, str]] = None, *, cwd: Optional[str] = None
+) -> Dict[str, str]:
     """The llama.cpp settings the primary takes from its environment rather than its argv.
 
     ``LLAMA_ARG_CACHE_TYPE_K`` and ``_V`` are the ones that matter here: Studio leaves them in
@@ -885,6 +901,8 @@ def replica_env(source: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         text = str(value).strip()
         if not text:
             continue
+        if name in _REPLICA_ENV_PATHS:
+            text = absolute_sidecar_operand(text, cwd = cwd)
         out[name] = text.lower() if name in _REPLICA_ENV_LOWERED else text
     return out
 
@@ -1660,11 +1678,27 @@ def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
     return found
 
 
-def extra_args_refuse_pipeline_groups(extra_args: Optional[List[str]] = None) -> Optional[str]:
-    """The first pass-through flag the server still refuses together with the groups."""
+# The env twins of the flags the groups are refused with. llama.cpp's common_arg reads these
+# itself, so a projector or control vector can reach the server without ever appearing in argv,
+# and a check that only reads argv sees a clean launch and enables the groups anyway. Same
+# mechanism as the sidecar paths above: one setting, two routes, and a guard on one route only
+# is a guard that holds until somebody uses the other.
+_GROUPS_REFUSED_ENV = frozenset({"LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"})
+
+
+def extra_args_refuse_pipeline_groups(
+    extra_args: Optional[List[str]] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """The first pass-through flag or environment setting the server still refuses together
+    with the groups."""
     for arg in extra_args or []:
         name = _arg_name(arg)
         if name in _GROUPS_REFUSED_FLAGS:
+            return name
+    source = os.environ if env is None else env
+    for name in _GROUPS_REFUSED_ENV:
+        if str(source.get(name, "")).strip():
             return name
     return None
 

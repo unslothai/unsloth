@@ -3171,3 +3171,46 @@ def test_a_missing_shard_reports_the_size_unknown_rather_than_short(tmp_path):
 
     (tmp_path / "m-00003-of-00003.gguf").write_bytes(b"c" * 100)
     assert ss.gguf_size_bytes(str(first)) == 300
+
+
+def test_a_projector_that_arrives_only_through_the_environment_still_costs_the_groups(monkeypatch):
+    """llama.cpp's common_arg reads LLAMA_ARG_MMPROJ itself, so a projector can reach the server
+    without ever appearing in argv. A refusal that only read argv saw a clean launch and enabled
+    the groups anyway -- the same one-setting-two-routes shape as the sidecar paths."""
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ_URL", raising = False)
+    assert ss.extra_args_refuse_pipeline_groups([]) is None
+    assert ss.extra_args_refuse_pipeline_groups(["--mmproj", "p.gguf"]) == "--mmproj"
+
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", "/models/p.gguf")
+    assert ss.extra_args_refuse_pipeline_groups([]) == "LLAMA_ARG_MMPROJ"
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example/p.gguf")
+    assert ss.extra_args_refuse_pipeline_groups([]) == "LLAMA_ARG_MMPROJ_URL"
+    # an empty value is not a projector
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "  ")
+    assert ss.extra_args_refuse_pipeline_groups([]) is None
+
+
+def test_the_env_route_absolutises_the_same_sidecar_paths_the_argv_route_does():
+    """The peer resolves a bare name against its own login directory whichever route carried it,
+    so fixing only replica_argv fixed only the callers that happened to use argv."""
+    source = {
+        "LLAMA_ARG_MMPROJ": "proj.gguf",
+        "LLAMA_ARG_SPEC_DRAFT_MODEL": "draft.gguf",
+        "LLAMA_ARG_CHAT_TEMPLATE_FILE": "tmpl.jinja",
+        "LLAMA_ARG_MMPROJ_URL": "https://example/p.gguf",   # a URL, must be left alone
+        "LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/repo",          # a repo id, must be left alone
+        "LLAMA_ARG_CACHE_TYPE_K": "Q8_0",
+    }
+    out = ss.replica_env(source, cwd = "/work")
+    assert out["LLAMA_ARG_MMPROJ"] == "/work/proj.gguf"
+    assert out["LLAMA_ARG_SPEC_DRAFT_MODEL"] == "/work/draft.gguf"
+    assert out["LLAMA_ARG_CHAT_TEMPLATE_FILE"] == "/work/tmpl.jinja"
+    assert out["LLAMA_ARG_MMPROJ_URL"] == "https://example/p.gguf", "a URL is not a path"
+    assert out["LLAMA_ARG_SPEC_DRAFT_HF_REPO"] == "org/repo", "a repo id is not a path"
+    assert out["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0", "the lowering still applies"
+    # already absolute stays put
+    assert ss.replica_env({"LLAMA_ARG_MMPROJ": "/abs/p.gguf"}, cwd = "/work") == {
+        "LLAMA_ARG_MMPROJ": "/abs/p.gguf"
+    }
