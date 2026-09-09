@@ -7360,10 +7360,20 @@ def _prepare_tool_launch(plan):
             prepared.env = _session_packages_env(prepared.env, plan.workdir)
         return prepared
     except os_sandbox.SandboxUnavailableError:
+        # Refused, and on a host that CAN isolate a refusal never becomes an
+        # unisolated launch. The subject of every one of those refusals is the
+        # session workdir, which is the one thing a tool call can write to, so
+        # answering them with "run the next call on the host" hands model-authored
+        # code a switch for its own boundary. auto's promise was always about a
+        # host that cannot build a sandbox at all -- no bwrap, no user namespace,
+        # not this platform -- and that path does not come through here.
+        #
         # An unknown mode is a caller error rather than a host that cannot
-        # isolate, so it is never swallowed into a fallback launch.
+        # isolate, and is never swallowed either.
         known = plan.requested_mode in os_sandbox.TOOL_EXECUTION_MODES
         if plan.requested_mode == "required" or not known:
+            raise
+        if os_sandbox.capability_snapshot().available:
             raise
         logger.warning(
             "The sandbox backend declined this launch, running with software safeguards",

@@ -606,8 +606,22 @@ def _declining_backend(monkeypatch, reason: str) -> None:
     ],
     ids = ["python", "terminal"],
 )
-def test_auto_falls_back_when_the_backend_declines_this_launch(monkeypatch, run, expected):
-    _declining_backend(monkeypatch, "the session workdir is too large to check for host channels")
+def test_a_declined_launch_falls_back_only_where_nothing_could_have_isolated(
+    monkeypatch, run, expected
+):
+    """The fallback belongs to a host that cannot build a sandbox at all. Where one
+    COULD have been built, a refusal is a failed call: the subject of every backend
+    refusal is the session workdir, which is the one thing a tool call can write
+    to, so answering those with "run on the host" hands model-authored code a
+    switch for its own boundary."""
+    _declining_backend(monkeypatch, "the session workdir contains a device node")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kwargs: os_sandbox.SandboxCapability(
+            backend = "none", available = False, reason = "stubbed for this test"
+        ),
+    )
     tools._last_tool_execution_record = None
     out = run()
     assert expected in out
@@ -625,16 +639,30 @@ def test_auto_falls_back_when_the_backend_declines_this_launch(monkeypatch, run,
     assert "host_files_readable" in record.limitations
 
 
+@pytest.mark.skipif(
+    not os_sandbox.capability_snapshot().available, reason = "this host cannot isolate"
+)
+def test_a_declined_launch_fails_rather_than_de_isolating_where_isolation_was_possible(monkeypatch):
+    """The other half, and the one that closes the escalation: on a host that can
+    isolate, a refusal never becomes an unisolated launch."""
+    _declining_backend(monkeypatch, "the session workdir contains a device node")
+    tools._last_tool_execution_record = None
+    out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
+    assert "SHOULD_NOT_RUN" not in out
+    assert "device node" in out
+    assert tools._last_tool_execution_record is None
+
+
 def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatch):
-    _declining_backend(monkeypatch, "the session workdir contains a device or IPC node")
+    _declining_backend(monkeypatch, "the session workdir contains a device node")
     out = tools._python_exec(
         "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
     )
     assert "SHOULD_NOT_RUN" not in out
-    assert "device or IPC node" in out
+    assert "device node" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
+@pytest.mark.skipif(True, reason = "superseded: a refusal on a capable host is now a failed call")
 @pytest.mark.parametrize("kind", ["hardlink"])
 def test_a_workdir_the_backend_refuses_does_not_take_the_tools_away(kind):
     """End to end, through the real planner: the conditions the Linux backend
@@ -787,7 +815,14 @@ def test_a_package_installed_in_an_isolated_call_survives_a_fallback(monkeypatch
     os.makedirs(os.path.join(packages, "bin"), exist_ok = True)
     with open(os.path.join(packages, "installed_by_an_earlier_call.py"), "w") as handle:
         handle.write("VALUE = 'from the session package directory'\n")
-    _declining_backend(monkeypatch, "the session workdir contains a device or IPC node")
+    _declining_backend(monkeypatch, "the session workdir contains a device node")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kwargs: os_sandbox.SandboxCapability(
+            backend = "none", available = False, reason = "stubbed for this test"
+        ),
+    )
     try:
         out = tools._python_exec(
             "import installed_by_an_earlier_call as m; print('IMPORTED', m.VALUE)",

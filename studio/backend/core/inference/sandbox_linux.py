@@ -476,22 +476,21 @@ class _CacheMountpoints:
     def _mkdir(self, name: str) -> None:
         """``mkdir`` in the innermost directory, recorded only if it was made here.
 
-        An entry that already exists but is not a plain directory is REPLACED, not
-        refused. These are Studio's own mount points in a dot directory it created,
-        so there is nothing of the user's to lose, and refusing would hand tool
-        code the second half of the switch the workdir scan just stopped being: a
-        leaf a call leaves behind as a symlink would make the next preparation
-        raise, and ``auto`` answers a raise by running unisolated. Repairing keeps
-        the boundary on and keeps the O_NOFOLLOW guarantee, since what is opened
-        afterwards is a directory this call made.
+        An entry that already exists but is not a plain directory is REFUSED, and
+        nothing of the user's is deleted to make room. Symlinking a cache leaf at
+        another volume is a legitimate layout, and these names are not reserved
+        from workspace content. Refusing is safe again because a refusal no longer
+        de-isolates anything: on a host that can isolate, _prepare_tool_launch
+        turns it into a failed call rather than an unisolated one.
         """
         try:
             os.mkdir(name, dir_fd = self._fds[-1])
         except FileExistsError:
             if self._is_plain_directory(name):
                 return
-            os.unlink(name, dir_fd = self._fds[-1])
-            os.mkdir(name, dir_fd = self._fds[-1])
+            raise SandboxUnavailableError(
+                f"the session workdir's model cache path is not a plain directory: {name}"
+            ) from None
         self._made.append((len(self._fds) - 1, name))
 
     def _is_plain_directory(self, name: str) -> bool:

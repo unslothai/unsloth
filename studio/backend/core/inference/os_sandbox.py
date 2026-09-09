@@ -23,6 +23,7 @@ can still send it. Keeping that gap honest is why the record says
 """
 
 from __future__ import annotations
+import errno
 import hashlib
 import os
 import platform
@@ -263,6 +264,14 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     links: dict[tuple[int, int], list] = {}
 
     def stop(exc: OSError) -> None:
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            # A directory a tool call chmodded to 000. Unreadable to the scan and
+            # equally unreadable to anything the bind carries it into, so it is
+            # not a channel; skipped rather than refused, because refusing on
+            # something sandboxed code can create is how one call reaches into
+            # the next one's isolation.
+            logger.info("Skipped an unreadable session workdir entry: %s", exc.filename)
+            return
         raise SandboxUnavailableError(
             f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
         ) from exc
@@ -276,6 +285,10 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                     "refused for a budget a tool call can spend on its own",
                     entries,
                 )
+                # Not "clean": what was already counted still has to add up, or a
+                # link leading outside that the scan DID reach would be waved
+                # through by a tool call writing enough files to end the walk.
+                _refuse_unaccounted_links(links)
                 return
             path = os.path.join(base, name)
             try:
@@ -305,6 +318,11 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1
+    _refuse_unaccounted_links(links)
+
+
+def _refuse_unaccounted_links(links: dict) -> None:
+    """Refuse a hard link whose inode has more names than this walk found."""
     for found, total, path in links.values():
         if found < total:
             raise SandboxUnavailableError(
