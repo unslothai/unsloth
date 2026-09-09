@@ -57,6 +57,23 @@ def _conversation():
     ]
 
 
+def _truncated_turn(
+    *,
+    role = "assistant",
+    content = "a",
+    fits = True,
+    dropped_messages = 4,
+):
+    """A stored turn carrying a context-truncation record, with per-test overrides."""
+    return {
+        "role": role,
+        "content": content,
+        "metadata": {
+            "custom": {"contextTruncation": {"fits": fits, "dropped_messages": dropped_messages}}
+        },
+    }
+
+
 def test_recall_runs_even_when_document_rag_is_off(archived):
     """Compaction happens regardless of the user's RAG toggle.
 
@@ -327,21 +344,9 @@ def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 12}}
-                },
-            },
+            _truncated_turn(dropped_messages = 12),
             {"role": "user", "content": "q2"},
-            {
-                "role": "assistant",
-                "content": "a2",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 18}}
-                },
-            },
+            _truncated_turn(content = "a2", dropped_messages = 18),
         ],
     )
 
@@ -360,20 +365,11 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "answer on the branch we are on",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "regenerated answer the user switched away from",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 40}}
-                },
-            },
+            _truncated_turn(content = "answer on the branch we are on"),
+            _truncated_turn(
+                content = "regenerated answer the user switched away from",
+                dropped_messages = 40,
+            ),
         ],
     )
     branch = [
@@ -401,20 +397,8 @@ def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch)
         monkeypatch,
         [
             {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Done."),
+            _truncated_turn(content = "Done.", dropped_messages = 60),
         ],
     )
     branch = [
@@ -437,20 +421,8 @@ def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypa
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "an earlier, shallower answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 2}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "the newest answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 30}}
-                },
-            },
+            _truncated_turn(content = "an earlier, shallower answer", dropped_messages = 2),
+            _truncated_turn(content = "the newest answer", dropped_messages = 30),
         ],
     )
     branch = [
@@ -473,20 +445,8 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
         monkeypatch,
         [
             {"role": "user", "content": "did it work"},
-            {
-                "role": "assistant",
-                "content": "Not done yet, still running.",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "Done",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Not done yet, still running."),
+            _truncated_turn(content = "Done", dropped_messages = 60),
         ],
     )
     branch = [
@@ -509,13 +469,7 @@ def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(m
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "the answer",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 9}}
-                },
-            },
+            _truncated_turn(content = "the answer", dropped_messages = 9),
         ],
     )
     branch = [
@@ -680,13 +634,7 @@ def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 6}}
-                },
-            },
+            _truncated_turn(dropped_messages = 6),
         ],
     )
 
@@ -723,13 +671,7 @@ def test_sticky_boundary_only_matches_assistant_messages(monkeypatch):
         monkeypatch,
         [
             {"role": "user", "content": "did the deploy finish? not done yet I think"},
-            {
-                "role": "assistant",
-                "content": "Done",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
-                },
-            },
+            _truncated_turn(content = "Done", dropped_messages = 60),
         ],
     )
     branch = [{"role": "user", "content": "did the deploy finish? not done yet I think"}]
@@ -771,13 +713,7 @@ def test_sticky_boundary_ignores_a_fit_that_did_not_fit(monkeypatch):
     _fake_studio_db(
         monkeypatch,
         [
-            {
-                "role": "assistant",
-                "content": "a",
-                "metadata": {
-                    "custom": {"contextTruncation": {"fits": False, "dropped_messages": 40}}
-                },
-            },
+            _truncated_turn(fits = False, dropped_messages = 40),
         ],
     )
 

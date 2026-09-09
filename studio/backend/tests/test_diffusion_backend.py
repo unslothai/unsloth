@@ -868,16 +868,29 @@ def fake_runtime(monkeypatch):
     yield
 
 
+_LOAD_DEFAULTS = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
+
+
+def _load_into(backend, tmp_path, **overrides):
+    """``load_pipeline`` on ``tmp_path`` over the z-image defaults; writes no checkpoint file."""
+    return backend.load_pipeline(str(tmp_path), **{**_LOAD_DEFAULTS, **overrides})
+
+
+def _loaded_backend(tmp_path, **overrides):
+    """A backend loaded off a stub checkpoint written into ``tmp_path``.
+
+    ``overrides`` replace the z-image defaults and are forwarded to ``load_pipeline``.
+    """
+    filename = overrides.get("gguf_filename", _LOAD_DEFAULTS["gguf_filename"])
+    (tmp_path / filename).write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, **overrides)
+    return backend
+
+
 def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_runtime, tmp_path):
     """The guard in isolation: a snapshot naming another model is refused, typed (#9448)."""
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     st = backend.status()
     loaded = load_identity(st["repo_id"], st["base_repo"], st["family"])
 
@@ -967,23 +980,11 @@ def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_run
     base_repo and family_override are settable per load, so one local checkpoint reloads as a
     different model. Pinning the path alone let a FLUX.1-dev request reach a schnell pipeline.
     """
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "black-forest-labs/FLUX.1-dev",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path, base_repo = "black-forest-labs/FLUX.1-dev")
     st = backend.status()
     snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "black-forest-labs/FLUX.1-schnell",
-        family_override = "z-image",
-    )
+    _load_into(backend, tmp_path, base_repo = "black-forest-labs/FLUX.1-schnell")
     assert backend.status()["repo_id"] == snapshot.repo_id  # repo_id alone sees no change
     with pytest.raises(DiffusionModelReplacedError) as replaced:
         backend.generate(prompt = "p", steps = 28, guidance = 3.5, expected_load = snapshot)
@@ -994,13 +995,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-        hf_token = "hf_secret",
-    )
+    status = _load_into(backend, tmp_path, hf_token = "hf_secret")
     assert status["loaded"] is True
     assert status["family"] == "z-image"
     assert status["base_repo"] == "base/repo"
@@ -1044,12 +1039,7 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
     (tmp_path / filename).write_bytes(b"weights")
     backend = DiffusionBackend()
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = filename,
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    status = _load_into(backend, tmp_path, gguf_filename = filename)
 
     assert status["dtype"] == "float32"  # compute dtype is a separate concern
     assert status["gguf_variant"] == "Q8_0"
@@ -1058,15 +1048,7 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
 
 def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
     # Active must be published the moment the lock is held, before the slow setup that _apply_loras runs in.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-        hf_token = "hf_secret",
-    )
+    backend = _loaded_backend(tmp_path, hf_token = "hf_secret")
 
     seen = {}
 
@@ -1090,15 +1072,7 @@ def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypat
 
 def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkeypatch):
     # A setup failure skips the inner finally, so the outer finally must clear the published progress.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-        hf_token = "hf_secret",
-    )
+    backend = _loaded_backend(tmp_path, hf_token = "hf_secret")
 
     def boom(self, state, loras, cancel):
         raise RuntimeError("setup failed")
@@ -1115,15 +1089,7 @@ def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_p
     # The compile-cache save runs before the route persists the image, so progress must stay active through it.
     from core.inference import diffusion as dmod
 
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-        hf_token = "hf_secret",
-    )
+    backend = _loaded_backend(tmp_path, hf_token = "hf_secret")
 
     seen = {}
 
@@ -1164,11 +1130,8 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
-        family_override = "qwen-image",
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
     )
     assert status["speed_mode"] == "off"
     assert status["resolved"]["speed_mode"]["value"] == "deferred"
@@ -1186,10 +1149,10 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 
     # An explicit "off" is pinned: no deferral, still eager after 3 generations.
     backend.unload()
-    status_off = backend.load_pipeline(
-        str(tmp_path),
+    status_off = _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
         family_override = "qwen-image",
         speed_mode = "off",
     )
@@ -1215,13 +1178,8 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     # Stub LoRA loading (covered elsewhere) so no adapter file is needed.
     monkeypatch.setattr(DiffusionBackend, "_apply_loras", lambda self, state, loras, cancel: None)
 
-    (tmp_path / "model.safetensors").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
-        family_override = "qwen-image",
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
     )
     backend.generate(prompt = "one")
     backend.generate(prompt = "two")
@@ -1253,13 +1211,8 @@ def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, mon
 
     monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
 
-    (tmp_path / "model.safetensors").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
-        family_override = "qwen-image",
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
     )
     # Gens 1-2 attach an adapter, so it is still resident going into gen 3.
     backend.generate(prompt = "one", loras = [("adapter", 1.0)])
@@ -1303,10 +1256,10 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
 
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
+    _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
         family_override = "qwen-image",
         attention_backend = "native",
     )
@@ -1323,12 +1276,7 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
 
     # Control: on auto the same deferral does upgrade to cuDNN, so the assertion above is not vacuous.
     backend.unload()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
-        family_override = "qwen-image",
-    )
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
     for p in ("a", "b", "c"):
         backend.generate(prompt = p)
     assert backend.status()["attention_backend"] == "_native_cudnn"
@@ -1351,10 +1299,7 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     Pipeline.from_pipe around the loaded pipe (no reload), with image + strength passed
     and width/height dropped (the img2img pipe derives size from the input image)."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     # The family advertises its image-conditioned workflows for UI gating (upscale rides img2img).
     assert backend.status()["workflows"] == ["txt2img", "img2img", "upscale", "inpaint", "outpaint"]
 
@@ -1583,7 +1528,7 @@ def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monk
     )
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    backend.load_pipeline(str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo")
+    _load_into(backend, tmp_path, family_override = None)
     assert backend.status()["workflows"] == ["txt2img"]
     with pytest.raises(ValueError, match = "img2img"):
         backend.generate(prompt = "x", steps = 4, init_image = _tiny_png_b64())
@@ -1594,9 +1539,7 @@ def test_generate_rejects_conditioning_without_init_image(fake_runtime, tmp_path
     clear ValueError rather than silently degrading to txt2img."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    _load_into(backend, tmp_path)
     with pytest.raises(ValueError, match = "mask_image requires"):
         backend.generate(prompt = "x", steps = 4, mask_image = _mask_b64(64))
     with pytest.raises(ValueError, match = "upscale requires"):
@@ -1608,10 +1551,7 @@ def test_generate_rejects_conditioning_without_init_image(fake_runtime, tmp_path
 def test_generate_rejects_reference_on_unsupported_family(fake_runtime, tmp_path):
     """A non-reference family rejects reference_images instead of silently dropping them."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     with pytest.raises(ValueError, match = "Reference images are not supported"):
         backend.generate(
             prompt = "x",
@@ -1626,10 +1566,7 @@ def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
     pipeline (hires fix): the source is enlarged to size*factor (rounded to /16) before the
     denoise, the strength defaults low, and the factor is capped so a huge value can't OOM."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     # Upscale rides the img2img pipeline, so it is advertised alongside img2img.
     assert "upscale" in backend.status()["workflows"]
 
@@ -1690,10 +1627,7 @@ def test_decode_image_rejects_oversized(fake_runtime, tmp_path):
     """An input image larger than the per-side cap is rejected with a clear error (protects
     img2img / inpaint / reference from decompression-bomb / OOM inputs), not a 500."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     with pytest.raises(ValueError, match = "too large"):
         backend.generate(prompt = "x", steps = 4, init_image = _png_b64(4112))  # > 4096/side
 
@@ -1702,10 +1636,7 @@ def test_upscale_output_is_capped(fake_runtime, tmp_path):
     """Upscale bounds the absolute output side to 2048 even when input*factor exceeds it, so a
     large upload at 4x can't OOM the VAE/transformer."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 4.0)
     # 1024 * 4 = 4096 -> clamped to 2048 (longest side), still a multiple of 16.
     assert _FakeImg2ImgPipe.last_kwargs["image"].size == (2048, 2048)
@@ -1730,10 +1661,7 @@ def test_img2img_snaps_non_multiple_of_16(fake_runtime, tmp_path):
     """An odd-sized img2img upload (not divisible by 16) is auto-resized to the nearest
     multiple of 16 so the pipeline's divisibility check passes instead of erroring."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png_b64(186), strength = 0.5)
     # 186 / 16 = 11.625 -> round to 12 -> 192.
     assert _FakeImg2ImgPipe.last_kwargs["image"].size == (192, 192)
@@ -1743,10 +1671,7 @@ def test_inpaint_snaps_image_and_mask_together(fake_runtime, tmp_path):
     """Inpaint snaps the odd-sized input to /16 AND resizes the mask to match, so the image
     and mask stay aligned (a mismatch would crash the inpaint pipeline)."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     backend.generate(
         prompt = "x",
         steps = 4,
@@ -1769,13 +1694,7 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     diffusers.Flux2KleinInpaintPipeline = _FakeInpaintPipeline
     diffusers.Flux2Transformer2DModel = _FakeTransformer
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "flux.2-klein",
-    )
+    backend = _loaded_backend(tmp_path, family_override = "flux.2-klein")
     # FLUX.2-klein: txt2img + reference (own pipe) + inpaint (dedicated pipe). No img2img class, so no img2img/upscale.
     assert backend.status()["workflows"] == ["txt2img", "reference", "inpaint"]
 
@@ -1851,10 +1770,7 @@ def test_generate_inpaint_uses_from_pipe(fake_runtime, tmp_path):
     built via Pipeline.from_pipe around the loaded pipe (no reload), with the decoded image
     + mask + strength passed through and width/height dropped (size derives from the input)."""
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     loaded_pipe = backend._state.pipe
     out = backend.generate(
         prompt = "a red door",
@@ -1916,10 +1832,7 @@ def test_image_conditioned_passes_image_size_not_slider(fake_runtime, tmp_path):
 
     diffusers.ZImageImg2ImgPipeline = _SizePipeline
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     buf = io.BytesIO()
     Image.new("RGB", (96, 64), (10, 20, 30)).save(buf, format = "PNG")  # non-square, non-slider
     b64 = base64.b64encode(buf.getvalue()).decode()
@@ -1961,10 +1874,7 @@ def test_register_shape_uses_actual_forward_dims(fake_runtime, tmp_path, monkeyp
     )
     monkeypatch.setattr(diff.compile_cache, "save", lambda ctx, *, logger = None: True)
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
     # txt2img registers the requested slider size.
     backend.generate(prompt = "x", steps = 4, width = 1024, height = 512, seed = 1)
     assert registered[-1] == (1024, 512, 1)
@@ -1987,11 +1897,8 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
     no input image."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "Qwen/Qwen-Image-Edit-2511",
-        family_override = "qwen-image-edit",
+    _load_into(
+        backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit-2511", family_override = "qwen-image-edit"
     )
     # Edit families advertise only the edit workflow.
     assert backend.status()["workflows"] == ["edit"]
@@ -2037,11 +1944,8 @@ def test_load_single_file_safetensors_no_gguf_config(fake_runtime, tmp_path):
     GGUF dequant config (it carries its own dtype), then assembled from the base repo."""
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.safetensors",
-        base_repo = "base/repo",
-        family_override = "qwen-image",
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
     )
     assert status["loaded"] is True
     assert _FakeTransformer.last["path"] == str((tmp_path / "model.safetensors").resolve())
@@ -2075,8 +1979,8 @@ def test_load_sdxl_single_file_uses_pipeline_from_single_file(fake_runtime, tmp_
     (UNet2DConditionModel has no companion-transformer assembly here)."""
     (tmp_path / "sdxl.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "sdxl.safetensors", family_override = "sdxl"
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl"
     )
     assert status["loaded"] is True
     assert status["family"] == "sdxl"
@@ -2258,13 +2162,7 @@ def test_failed_load_rolls_back_eager_patches(fake_runtime, tmp_path, monkeypatc
 def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        family_override = "z-image",
-        base_repo = "base/repo",
-        cpu_offload = True,
-    )
+    status = _load_into(backend, tmp_path, cpu_offload = True)
     # No CUDA in the stub, so offload is not engaged.
     assert status["cpu_offload"] is False
 
@@ -2272,13 +2170,7 @@ def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
 def test_low_vram_ignored_off_cuda(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        family_override = "z-image",
-        base_repo = "base/repo",
-        memory_mode = "low_vram",
-    )
+    status = _load_into(backend, tmp_path, memory_mode = "low_vram")
     # No CUDA in the stub, so offload is not engaged regardless of the request.
     assert status["cpu_offload"] is False
 
@@ -2306,13 +2198,7 @@ def test_failed_load_restores_backend_flags(fake_runtime, tmp_path, monkeypatch)
     )
 
     with pytest.raises(RuntimeError, match = "out of memory"):
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "model.gguf",
-            family_override = "z-image",
-            base_repo = "base/repo",
-            speed_mode = "max",
-        )
+        _load_into(backend, tmp_path, speed_mode = "max")
     assert restored, "restore_backend_flags was not called on the failed-load path"
     assert cleared, "clear_gpu_cache was not called on the failed-load path (VRAM leak)"
     assert backend._state is None and backend.is_loaded is False
@@ -2460,14 +2346,7 @@ def test_estimate_eta():
 
 
 def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "Qwen/Qwen-Image",
-        family_override = "qwen-image",
-    )
+    backend = _loaded_backend(tmp_path, base_repo = "Qwen/Qwen-Image", family_override = "qwen-image")
     backend.generate(prompt = "a sloth", guidance = 4.0)
     # Qwen-Image's distilled guidance is off; the real CFG must land on true_cfg_scale.
     call = backend._state.pipe.last_kwargs
@@ -2485,16 +2364,16 @@ def test_ideogram_rejects_single_file_and_gguf_kinds(fake_runtime, tmp_path):
     backend = DiffusionBackend()
     (tmp_path / "model.gguf").write_bytes(b"x")
     with pytest.raises(ValueError, match = "full diffusers pipeline"):
-        backend.load_pipeline(
-            str(tmp_path), gguf_filename = "model.gguf", family_override = "ideogram-4"
-        )
+        _load_into(backend, tmp_path, base_repo = None, family_override = "ideogram-4")
     (tmp_path / "model.safetensors").write_bytes(b"x")
     with pytest.raises(ValueError, match = "full diffusers pipeline"):
-        backend.load_pipeline(
-            str(tmp_path),
+        _load_into(
+            backend,
+            tmp_path,
             gguf_filename = "model.safetensors",
-            model_kind = "single_file",
+            base_repo = None,
             family_override = "ideogram-4",
+            model_kind = "single_file",
         )
 
 
@@ -2538,12 +2417,7 @@ def test_generate_other_family_never_passes_cfg_trunc_ratio(fake_runtime, tmp_pa
     # The kwarg is family-gated, not just signature-gated, so another family accepting it must not inherit Lumina's constant.
     backend = DiffusionBackend()
     (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    _load_into(backend, tmp_path)
     backend.generate(prompt = "a sloth", steps = 9, guidance = 0.0)
     call = backend._state.pipe.last_kwargs
     assert call["cfg_trunc_ratio"] is None
@@ -3199,7 +3073,7 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
     load_done = threading.Event()
 
     def _load():
-        backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+        _load_m(backend, tmp_path)
         load_done.set()
 
     lt = threading.Thread(target = _load)
@@ -3225,7 +3099,7 @@ def test_load_reports_memory_plan_fields_on_cpu(fake_runtime, tmp_path):
     # The default stub resolves to a CPU target: no offload possible, VAE tiling on, and status carries the new fields.
     (tmp_path / "m.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = _load_m(backend, tmp_path)
     assert status["offload_policy"] == "none"
     assert status["cpu_offload"] is False
     assert status["vae_tiling"] is True
@@ -3250,14 +3124,54 @@ def _force_cuda_target(backend, monkeypatch):
     monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
 
 
-def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path, monkeypatch):
-    # balanced requests streamed group offload; with no diffusers.hooks the stub falls back to whole-module offload and reports it.
+def _mps_target(torch):
+    """An Apple/MPS device target: no model offload, no compile, no pinned transfer."""
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    return DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+
+
+def _fake_zimage_hub(monkeypatch):
+    """The Z-Image GGUF / base / FP8 trio the prequant tests resolve against."""
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+
+
+def _cuda_backend(tmp_path, monkeypatch):
+    """A CUDA-target backend with an ``m.gguf`` stub checkpoint written into ``tmp_path``."""
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "balanced"
+    return backend
+
+
+def _load_m(backend, tmp_path, **kwargs):
+    """``load_pipeline`` on the ``m.gguf`` z-image stub, with per-test overrides."""
+    return backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", **kwargs
     )
+
+
+def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path, monkeypatch):
+    # balanced requests streamed group offload; with no diffusers.hooks the stub falls back to whole-module offload and reports it.
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    status = _load_m(backend, tmp_path, memory_mode = "balanced")
     assert status["offload_policy"] in ("group", "model") and status["cpu_offload"] is True
     assert status["memory_mode"] == "balanced"
     assert backend._state.pipe.offloaded is True  # model-offload fallback engaged
@@ -3265,12 +3179,8 @@ def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path,
 
 def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path, monkeypatch):
     # low_vram offloads every component; whole-module offload is the robust path and engages directly.
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "low_vram"
-    )
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    status = _load_m(backend, tmp_path, memory_mode = "low_vram")
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
     pipe = backend._state.pipe
     assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
@@ -3282,9 +3192,7 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
     from core.inference import diffusion as dmod
     from core.inference.diffusion_precision import TEQuantOutcome
 
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
+    backend = _cuda_backend(tmp_path, monkeypatch)
     seen = {"quantized": False, "refined": False}
 
     def _quantize(*args, **kwargs):
@@ -3302,12 +3210,7 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     monkeypatch.setattr(dmod, "quantize_text_encoders", _quantize)
     monkeypatch.setattr(dmod, "refine_memory_plan_for_components", _refine)
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        memory_mode = "low_vram",
-    )
+    _load_m(backend, tmp_path, memory_mode = "low_vram")
     assert seen == {"quantized": True, "refined": True}
 
 
@@ -3315,12 +3218,8 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
     fake_runtime, tmp_path, monkeypatch
 ):
     # cpu_offload=True with no mode: auto would stay resident under the stub, but the explicit flag forces whole-module offload.
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", cpu_offload = True
-    )
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    status = _load_m(backend, tmp_path, cpu_offload = True)
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
 
 
@@ -3330,26 +3229,17 @@ def test_load_speed_mode_gguf_auto_defaults_and_explicit(
     # No speed_mode on a GGUF model resolves to auto `default`; compile is CUDA-only, so nothing engages on this CPU stub.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = _load_m(backend, tmp_path)
     assert status["speed_mode"] == "default"
     # An explicit "off" opts back into the bit-identical path (engages nothing).
-    status_off = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "off"
-    )
+    status_off = _load_m(backend, tmp_path, speed_mode = "off")
     assert status_off["speed_mode"] == "off" and status_off["speed_optims"] == []
     # An explicit speed_mode threads through to status (engaged optims are GPU-verified).
-    status2 = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
-    )
+    status2 = _load_m(backend, tmp_path, speed_mode = "max")
     assert status2["speed_mode"] == "max"
     # Text-encoder quant defaults off; a requested mode threads through (engagement is GPU-verified).
     assert status2["text_encoder_quant"] is None
-    status3 = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        text_encoder_quant = "nvfp4",
-    )
+    status3 = _load_m(backend, tmp_path, text_encoder_quant = "nvfp4")
     # Under the CPU stub nvfp4 is unsupported, so it engages nothing (the legacy escape hatch is
     # set; the strict default refuses the load -- see
     # test_explicit_text_encoder_quant_refuses_when_nothing_engaged).
@@ -3360,12 +3250,8 @@ def test_load_speed_mode_gguf_auto_defaults_and_explicit(
 
 
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "fast"
-    )
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    status = _load_m(backend, tmp_path, memory_mode = "fast")
     assert status["offload_policy"] == "none" and status["cpu_offload"] is False
     assert backend._state.pipe.moved_to == "cuda"
 
@@ -3417,7 +3303,7 @@ def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, mo
     monkeypatch.setattr(dmod, "dense_transformer_supported", _supported)
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = _load_m(backend, tmp_path)
     assert consulted["n"] >= 1
     assert status["transformer_quant"] is None
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
@@ -3434,12 +3320,7 @@ def test_explicit_off_load_skips_dense_quant_path(fake_runtime, tmp_path, monkey
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "none",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "none")
     assert status["transformer_quant"] is None
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
 
@@ -3455,12 +3336,7 @@ def test_speed_off_load_suppresses_auto_dtype_quant(fake_runtime, tmp_path, monk
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        speed_mode = "off",
-    )
+    status = _load_m(backend, tmp_path, speed_mode = "off")
     assert status["transformer_quant"] is None
     assert status["speed_mode"] == "off"
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used, not a dense build
@@ -3472,12 +3348,7 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
     _force_cuda_target(backend, monkeypatch)
     calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert status["transformer_quant"] == "fp8"
     # No speed_mode was given, but a quantized transformer is ~30x slower eager, so it is promoted to `default`.
     assert status["speed_mode"] == "default"
@@ -3551,12 +3422,7 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     monkeypatch.setattr(dmod, "load_prequantized_transformer", lambda *a, **k: None)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert status["transformer_quant"] == "fp8"
     assert calls["from_pretrained"] == 1 and calls["quantize"] == 1  # dense path ran
     assert _FakeTransformer.last == {}  # GGUF not used
@@ -3576,13 +3442,7 @@ def test_prequant_failure_never_pulls_unprefetched_dense_shards(
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     monkeypatch.setattr(dmod, "load_prequantized_transformer", lambda *a, **k: None)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8", _transformer_prefetched = False)
     assert calls["from_pretrained"] == 0  # no dense shard pull under the lock
     assert calls["quantize"] == 0
     assert status["transformer_quant"] is None  # dropped to the GGUF build
@@ -3733,16 +3593,9 @@ def test_a_cached_prequant_survives_the_resolvers_free_disk_gate(
     _stub_hosted_prequant(monkeypatch, cached = True)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert len(_dense_calls(calls, backend)) == 1
 
@@ -3779,10 +3632,11 @@ def test_declined_explicit_precision_reports_the_ask_and_the_outcome(
     backend = DiffusionBackend()
     _stub_declining_dense_quant(backend, monkeypatch)
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
+    status = _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
-        family_override = "z-image",
+        base_repo = None,
         transformer_quant = "fp8",
     )
     # Runtime telemetry: fp8 is NOT engaged.
@@ -3804,7 +3658,7 @@ def test_auto_precision_still_falls_back_silently(fake_runtime, tmp_path, monkey
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = _load_m(backend, tmp_path)
     assert status["loaded"] is True
     assert status["transformer_quant"] is None
     resolved = status["resolved"]["transformer_quant"]
@@ -3823,10 +3677,11 @@ def test_explicit_transformer_quant_refuses_instead_of_loading_the_gguf(
     _stub_declining_dense_quant(backend, monkeypatch)
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
     with pytest.raises(RuntimeError) as excinfo:
-        backend.load_pipeline(
-            str(tmp_path),
+        _load_into(
+            backend,
+            tmp_path,
             gguf_filename = "z-image-turbo-Q4_K_M.gguf",
-            family_override = "z-image",
+            base_repo = None,
             transformer_quant = "fp8",
         )
     message = str(excinfo.value)
@@ -3885,9 +3740,7 @@ def test_a_refusal_caused_by_a_broken_torchao_says_so_instead_of_blaming_the_gpu
     from core.inference import diffusion as dmod
     import core.inference.diffusion_transformer_quant as tq
 
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
+    backend = _cuda_backend(tmp_path, monkeypatch)
     # The device clears the dense-path bar; the SCHEME still comes back None, which is the exact
     # shape of a host whose torchao cannot load its kernels.
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
@@ -4064,12 +3917,7 @@ def test_transformer_quant_falls_back_to_gguf_on_failure(
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
     monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: None)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert status["loaded"] is True
     assert status["transformer_quant"] is None  # fell back
     assert _FakeTransformer.last["path"]  # GGUF from_single_file used
@@ -4091,13 +3939,7 @@ def test_transformer_quant_skipped_when_plan_offloads(
 
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-        memory_mode = "low_vram",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8", memory_mode = "low_vram")
     assert status["transformer_quant"] is None
     assert status["offload_policy"] == "model"
     assert _FakeTransformer.last["path"]  # GGUF path used
@@ -4143,12 +3985,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
 
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert status["transformer_quant"] is None  # dense quant skipped
     assert status["offload_policy"] == "none"  # GGUF loaded resident, not offloaded
     assert _FakeTransformer.last["path"]  # GGUF path used
@@ -4200,12 +4037,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert dense_refit_ran == [True]  # the re-check runs (it gates the fallback)...
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
@@ -4269,12 +4101,7 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "int8",
-    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
     assert replan_calls == [True, True]  # declined once, retried once
     assert attempted == [False]  # fast path attempted; prequant-sized plan forbids dense fallback
 
@@ -4326,12 +4153,7 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
 
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "int8",
-    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
     assert replan_calls == [True]  # genuine capacity shortfall: declined without a retry
 
 
@@ -4387,13 +4209,7 @@ def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
     backend = DiffusionBackend()
     _decline_dense_quant(backend, monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            transformer_quant = "int8",
-            loras = [("adapter", 1.0)],
-        )
+        _load_m(backend, tmp_path, transformer_quant = "int8", loras = [("adapter", 1.0)])
 
 
 def test_declined_dense_without_loras_still_falls_back_to_gguf(
@@ -4402,13 +4218,7 @@ def test_declined_dense_without_loras_still_falls_back_to_gguf(
     # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0 adapters count as "none".
     backend = DiffusionBackend()
     _decline_dense_quant(backend, monkeypatch, tmp_path)
-    result = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "int8",
-        loras = [("adapter", 0.0)],
-    )
+    result = _load_m(backend, tmp_path, transformer_quant = "int8", loras = [("adapter", 0.0)])
     assert result is not None
     assert backend.status()["transformer_quant"] is None  # GGUF-as-is fallback
 
@@ -4709,12 +4519,7 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
 
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8")
     assert status["loaded"] is True
     assert status["transformer_quant"] is None  # fell back to GGUF
     assert _FakeTransformer.last["path"]  # GGUF from_single_file used
@@ -4931,11 +4736,9 @@ def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path,
     # checkpoint that became the denoiser, so the GGUF was never used.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = _load_m(backend, tmp_path)
 
     # The fast path never ran, so nothing fetched a second transformer.
     assert _dense_calls(calls, backend) == []
@@ -4950,11 +4753,9 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
     # Free shortcuts are still taken: dense+torchao beats per-matmul dequant and costs no bytes.
     _stub_hosted_prequant(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    _load_m(backend, tmp_path)
 
     assert len(_dense_calls(calls, backend)) == 1
 
@@ -4965,13 +4766,9 @@ def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_
     # skip the decline and fetch the dense companion for a request that applies no adapter.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", loras = loras
-    )
+    _load_m(backend, tmp_path, loras = loras)
 
     assert _dense_calls(calls, backend) == []
 
@@ -4981,17 +4778,10 @@ def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monk
     # adapter still takes the dense route, which this runtime reports rather than silently drops.
     _stub_hosted_prequant(monkeypatch, cached = False)
     _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            loras = [("adapter", 0.8)],
-        )
+        _load_m(backend, tmp_path, loras = [("adapter", 0.8)])
 
 
 def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
@@ -5000,16 +4790,9 @@ def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
     # Only the AUTO-derived case is restricted: asking for fp8 asks for the artifact serving it.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-    )
+    _load_m(backend, tmp_path, transformer_quant = "fp8")
 
     assert len(_dense_calls(calls, backend)) == 1
 
@@ -5018,17 +4801,10 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
     # A LoRA bake needs the DENSE transformer and the GGUF fallback cannot carry the adapters.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match = "LoRA"):
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            loras = [("adapter", 1.0)],
-        )
+        _load_m(backend, tmp_path, loras = [("adapter", 1.0)])
 
     assert len(_dense_calls(calls, backend)) == 1
 
@@ -5242,16 +5018,9 @@ def test_the_load_declines_when_the_prefetch_skipped_the_dense_shards(
     # The candidate is the DENSE base, which is the only thing an unstaged transformer/ can cost.
     _stub_dense_candidate(monkeypatch, prequant = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert _dense_calls(calls, backend) == []
     assert status["loaded"] is True
@@ -5279,16 +5048,9 @@ def test_an_unstaged_transformer_still_takes_a_CACHED_prequant(fake_runtime, tmp
     _stub_hosted_prequant(monkeypatch, cached = True)
     _stub_dense_candidate(monkeypatch, prequant = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert len(_dense_calls(calls, backend)) == 1
 
@@ -5308,16 +5070,9 @@ def test_an_unstaged_prequant_load_still_forbids_the_dense_fallback(
         return None, None
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", _record)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert seen == [False]
 
@@ -5331,16 +5086,9 @@ def test_an_uncached_prequant_still_declines_before_the_candidate_is_asked(
     _stub_hosted_prequant(monkeypatch, cached = False)
     _stub_dense_candidate(monkeypatch, prequant = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert _dense_calls(calls, backend) == []
     assert status["transformer_quant"] is None
@@ -5358,16 +5106,9 @@ def test_a_resolver_with_no_answer_reads_as_the_dense_base(fake_runtime, tmp_pat
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert _dense_calls(calls, backend) == []
 
@@ -5383,16 +5124,9 @@ def test_a_raising_resolver_reads_as_the_dense_base(fake_runtime, tmp_path, monk
     _stub_hosted_prequant(monkeypatch, cached = True)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _boom)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert _dense_calls(calls, backend) == []
     assert status["loaded"] is True
@@ -5418,12 +5152,7 @@ def test_the_plan_and_the_load_agree_on_a_cached_prequant(fake_runtime, tmp_path
         False
     )
     # ... and the load, told exactly that, still quantises.
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    _load_m(backend, tmp_path, _transformer_prefetched = False)
     assert len(_dense_calls(calls, backend)) == 1
 
 
@@ -5570,11 +5299,7 @@ def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
     # what distinguishes the file that was downloaded and opened.
     backend = DiffusionBackend()
     (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "z-image-turbo-Q8_0.gguf",
-        family_override = "z-image",
-    )
+    _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q8_0.gguf", base_repo = None)
     status = backend.status()
     assert status["model_kind"] == "gguf"
     assert status["transformer_quant"] is None  # the GGUF ran as-is
@@ -5591,10 +5316,11 @@ def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
     _force_cuda_target(backend, monkeypatch)
     _stub_dense_quant(monkeypatch, scheme = "fp8")
     (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
-    status = backend.load_pipeline(
-        str(tmp_path),
+    status = _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "z-image-turbo-Q8_0.gguf",
-        family_override = "z-image",
+        base_repo = None,
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
@@ -6155,12 +5881,8 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
         DiffusionBackend, "_load_dense_quant_pipeline", lambda self, *a, **k: (None, None)
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        transformer_quant = "fp8",
-        _base_local_dir = str(shards) if staged else None,
+    _load_m(
+        backend, tmp_path, transformer_quant = "fp8", _base_local_dir = str(shards) if staged else None
     )
     assert dense_refit_ran == [12288]
     assert backend.status()["loaded"] is True
@@ -6247,14 +5969,7 @@ def test_reset_step_cache_helper_is_best_effort():
 
 def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
     # FBCache residuals survive on the resident transformer, so generate() must reset first, but only when a cache is engaged.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     resets = []
     # Use the real diffusers CacheMixin entry point; a genuine transformer exposes this, not reset_stateful_hooks.
     backend._state.pipe.transformer = types.SimpleNamespace(
@@ -6356,14 +6071,7 @@ def test_unload_waits_for_in_flight_denoise_before_teardown():
 
 
 def _load_zimage_backend(tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     return backend
 
 
@@ -6683,8 +6391,14 @@ def _fake_hf_api(
     )
 
 
-def test_download_plan_scopes_the_base_repo_files(monkeypatch):
-    # The plan drives the Hub download manager, so its file list must match what the loader reads: a full snapshot adds the 24 GB root single and the shards the GGUF replaces.
+def _no_dense_prefetch(monkeypatch):
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    )
+
+
+def _fake_flux_hub(monkeypatch):
+    """The FLUX.1-dev GGUF + base-repo pair the download-plan tests resolve against."""
     _fake_hf_api(
         monkeypatch,
         {
@@ -6696,14 +6410,21 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
         "core.inference.diffusion._resolve_base_repo",
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    _no_dense_prefetch(monkeypatch)
+
+
+def _flux_download_plan(**kwargs):
+    return DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf", **kwargs
     )
+
+
+def test_download_plan_scopes_the_base_repo_files(monkeypatch):
+    # The plan drives the Hub download manager, so its file list must match what the loader reads: a full snapshot adds the 24 GB root single and the shards the GGUF replaces.
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     # The base entry names the MIRROR: staged before the loader runs, so a gated id here 401s an
     # anonymous user at staging and the swap downstream is never reached.
@@ -6731,20 +6452,7 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
 
 
 def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypatch):
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     monkeypatch.setattr(
         DiffusionBackend,
@@ -6756,9 +6464,7 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         ),
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     assert [entry["repo_id"] for entry in plan["entries"]] == ["unsloth/FLUX.1-dev"]
     assert "text_encoder/model.safetensors" in plan["entries"][0]["files"]
@@ -6769,20 +6475,7 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
 
 
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _all_cached(monkeypatch)
     monkeypatch.setattr(
         DiffusionBackend,
@@ -6790,9 +6483,7 @@ def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
         staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: True),
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     assert plan["entries"] == []
     assert plan["total_bytes"] == 0
@@ -6817,9 +6508,7 @@ def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monke
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: combined)
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(
@@ -6967,9 +6656,7 @@ def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
         "core.inference.diffusion._resolve_base_repo",
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     # Upstream serves this pick, so both entries keep the id the sizes were read from. A mirror
     # swap deliberately drops the pin instead: the vendor's commit means nothing in that repo.
     _all_cached(monkeypatch)
@@ -7024,9 +6711,7 @@ def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
 
     monkeypatch.setattr(DiffusionBackend, "_dense_quant_prefetch_needed", _gate)
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     # The gate saw the listing, split the way _run_load splits it ...
     assert seen, "the deferred gate was never called with the base listing"
@@ -7104,9 +6789,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
         "core.inference.diffusion._resolve_base_repo",
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
@@ -7145,26 +6828,11 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
 
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request -> no hosted checkpoint -> the dense encoder is exactly as before.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     # An upstream that already satisfies the load keeps its id, so the plan stages the cache the
     # user already paid for.
     _all_cached(monkeypatch)
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
     base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
     assert "text_encoder/model.safetensors" in base["files"]
     assert len(plan["entries"]) == 2
@@ -7172,20 +6840,7 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
 
 def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavailable(monkeypatch):
     # A gated / renamed / unpublished artifact must NOT cost the dense encoder: the load falls back to it, so the plan stages it.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
         lambda fam, *, te_quant_mode, target: {
@@ -7325,17 +6980,7 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     # An explicit fp8 request loads the hosted prequant INSTEAD of the base transformer/ shards,
     # which the plan already excludes. required_bytes is the on-disk footprint the picker renders
     # as "Full required size", so leaving the prequant out under-reports it by the whole denoiser.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = False)
 
     plan = DiffusionBackend().download_plan(
@@ -7411,17 +7056,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
     # none. Balanced and low_vram offload BY MODE, which no replan can clear, so the load keeps
     # the GGUF and never fetches the hosted checkpoint. Counting it overstates the footprint by
     # the whole denoiser even though an explicit quant was requested.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = True)
 
     for kwargs in (
@@ -7450,17 +7085,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
     # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
     # skips the fast path, so nothing is fetched and the footprint must not claim it.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = True)
 
     auto = DiffusionBackend().download_plan(
@@ -7481,17 +7106,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
 def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
     # Auto runs the GGUF as-is rather than download an uncached hosted checkpoint, so those bytes
     # never land and must not inflate the figure either. Only an explicit request pays for it.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = False)
     monkeypatch.setattr(
         "core.inference.diffusion._uncached_prequant_repo",
@@ -7670,14 +7285,7 @@ def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(m
 
 def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path):
     # A queued generation must not bypass the teardown fence.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     seen: list[int] = []
     real_unload_locked = backend._unload_locked
@@ -7698,14 +7306,7 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     # _unload_locked ends in clear_gpu_cache(), whose CUDA branch raises on a sticky fault. Without the finally the fence stayed up forever, refusing every later generation.
     from core.inference import diffusion as diffusion_module
 
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     real_clear = diffusion_module.clear_gpu_cache
 
@@ -7719,12 +7320,7 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
 
     # The next load and generation must not be fenced out by the teardown that blew up.
     monkeypatch.setattr(diffusion_module, "clear_gpu_cache", real_clear)
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    _load_into(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["images"]
 
 
@@ -7772,14 +7368,7 @@ class _AdmissionHookLock:
 
 def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
     # A lock winner must yield to every pending teardown.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     assert backend.generate(prompt = "before", steps = 2)["images"]
 
     parked = threading.Event()
@@ -7821,14 +7410,7 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monk
 
 
 def test_cancel_wakes_generation_waiting_for_replacement(fake_runtime, tmp_path, monkeypatch):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     replacement_build_started = threading.Event()
     allow_replacement_commit = threading.Event()
@@ -7894,14 +7476,7 @@ def test_cancel_wakes_generation_waiting_for_replacement(fake_runtime, tmp_path,
 
 
 def test_cancel_stops_every_generation_queued_behind_teardown(fake_runtime, tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     with backend._lock:
         backend._reserve_teardown_locked()
 
@@ -7971,14 +7546,7 @@ def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
     # parked behind the teardown must not need that lock to notice Stop. Waiting on a
     # Condition over _lock does need it -- Condition.wait() reacquires the lock before it
     # returns, timeout included -- which left the request blocked for the length of the load.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     with backend._lock:
         backend._reserve_teardown_locked()
 
@@ -8021,14 +7589,7 @@ def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
     fake_runtime, tmp_path, monkeypatch
 ):
     # Stop eligibility is decided from live state after the handoff.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     denoising = threading.Event()
     release_active = threading.Event()
@@ -8105,14 +7666,7 @@ def test_cancel_spares_a_serialized_request_through_the_active_epilogue(
     # The active generation drops its cancel event at the last-word check, while it still owns
     # the slot for the epilogue that builds the result. Reading "no cancel event" as "nothing
     # owns the slot" there failed a request that was only serialised behind it.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     from core.inference import diffusion as diffusion_module
 
@@ -8192,14 +7746,7 @@ def test_stop_reaches_a_queued_generation_before_its_first_lock_attempt(fake_run
     # event only after the first timed acquisition failed left a 100 ms hole: Stop answered
     # false, the page settled its button back to Generate, and the generation still ran once the
     # load finished.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     with backend._lock:
         backend._reserve_teardown_locked()
 
@@ -8263,14 +7810,7 @@ def test_cancel_spares_a_serialized_request_during_slot_handoff(
     # Once the active request releases _generate_lock, a waiter can own it before moving its
     # cancel event from the queued set to the active slot. Stop in that handoff must not mistake
     # the ordinary serialized waiter for a request blocked by model replacement.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     denoising = threading.Event()
     release_active = threading.Event()
@@ -8367,14 +7907,7 @@ def test_cancel_spares_a_request_only_serialized_behind_the_active_one(
     # busy guard, so the second simply waits on _generate_lock. Stop is about the generation
     # the page is showing, so it must not fail that second request with the cancel sentinel
     # -- the same untrue "cancelled" this PR exists to remove.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     denoising = threading.Event()
     release_active = threading.Event()
@@ -8421,14 +7954,7 @@ def test_cancel_spares_a_request_only_serialized_behind_the_active_one(
 
 
 def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     start_teardown = threading.Event()
     teardown_reserved = threading.Event()
@@ -8482,14 +8008,7 @@ def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tm
 
 
 def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     parked = threading.Event()
     backend._teardown_drained = _RecordingGate(parked)
@@ -8518,14 +8037,7 @@ def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tm
 
 def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path):
     # begin_load frees the old pipeline behind the same barrier, so it needs the same fence: a queued generation would otherwise run on the pipe being dropped.
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
 
     seen: list[int] = []
     real_unload_locked = backend._unload_locked
@@ -8535,12 +8047,7 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
         real_unload_locked()
 
     backend._unload_locked = _record_then_unload
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    _load_into(backend, tmp_path)
 
     assert seen == [1]
     assert backend._teardown_waiters == 0
@@ -8750,9 +8257,11 @@ def test_the_offload_retry_runs_when_the_auto_winner_had_no_candidate_at_all(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
+    _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "m.gguf",
+        base_repo = None,
         family_override = "qwen-image",
         transformer_quant = "auto",
     )
@@ -8821,9 +8330,11 @@ def test_the_resident_retry_runs_when_the_dense_shards_were_never_staged(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
+    _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "m.gguf",
+        base_repo = None,
         family_override = "qwen-image",
         transformer_quant = "auto",
         _transformer_prefetched = False,
@@ -8889,9 +8400,11 @@ def test_the_resident_retry_declines_a_rung_that_does_not_plan_resident(
         lambda self, *a, **k: attempted.append(True),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    backend.load_pipeline(
-        str(tmp_path),
+    _load_into(
+        backend,
+        tmp_path,
         gguf_filename = "m.gguf",
+        base_repo = None,
         family_override = "qwen-image",
         transformer_quant = "auto",
         _transformer_prefetched = False,
@@ -8915,20 +8428,7 @@ def test_an_auto_pick_that_retried_a_lower_rung_is_still_badged_auto():
 
 def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
     # Entries are what the Downloads panel lists, so a model fully on disk must plan nothing.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     monkeypatch.setattr(
         DiffusionBackend,
@@ -8936,9 +8436,7 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
         staticmethod(lambda repo_id, files, revision = None, declared_sizes = None: set(files)),
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     assert plan["entries"] == []
     assert plan["total_bytes"] == 0
@@ -8946,20 +8444,7 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
 
 def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
     # The common case after a base repo is shared: the companion is on disk, a new quant is not.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     # Everything but the checkpoint repo is cached.
     monkeypatch.setattr(
@@ -8972,9 +8457,7 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
         ),
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/FLUX.1-dev-GGUF"]
     assert plan["entries"][0]["files"] == ["flux1-dev-Q4_K_M.gguf"]
@@ -9120,9 +8603,7 @@ def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     # No mirror swap, so the staged id and the probed commit are the vendor's own.
     _all_cached(monkeypatch)
     staged = [
@@ -9135,9 +8616,7 @@ def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, t
     for name in staged[1:]:
         _seed_cache_file(other, base, name, base_sha)
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert base in by_repo, "a split base repo must keep its row"
@@ -9160,9 +8639,7 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     _all_cached(monkeypatch)
     for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
         if _base_file_downloaded(name, include_transformer = False):
@@ -9175,9 +8652,7 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         size = 7 * GB,
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     # incompatible_reason rides in the same envelope: the plan is where a FLUX.2 GGUF/base
     # mismatch is reported, and None is "nothing known to be wrong".
@@ -9219,20 +8694,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
     """Dropped only when ALL of it is cached: a shrinking file list would 409 a second pick sharing
     this base, since every diffusion entry rides the one "@diffusion" scope slot and
     download_registry refuses a claim whose scoped_files differ from the live job's."""
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     # The manifest is on disk, the VAE is not; the checkpoint repo is untouched.
     monkeypatch.setattr(
@@ -9247,9 +8709,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
         ),
     )
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     # Nothing is cached, so prefer_ungated_mirror swaps the gated vendor id for the mirror.
@@ -9359,9 +8819,7 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         "core.inference.diffusion._resolve_base_repo",
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _no_dense_prefetch(monkeypatch)
     _no_cache(monkeypatch)
     seen: list = []
     monkeypatch.setattr(
@@ -9388,20 +8846,7 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
 def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch):
     """An old huggingface_hub, or a listing without a sha, must not fall back to the cache's own
     refs/main: no commit is no verdict, so the pick stages exactly as it did before #8154."""
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
-            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo",
-        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
-    )
+    _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     revisions: list = []
     real = DiffusionBackend._files_already_cached
@@ -9417,9 +8862,7 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
 
     monkeypatch.setattr(DiffusionBackend, "_files_already_cached", staticmethod(_spy))
 
-    plan = DiffusionBackend().download_plan(
-        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
-    )
+    plan = _flux_download_plan()
 
     assert revisions and all(rev is None for rev in revisions)
     assert {e["repo_id"] for e in plan["entries"]} == {
@@ -9461,12 +8904,7 @@ def _oversized_gguf(
 def test_unified_memory_refuses_an_oversized_image_load(fake_runtime, monkeypatch, tmp_path):
     backend = _oversized_gguf(monkeypatch, tmp_path, 16)
     with pytest.raises(RuntimeError) as excinfo:
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "model.gguf",
-            base_repo = "base/repo",
-            family_override = "z-image",
-        )
+        _load_into(backend, tmp_path)
     message = str(excinfo.value)
     assert "z-image" in message
     assert "unified memory" in message
@@ -9477,12 +8915,7 @@ def test_unified_memory_refuses_an_oversized_image_load(fake_runtime, monkeypatc
 
 def test_unified_memory_allows_an_image_load_that_fits(fake_runtime, monkeypatch, tmp_path):
     backend = _oversized_gguf(monkeypatch, tmp_path, 128)
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    status = _load_into(backend, tmp_path)
     assert status["loaded"] is True
 
 
@@ -9491,12 +8924,7 @@ def test_unified_memory_image_refusal_is_overridable(fake_runtime, monkeypatch, 
 
     backend = _oversized_gguf(monkeypatch, tmp_path, 16)
     monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    status = _load_into(backend, tmp_path)
     assert status["loaded"] is True
 
 
@@ -9542,18 +8970,9 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     the refusal into the OS killer. On disk is the measured truth for a local path."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
     backend = DiffusionBackend()
     measured = 34_000  # what a 9B pipeline's shards actually weigh
@@ -9578,17 +8997,9 @@ def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, 
     GGUF they asked for."""
     _stub_hosted_prequant(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        speed_mode = "off",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, speed_mode = "off", _transformer_prefetched = False)
 
     assert _dense_calls(calls, backend) == []
     resolved = status.get("resolved", {}).get("transformer_quant", {})
@@ -9613,12 +9024,7 @@ def test_a_cached_lower_rung_survives_the_unstaged_decline(fake_runtime, tmp_pat
         backend = DiffusionBackend()
         _force_cuda_target(backend, monkeypatch)
         (tmp_path / "m.gguf").write_bytes(b"x")
-        status = backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            _transformer_prefetched = False,
-        )
+        status = _load_m(backend, tmp_path, _transformer_prefetched = False)
         return str(status.get("resolved", {}).get("transformer_quant", {}).get("reason") or "")
 
     marker = "an auto quant never downloads a second transformer"
@@ -9834,14 +9240,7 @@ def _loaded_backend_on_a_16g_card(
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import DeviceMemory
 
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = base_repo,
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path, base_repo = base_repo)
     free, total = _ROCM_16G
     snapshot = lambda target, **kw: DeviceMemory("cuda", "cuda", "discrete_vram", free, total)
     monkeypatch.setattr(dmod, "settled_snapshot_device_memory", snapshot)
@@ -10019,12 +9418,7 @@ def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
     # The spy forces offload on every replan, so the EXPLICIT int8 ends in the strict-precision
     # refusal. Immaterial here: the replan calls this asserts on all happen before it.
     with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
-        backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            transformer_quant = "int8",
-        )
+        _load_m(backend, tmp_path, transformer_quant = "int8")
     assert seen and all(value == 7_629 for value in seen)
 
 
@@ -10102,10 +9496,7 @@ def test_cancel_generate_stops_every_workflow(
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
 
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
 
     record = {
         "total_steps": 8,
@@ -10157,10 +9548,7 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
     # The contract is best-effort at the NEXT step boundary, the same one the video backend
     # documents. Pin it: a cancel raised during step 1 must not let step 3 run.
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
 
     seen: list[int] = []
 
@@ -10199,10 +9587,7 @@ def test_cancel_generate_during_the_post_denoise_save_still_cancels(
     from core.inference import diffusion_compile_cache as compile_cache
 
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
 
     def _save(ctx, logger = None):
         # Stop pressed while the bundle is being written: the route's cancel reaches the SAME
@@ -10222,10 +9607,7 @@ def test_a_completed_generation_stops_advertising_itself_as_cancellable(
     # cancel_generate takes, so there is no sliver between "the result is committed" and "the
     # event is gone" in which Stop could answer true for a generation that then returns images.
     (tmp_path / "model.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
-    )
+    backend = _loaded_backend(tmp_path)
 
     from core.inference import diffusion as diffusion_module
 
@@ -10280,12 +9662,7 @@ def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
         ),
     )
 
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        family_override = "z-image",
-        model_kind = "gguf",
-    )
+    status = _load_into(backend, tmp_path, base_repo = None, model_kind = "gguf")
     # The GGUF fits and loads; the oversized quant is declined rather than materialised.
     assert status["loaded"] is True
     assert status["transformer_quant"] is None
@@ -10328,12 +9705,7 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
 
     monkeypatch.setattr(dmod.DiffusionBackend, "_load_dense_quant_pipeline", _record)
 
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        family_override = "z-image",
-        model_kind = "gguf",
-    )
+    _load_into(backend, tmp_path, base_repo = None, model_kind = "gguf")
     assert calls == ["built"], "a prequant that fits must still reach the dense fast path"
 
 
@@ -10346,19 +9718,10 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     import torch
 
     from core.inference import diffusion as dmod
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
     base = "Tongyi-MAI/Z-Image-Turbo"
     backend = DiffusionBackend()
@@ -10389,18 +9752,9 @@ def test_the_resident_size_table_never_shrinks_an_unrecognised_remote_variant(fa
     one. A 9B derivative lowered to the 4B number walks straight past the refusal."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
     backend = DiffusionBackend()
     measured = 34_000
@@ -10426,19 +9780,10 @@ def test_a_whole_pipeline_single_file_is_not_charged_for_cached_companions(fake_
     only for users who happen to have loaded the full pipeline before."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert fam.single_file_is_pipeline, "this test is about the SDXL-shaped families"
     plan = MemoryPlan(
@@ -10522,13 +9867,7 @@ def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
         backend = DiffusionBackend()
         _force_cuda_target(backend, monkeypatch)
         (tmp_path / "m.gguf").write_bytes(b"x")
-        status = backend.load_pipeline(
-            str(tmp_path),
-            gguf_filename = "m.gguf",
-            family_override = "z-image",
-            _transformer_prefetched = False,
-            **request,
-        )
+        status = _load_m(backend, tmp_path, _transformer_prefetched = False, **request)
         reason = str(status.get("resolved", {}).get("transformer_quant", {}).get("reason") or "")
         assert marker not in reason, request
 
@@ -10551,12 +9890,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "m.gguf",
-        family_override = "z-image",
-        _transformer_prefetched = False,
-    )
+    status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
     assert status["loaded"] is True
     assert status["transformer_quant"] is None
@@ -10600,14 +9934,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
     import core.inference.diffusion as diffusion_mod
 
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend = DiffusionBackend()
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "base/repo",
-        family_override = "z-image",
-    )
+    backend = _loaded_backend(tmp_path)
     monkeypatch.setattr(diffusion_mod, "_diffusion_backend", backend)
 
     seen = {}
