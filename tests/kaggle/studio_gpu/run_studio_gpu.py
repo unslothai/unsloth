@@ -301,7 +301,15 @@ def cli_run_gpu_failure(
             ), detail
         return None, detail
 
-    before = apps_before or {}
+    # A pid on the card before the launch is not this launch's whether or not the listing
+    # could put a figure on it. Excluding only the ATTRIBUTED ones let a co-tenant that
+    # read [N/A] before and a number after count as newly appeared, and pass the claim on
+    # its memory.
+    before = set(apps_before or {}) | set(listed_before or ())
+    appeared = {pid: mib for pid, mib in apps_after.items() if pid not in before}
+    detail["compute_apps_appeared"] = appeared
+    grew = sum(appeared.values())
+    detail["process_vram_mib"] = grew
     # A pid that APPEARED but carries no figure is the mixed-listing case: the all-[N/A] guard
     # never fires, so defer to the device-wide delta rather than reporting CPU.
     if listed_before is not None and listed_after is not None:
@@ -323,6 +331,18 @@ def cli_run_gpu_failure(
                     f"GPU use is unmeasured rather than proven"
                 ), detail
             if settled - baseline < 200.0:
+                if grew >= 200.0:
+                    # The device total is the WEAKER ruler and cannot overrule a direct
+                    # per-process reading: {222: 2600} beside an unattributable {333} is
+                    # not a CPU-served run however flat the total looks. Which of the two
+                    # is the server is unknown, so this is a hedge and not a pass.
+                    return (
+                        f"the device total moved {settled - baseline:.1f} MiB while "
+                        f"{sorted(appeared)} appeared holding {grew} MiB and "
+                        f"{appeared_unattributed} could not be attributed at all -- the "
+                        f"two rulers disagree, so GPU use is unmeasured rather than "
+                        f"disproven"
+                    ), detail
                 return (
                     f"device VRAM grew by {settled - baseline:.1f} MiB across the "
                     f"launch and a served completion, and nvidia-smi could not "
@@ -330,10 +350,6 @@ def cli_run_gpu_failure(
                     f"`unsloth run` served from the CPU"
                 ), detail
             return None, detail
-    appeared = {pid: mib for pid, mib in apps_after.items() if pid not in before}
-    detail["compute_apps_appeared"] = appeared
-    grew = sum(appeared.values())
-    detail["process_vram_mib"] = grew
     if grew < 200.0:
         return (
             f"no process appeared on the GPU holding more than {grew} MiB "

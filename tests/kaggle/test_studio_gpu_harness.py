@@ -2898,3 +2898,76 @@ class TestTheCardIsGivenTimeToSettleAfterAStop:
             {5555},
         )[0]
         assert settled is None
+
+
+class TestTheTwoRulersAreReadInTheRightOrder:
+    """Which pids count as new, and which reading is allowed to overrule which.
+
+    Both of these are the mixed listing, where one new pid carries a figure and another
+    does not, and both come out of splitting "listed" from "attributed": the split is only
+    half applied unless the exclusion uses it too, and the weaker ruler must not be allowed
+    to contradict the stronger one.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_flat_device_total_does_not_disprove_an_attributed_process(self):
+        """2.6 GiB read off pid 222 is not a CPU-served run because pid 333 was also new
+        and unreadable. The total is a shared counter and cannot outrank a direct reading;
+        which of the two is the server is still unknown, so this hedges rather than passes.
+        """
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 1050.0,
+            listed_before = set(),
+            listed_after = {222, 333},
+        )
+        assert failure is not None
+        assert "served from the CPU" not in failure, failure
+        assert "unmeasured rather than disproven" in failure
+        assert detail["process_vram_mib"] == 2600
+        assert detail["compute_apps_unattributed"] == [333]
+
+    def test_a_co_tenant_that_becomes_readable_is_still_not_new(self):
+        """pid 77 was on the card at launch and merely unattributable then. Keying the
+        exclusion on the attributed map alone counted its 500 MiB as this launch's and
+        passed a server that never left the CPU."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77},
+        )
+        assert failure is not None and "no process appeared" in failure
+        assert detail["compute_apps_appeared"] == {}
+
+    def test_the_same_co_tenant_does_not_carry_the_mixed_listing_either(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77, 888},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_an_attributed_launch_on_an_empty_card_still_passes(self):
+        """The ordinary verdict is untouched: the exclusion only ever grows."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 3600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600
