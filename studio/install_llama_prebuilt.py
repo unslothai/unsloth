@@ -590,7 +590,8 @@ def github_api_headers(url: str | None = None) -> dict[str, str]:
 
 is_github_api_url = _core.is_github_api_url
 is_retryable_url_error = _core.is_retryable_url_error
-_RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
+# Alias, not a copy: _http_error_retry_delay reads prebuilt_core's global, so a literal here does nothing.
+_RATE_LIMIT_WAIT_CAP_SECONDS = _core._RATE_LIMIT_WAIT_CAP_SECONDS
 _http_error_retry_delay = _core._http_error_retry_delay
 sleep_backoff = _core.sleep_backoff
 atomic_write_bytes = _core.atomic_write_bytes
@@ -1572,14 +1573,9 @@ def parse_approved_release_checksums(
     )
 
 
-def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
-    try:
-        release = github_release(repo, release_tag)
-    except Exception as exc:
-        raise PrebuiltFallback(
-            f"approved prebuilt release {repo}@{release_tag} was not available"
-        ) from exc
-    assets = release_asset_map(release)
+def load_approved_release_checksums(
+    repo: str, release_tag: str, assets: dict[str, str]
+) -> ApprovedReleaseChecksums:
     checksum_url = assets.get(DEFAULT_PUBLISHED_SHA256_ASSET)
     if not checksum_url:
         raise PrebuiltFallback(
@@ -1966,7 +1962,7 @@ def _validate_checksums_against_bundle(
 def validated_checksums_for_bundle(
     repo: str, bundle: PublishedReleaseBundle
 ) -> ApprovedReleaseChecksums:
-    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    checksums = load_approved_release_checksums(repo, bundle.release_tag, bundle.assets)
     return _validate_checksums_against_bundle(repo, bundle, checksums)
 
 
@@ -6945,11 +6941,47 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
+# ggml-org/llama.cpp#23462 split per-binary entry code into ``lib<binary>-impl``
+# libraries between b9279 and b9283; an older archive is monolithic and healthy
+# without llama-server-impl.dll, so requiring it there forces a source build.
+LLAMA_SERVER_IMPL_SPLIT_BUILD = 9283
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    """Build number of a ``bNNNN`` tag, also matching the fork's ``bNNNN-mix-<sha>``.
+    None for a branch or commit pin, which callers treat as "assume current"."""
+    if not isinstance(tag, str):
+        return None
+    match = re.match(r"b(\d+)(?:[-.]|$)", tag.strip())
+    return int(match.group(1)) if match else None
+
+
+def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> list[list[str]]:
+    """Runtime files every Windows install kind owes, before its backend DLL.
+
+    Requiring only ``llama.dll`` let a truncated extract validate then fail at exec.
+    Prebuilt sources only: ``setup.ps1`` links statically and ships none of these.
+    """
+    groups: list[list[str]] = [["llama.dll"]]
+    if source_label in {"published", "upstream"}:
+        groups.append(["llama-common.dll"])
+        groups.append(["llama-server.exe"])
+        build = _release_build_number(tag)
+        if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            groups.append(["llama-server-impl.dll"])
+        groups.append(["ggml.dll"])
+        groups.append(["ggml-base.dll"])
+        groups.append(["ggml-cpu*.dll"])
+        groups.append(["mtmd.dll"])
+    return groups
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
     source_label: str | None = None,
     runtime_name: str | None = None,
+    tag: str | None = None,
 ) -> list[list[str]]:
     """Return required runtime file groups for an install kind."""
     if install_kind in {"linux-cpu", "linux-arm64"}:
@@ -7005,9 +7037,9 @@ def runtime_payload_health_groups(
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
-        return [["llama.dll"]]
+        return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
-        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
@@ -7015,9 +7047,9 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return [["llama.dll"], ["*hip*.dll"]]
+        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
     if install_kind == "windows-vulkan":
-        groups = [["llama.dll"], ["ggml-vulkan.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
@@ -7053,6 +7085,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             choice.install_kind,
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
+            tag = choice.tag,
         ),
     )
 
@@ -7073,12 +7106,16 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(
             {
                 tuple(group)
                 for group in runtime_payload_health_groups(
-                    kind, source_label = source_label, runtime_name = runtime_asset
+                    kind,
+                    source_label = source_label,
+                    runtime_name = runtime_asset,
+                    tag = marker_tag if isinstance(marker_tag, str) else None,
                 )
             }
             for kind in kinds
@@ -7321,10 +7358,14 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
-        install_dir, host, choice
-    ):
-        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
+    # Every WINDOWS kind: gating only Vulkan activated a fresh tree missing
+    # llama-common.dll and reported success.
+    if (
+        choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
+    ) and not runtime_payload_is_healthy(install_dir, host, choice):
+        raise PrebuiltFallback(
+            f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
+        )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
@@ -7704,6 +7745,13 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
 
 # 64-bit only: WOW6432Node holds 32-bit registrations windows-x64-vulkan cannot load.
 _VULKAN_ICD_REGISTRY_KEYS = (r"SOFTWARE\Khronos\Vulkan\Drivers",)
+# AMD drivers can register Vulkan on these device classes without a Khronos entry.
+_WINDOWS_VULKAN_DEVICE_CLASS_KEYS = (
+    _WINDOWS_DISPLAY_CLASS_KEY,
+    r"SYSTEM\CurrentControlSet\Control\Class\{5c4c3332-344d-483c-8739-259e934c9cc8}",
+)
+# Use the 64-bit value; VulkanDriverNameWow is for 32-bit drivers.
+_WINDOWS_VULKAN_DRIVER_VALUE = "VulkanDriverName"
 # RADV radeon_icd.x86_64.json, AMDVLK amd_icd64 / amd_pro_icd64 / amdvlk64, Adrenalin
 # amd-vulkan64.json. Matched on the basename ("amd" names directories too) with "-" folded
 # to "_", without which the ordinary Adrenalin host answered False.
@@ -7795,6 +7843,178 @@ def _vulkan_icd_search_dirs() -> list[Path]:
     return unique
 
 
+# Device presence constants from cfgmgr32.h and cfg.h.
+_CM_LOCATE_DEVNODE_NORMAL = 0x00000000
+_CM_GETIDLIST_FILTER_PRESENT = 0x00000100
+_CM_GETIDLIST_FILTER_CLASS = 0x00000200
+_CM_DRP_DRIVER = 0x0000000A
+_CR_SUCCESS = 0x00000000
+_CR_BUFFER_SMALL = 0x0000001A
+_DN_HAS_PROBLEM = 0x00000400
+_CM_PROB_NEED_RESTART = 0x0000000E
+# cfg.h calls it DN_LIAR and lists it under "Device Instance status flags", so it is a bit
+# in pulStatus. CM_PROB_ codes stop at 0x39, so it can never appear in pulProblemNumber.
+_DN_NEED_RESTART = 0x00000100
+_CM_DEVICE_LIST_ATTEMPTS = 4
+
+
+def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
+    """Return present class instances ("0000"), or None if enumeration fails.
+
+    CM_DRP_DRIVER maps each device to "{class guid}\\NNNN"; an empty set means none
+    are present. Every devnode filter here is the loader's own
+    (windows_get_device_registry_files), but its traversal is NOT: the loader reaches
+    SoftwareComponents only as children of a present adapter, and the caller
+    enumerates that class directly, so discovery there is wider.
+    """
+    guid = class_key_path.rsplit("\\", 1)[-1]
+    try:
+        import ctypes
+        from ctypes import wintypes
+        cfgmgr = ctypes.WinDLL("cfgmgr32.dll")
+    except Exception:
+        return None
+    try:
+        length = wintypes.ULONG(0)
+        flags = _CM_GETIDLIST_FILTER_CLASS | _CM_GETIDLIST_FILTER_PRESENT
+        # A device arriving between the two calls outgrows the buffer and the API refuses
+        # rather than truncating; unretried, that transient drops the whole scan.
+        for _attempt in range(_CM_DEVICE_LIST_ATTEMPTS):
+            if (
+                cfgmgr.CM_Get_Device_ID_List_SizeW(ctypes.pointer(length), guid, flags)
+                != _CR_SUCCESS
+            ):
+                return None
+            buffer = ctypes.create_unicode_buffer(length.value)
+            listed = cfgmgr.CM_Get_Device_ID_ListW(guid, buffer, length.value, flags)
+            if listed == _CR_SUCCESS:
+                break
+            if listed != _CR_BUFFER_SMALL:
+                return None
+        else:
+            return None
+        # One double-NUL-terminated block of device ids.
+        device_ids = [entry for entry in buffer[: length.value].split("\0") if entry]
+        instances: set[str] = set()
+        for device_id in device_ids:
+            devinst = wintypes.DWORD(0)
+            if (
+                cfgmgr.CM_Locate_DevNodeW(
+                    ctypes.pointer(devinst), device_id, _CM_LOCATE_DEVNODE_NORMAL
+                )
+                != _CR_SUCCESS
+            ):
+                continue
+            if not _windows_devnode_is_usable(cfgmgr, ctypes, wintypes, devinst):
+                continue
+            size = wintypes.ULONG(0)
+            # First call sizes the value; a device with no driver bound has none.
+            cfgmgr.CM_Get_DevNode_Registry_PropertyW(
+                devinst, _CM_DRP_DRIVER, None, None, ctypes.pointer(size), 0
+            )
+            if not size.value:
+                continue
+            value = ctypes.create_unicode_buffer(size.value // ctypes.sizeof(ctypes.c_wchar) + 1)
+            if (
+                cfgmgr.CM_Get_DevNode_Registry_PropertyW(
+                    devinst, _CM_DRP_DRIVER, None, value, ctypes.pointer(size), 0
+                )
+                != _CR_SUCCESS
+            ):
+                continue
+            driver = (value.value or "").strip()
+            if "\\" in driver:
+                instances.add(driver.rsplit("\\", 1)[-1])
+        return instances
+    except Exception:
+        return None
+
+
+def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst: Any) -> bool:
+    """Whether this devnode is one the Vulkan loader would read, not merely present.
+
+    A driver update registers VulkanDriverName and drops its manifest before the reboot
+    that binds it: until then the adapter is present, the file is on disk, and the driver
+    cannot load. Counting that window hands the host a Vulkan bundle and lets llama-server
+    fall back to CPU, which is what _amd_vulkan_icd_present exists to prevent. An
+    unreadable status is skipped too, since guessing wrong replaces a working ROCm install.
+    """
+    status = wintypes.ULONG(0)
+    problem = wintypes.ULONG(0)
+    if (
+        cfgmgr.CM_Get_DevNode_Status(ctypes.pointer(status), ctypes.pointer(problem), devinst, 0)
+        != _CR_SUCCESS
+    ):
+        return False
+    # Read before the problem word and independently of DN_HAS_PROBLEM: this one is a status
+    # bit, and a devnode that reports it without also raising a problem still needs the reboot.
+    if status.value & _DN_NEED_RESTART:
+        return False
+    if not status.value & _DN_HAS_PROBLEM:
+        return True
+    return problem.value != _CM_PROB_NEED_RESTART
+
+
+def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
+    """Read Vulkan manifests from present adapters and SoftwareComponents.
+
+    A removed device keeps its registration AND its files, so presence decides, and a
+    class whose presence is unknown is skipped rather than trusted.
+    """
+    paths: list[str] = []
+    for class_key_path in _WINDOWS_VULKAN_DEVICE_CLASS_KEYS:
+        present = _windows_present_class_instances(class_key_path)
+        if present is None:
+            continue
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, class_key_path) as class_key:
+                for index in range(winreg.QueryInfoKey(class_key)[0]):
+                    try:
+                        name = winreg.EnumKey(class_key, index)
+                        # Skip non-instance keys such as the restricted "Properties".
+                        if not name.isdigit() or name not in present:
+                            continue
+                        with winreg.OpenKey(class_key, name) as device_key:
+                            value, kind = winreg.QueryValueEx(
+                                device_key, _WINDOWS_VULKAN_DRIVER_VALUE
+                            )
+                        paths.extend(_windows_vulkan_driver_value_paths(winreg, value, kind))
+                    # Per instance: the integrated part often enumerates first.
+                    except Exception:
+                        continue
+        except OSError:
+            continue
+        except Exception:
+            # Discovery failures must not abort installation.
+            continue
+    return paths
+
+
+def _windows_vulkan_driver_value_paths(winreg: Any, value: Any, kind: Any) -> list[str]:
+    """Existing absolute manifest paths from REG_SZ or REG_MULTI_SZ. Relative ones need
+    the device's DriverStore directory, which is not reachable here, so they are skipped.
+    """
+    if kind == winreg.REG_SZ:
+        entries = [value]
+    elif kind == winreg.REG_MULTI_SZ:
+        entries = list(value or [])
+    else:
+        return []
+    found = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        entry = entry.strip()
+        if not os.path.isabs(entry):
+            continue
+        try:
+            if os.path.isfile(entry):
+                found.append(entry)
+        except OSError:
+            continue
+    return found
+
+
 def _amd_vulkan_icd_manifest_paths() -> list[str]:
     """Vulkan ICD manifests this host has registered, by loader search order.
 
@@ -7822,7 +8042,7 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
             import winreg
         except ImportError:
             return []
-        paths: list[str] = []
+        paths: list[str] = _windows_device_icd_manifest_paths(winreg)
         for key_path in _VULKAN_ICD_REGISTRY_KEYS:
             try:
                 with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
@@ -7843,7 +8063,8 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
                         paths.append(name)
             except OSError:
                 continue
-        return paths
+        # The same manifest may appear in several registrations.
+        return list(dict.fromkeys(paths))
     paths = []
     for directory in _vulkan_icd_search_dirs():
         try:

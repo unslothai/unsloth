@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -80,14 +81,19 @@ function RouteFallback() {
 // Retires the retained reload shell (public/reload-snapshot.js). It rides
 // inside the route's own Suspense boundary, so a lazy page that is still
 // resolving keeps the shell up instead of uncovering RouteFallback.
-function signalReloadSnapshotReady() {
-  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+function InitialReadyPage({
+  children,
+}: {
+  children: (signalReady: () => void) => ReactNode;
+}) {
+  return children(useAppShellReadySignal());
 }
 
 function ReloadSnapshotReady() {
+  const signalReady = useAppShellReadySignal();
   useLayoutEffect(() => {
-    signalReloadSnapshotReady();
-  }, []);
+    signalReady();
+  }, [signalReady]);
   return null;
 }
 
@@ -598,10 +604,11 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage
-                      active={isImagesRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <ImagesPage active={isImagesRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -616,10 +623,11 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage
-                      active={isVideoRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <VideoPage active={isVideoRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -634,10 +642,11 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage
-                      active={isAudioRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <AudioPage active={isAudioRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}

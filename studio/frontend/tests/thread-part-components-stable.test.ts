@@ -15,10 +15,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const THREAD_SOURCE = readFileSync(
-  new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const THREAD_SOURCE = readSrc("components/assistant-ui/thread.tsx");
 
 test("the assistant part components are not an inline object literal", () => {
   // `components={{` is the regression's exact shape: an inline JSX literal, so

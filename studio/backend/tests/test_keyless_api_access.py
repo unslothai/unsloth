@@ -223,6 +223,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
     import utils.keyless_api_access as keyless
+
     from utils.keyless_api_access import asgi_request_is_keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -315,8 +316,9 @@ def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
-    import anyio.to_thread
     import utils.keyless_api_access as keyless
+
+    import anyio.to_thread
     from starlette.concurrency import run_in_threadpool
 
     set_keyless_api_access("inference", tools = False)
@@ -427,9 +429,10 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
 
 
 def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     import gc
     import weakref
-    import utils.keyless_api_access as keyless
 
     loop_refs = []
 

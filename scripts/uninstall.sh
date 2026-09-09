@@ -75,16 +75,12 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
-# sd.cpp roots whose sd-server has to be stopped: the default
-# $HOME/.unsloth/stable-diffusion.cpp, plus for each custom root both
-# <root>/stable-diffusion.cpp, where the install now lives, and the legacy
-# <parent>/stable-diffusion.cpp sibling an older build wrote. The nested one matters most: a
-# resident sd-server survives unlinking its binary, and the custom root is removed wholesale
-# below, so without it the tree goes and the server keeps running.
-# The owner marker gates the paths that SURVIVE when unowned (the default and the sibling), so an
-# unrelated checkout there keeps its server. It does not gate the nested path of a root this run
-# deletes: the current-root finder can select an unmarked binary there, and deleting the tree out
-# from under a live server is exactly what leaves it holding its port.
+# sd.cpp roots whose sd-server has to be stopped: the default $HOME/.unsloth/stable-diffusion.cpp,
+# plus per custom root the nested <root>/stable-diffusion.cpp and the legacy <parent> sibling.
+# A resident sd-server survives unlinking its binary, and the custom root is removed wholesale
+# below, so without the nested path the tree goes and the server keeps running.
+# The owner marker gates only the paths that SURVIVE when unowned (the default and the sibling), so
+# an unrelated checkout keeps its server; the nested path of a root this run deletes is not gated.
 _owned_sd_cpp_roots() {
     _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
@@ -103,10 +99,9 @@ _owned_sd_cpp_roots() {
 }
 
 # Every root an older build could have hung its sd.cpp sibling off: the canonicalized custom roots
-# and the lexical ones. They differ only when the Unsloth home is itself a symlink, and there the
-# lexical form is the one the old `dirname "$UNSLOTH_STUDIO_HOME"` produced, so canonicalizing
-# first looked beside the link's target and missed the tree entirely. Every use is gated on the
-# owner marker, which is what keeps an unrelated checkout at either path safe.
+# and the lexical ones. They differ only when the Unsloth home is itself a symlink, and there only
+# the lexical form (what the old plain `dirname` produced) finds the tree. Every use is gated on
+# the owner marker, which is what keeps an unrelated checkout at either path safe.
 _sd_cpp_sibling_bases() {
     {
         _custom_studio_roots 2>/dev/null
@@ -177,9 +172,8 @@ _pkill_studio() {
     done
 
     if ! command -v pkill >/dev/null 2>&1; then
-        # No procps (install.sh never requires it): the PID sweep above is all we have.
-        # A live app's WebView helpers re-create the profile right after the delete, so
-        # the removal is incomplete and the summary must not claim otherwise.
+        # No procps (install.sh never requires it): the PID sweep above is all we have. A live
+        # app re-creates the profile right after the delete, so do not claim a clean removal.
         if _studio_app_running; then
             echo "  pkill not found and Unsloth Studio is running; close it and re-run" >&2
             _set_marker "$_REMOVE_FAILED_FLAG"
@@ -198,8 +192,7 @@ $_roots_from_conf"
         [ -n "$_root" ] || continue
         [ -d "$_root" ] || continue
         _re=$(_pkill_escape "$_root")
-        # `unsloth studio` (default port) + `-p N` + `--port N` forms, all
-        # anchored on the install root's venv path.
+        # `unsloth studio` default-port, `-p N` and `--port N` forms, anchored on the venv path.
         for _pat in \
             "${_re}/unsloth_studio/bin/[^ ]* studio( |\$|.*-p[ =][0-9])" \
             "${_re}/unsloth_studio/bin/[^ ]* studio.*--port[ =][0-9]" \
@@ -222,17 +215,15 @@ $_roots_from_conf"
         done
     done
 
-    # Native diffusion servers (sd-server / sd-cli) survive unlinking their binary,
-    # so stop the ones under an owned sd.cpp root before those trees are removed.
+    # sd-server / sd-cli survive unlinking their binary, so stop them before their trees go.
     _stop_owned_sd_cpp_processes TERM
     sleep 0.5
     _stop_owned_sd_cpp_processes KILL
 
-    # The app's WebView helpers re-create the caches removed below, so it has to die here.
-    # -x is exact, so the "unsloth" CLI shim never matches. -u takes the owner of the $HOME
-    # being cleared, not the caller (macOS sudo keeps HOME), so a root run spares other users;
-    # an unknown owner skips rather than signalling everyone. Numeric uid and signal-first
-    # suit BSD pkill, which reads the signal from argv[1] only.
+    # The app's WebView helpers re-create the caches removed below, so it has to die here. -x is
+    # exact, so the "unsloth" CLI shim never matches. -u takes the owner of the $HOME being
+    # cleared, not the caller (macOS sudo keeps HOME), so a root run spares other users and an
+    # unknown owner skips entirely. Numeric uid and signal-first for BSD pkill (signal in argv[1]).
     _studio_uid=$(_home_uid)
     if [ -n "$_studio_uid" ]; then
         pkill -TERM -x -u "$_studio_uid" unsloth-studio 2>/dev/null || true
@@ -241,16 +232,14 @@ $_roots_from_conf"
     fi
 }
 
-# Summary state in files, not variables: custom roots are removed inside a pipeline
-# subshell, where an assignment would never reach the summary.
+# Summary state in files, not variables: custom roots are removed inside a pipeline subshell,
+# where an assignment would never reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
-# studio.db holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()),
-# not the provider API keys: providers_db.py keeps those in the browser's localStorage only.
-# It sits under the install root, so an env-mode install keeps it in a custom root a bare run
-# cannot discover; claim the history is gone only if a database was really deleted.
-# mktemp -d, not a $TMPDIR name: private (0700) and unpredictable, so the markers cannot
-# collide with, or be pre-created by, anything else.
+# studio.db holds the chat history (backend/storage/studio_db.py), not the provider API keys:
+# providers_db.py keeps those in the browser's localStorage only. An env-mode install keeps it in
+# a custom root a bare run cannot discover, so claim the history is gone only if one was deleted.
+# mktemp -d, not a $TMPDIR name: private (0700) and unpredictable, so nothing else can pre-create.
 _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
@@ -259,9 +248,8 @@ if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
 fi
 
-# `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it
-# kills a non-interactive shell outright (dash 2, busybox ash 1) and `|| true` does not stop
-# it. printf is a regular builtin, so the same failure is just a nonzero status.
+# `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it kills a
+# non-interactive shell outright (dash, busybox ash) and `|| true` does not stop it.
 _set_marker() {
     [ -n "$1" ] || return 0
     printf '' > "$1" 2>/dev/null || true
@@ -269,8 +257,8 @@ _set_marker() {
 }
 _marker_set() { [ -n "$1" ] && [ -f "$1" ]; }
 # No marker storage means no record of what failed, so the summary must not claim success.
-# Re-checked, not trusted from startup: the directory can vanish or lose write access mid-run,
-# after which _set_marker silently drops every failure while the pathname still looks fine.
+# Re-checked, not trusted from startup: the dir can vanish or lose write access mid-run, after
+# which _set_marker silently drops every failure.
 _markers_unavailable() {
     [ -n "$_MARKER_DIR" ] || return 0
     [ -d "$_MARKER_DIR" ] || return 0
@@ -286,12 +274,11 @@ _cleanup_markers() {
 }
 trap _cleanup_markers EXIT
 
-# Remove an install root and record whether its studio.db really went with it.
-# The check runs on the RESOLVED path: a relocated install (~/.unsloth/studio a symlink to
-# another disk) passes `-f "$root/studio.db"` through the link, but `rm -rf` unlinks only the
-# link, and afterwards the path stops resolving and reads as absent either way.
-# Verifying rather than chasing the link is deliberate: following a symlink out of the
-# expected location to `rm -rf` its target is what the deny lists exist to prevent.
+# Remove an install root and record whether its studio.db really went with it. The check runs on
+# the RESOLVED path: a relocated install (~/.unsloth/studio a symlink to another disk) passes
+# `-f "$root/studio.db"` through the link, but `rm -rf` unlinks only the link, after which the
+# path reads as absent either way. Verifying rather than chasing the link is deliberate: following
+# a symlink out of the expected location to `rm -rf` its target is what the deny lists prevent.
 _remove_root_recording_db() {
     _rrd_root="$1"
     # shellcheck disable=SC1007
@@ -301,9 +288,8 @@ _remove_root_recording_db() {
     _rrd_db="$_rrd_real/studio.db"
     if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
-        # The db itself can be a symlink out of the tree: -f follows it but the rm below
-        # unlinks only the link, so track where the bytes are. readlink without -f: BSD
-        # gained -f in macOS 12.3, so use the raw link text plus cd -P, portable to both.
+        # The db itself can be a symlink out of the tree: -f follows it but the rm unlinks only
+        # the link, so track where the bytes are. readlink without -f (BSD got it in macOS 12.3).
         if [ -L "$_rrd_db" ]; then
             _rrd_link=$(readlink "$_rrd_db" 2>/dev/null || true)
             if [ -n "$_rrd_link" ]; then
@@ -349,10 +335,9 @@ _xdg_dir() {
     case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
 
-# Accept as Unsloth root only if Unsloth sentinels exist (matches install.sh's
-# env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
-# directory is NOT enough -- require the install-time owner marker so a user
-# directory that happens to contain a folder named "unsloth_studio" is safe.
+# Accept as Unsloth root only if an Unsloth sentinel exists (matching install.sh's env-mode
+# ownership guard). A bare unsloth_studio/ directory is NOT enough: require the install-time owner
+# marker so a user directory that happens to contain such a folder is safe.
 _is_studio_root() {
     _r="$1"
     [ -n "$_r" ] || return 1
@@ -387,9 +372,8 @@ _custom_studio_data_dirs() {
 #   1. UNSLOTH_STUDIO_HOME / STUDIO_HOME env vars at uninstall time
 #   2. Default-mode studio.conf at $HOME/.local/share/unsloth/studio.conf
 #   3. Env-mode studio.conf at $<root>/share/studio.conf (discovered via 1)
-# install.sh writes UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so
-# the install root is three dirnames up. Prints each discovered non-default
-# root on its own line; the caller iterates and de-duplicates.
+# install.sh writes UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the install root is three
+# dirnames up. Each discovered non-default root is printed on its own line, de-duplicated.
 _custom_studio_roots() {
     # $1 = "lexical": skip the canonicalization (see the legacy sd.cpp sibling below). Reset on
     # every call, so a plain call is never affected by a preceding lexical one.
@@ -398,18 +382,16 @@ _custom_studio_roots() {
     _emit() {
         _r="$1"
         [ -z "$_r" ] && return 0
-        # Tilde expansion (env vars are not subject to it on quoted assignment),
-        # matches install.sh's _resolve_studio_destinations. The literal "~/"
-        # pattern is intentional; SC2088 is a false positive here.
+        # Tilde expansion (env vars are not subject to it on quoted assignment), matching
+        # install.sh's _resolve_studio_destinations. The literal "~/" pattern is intentional.
         # shellcheck disable=SC2088
         case "$_r" in
             "~") _r="$HOME" ;;
             "~/"*) _r="$HOME/${_r#'~/'}" ;;
         esac
-        # Canonicalize so syntactic variants ($HOME/../$USER, trailing slash)
-        # resolve to the same path and hit the _is_unsafe_root deny list.
-        # Skipped for the lexical pass, which exists only to rebuild the path an
-        # older build derived with a plain dirname (see _sd_cpp_sibling_bases).
+        # Canonicalize so syntactic variants ($HOME/../$USER, trailing slash) resolve to the same
+        # path and hit the _is_unsafe_root deny list. Skipped for the lexical pass, which rebuilds
+        # the path an older build derived with a plain dirname (see _sd_cpp_sibling_bases).
         if [ "${_studio_roots_lexical:-}" != "lexical" ]; then
             # shellcheck disable=SC1007
             _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
@@ -428,9 +410,8 @@ _custom_studio_roots() {
         [ -n "$_exe" ] || return 0
         _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
     }
-    # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is
-    # ignored when both are set. Otherwise uninstalling install A could also
-    # delete install B if the user has STUDIO_HOME left over from B.
+    # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is ignored when both
+    # are set, or uninstalling install A could also delete install B from a leftover STUDIO_HOME.
     if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
         _emit "$UNSLOTH_STUDIO_HOME"
         _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
@@ -442,11 +423,9 @@ _custom_studio_roots() {
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
 }
 
-# Remove $HOME/.local/bin/unsloth only if it's an Unsloth-managed symlink.
-# Unsloth's install.sh writes this as a symlink into the studio venv
-# (install.sh: `ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"`). A
-# pip-installed `unsloth` CLI is a regular file — leave it alone to avoid
-# wiping an unrelated install.
+# Remove $HOME/.local/bin/unsloth only if it is the symlink install.sh created into the studio
+# venv. A pip-installed `unsloth` CLI is a regular file: leave it alone rather than wiping an
+# unrelated install.
 _remove_cli_shim() {
     _shim="$HOME/.local/bin/unsloth"
     [ -L "$_shim" ] || return 0
@@ -476,9 +455,8 @@ _owns_bundle_id() {
     [ "$(_plist_string "$1/Contents/Info.plist" CFBundleExecutable)" != "launch-studio" ]
 }
 
-# Path of the installed app owning bundle id $1, empty if there is none. A renamed
-# bundle or a subdirectory such as "/Applications/AI & ML/Unsloth.app" is a supported
-# layout, so match on the identifier rather than on a fixed set of paths.
+# Path of the installed app owning bundle id $1, empty if there is none. A renamed bundle or a
+# nested one ("/Applications/AI & ML/Unsloth.app") is supported, so match on the identifier.
 _bundle_id_owner() {
     # Overridable so tests can point the scan at a fixture dir.
     _bio_apps="${UNSLOTH_APPLICATIONS_DIR:-/Applications}"
@@ -542,15 +520,12 @@ _unsloth_uninstall_main() {
             continue
         fi
         _remove_root_recording_db "$_custom_root"
-        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
-        # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
-        # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
-        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
-        # Only remove a sibling Unsloth installed: <parent> is a user-chosen dir and
-        # "stable-diffusion.cpp" is exactly what `git clone` of the upstream project produces, so
-        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
-        # unowned checkout. A pre-marker Unsloth build is left behind, never a user file deleted.
-        # Guard the derived parent path the same way.
+        # Native diffusion now installs UNDER the custom root, so the removal above already took
+        # it. Older builds put it BESIDE the root at <parent>/stable-diffusion.cpp, which removing
+        # the root alone would leave behind. <parent> is user-chosen and "stable-diffusion.cpp" is
+        # exactly what `git clone` of the upstream project produces, so require our owner marker
+        # (install_sd_cpp_prebuilt) before rm: an unowned checkout or a pre-marker build is kept,
+        # never a user file deleted. The derived parent path gets the deny-list check too.
         _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
         if _is_unsafe_root "$_custom_sd_cpp"; then
             echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
@@ -561,21 +536,18 @@ _unsloth_uninstall_main() {
         fi
     done
     # The lexical parent as well. A home that is itself a symlink has its old sd.cpp tree beside
-    # the LINK, and the loop above only saw the canonicalized root, so that tree survived. Marker
-    # only, with no "keeping" notice: an unmarked directory at this path is somebody's checkout
-    # and the canonical pass has already reported the one it looked at.
+    # the LINK, which the canonicalized loop above never saw. Marker only, no "keeping" notice: an
+    # unmarked directory here is somebody's checkout, and the canonical pass already reported.
     _custom_studio_roots lexical 2>/dev/null | while IFS= read -r _lex_root; do
         [ -n "$_lex_root" ] || continue
-        # The same ownership check the canonical loop makes before it touches anything. A stale or
-        # mistyped UNSLOTH_STUDIO_HOME still reaches here (the lexical pass has no cd -P to filter
-        # a path that is not there), and without this "/parent/typo" would take the marked
-        # /parent/stable-diffusion.cpp of somebody else's Unsloth with it.
+        # The same ownership check the canonical loop makes. A stale or mistyped
+        # UNSLOTH_STUDIO_HOME still reaches here (the lexical pass has no cd -P to filter it), and
+        # without this "/parent/typo" would take somebody else's marked sd.cpp with it.
         _is_studio_root "$_lex_root" || continue
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
         # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can
-        # carry ".." or a symlinked ancestor and slip a protected tree ("/tmp/../usr/...") past it.
-        # Canonicalize a copy for the check only; the removal still uses the lexical path.
+        # carry ".." or a symlinked ancestor and slip a protected tree past it. The rm stays lexical.
         # shellcheck disable=SC1007
         _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P)
         [ -n "$_lex_sd_canon" ] || _lex_sd_canon="$_lex_sd_cpp"
@@ -586,17 +558,14 @@ _unsloth_uninstall_main() {
         fi
     done
     _remove_root_recording_db "$HOME/.unsloth/studio"
-    # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
-    # by deleting it). No-op in env/custom mode (they nest under the custom root) and
-    # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
+    # Shared llama.cpp build + cache, siblings of studio in default mode (deleting studio misses
+    # them). No-op in env/custom mode and when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is kept.
     _remove_path "$HOME/.unsloth/llama.cpp"
-    # Default-mode native diffusion (stable-diffusion.cpp / sd-cli) build, a sibling of
-    # studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). No-op in
-    # env/custom mode and when absent. "stable-diffusion.cpp" is exactly what a `git clone` of
-    # leejet/stable-diffusion.cpp produces, so a user may keep their own checkout (or point
-    # UNSLOTH_SD_CPP_PATH) at this default path; require our owner marker (written by
-    # install_sd_cpp_prebuilt) before rm, mirroring the custom-root guard above, so a user's own
-    # checkout or a pre-marker Unsloth build is kept rather than deleted.
+    # Default-mode native diffusion build, a sibling of studio like llama.cpp. No-op in env/custom
+    # mode and when absent. "stable-diffusion.cpp" is exactly what a `git clone` of
+    # leejet/stable-diffusion.cpp produces and a user may keep their own checkout (or point
+    # UNSLOTH_SD_CPP_PATH) here, so require our owner marker (install_sd_cpp_prebuilt) before rm,
+    # mirroring the custom-root guard above.
     _default_sd_cpp="$HOME/.unsloth/stable-diffusion.cpp"
     if [ -e "$_default_sd_cpp" ] && [ ! -f "$_default_sd_cpp/.unsloth-studio-owned" ]; then
         echo "  keeping sd.cpp without Unsloth owner marker: $_default_sd_cpp" >&2
@@ -604,33 +573,26 @@ _unsloth_uninstall_main() {
         _remove_path "$_default_sd_cpp"
     fi
     _remove_path "$HOME/.unsloth/.cache"
-    # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
-    # default mode. No-op in env/custom mode (nested under the custom root) and absent.
+    # Isolated Node.js runtime (install_node_prebuilt.py), a default-mode sibling of studio.
     _remove_path "$HOME/.unsloth/node"
-    # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
-    # Normally pruned after activate, but an interrupted build can leave it behind;
-    # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
+    # llama.cpp atomic-install staging root (install_llama_prebuilt.py). Normally pruned after
+    # activate, but an interrupted build leaves it behind and it blocks the rmdir below.
     _remove_path "$HOME/.unsloth/.staging"
-    # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a sibling
-    # of studio in default mode. Only present when a whisper prebuilt matching the
-    # pinned llama.cpp build existed at install time, so many installs lack it.
+    # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a default-mode sibling.
+    # Only present when a prebuilt matching the pinned llama.cpp build existed at install time.
     _remove_path "$HOME/.unsloth/whisper.cpp"
-    # Prebuilt install locks. Every prebuilt serializes on
-    # <parent>/.<name>.install.lock (prebuilt_core.py:1129), so llama.cpp, node and
-    # whisper.cpp each leave one; a stray lock keeps ~/.unsloth from being pruned
-    # below. No-op in env/custom mode and when absent.
+    # Prebuilt install locks: every prebuilt serializes on <parent>/.<name>.install.lock
+    # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
     _remove_path "$HOME/.unsloth/.node.install.lock"
     _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
     # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
-    # (install_node_prebuilt.py); a crash between the two steps strands the rename,
-    # and a stranded one blocks the rmdir below. Unmatched globs stay literal,
-    # hence the existence test.
+    # (install_node_prebuilt.py); a crash between the two strands the rename, and a stranded one
+    # blocks the rmdir below. Unmatched globs stay literal, hence the existence test.
     for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
         [ -e "$_stale" ] && _remove_path "$_stale"
     done
-    # ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
-    # where they don't exist; removing them lets the rmdir below succeed.
+    # ROCm-on-WSL helper artifacts (librocdxg clone, smoke-test venv); removing them frees the rmdir.
     _remove_path "$HOME/.unsloth/librocdxg"
     _remove_path "$HOME/.unsloth/rocm-smoketest"
     # Drop ~/.unsloth only if now empty (rmdir refuses non-empty, so user content is kept).
@@ -640,8 +602,7 @@ _unsloth_uninstall_main() {
     _remove_cli_shim
 
     echo "Removing desktop shortcut and launcher lock..."
-    # install.sh creates Desktop/Unsloth Studio as a symlink. If the user has an
-    # unrelated regular directory by that name, leave it alone.
+    # install.sh creates Desktop/Unsloth Studio as a symlink; an unrelated regular dir is kept.
     _desktop_link="$HOME/Desktop/Unsloth Studio"
     if [ -L "$_desktop_link" ] || [ ! -e "$_desktop_link" ]; then
         _remove_path "$_desktop_link"
@@ -663,10 +624,9 @@ _unsloth_uninstall_main() {
             if [ -x "$_lsr" ]; then
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
-            # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh.
-            # The packaged desktop app shares this bundle id and is the only thing that
-            # writes this data; the shell launcher just opens a browser. This script never
-            # removes that app, so it must not reset it either.
+            # WKWebView data, keyed by bundle id; created at first launch, not by install.sh. The
+            # packaged desktop app shares this id and is the only thing that writes the data, so
+            # while that app is still installed this script must not reset it either.
             _bid="ai.unsloth.studio"
             _bid_owner=$(_bundle_id_owner "$_bid")
             if [ -n "$_bid_owner" ]; then
@@ -692,21 +652,18 @@ _unsloth_uninstall_main() {
         Linux)
             if [ "$_is_wsl" = "1" ]; then
                 echo "Removing WSL Windows-side shortcuts..."
-                # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk'
-                # on the Windows Desktop + Start Menu via powershell.exe. Scope removal
-                # to THIS distro (passed as $args[0]) so a multi-distro install keeps the
-                # other distros' launchers; the TARGET=wsl.exe check still spares a
-                # native install's "Unsloth Studio.lnk". Prefer powershell.exe; test it
-                # can EXECUTE (`command -v` succeeds even with interop OFF -- .exe then
-                # fails "Exec format error", common on systemd-enabled distros).
+                # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk' on the
+                # Windows Desktop + Start Menu. Scope removal to THIS distro so a multi-distro
+                # install keeps the other distros' launchers; the TARGET=wsl.exe check spares a
+                # native install's "Unsloth Studio.lnk". Test powershell.exe can EXECUTE:
+                # `command -v` succeeds even with interop OFF and the .exe then fails to run.
                 _wsl_distro="${WSL_DISTRO_NAME:-}"
                 _ps_ran=0
                 if command -v powershell.exe >/dev/null 2>&1 && \
                    powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
                     _ps_ran=1
-                    # Inject the distro into the command: a -Command string does not
-                    # receive trailing tokens as $args. WSL distro names are safe to
-                    # embed (no quotes/$/backtick).
+                    # Inject the distro into the command: a -Command string does not receive
+                    # trailing tokens as $args. WSL distro names are safe to embed.
                     # shellcheck disable=SC2016
                     powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                         $dirs = @(
@@ -748,10 +705,9 @@ _unsloth_uninstall_main() {
                             if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
                         }' >/dev/null 2>&1 || true
                 fi
-                # Remove $1's shared unsloth.ico only if no Unsloth shortcut (native install
-                # or another WSL distro) still uses it, then drop the dir if empty. Reciprocal
-                # of uninstall.ps1's _RemoveDataDirKeepingWslIcon (keeps the icon for a
-                # surviving WSL shortcut when the native side is removed).
+                # Remove $1's shared unsloth.ico only if no Unsloth shortcut (native install or
+                # another WSL distro) still uses it, then drop the dir if empty. Reciprocal of
+                # uninstall.ps1's _RemoveDataDirKeepingWslIcon.
                 _drop_shared_icon_if_unused() {
                     _du="$1"
                     _icodir="$_du/AppData/Local/Unsloth Studio"
@@ -772,9 +728,8 @@ _unsloth_uninstall_main() {
                     fi
                     [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
                 }
-                # Fallback when powershell.exe can't run (interop disabled): remove WSL .lnk
-                # files via drvfs. The "Unsloth Studio (WSL..." name is WSL-specific, so a
-                # native install's "Unsloth Studio.lnk" never matches.
+                # Fallback when interop is off: remove WSL .lnk files via drvfs. The
+                # "Unsloth Studio (WSL..." name never matches a native "Unsloth Studio.lnk".
                 if [ "$_ps_ran" = "0" ]; then
                     for _drive in /mnt/c /mnt/d /mnt/e; do
                         [ -d "$_drive/Users" ] || continue
@@ -841,16 +796,14 @@ _unsloth_uninstall_main() {
             echo "Removing Linux .desktop entry..."
             _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
             # tauri-plugin-deep-link rewrites "<exe>-handler.desktop" on every launch for the
-            # unsloth:// scheme, so it exists on any machine the app has started on and would
-            # be left pointing at a binary we just deleted. Unlike install.sh's own shortcut,
-            # it uses Tauri's data_dir(), which honours XDG_DATA_HOME, so check both.
+            # unsloth:// scheme, so it exists on any machine the app has started on. Unlike
+            # install.sh's own shortcut it uses Tauri's data_dir(), which honours XDG_DATA_HOME.
             _un_appdir="$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/applications"
             _remove_path "$_un_appdir/unsloth-studio-handler.desktop"
             if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
                 _remove_path "$HOME/.local/share/applications/unsloth-studio-handler.desktop"
             fi
-            # Rebuild mimeinfo.cache wherever an entry was removed, or the stale cache keeps
-            # advertising it. Mirrors install.sh:1574 on the way out.
+            # Rebuild mimeinfo.cache wherever an entry was removed, or it keeps advertising it.
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
                 if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
@@ -887,9 +840,8 @@ _unsloth_uninstall_main() {
     echo "      http://localhost:<port> origin you used to remove them."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
-    # Env-mode installs leave no breadcrumb in $HOME, so a custom root can
-    # only be located if the user re-exports the variable. Print a hint when
-    # neither var is set so the bare `curl | sh` flow doesn't silently miss.
+    # Env-mode installs leave no breadcrumb in $HOME, so a custom root is only found when the
+    # user re-exports the variable. Hint when neither is set, so `curl | sh` does not silently miss.
     if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then
         echo ""
         echo "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"

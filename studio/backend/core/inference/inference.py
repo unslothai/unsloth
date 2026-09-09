@@ -259,6 +259,25 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
+def _prompt_already_has_bos(tokenizer, prompt):
+    """Did the rendered chat template emit BOS itself?
+
+    Most do, so the tokenizer must not add a second. Some do not (zephyr, tinyllama-chat), and
+    suppressing special tokens there drops BOS entirely.
+    """
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    bos_token_id = getattr(tok, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+    while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return bool(len(ids)) and ids[0] == bos_token_id
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -1190,6 +1209,7 @@ class InferenceBackend:
         else:
             template_messages = messages
         reasoning_channel_markers_resolved = False
+        add_special_tokens = True
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1234,6 +1254,8 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
+            # Suppress the tokenizer's BOS only when the template already emitted one.
+            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -1260,6 +1282,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            add_special_tokens = add_special_tokens,
         )
 
     def _generate_vision_response(
@@ -1459,7 +1482,11 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(
+                formatted_prompt,
+                return_tensors = "pt",
+                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            ).to(model.device)
             prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
@@ -1936,8 +1963,12 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        add_special_tokens: bool = True,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
+
+        Rendered chat prompts pass add_special_tokens=False; raw prompts keep
+        the tokenizer defaults, including BOS insertion for base models.
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
@@ -1958,7 +1989,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(prompt, return_tensors = "pt").to(model.device)
+            inputs = tokenizer(
+                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
+            ).to(model.device)
 
             import threading
 

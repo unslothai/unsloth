@@ -6,10 +6,13 @@
 // waved away, and would otherwise also reopen one deliberately turned off.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
+
+const LOADED_MODELS_INDICATOR = readSrc(
+  "features/loaded-models/loaded-models-indicator.tsx",
+);
 
 const { store } = installLocalStorageFake();
 
@@ -105,34 +108,24 @@ test("setting the dismissal to what it already is changes nothing", () => {
 });
 
 test("the dismissal key is cleared by Reset all local preferences", () => {
-  const generalTab = readFileSync(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const generalTab = readSrc("features/settings/tabs/general-tab.tsx");
   assert.match(generalTab, /LOADED_MODELS_PREFERENCE_KEYS\.dismissed,/);
 });
 
 test("the card carries a close button, and a load brings it back", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(indicator, /aria-label="Close loaded models"/);
+  assert.match(LOADED_MODELS_INDICATOR, /aria-label="Close loaded models"/);
   assert.match(
-    indicator,
+    LOADED_MODELS_INDICATOR,
     /onClick=\{\(\) => setLoadedModelsDismissed\(true\)\}/,
   );
   // Reopened on the START of a load, so the card is up for as long as the toast.
   assert.match(
-    indicator,
+    LOADED_MODELS_INDICATOR,
     /subscribeModelLifecycle\(\(\{ loading \}\) => \{\s*if \(loading\) \{\s*setLoadedModelsDismissed\(false\);/,
   );
   // And the gate reads it. Reachability is hoisted so tracking can share it.
   assert.match(
-    indicator,
+    LOADED_MODELS_INDICATOR,
     /const enabled = showIndicator && !dismissed && reachable;/,
   );
 });
@@ -140,37 +133,23 @@ test("the card carries a close button, and a load brings it back", () => {
 // Requested by name: hugeicons.com/icon/sparkle. Singular, so NOT the free
 // set's SparklesIcon (two stars) nor lib/sparkles-icon, which is a shield.
 test("the card is badged with the single sparkle, not the brain", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(indicator, /icon=\{SparkleIcon\}/);
-  assert.match(indicator, /from "@\/lib\/sparkle-icon"/);
-  assert.doesNotMatch(indicator, /AiBrain01Icon|SparklesIcon/);
+  assert.match(LOADED_MODELS_INDICATOR, /icon=\{SparkleIcon\}/);
+  assert.match(LOADED_MODELS_INDICATOR, /from "@\/lib\/sparkle-icon"/);
+  assert.doesNotMatch(LOADED_MODELS_INDICATOR, /AiBrain01Icon|SparklesIcon/);
 });
 
 // Releasing the weights is not the same act as closing the card, so it must not
 // wear the same X.
 test("a row ejects with the eject glyph, the header closes with an X", () => {
-  const indicator = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const row = indicator.slice(
-    indicator.indexOf("function LoadedModelRow"),
-    indicator.indexOf("export function LoadedModelsIndicator"),
+  const row = LOADED_MODELS_INDICATOR.slice(
+    LOADED_MODELS_INDICATOR.indexOf("function LoadedModelRow"),
+    LOADED_MODELS_INDICATOR.indexOf("export function LoadedModelsIndicator"),
   );
   assert.match(row, /icon=\{RemoveCircleIcon\}/);
   assert.doesNotMatch(row, /icon=\{Cancel01Icon\}/);
   // The close button keeps the X, as the Live monitor's does.
-  const header = indicator.slice(
-    indicator.indexOf('aria-label="Close loaded models"'),
+  const header = LOADED_MODELS_INDICATOR.slice(
+    LOADED_MODELS_INDICATOR.indexOf('aria-label="Close loaded models"'),
   );
   assert.match(header, /icon=\{Cancel01Icon\}/);
 });
@@ -182,23 +161,19 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
 // 401 ran authFetch's refresh-then-redirect ladder against no session at all.
 // Asserted by reading the source, since the node suite has no DOM to mount in.
 test("recording follows the route and auth gate, but not the dismissal", () => {
-  const INDICATOR = readFileSync(
-    new URL(
-      "../src/features/loaded-models/loaded-models-indicator.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // The auth gate lives in canShowIndicator, so `reachable` is what carries it.
-  assert.match(INDICATOR, /const reachable = canShowIndicator\(pathname\);/);
   assert.match(
-    INDICATOR,
+    LOADED_MODELS_INDICATOR,
+    /const reachable = canShowIndicator\(pathname\);/,
+  );
+  assert.match(
+    LOADED_MODELS_INDICATOR,
     /hasAuthToken\(\) && !mustChangePassword\(\)/,
     "canShowIndicator must still be the thing that gates on auth",
   );
-  const call = INDICATOR.slice(
-    INDICATOR.indexOf("useLoadedModels("),
-    INDICATOR.indexOf("useLoadedModels(") + 200,
+  const call = LOADED_MODELS_INDICATOR.slice(
+    LOADED_MODELS_INDICATOR.indexOf("useLoadedModels("),
+    LOADED_MODELS_INDICATOR.indexOf("useLoadedModels(") + 200,
   );
   assert.match(call, /showIndicator && reachable/, "track must be gated too");
   assert.doesNotMatch(

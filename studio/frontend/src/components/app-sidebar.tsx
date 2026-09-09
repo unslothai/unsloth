@@ -835,7 +835,10 @@ export function AppSidebar() {
         chatOnlyDetail
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
-      : chatOnlyReason === "intel_mac"
+      : chatOnlyReason === "no_torch"
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
+          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||
             chatOnlyReason === "torch_cuda_unavailable"
@@ -3072,9 +3075,11 @@ export function AppSidebar() {
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
         : Boolean(runningByThreadId[item.id]);
-    const hasQueuedActivity = threadIds.some((threadId) =>
-      Boolean(queueByThreadId[threadId]),
-    );
+    // A paused queue is not activity: its entry outlives Stop, so the row would spin on.
+    const hasQueuedActivity = threadIds.some((threadId) => {
+      const entry = queueByThreadId[threadId];
+      return Boolean(entry) && !entry.paused;
+    });
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
