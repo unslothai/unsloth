@@ -231,7 +231,7 @@ const requestMethod = storeSource.slice(
 test("a new permission refusal replaces stale probe diagnostics", () => {
   const setters = storeSource.slice(
     storeSource.indexOf("  setToolExecutionMode: (toolExecutionMode) =>"),
-    storeSource.indexOf("  refreshToolIsolationCapability: async () =>"),
+    storeSource.indexOf("  refreshToolIsolationCapability: async"),
   );
   for (const mode of ["container_isolation", "limited", "full", "allowlist"]) {
     let state: any = {

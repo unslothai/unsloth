@@ -2362,6 +2362,8 @@ type ChatRuntimeStore = {
   toolIsolationError: string | null;
   toolIsolationErrorDiagnostic: ToolIsolationCapability["diagnostic"];
   toolIsolationConsentOpen: boolean;
+  windowsToolIsolationSetupOpen: boolean;
+  windowsToolIsolationSetupRequested: boolean;
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -2634,7 +2636,7 @@ type ChatRuntimeStore = {
   setPermissionMode: (mode: PermissionMode) => void;
   setToolExecutionMode: (mode: ToolExecutionMode) => void;
   setToolNetworkPolicy: (policy: ToolNetworkPolicy) => void;
-  refreshToolIsolationCapability: () => Promise<void>;
+  refreshToolIsolationCapability: (refresh?: boolean) => Promise<void>;
   requestNestedToolGrant: () => Promise<NestedToolGrant>;
   clearNestedToolGrant: () => void;
   requestLimitedToolGrant: () => Promise<LimitedToolGrant>;
@@ -4081,6 +4083,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolIsolationError: null,
   toolIsolationErrorDiagnostic: null,
   toolIsolationConsentOpen: false,
+  windowsToolIsolationSetupOpen: false,
+  windowsToolIsolationSetupRequested: false,
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -5142,6 +5146,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       return {
+        windowsToolIsolationSetupRequested: codeToolsEnabled && !state.codeToolsEnabled,
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
           : { codeToolsEnabled }),
@@ -5449,14 +5454,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       };
     }),
-  refreshToolIsolationCapability: async () => {
+  refreshToolIsolationCapability: async (refresh = false) => {
     set(() => ({
       toolIsolationCapabilityLoading: true,
       toolIsolationError: null,
       toolIsolationErrorDiagnostic: null,
     }));
     try {
-      const capability = await fetchToolIsolationCapability();
+      const capability = await fetchToolIsolationCapability(refresh);
       set((state) => {
         const grantRemainsValid =
           capability.protection_state === "unavailable" &&
@@ -6156,6 +6161,8 @@ function clearToolIsolationGrantForAuthSession(): void {
   // Full and Limited are decisions of the signed-in person, so both end with the auth
   // session: a different account signing in on this tab starts at the persisted level.
   useChatRuntimeStore.setState((state) => ({
+    windowsToolIsolationSetupOpen: false,
+    windowsToolIsolationSetupRequested: false,
     toolIsolationUiSessionId: createToolIsolationUiSessionId(),
     toolIsolationGrantLoading: false,
     ...protectedIsolationDefaults(

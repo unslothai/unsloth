@@ -145,7 +145,13 @@ test("composer hides inactive code isolation but retains Full and Limited warnin
         ? "Approve for me: Approval description. Isolation status."
         : "Approve for me: Approval description",
     );
-    assert.equal(Boolean(button.children[2]), shown);
+    const textContent = (node: any): string =>
+      typeof node === "string"
+        ? node
+        : (node?.children ?? []).map(textContent).join("");
+    const renderedText = textContent(button);
+    assert.equal(renderedText.includes("Isolation status"), shown);
+    assert.equal(renderedText.includes("·"), shown);
   }
 });
 const validator = isolation.slice(
@@ -403,6 +409,7 @@ test("closing the actual Limited dialog rejects its pending grant response", asy
     },
   ).outputText;
   let closed = false;
+  let aborted = false;
   const context: Record<string, unknown> = {
     React: {
       createElement: (
@@ -418,6 +425,9 @@ test("closing the actual Limited dialog rejects its pending grant response", asy
         clearLimitedToolGrant: clear,
       }),
     limitedModeWarning: () => "warning",
+    cancelLimitedToolGrant: () => {
+      aborted = true;
+    },
   };
   for (const name of [
     "AlertDialog",
@@ -447,6 +457,7 @@ test("closing the actual Limited dialog rejects its pending grant response", asy
   assert.notEqual(cancel.props?.disabled, true);
   dialog.props.onOpenChange(false);
   assert.equal(closed, true);
+  assert.equal(aborted, true);
   h.requests[0].resolve(grant("dismissed"));
   await rejected;
   assert.equal(h.get().toolExecutionMode, "os_isolation_required");

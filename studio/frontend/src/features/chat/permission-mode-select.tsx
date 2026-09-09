@@ -51,12 +51,11 @@ import {
 import {
   type ToolIsolationCapability,
   toolIsolationPresentation,
+  setupWindowsToolIsolation,
+  cancelLimitedToolGrant,
+  cancelToolIsolationCheck,
 } from "./tool-isolation";
-import {
-  TOOL_ISOLATION_LIMITATION_TEXT,
-  limitedBackendLabel,
-  networkAllowlistSummary,
-} from "./tool-isolation-labels";
+import { networkAllowlistSummary } from "./tool-isolation-labels";
 import { capabilityOffersNetworkAllowlist } from "./utils/tool-network-policy";
 
 /** Permission levels for tool calls. Full access stays last because it disables both approval
@@ -252,9 +251,8 @@ function isolationSummary(
   if (state === "full") return "Sandbox off";
   if (state === "limited") return "Limited · no OS isolation";
   if (state === "container") return "Container-compatible isolation";
-  if (!capability) return "Checking sandbox…";
-  if (state === "preview") return "Sandbox · Preview";
-  if (state === "protected") return "Sandbox on";
+  if (!capability) return "Checking";
+  if (state === "preview" || state === "protected") return "Sandbox";
   return "Sandbox unavailable";
 }
 
@@ -268,26 +266,15 @@ function ToolIsolationDetailsDialog({
   restoreFocus?: () => void;
 }) {
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
-  const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
-  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
-  const nestedGrant = useChatRuntimeStore((s) => s.nestedToolGrant);
-  const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
-  const presentation = toolIsolationPresentation(
-    mode,
-    capability,
-    grant,
-    nestedGrant,
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const errorDiagnostic = useChatRuntimeStore(
+    (s) => s.toolIsolationErrorDiagnostic,
   );
-  const isolated =
-    presentation.state === "protected" || presentation.state === "preview";
-  const limitedBackend = limitedBackendLabel(
-    capability?.limited_backend ?? null,
-  );
-
+  const diagnostic = error ? errorDiagnostic : capability?.diagnostic;
+  if (!error && capability?.available !== false) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="gap-6 p-6 max-sm:content-start"
         onCloseAutoFocus={(event) => {
           if (restoreFocus) {
             event.preventDefault();
@@ -295,128 +282,134 @@ function ToolIsolationDetailsDialog({
           }
         }}
       >
-        <DialogHeader className="pe-8">
-          <DialogTitle>Sandbox details</DialogTitle>
-          <DialogDescription>{presentation.label}</DialogDescription>
+        <DialogHeader>
+          <DialogTitle>Tool isolation error</DialogTitle>
+          <DialogDescription>
+            {error ||
+              capability?.reason ||
+              "Tool isolation could not be verified."}
+          </DialogDescription>
         </DialogHeader>
-        {capability ? (
-          <>
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-muted-foreground">Environment</dt>
-              <dd className="break-words text-end">{capability.environment}</dd>
-              {presentation.state === "container" ? (
-                <>
-                  <dt className="text-muted-foreground">Runtime</dt>
-                  <dd className="text-end">Sandbox Runtime (SRT)</dd>
-                  <dt className="text-muted-foreground">Profile</dt>
-                  <dd className="break-all text-end">
-                    {capability.nested_profile_id}
-                  </dd>
-                  <dt className="text-muted-foreground">Network</dt>
-                  <dd className="text-end">Off</dd>
-                </>
-              ) : null}
-              {isolated ? (
-                <>
-                  <dt className="text-muted-foreground">Runtime</dt>
-                  <dd className="break-words text-end">{capability.backend}</dd>
-                </>
-              ) : null}
-              {isolated && capability.profile_id ? (
-                <>
-                  <dt className="text-muted-foreground">Profile</dt>
-                  <dd className="break-all text-end">
-                    {capability.profile_id}
-                  </dd>
-                </>
-              ) : null}
-              {isolated ? (
-                <>
-                  <dt className="text-muted-foreground">Network</dt>
-                  <dd className="text-end">
-                    {capabilityOffersNetworkAllowlist(capability) &&
-                    networkPolicy === "allowlist"
-                      ? "Allowed hosts only"
-                      : "Off"}
-                  </dd>
-                </>
-              ) : null}
-            </dl>
-            {!isolated ? (
-              <p className="text-sm">{presentation.description}</p>
+        {diagnostic ? (
+          <div className="text-sm">
+            <p>Code: {diagnostic.code}</p>
+            <p>Stage: {diagnostic.stage}</p>
+            {diagnostic.dependency ? (
+              <p>Dependency: {diagnostic.dependency}</p>
             ) : null}
-            {presentation.state === "unavailable" && capability.reason ? (
-              <p className="whitespace-pre-wrap break-words text-sm">
-                {capability.reason}
-              </p>
-            ) : null}
-            {presentation.state === "unavailable" && capability.diagnostic ? (
-              <details className="text-sm">
-                <summary>Diagnostic details</summary>
-                <p>Code: {capability.diagnostic.code}</p>
-                <p>Stage: {capability.diagnostic.stage}</p>
-                {capability.diagnostic.field ? (
-                  <p>
-                    {capability.diagnostic.field}: {capability.diagnostic.count}{" "}
-                    entries; limit {capability.diagnostic.limit}.
-                  </p>
-                ) : null}
-                {capability.diagnostic.dependency ? (
-                  <p>Dependency: {capability.diagnostic.dependency}</p>
-                ) : null}
-              </details>
-            ) : null}
-            {(isolated || presentation.state === "unavailable") &&
-            capability.limitations.length > 0 ? (
-              <section className="space-y-2">
-                <h3 className="text-sm font-medium">Limitations</h3>
-                <ul className="list-disc space-y-2 ps-4 text-sm leading-normal">
-                  {capability.limitations.map((code) => (
-                    <li key={code} className="break-words">
-                      {TOOL_ISOLATION_LIMITATION_TEXT[code] ?? code}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ) : null}
-            {presentation.state === "unavailable" && capability.remediation ? (
-              <p className="whitespace-pre-wrap break-words text-sm">
-                {capability.remediation}
-              </p>
-            ) : null}
-            {presentation.state !== "full" &&
-            (limitedBackend ||
-              presentation.state === "limited" ||
-              presentation.state === "unavailable") ? (
-              <section className="space-y-2 border-t border-border pt-4">
-                <h3 className="text-sm font-medium">
-                  {isolated || presentation.state === "container"
-                    ? "About Limited mode"
-                    : "Limited mode"}
-                </h3>
-                <p className="text-sm">{limitedModeWarning(capability)}</p>
-                {limitedBackend ? (
-                  <p className="text-sm text-muted-foreground">
-                    {limitedBackend}
-                  </p>
-                ) : null}
-                {capability.limited_limitations.length > 0 ? (
-                  <ul className="list-disc space-y-2 ps-4 text-sm leading-normal">
-                    {capability.limited_limitations.map((code) => (
-                      <li key={code} className="break-words">
-                        {TOOL_ISOLATION_LIMITATION_TEXT[code] ?? code}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </section>
-            ) : null}
-          </>
-        ) : (
-          <p className="text-sm">Checking this environment…</p>
-        )}
+          </div>
+        ) : null}
+        <p className="text-sm">{capability?.remediation}</p>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function WindowsToolIsolationSetup() {
+  const open = useChatRuntimeStore((s) => s.windowsToolIsolationSetupOpen);
+  const requested = useChatRuntimeStore(
+    (s) => s.windowsToolIsolationSetupRequested,
+  );
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const setOpen = (value: boolean) =>
+    useChatRuntimeStore.setState({ windowsToolIsolationSetupOpen: value });
+  const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [message, setMessage] = useState("");
+  const repair = conflict || capability?.reason_code === "setup_conflict" || capability?.reason_code === "proxy_port_unavailable";
+  const setupMessage = message || (repair ? capability?.remediation : "");
+  const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+  const clearGrant = useChatRuntimeStore((s) => s.clearLimitedToolGrant);
+  useEffect(() => {
+    if (!requested) return;
+    if (!capability) {
+      void refresh();
+      return;
+    }
+    useChatRuntimeStore.setState({
+      windowsToolIsolationSetupRequested: false,
+      windowsToolIsolationSetupOpen:
+        capability.environment === "win32" &&
+        !capability.available &&
+        mode === "os_isolation_required",
+    });
+  }, [requested, capability, mode, refresh]);
+  return (
+    <>
+      <AlertDialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!busy) setOpen(next);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Set up Windows tool isolation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Applies to Python and Terminal tool calls. Windows will ask for
+              administrator approval to set up a sandbox account and network
+              filters. Studio will check isolation afterward; your command will
+              not be retried.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {setupMessage ? (
+            <p className="text-sm" role="status">
+              {setupMessage}
+            </p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy}
+              onClick={async (event) => {
+                event.preventDefault();
+                setBusy(true);
+                clearGrant();
+                setMessage(
+                  "Installing Windows tool isolation. Check for an administrator prompt. This may take a few minutes.",
+                );
+                try {
+                  const result = await setupWindowsToolIsolation(repair);
+                  setConflict(result.status === "conflict");
+                  useChatRuntimeStore.setState({
+                    toolIsolationError:
+                      result.status === "installed" ? null : result.message,
+                    toolIsolationErrorDiagnostic: null,
+                  });
+                  setMessage(result.message);
+                  if (result.status === "installed") {
+                    setMessage("Checking Windows isolation…");
+                    await refresh(true);
+                    const state = useChatRuntimeStore.getState();
+                    setMessage(
+                      state.toolIsolationCapability?.available
+                        ? "Windows tool isolation is ready. Retry your command when you are ready."
+                        : state.toolIsolationError ||
+                            "Setup finished, but tool isolation could not be verified. Open Error details for the check result.",
+                    );
+                  }
+                } catch (error) {
+                  setMessage(
+                    error instanceof Error
+                      ? error.message
+                      : "Windows setup failed.",
+                  );
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy
+                ? "Setting up…"
+                : repair
+                  ? "Repair existing setup"
+                  : "Set up isolation"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -475,7 +468,9 @@ function ToolIsolationMenuSection({
           />
           <p className="text-sm font-medium">
             {loading
-              ? "Checking sandbox…"
+              ? capability?.environment === "win32"
+                ? "Checking Windows isolation…"
+                : "Checking isolation…"
               : isolationSummary(presentation.state, capability)}
           </p>
         </div>
@@ -486,13 +481,15 @@ function ToolIsolationMenuSection({
           <p className="break-words text-xs text-destructive">{error}</p>
         ) : null}
       </div>
-      <DropdownMenuItem
-        onSelect={() => setTimeout(onRequestDetails, 0)}
-        className="gap-2 text-sm"
-      >
-        <Info className="size-4" strokeWidth={2} />
-        Sandbox details
-      </DropdownMenuItem>
+      {unavailable || error ? (
+        <DropdownMenuItem
+          onSelect={() => setTimeout(onRequestDetails, 0)}
+          className="gap-2 text-sm"
+        >
+          <Info className="size-4" strokeWidth={2} />
+          Error details
+        </DropdownMenuItem>
+      ) : null}
       {offersAllowlist && capability ? (
         <DropdownMenuItem
           onSelect={(event) => {
@@ -536,6 +533,17 @@ function ToolIsolationMenuSection({
           Try container-compatible isolation…
         </DropdownMenuItem>
       ) : null}
+      {unavailable && capability?.environment === "win32" ? (
+        <DropdownMenuItem
+          onSelect={() =>
+            useChatRuntimeStore.setState({
+              windowsToolIsolationSetupOpen: true,
+            })
+          }
+        >
+          Set up Windows tool isolation…
+        </DropdownMenuItem>
+      ) : null}
       {unavailable ? (
         <DropdownMenuItem
           onSelect={() => setTimeout(onRequestLimited, 0)}
@@ -555,12 +563,17 @@ function ToolIsolationMenuSection({
           Require sandbox
         </DropdownMenuItem>
       ) : null}
+      {loading ? (
+        <DropdownMenuItem onSelect={() => cancelToolIsolationCheck()}>
+          Cancel isolation check
+        </DropdownMenuItem>
+      ) : null}
       {!loading &&
       (!capability || capability.retryable || !capability.available) ? (
         <DropdownMenuItem
           onSelect={(event) => {
             event.preventDefault();
-            refresh().catch(() => undefined);
+            refresh(true).catch(() => undefined);
           }}
           className="text-sm"
         >
@@ -600,7 +613,10 @@ export function LimitedModeConfirmDialog({
     <AlertDialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen && loading) clearGrant();
+        if (!nextOpen && loading) {
+          if (variant === "limited") cancelLimitedToolGrant();
+          clearGrant();
+        }
         onOpenChange(nextOpen);
       }}
     >
@@ -671,7 +687,9 @@ export function LimitedModeConfirmDialog({
             }}
           >
             {loading
-              ? "Checking…"
+              ? capability?.environment === "win32"
+                ? "Checking Windows isolation…"
+                : "Checking isolation…"
               : variant === "nested"
                 ? "Check and enable"
                 : "Use Limited mode"}
@@ -686,7 +704,12 @@ export function LimitedModeConfirmDialog({
 export function ToolIsolationConsentDialog() {
   const open = useChatRuntimeStore((s) => s.toolIsolationConsentOpen);
   const setOpen = useChatRuntimeStore((s) => s.setToolIsolationConsentOpen);
-  return open ? <ActiveToolIsolationConsentDialog setOpen={setOpen} /> : null;
+  return (
+    <>
+      <WindowsToolIsolationSetup />
+      {open ? <ActiveToolIsolationConsentDialog setOpen={setOpen} /> : null}
+    </>
+  );
 }
 
 function ActiveToolIsolationConsentDialog({
@@ -872,12 +895,17 @@ export function PermissionModeComposerPill({
             <span className="composer-pill-glyph">
               <ActiveIcon className="size-[15px]" strokeWidth={2} />
             </span>
-            <span>{active.label}</span>
-            {showIsolation ? (
-              <span className="truncate text-xs font-normal">
-                {isolationSummary(isolation.state, capability)}
-              </span>
-            ) : null}
+            <span className="inline-flex min-w-0 items-baseline gap-1.5">
+              <span>{active.label}</span>
+              {showIsolation ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="truncate text-xs font-normal">
+                    {isolationSummary(isolation.state, capability)}
+                  </span>
+                </>
+              ) : null}
+            </span>
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.5}

@@ -5,7 +5,10 @@ import { authFetch } from "@/features/auth";
 import { backendLabel, limitedBackendLabel } from "./tool-isolation-labels";
 
 export type ToolExecutionMode =
-  "os_isolation_required" | "limited" | "container_isolation" | "full";
+  | "os_isolation_required"
+  | "limited"
+  | "container_isolation"
+  | "full";
 
 /** Outbound network for an OS-isolated launch: nothing, or the backend's fixed host allowlist
  *  through its local proxy. Only Required mode can enforce either. */
@@ -17,7 +20,9 @@ export const TOOL_NETWORK_POLICIES: readonly ToolNetworkPolicy[] = [
 ];
 
 export type ToolIsolationProtectionState =
-  "protected" | "preview" | "unavailable";
+  | "protected"
+  | "preview"
+  | "unavailable";
 
 /** Advisory host capability. The launch route revalidates it before exec. */
 export type ToolIsolationCapability = {
@@ -84,7 +89,12 @@ export function isNestedGrantCurrent(
 
 export type ToolIsolationPresentation = {
   state:
-    "protected" | "preview" | "unavailable" | "limited" | "container" | "full";
+    | "protected"
+    | "preview"
+    | "unavailable"
+    | "limited"
+    | "container"
+    | "full";
   label: string;
   description: string;
 };
@@ -340,27 +350,73 @@ function parseGrant(body: unknown): LimitedToolGrant {
 }
 
 let capabilityRequest: Promise<ToolIsolationCapability> | null = null;
+let capabilityAbort: AbortController | null = null;
+let limitedAbort: AbortController | null = null;
 
-export async function fetchToolIsolationCapability(): Promise<ToolIsolationCapability> {
-  if (capabilityRequest) {
-    return capabilityRequest;
-  }
-  capabilityRequest = (async () => {
-    const response = await authFetch(
-      "/api/inference/tool-isolation/capability",
-    );
+export function cancelToolIsolationCheck(): void {
+  capabilityAbort?.abort(new Error("Isolation check cancelled."));
+}
+
+export function cancelLimitedToolGrant(): void {
+  limitedAbort?.abort(new Error("Limited-mode request cancelled."));
+}
+
+async function isolationRequest(
+  path: string,
+  init: RequestInit,
+  controller: AbortController,
+  timeoutMs = 70_000,
+): Promise<unknown> {
+  const timer = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          "Isolation check timed out. No permission was granted. Check again to retry.",
+        ),
+      ),
+    timeoutMs,
+  );
+  try {
+    const response = await authFetch(path, {
+      ...init,
+      signal: controller.signal,
+    });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
       throw new Error(
-        responseError(body, `Capability check failed (${response.status})`),
+        responseError(body, `Isolation request failed (${response.status})`),
       );
     }
-    return parseCapability(body);
-  })();
+    controller.signal.throwIfAborted();
+    return body;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw controller.signal.reason instanceof Error
+        ? controller.signal.reason
+        : new Error("Isolation check cancelled.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function fetchToolIsolationCapability(
+  refresh = false,
+): Promise<ToolIsolationCapability> {
+  if (capabilityRequest) return capabilityRequest;
+  const controller = new AbortController();
+  capabilityAbort = controller;
+  capabilityRequest = isolationRequest(
+    `/api/inference/tool-isolation/capability${refresh ? "?refresh=true" : ""}`,
+    {},
+    controller,
+  ).then(parseCapability);
   try {
     return await capabilityRequest;
   } finally {
     capabilityRequest = null;
+    capabilityAbort = null;
   }
 }
 
@@ -368,24 +424,59 @@ export async function fetchLimitedToolGrant(
   uiSessionId: string,
   probeGeneration: string,
 ): Promise<LimitedToolGrant> {
-  const response = await authFetch(
-    "/api/inference/tool-isolation/limited-grant",
+  limitedAbort?.abort();
+  const controller = new AbortController();
+  limitedAbort = controller;
+  try {
+    return parseGrant(
+      await isolationRequest(
+        "/api/inference/tool-isolation/limited-grant",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ui_session_id: uiSessionId,
+            probe_generation: probeGeneration,
+          }),
+        },
+        controller,
+      ),
+    );
+  } finally {
+    if (limitedAbort === controller) limitedAbort = null;
+  }
+}
+
+export async function setupWindowsToolIsolation(
+  repairExisting = false,
+): Promise<{
+  status: string;
+  message: string;
+}> {
+  const result = await isolationRequest(
+    "/api/inference/tool-isolation/windows-setup",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ui_session_id: uiSessionId,
-        probe_generation: probeGeneration,
+        confirm: true,
+        ...(repairExisting ? { repair_existing: true } : {}),
       }),
     },
+    new AbortController(),
+    550_000,
   );
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(
-      responseError(body, `Limited grant failed (${response.status})`),
-    );
+  if (
+    !result ||
+    typeof result !== "object" ||
+    !("status" in result) ||
+    !("message" in result) ||
+    typeof result.status !== "string" ||
+    typeof result.message !== "string"
+  ) {
+    throw new Error("Invalid Windows setup response.");
   }
-  return parseGrant(body);
+  return { status: result.status, message: result.message };
 }
 
 export class ToolIsolationRequestError extends Error {
