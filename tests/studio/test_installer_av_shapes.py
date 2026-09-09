@@ -287,9 +287,9 @@ def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
     assert workflow.is_file(), "the runtime guard lane is gone; the text check is alone again"
     body = workflow.read_text(encoding = "utf-8")
     assert "Positive control" in body, "the lane no longer proves its own detector works"
-    assert "Add-Type -TypeDefinition" in body, (
-        "the positive control must really compile something; a simulated one proves nothing"
-    )
+    assert (
+        "Add-Type -TypeDefinition" in body
+    ), "the positive control must really compile something; a simulated one proves nothing"
 
     watcher = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
     assert watcher.is_file()
