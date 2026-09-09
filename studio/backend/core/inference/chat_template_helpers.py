@@ -3452,9 +3452,7 @@ def resolve_native_chat_template(
                 exc,
             )
         else:
-            logger.warning(
-                "Could not load native chat template for '%s': %s", template_source, exc
-            )
+            logger.warning("Could not load native chat template for '%s': %s", template_source, exc)
         # A failed fetch is not "no template": leave the sentinel unset so the next call
         # retries (caching False would pin the tool-dropping override).
         return None

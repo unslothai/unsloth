@@ -248,7 +248,6 @@ if sys.platform == "win32":
     # there rather than here keeps the CLI and the backend on one implementation.
     try:
         from unsloth.import_fixes import disable_sentencepiece_if_blocked
-
         disable_sentencepiece_if_blocked()
     except Exception:
         pass

@@ -71,7 +71,9 @@ def test_an_ordinary_failure_is_not_mistaken_for_a_block():
 def test_a_missing_optional_package_is_not_a_block():
     """An ImportError naming a package nobody installed is not a refusal, and it already
     has a good message of its own."""
-    assert helpers._looks_like_a_blocked_import(ImportError("No module named 'flash_attn'")) is False
+    assert (
+        helpers._looks_like_a_blocked_import(ImportError("No module named 'flash_attn'")) is False
+    )
 
 
 def test_a_blocked_extension_is_reported_at_error_level(monkeypatch, caplog):
@@ -118,10 +120,7 @@ def test_an_ordinary_failure_still_logs_a_warning(monkeypatch, caplog):
     monkeypatch.setitem(sys.modules, "transformers", module)
 
     with caplog.at_level(logging.WARNING):
-        assert helpers.resolve_native_chat_template(
-            model_info,
-            "unsloth/Qwen3.5-2B",
-        ) is None
+        assert helpers.resolve_native_chat_template(model_info, "unsloth/Qwen3.5-2B") is None
 
     assert [r for r in caplog.records if r.levelno == logging.WARNING]
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
