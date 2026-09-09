@@ -215,6 +215,103 @@ def test_graceful_shutdown_drops_the_record_last(monkeypatch):
     assert order == ["release_socket", "remove_record"]
 
 
+def test_graceful_shutdown_retries_project_quarantine_before_generic_sweep(monkeypatch):
+    from utils import process_lifetime
+
+    order = []
+    retry_count = {"value": 0}
+
+    def retry_quarantine():
+        retry_count["value"] += 1
+        order.append(f"project_quarantine_{retry_count['value']}")
+        return 0
+
+    monkeypatch.setattr(run, "_retry_project_process_quarantine", retry_quarantine)
+    monkeypatch.setattr(
+        process_lifetime,
+        "terminate_all",
+        lambda: order.append("generic_sweep") or [],
+    )
+    monkeypatch.setattr(process_lifetime, "clear_breadcrumb", lambda: None)
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: None)
+
+    run._graceful_shutdown()
+
+    assert order == ["project_quarantine_1", "generic_sweep", "project_quarantine_2"]
+
+
+def test_graceful_shutdown_retries_quarantine_even_when_generic_sweep_fails(monkeypatch):
+    from utils import process_lifetime
+
+    order = []
+
+    def retry_quarantine():
+        order.append("project_quarantine")
+        return 1
+
+    def failed_sweep():
+        order.append("generic_sweep")
+        raise RuntimeError("sweep failed")
+
+    monkeypatch.setattr(run, "_retry_project_process_quarantine", retry_quarantine)
+    monkeypatch.setattr(process_lifetime, "terminate_all", failed_sweep)
+    monkeypatch.setattr(
+        process_lifetime,
+        "clear_breadcrumb",
+        lambda: pytest.fail("cleared recovery state after a failed sweep"),
+    )
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: None)
+
+    run._graceful_shutdown()
+
+    assert order == ["project_quarantine", "generic_sweep", "project_quarantine"]
+
+
+@pytest.mark.parametrize("missing", ["core.agent_workspace", "core.agent_workspace.supervisor"])
+def test_shutdown_without_optional_supervisor_has_no_quarantine(monkeypatch, missing):
+    import importlib
+
+    def absent(name):
+        assert name == "core.agent_workspace.supervisor"
+        raise ModuleNotFoundError("optional feature absent", name = missing)
+
+    monkeypatch.setattr(importlib, "import_module", absent)
+    assert run._retry_project_process_quarantine() == 0
+
+
+def test_shutdown_broken_supervisor_import_cannot_claim_no_quarantine(monkeypatch):
+    import importlib
+
+    def broken(name):
+        raise ModuleNotFoundError("broken dependency", name = "supervisor_dependency")
+
+    monkeypatch.setattr(importlib, "import_module", broken)
+    with pytest.raises(ModuleNotFoundError):
+        run._retry_project_process_quarantine()
+
+
+@pytest.mark.parametrize("survivors", [[], [123]])
+@pytest.mark.parametrize("retained", [0, 1, None])
+def test_shutdown_keeps_recovery_record_until_both_sweeps_are_proven(
+    monkeypatch, survivors, retained
+):
+    from utils import process_lifetime
+
+    cleared = []
+
+    def retry():
+        if retained is None:
+            raise RuntimeError("cleanup could not be proven")
+        return retained
+
+    monkeypatch.setattr(run, "_retry_project_process_quarantine", retry)
+    monkeypatch.setattr(process_lifetime, "terminate_all", lambda: survivors)
+    monkeypatch.setattr(process_lifetime, "clear_breadcrumb", lambda: cleared.append(True))
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: None)
+    run._graceful_shutdown()
+    assert bool(cleared) == (not survivors and retained == 0)
+
+
 def test_own_studio_on_port_is_found_without_psutil(tmp_path, monkeypatch):
     # psutil is optional; a listener scan finds nothing without it, so detection
     # must come from our own records or we silently start a duplicate.

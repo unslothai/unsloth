@@ -1591,6 +1591,20 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
+def _retry_project_process_quarantine():
+    """No work when the optional supervisor is absent; broken imports still fail."""
+    import importlib
+
+    module_name = "core.agent_workspace.supervisor"
+    try:
+        supervisor = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name not in {module_name, "core.agent_workspace"}:
+            raise
+        return 0
+    return supervisor.retry_quarantined_project_processes()
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
@@ -1672,13 +1686,51 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
-    # 7. Backstop sweep for any adopted child the steps above missed.
+    # 7. Retry fail-closed cleanup for project processes whose exact namespace
+    # lifecycle could not be proven earlier. Their workspace lease and mutation
+    # slot stay held unless this pidfd-backed retry succeeds.
+    try:
+        retained = _retry_project_process_quarantine()
+        if retained:
+            logger.warning(
+                "%s supervised project process(es) remain quarantined; "
+                "workspace locks will stay held until process exit",
+                retained,
+            )
+    except Exception as e:
+        logger.warning("Error retrying quarantined project processes: %s", e)
+
+    # 8. Backstop sweep for any adopted child the steps above missed.
+    survivors = None
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all
-        terminate_all()
-        clear_breadcrumb()  # nothing left for the next startup to sweep
+        survivors = terminate_all()
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
+
+    # 9. The generic sweep may have made an earlier pidfd cleanup provable.
+    retained_after_sweep = None
+    try:
+        retained_after_sweep = _retry_project_process_quarantine()
+        if retained_after_sweep:
+            logger.warning(
+                "%s supervised project process(es) remain quarantined after the "
+                "generic process sweep",
+                retained_after_sweep,
+            )
+    except Exception as e:
+        logger.warning("Error retrying project quarantine after process sweep: %s", e)
+
+    if survivors is not None and retained_after_sweep is not None:
+        if not survivors and not retained_after_sweep:
+            clear_breadcrumb()
+        else:
+            logger.warning(
+                "Keeping the child-process recovery record for %s survivor(s) and "
+                "%s quarantined project process(es)",
+                len(survivors),
+                retained_after_sweep,
+            )
 
     # Last: while cleanup runs the server is still alive, and dropping the record
     # early leaves a retried `stop` or a new launch unable to find it.

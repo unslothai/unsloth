@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Native process-lifetime and shutdown recovery coverage.
+# This lane does not download a model or depend on a model choosing a tool.
+
+name: Studio shutdown recovery
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/run.py'
+      - 'studio/backend/utils/process_lifetime.py'
+      - 'studio/backend/tests/test_studio_pid_files.py'
+      - 'studio/backend/tests/test_process_lifetime.py'
+      - '.github/workflows/studio-shutdown-recovery-ci.yml'
+  merge_group:
+  push:
+    # Let the source split qualify on its author's fork before upstream
+    # maintainers approve the pull_request runs.
+    branches: [main, 'codex/project-shutdown-cleanup-*']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: shutdown recovery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-15]
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+      UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE: '1'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install focused backend dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            fastapi httpx typer packaging structlog huggingface-hub \
+            pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests \
+            pytest pytest-timeout
+
+      - name: Run shutdown recovery tests
+        working-directory: studio/backend
+        run: >-
+          python -m pytest
+          tests/test_studio_pid_files.py
+          tests/test_process_lifetime.py
+          -q --tb=short --timeout=60 --maxfail=5
