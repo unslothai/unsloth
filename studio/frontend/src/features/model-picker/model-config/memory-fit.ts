@@ -23,7 +23,11 @@ import {
 } from "../../../lib/memory/verdict.ts";
 import type { MemoryFitVerdict } from "../../../lib/memory/verdict.ts";
 import { formatBytesGiB } from "../../../lib/memory/format.ts";
-import type { ReconciledGpuSelection } from "../../../hooks/gpu-selection.ts";
+import type {
+  ReconciledGpuSelection,
+  SystemGpuDevice,
+} from "../../../hooks/gpu-selection.ts";
+import { gpuMemoryTotalsGb, sharesHostMemory } from "../../../hooks/gpu-vram.ts";
 
 /** A memory figure in bytes, to two decimals. @deprecated Prefer `formatBytesGiB` from
  *  `@/lib/memory/format`, whose name says which unit it takes. This alias exists because a
@@ -87,10 +91,14 @@ export interface MemoryFitCapacity {
   freeGpuCapacityGb: number;
   /** Distinguishes an exhausted GPU budget from an unknown reading. */
   freeGpuCapacityKnown?: boolean;
+  /** Reserve hidden by clamping the current usable VRAM to zero. */
+  freeGpuReserveDeficitGb?: number;
   /** Available host RAM after the loader's reserve. Warns only. */
   usableSystemRamGb: number;
   /** Distinguishes exhausted RAM from an unknown reading. */
   usableSystemRamKnown?: boolean;
+  /** Host reserve hidden by clamping current usable RAM to zero. */
+  systemRamReserveDeficitGb?: number;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
   /** Resident bytes returned to the requested pools on unload. Free-memory verdicts only. */
@@ -112,6 +120,7 @@ export function resolveReclaimableMemoryCredit(
   residentPool: ReconciledGpuSelection,
   requestedPool: ReconciledGpuSelection,
   cpuFallback = false,
+  devices: SystemGpuDevice[] = [],
 ): { totalBytes: number; gpuBytes: number } {
   const total = reclaimableBytes(estimate?.totalBytes);
   const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
@@ -127,7 +136,35 @@ export function resolveReclaimableMemoryCredit(
     includesResidentPool && !cpuFallback && !estimate?.moeOffloadUnmodelled
       ? gpu
       : 0;
-  return { totalBytes: total - gpu + gpuCredit, gpuBytes: gpuCredit };
+  const residentDevices = residentPool.ids?.length
+    ? devices.filter((device) =>
+        device.indexKind === residentPool.indexKind &&
+        residentPool.ids!.includes(device.index))
+    : devices;
+  const topologyKnown =
+    residentDevices.length > 0 &&
+    (!residentPool.ids?.length ||
+      (residentPool.indexKind != null &&
+        residentPool.ids.every((id) =>
+          residentDevices.some((device) => device.index === id)))) &&
+    residentDevices.every((device) =>
+      (sharesHostMemory(device) && device.sharedMemoryHostBackedGb == null) ||
+      (Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0));
+  const independentGb = gpuMemoryTotalsGb(
+    residentDevices.map((device) => ({
+      memory_total_gb: device.memoryTotalGb,
+      shared_memory: sharesHostMemory(device),
+      shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
+    })),
+  ).dedicated;
+  // Only bytes beyond all independent capacity are certainly backed by host RAM.
+  const sharedHostCredit = gpuCredit === 0 && topologyKnown
+    ? Math.max(0, gpu - independentGb * 1024 ** 3)
+    : 0;
+  return {
+    totalBytes: total - gpu + gpuCredit + sharedHostCredit,
+    gpuBytes: gpuCredit,
+  };
 }
 
 export interface MemoryFitResult {
@@ -189,6 +226,7 @@ export function resolveMemoryFit(
     capacity.freeGpuCapacityGb,
     capacity.freeGpuCapacityKnown,
     singleMemoryPool ? reclaimableTotal : reclaimableGpu,
+    capacity.freeGpuReserveDeficitGb,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
   // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
@@ -203,6 +241,7 @@ export function resolveMemoryFit(
     capacity.usableSystemRamGb,
     capacity.usableSystemRamKnown,
     singleMemoryPool ? reclaimableTotal : reclaimableTotal - reclaimableGpu,
+    capacity.systemRamReserveDeficitGb,
   );
   const hostPressured =
     usableHostFit === "exceeds" || usableHostFit === "tight";
@@ -269,6 +308,7 @@ function classifyAvailableMemory(
   availableGb: number,
   known = false,
   reclaimedBytes = 0,
+  reserveDeficitGb = 0,
 ): MemoryFitVerdict {
   if (
     !Number.isFinite(availableGb) ||
@@ -278,7 +318,10 @@ function classifyAvailableMemory(
     return "unknown";
   }
   // Pressure is a fraction of post-unload availability, not just allocation growth.
-  const afterUnloadGb = availableGb + reclaimedBytes / 1024 ** 3;
+  const afterUnloadGb = availableGb + Math.max(
+    0,
+    reclaimedBytes / 1024 ** 3 - reclaimableBytes(reserveDeficitGb),
+  );
   if (known && afterUnloadGb === 0 && Number.isFinite(bytes) && bytes > 0)
     return "exceeds";
   return classifyMemoryFit(bytes, afterUnloadGb);
@@ -321,7 +364,7 @@ export function resolveMemoryAdvisory(
     if (verdicts.totalFit === "exceeds") {
       return {
         tone: "warn",
-        text: "Exceeds system RAM. Try a shorter context or smaller model; paging may be slow.",
+        text: "Exceeds system RAM. Try a shorter context or smaller model.",
       };
     }
     if (verdicts.hostPressured) {
@@ -356,13 +399,13 @@ export function resolveMemoryAdvisory(
   ) {
     return {
       tone: "warn",
-      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
+      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model.",
     };
   }
   if (verdicts.hostShareFit === "exceeds") {
     return {
       tone: "warn",
-      text: "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
+      text: "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model.",
     };
   }
   if (verdicts.gpuFit === "exceeds") {

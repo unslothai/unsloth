@@ -430,6 +430,21 @@ export interface FreeVramDevice {
   unifiedMemory?: boolean;
 }
 
+/** Reserve still unmet before unloading; per-device reclaimed amounts are unknown. */
+export function aggregateVramReserveDeficitGb(
+  devices: FreeVramDevice[],
+  fraction: number,
+): number {
+  return devices.reduce((sum, device) => {
+    const total = device.memoryTotalGb ?? 0;
+    const free = device.memoryFreeGb ?? 0;
+    if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(free) || free < 0)
+      return sum;
+    const reserve = total - usableFreeVramGb(total, total, fraction);
+    return sum + Math.max(0, reserve - free);
+  }, 0);
+}
+
 /**
  * Free memory a prospective load may claim across an inventory, counting a shared
  * host-memory pool only once.

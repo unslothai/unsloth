@@ -10,6 +10,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { SystemGpuDevice } from "../src/hooks/gpu-selection.ts";
+import { aggregateVramReserveDeficitGb } from "../src/hooks/gpu-vram.ts";
 
 import {
   type MemoryFitCapacity,
@@ -141,9 +143,9 @@ const ADVISORY_TEXTS = {
   singlePoolPressure:
     "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
   hostShareExceeds:
-    "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
+    "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model.",
   totalExceeds:
-    "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
+    "Exceeds combined GPU and system memory. Try a shorter context or smaller model.",
   gpuExceeds:
     "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
   hostPressure:
@@ -705,6 +707,40 @@ test("reclaimed memory does not turn missing free-memory readings into known one
   assert.equal(exhausted.usableHostFit, "tight");
 });
 
+test("reclaimed memory first fills GPU and host reserve deficits", () => {
+  const gpuDeficit = aggregateVramReserveDeficitGb([
+    { memoryTotalGb: 24, memoryFreeGb: 0 },
+  ], 0.9);
+  assert.ok(Math.abs(gpuDeficit - 2.4) < 1e-9);
+  const result = fit({ gpuBytes: 16 * GB, totalBytes: 32 * GB }, {
+    freeGpuCapacityGb: 0,
+    freeGpuCapacityKnown: true,
+    freeGpuReserveDeficitGb: gpuDeficit,
+    usableSystemRamGb: 0,
+    usableSystemRamKnown: true,
+    systemRamReserveDeficitGb: 2,
+    reclaimableTotalBytes: 40 * GB,
+    reclaimableGpuBytes: 20 * GB,
+  });
+  assert.equal(result.freeGpuFit, "tight");
+  assert.equal(result.usableHostFit, "tight");
+});
+
+test("unmet reserves do not reduce memory already usable on another card", () => {
+  for (const credit of [0, 1]) {
+    const result = fit({ gpuBytes: 8 * GB, totalBytes: 8 * GB }, {
+      freeGpuCapacityGb: 10,
+      freeGpuReserveDeficitGb: 2.4,
+      reclaimableTotalBytes: credit * GB,
+      reclaimableGpuBytes: credit * GB,
+    });
+    assert.equal(result.freeGpuFit, "fits");
+  }
+  assert.equal(aggregateVramReserveDeficitGb([
+    { memoryTotalGb: 24, memoryFreeGb: 5 },
+  ], 0.9), 0);
+});
+
 test("the credit never improves a CAPACITY verdict, only a free-memory one", () => {
   // 70 GB on a 64 GB machine: unloading frees memory, it does not add any.
   const result = fit(
@@ -812,6 +848,50 @@ test("CPU fallback and unmodelled experts withhold uncertain VRAM credit", () =>
     });
     assert.equal(result.gpuPressured, true);
     assert.equal(result.hostPressured, false);
+  }
+});
+
+test("shared GPU allocations return to RAM when the requested GPU changes", () => {
+  const device: SystemGpuDevice = {
+    index: 0,
+    indexKind: "vulkan",
+    name: "Shared GPU",
+    memoryTotalGb: 32,
+    memoryFreeGb: 0,
+    sharedMemory: true,
+    pinnable: true,
+    diffusionPinnable: false,
+  };
+  const resident = { gpuBytes: 20 * GB, totalBytes: 24 * GB };
+  const loaded = { ids: [0], indexKind: "vulkan" as const };
+  const requested = { ids: [1], indexKind: "vulkan" as const };
+  for (const topology of [device, { ...device, sharedMemory: false, unifiedMemory: true }]) {
+    const credit = resolveReclaimableMemoryCredit(resident, loaded, requested, false, [topology]);
+    assert.deepEqual(credit, { gpuBytes: 0, totalBytes: 24 * GB });
+    const result = fit({ gpuBytes: 8 * GB, totalBytes: 28 * GB }, {
+      usableSystemRamGb: 4,
+      reclaimableTotalBytes: credit.totalBytes,
+      reclaimableGpuBytes: credit.gpuBytes,
+    });
+    assert.equal(result.hostPressured, false);
+  }
+  const partial = resolveReclaimableMemoryCredit(resident, loaded, requested, false, [
+    { ...device, sharedMemoryHostBackedGb: 24 },
+  ]);
+  assert.deepEqual(partial, { gpuBytes: 0, totalBytes: 16 * GB });
+  const unknown = resolveReclaimableMemoryCredit(resident, loaded, requested, false, []);
+  assert.deepEqual(unknown, { gpuBytes: 0, totalBytes: 4 * GB });
+  const discrete = resolveReclaimableMemoryCredit(resident, loaded, requested, false, [
+    { ...device, sharedMemory: false },
+  ]);
+  assert.deepEqual(discrete, unknown);
+});
+
+test("capacity advice does not assume a pageable load mode", () => {
+  for (const [gpu, total] of [[0, 100], [30, 100], [8, 78]]) {
+    const result = fit({ gpuBytes: gpu * GB, totalBytes: total * GB }, {});
+    assert.match(result.advisory?.text ?? "", /smaller model/);
+    assert.doesNotMatch(result.advisory?.text ?? "", /paging|will load|will fit/);
   }
 });
 

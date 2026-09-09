@@ -144,8 +144,10 @@ export function MemoryEstimateRow({
   systemRamCapacityGb,
   freeGpuCapacityGb,
   freeGpuCapacityKnown,
+  freeGpuReserveDeficitGb,
   usableSystemRamGb,
   usableSystemRamKnown,
+  systemRamReserveDeficitGb,
   isUnifiedMemory,
   singleMemoryPool,
   reclaimableTotalBytes,
@@ -165,9 +167,11 @@ export function MemoryEstimateRow({
   /** Free GPU memory in GiB; warnings only, since replacement can free memory. */
   freeGpuCapacityGb: number;
   freeGpuCapacityKnown?: boolean;
+  freeGpuReserveDeficitGb?: number;
   /** Available host RAM minus the loader reserve, in GiB. */
   usableSystemRamGb: number;
   usableSystemRamKnown?: boolean;
+  systemRamReserveDeficitGb?: number;
   isUnifiedMemory: boolean;
   /** Whether GPU and CPU share one memory pool. */
   singleMemoryPool: boolean;
@@ -190,8 +194,10 @@ export function MemoryEstimateRow({
       systemRamCapacityGb,
       freeGpuCapacityGb,
       freeGpuCapacityKnown,
+      freeGpuReserveDeficitGb,
       usableSystemRamGb,
       usableSystemRamKnown,
+      systemRamReserveDeficitGb,
       singleMemoryPool,
       reclaimableTotalBytes,
       reclaimableGpuBytes,
