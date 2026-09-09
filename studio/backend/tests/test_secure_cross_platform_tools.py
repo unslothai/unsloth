@@ -1058,6 +1058,22 @@ def test_windows_replacement_rejects_named_streams_portably():
     assert operations.closed == [7]
 
 
+@pytest.mark.skipif(os.name != "nt", reason = "native Win32 read-only metadata")
+def test_native_windows_read_only_replacement_preserves_target_and_cleans_temp(tmp_path):
+    target = tmp_path / "read-only.txt"
+    target.write_bytes(b"before")
+    target.chmod(0o444)
+    try:
+        with ProjectFileMutation.open(_workspace(tmp_path), target.name) as boundary:
+            before, mode, identity = boundary.read(1024)
+            with pytest.raises(WindowsMutationRejected, match = "Read-only"):
+                boundary.replace(b"after", expect = before, mode = mode, identity = identity)
+        assert target.read_bytes() == b"before"
+        assert not list(tmp_path.glob(".unsloth_edit_*"))
+    finally:
+        target.chmod(0o666)
+
+
 @pytest.mark.skipif(os.name != "nt", reason = "native Win32 mutation")
 @pytest.mark.parametrize("filename", ["a", "a.py", "created.txt", "created-\U0001f9ea.txt"])
 def test_native_windows_project_mutation_round_trip(tmp_path, filename):

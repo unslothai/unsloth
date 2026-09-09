@@ -10,10 +10,10 @@ delegation, scheduling, and chat continuity are outside this patch.
 
 - Sandboxed `edit_file` uses descriptor-relative POSIX operations or verified
   Windows handles, rejects links and nonregular targets, checks expected content
-  and file identity, preserves file permissions, and publishes replacements
+  and file identity, preserves POSIX mode bits, and publishes replacements
   atomically. Creates do not overwrite a nonempty existing file. Windows edits
-  preserve the DACL, attributes, and creation time; unsupported streams and
-  replacement metadata are rejected.
+  preserve the DACL, attributes, and creation time; read-only targets,
+  unsupported streams, and replacement metadata are rejected.
 - Linux managed-project Python and terminal calls run through bubblewrap with a
   restricted filesystem, no network, scrubbed environment, bounded output, and
   an identity-verified PID namespace. The project lease and mutation lock remain
@@ -31,7 +31,7 @@ delegation, scheduling, and chat continuity are outside this patch.
   approval, and operation errors. Remembered per-tool approval does not approve
   later local edit, Python, or terminal calls in modes that request confirmation.
 
-POSIX content checks detect changes observed before publication; this is not an
+Content checks detect changes observed before publication; this is not an
 atomic compare-and-swap against arbitrary external filesystem writers. The
 mutation lock coordinates Studio's guarded operations. Full access and unrelated
 host processes are outside that coordination.
@@ -41,7 +41,9 @@ host processes are outside that coordination.
 Local validation uses the current source, rather than historical aggregate
 receipts. The focused native macOS run covers edits, supervisor behavior, and
 shutdown. The full frontend suite has 7,120 passing tests. The adjacent backend
-selection has 1,407 passes and four platform skips. Storage deletion fixtures
+selection has 1,407 passes and four platform skips. Frontend typecheck, build,
+and bundle budget pass; changed frontend files add no ESLint findings relative
+to the base. The workflow guard selection has 530 passes. Storage deletion fixtures
 must use a disposable directory outside macOS system temp paths because Studio
 intentionally refuses deletion under `/private/var` and `/private/tmp`.
 
@@ -56,8 +58,10 @@ and release certification remain separate gates.
 
 ## Native API references
 
-- [Microsoft FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info):
-  handle-relative target names and filename lengths measured in UTF-16 bytes.
+- [Microsoft NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+  and [FILE_RENAME_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information):
+  native handle-relative publication, traversal access on the parent, and
+  filename lengths measured in UTF-16 bytes.
 - [bubblewrap source](https://github.com/containers/bubblewrap/blob/main/bubblewrap.c):
   namespace status, blocked startup, and PID-namespace lifecycle.
 

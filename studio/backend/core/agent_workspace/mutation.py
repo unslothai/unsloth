@@ -410,6 +410,7 @@ class _PosixVerifiedMutation:
 
 
 # Win32 constants used by the handle-verified backend.
+_FILE_ATTRIBUTE_READONLY = 0x00000001
 _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200
@@ -1011,6 +1012,10 @@ def _windows_stream_names(handle: int) -> tuple[str, ...]:
 def _assert_windows_replacement_metadata_supported(
     info: _WindowsHandleInfo, stream_names: Sequence[str]
 ) -> None:
+    if info.attributes & _FILE_ATTRIBUTE_READONLY:
+        # Windows refuses replacement of a read-only destination. Do not copy
+        # this flag to the temporary file, where it also prevents cleanup.
+        raise WindowsMutationRejected("Read-only Windows files cannot be edited.")
     if info.attributes & _UNSUPPORTED_REPLACEMENT_ATTRIBUTES:
         raise WindowsMutationRejected(
             "Compressed, encrypted, and sparse Windows files cannot be edited safely."
