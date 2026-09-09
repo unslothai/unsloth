@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ToolCallMessagePartStatus } from "@assistant-ui/react";
+
 /**
  * How much of a serialised object a card shows. Only the JSON branch is capped,
  * so every string argument is returned untouched.
@@ -47,3 +49,13 @@ export const toolArgText = (value: unknown): string => {
     return "";
   }
 };
+
+// A part inherits the message status until it has a result, tested for
+// truthiness: a tool returning "" or 0 reads as running until the message does.
+export const isToolCallRunning = (
+  status?: ToolCallMessagePartStatus,
+): boolean => status?.type === "running";
+
+export const isToolCallCancelled = (
+  status?: ToolCallMessagePartStatus,
+): boolean => status?.type === "incomplete" && status.reason === "cancelled";

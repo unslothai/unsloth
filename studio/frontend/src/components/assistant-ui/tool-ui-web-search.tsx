@@ -18,7 +18,7 @@ import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
-import { toolArgText } from "./tool-arg-text";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -135,7 +135,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       return "";
     }
   })();
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   const withImages = isSearchImagesToolResult(result);
   const resultText =
     result == null
