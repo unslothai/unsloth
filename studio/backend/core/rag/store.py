@@ -272,24 +272,33 @@ def create_document(
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
     created_at: str | None = None,
+    rowid: int | None = None,
     commit: bool = True,
 ) -> str:
-    """``created_at`` is for a REWRITE of a row that already exists, and nothing else.
+    """``created_at`` and ``rowid`` are for a REWRITE of a row that already exists.
 
     A re-embed deletes the old row and inserts a new one for the same content, so stamping
     it with the current time would say the turn was archived when its vectors were
     rebuilt. That is not a cosmetic difference for an archived turn: an archive written
     before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
-    takes a fresh timestamp moves that turn to the end of its own conversation. Omitted,
-    this is byte for byte what every other caller has always got.
+    takes a fresh timestamp moves that turn to the end of its own conversation.
+
+    ``rowid`` carries over for the same reason, one level down. Two rows archived in the
+    same clock tick hold the same `created_at` -- routine on Windows, whose wall clock
+    advances about every 15.6 ms -- and insertion order is then the only record left of
+    which turn was said first. A rewrite that takes a fresh rowid discards it, so the
+    rewritten turns sort behind the ones the pass never reached. Omitted, both arguments
+    leave this byte for byte what every other caller has always got: SQLite assigns the
+    next rowid for a NULL, exactly as it does when the column is not named at all.
     """
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
+        "INSERT INTO documents(rowid, id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
         "linked_relative_path, archive_messages, archive_ordinal) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
+            rowid,
             document_id,
             scope,
             kb_id,
@@ -384,6 +393,18 @@ def next_archive_ordinal(conn: sqlite3.Connection, scope: str) -> int:
 
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def document_rewrite_identity(conn: sqlite3.Connection, document_id: str) -> dict | None:
+    """What a re-embed has to carry over from the row it replaces, `rowid` included.
+
+    Separate from `get_document` because `SELECT *` does not return the implicit rowid and
+    widening that query would add the key to every caller's dict.
+    """
+    row = conn.execute(
+        "SELECT rowid, archive_ordinal, created_at FROM documents WHERE id=?", (document_id,)
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -737,7 +758,8 @@ def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
-        f"c.source_page_index, d.filename, d.archive_ordinal, d.created_at "
+        f"c.source_page_index, d.filename, d.archive_ordinal, d.created_at, "
+        f"d.rowid AS document_rowid "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
         f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "

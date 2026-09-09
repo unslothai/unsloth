@@ -451,6 +451,7 @@ def archive_turns(
                 continue
             ordinal = None
             archived_at = None
+            archived_rowid = None
             if stale is not None:
                 # Same turn, vectors from an embedder the query side no longer asks for.
                 # The copy is replaced rather than deduplicated, as ingestion does, since
@@ -461,9 +462,16 @@ def archive_turns(
                 # reorder the archive by the order its vectors were rebuilt. NULL stays
                 # NULL, since numbering a pre-column row moves the oldest turn behind every
                 # numbered one and the header would call it the conversation's last word.
-                previous = store.get_document(conn, stale) or {}
+                #
+                # And its ROWID, which is what "keeps its timestamp" reduces to whenever the
+                # timestamp cannot separate two turns: rows archived in the same clock tick
+                # share a `created_at` to the byte, and insertion order is then the only
+                # surviving record of which was said first. Free to reuse because the row is
+                # deleted below in this same transaction.
+                previous = store.document_rewrite_identity(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
                 archived_at = previous.get("created_at")
+                archived_rowid = previous.get("rowid")
                 store.delete_document(conn, stale, commit = False)
             else:
                 # The nth copy of a repeated turn takes the nth occurrence's position, so a
@@ -495,6 +503,9 @@ def archive_turns(
                 # When the turn was archived, not when this row was written. None for a turn
                 # seen for the first time, which takes the clock as before.
                 created_at = archived_at,
+                # Likewise None for a first sighting, which lets SQLite assign the next
+                # rowid exactly as it always has.
+                rowid = archived_rowid,
                 commit = False,
             )
             try:
@@ -2118,15 +2129,28 @@ def _conversation_order(row) -> tuple:
     breaks ties, because the ordinal is deliberately not UNIQUE: the write lock is
     best-effort, so two concurrent archive passes can compute the same MAX + 1 and must
     tie-break rather than raise.
+
+    The document's rowid ends the key, and it has to, because everything above it can tie:
+    `created_at` is a wall-clock reading, and a clock whose granularity is coarser than a
+    write is a clock that stamps several rows identically. Windows advances the system
+    clock about every 15.6 ms, so a compaction writing a whole conversation at once
+    routinely gives every turn the same timestamp to the byte. With the key exhausted the
+    sort is no longer a total order, `sorted` keeps whatever order relevance handed it, and
+    the turns are quoted scrambled under a header saying they are oldest first and that
+    each supersedes the one before. Insertion order is the tiebreak because it is what the
+    archive actually recorded, and the rewrite path preserves it (`create_document`'s
+    `rowid`) so a re-embed cannot move a turn. Last in the key, so it decides nothing that
+    an ordinal or a timestamp already decided.
     """
     if row is None:
-        return (2, 0, "", 0)
+        return (2, 0, "", 0, 0)
     ordinal = tool._row_value(row, "archive_ordinal")
     created = tool._row_value(row, "created_at") or ""
     index = tool._row_value(row, "chunk_index") or 0
+    rowid = tool._row_value(row, "document_rowid") or 0
     if ordinal is None:
-        return (0, 0, created, index)
-    return (1, int(ordinal), created, index)
+        return (0, 0, created, index, rowid)
+    return (1, int(ordinal), created, index, rowid)
 
 
 def _above_floor(hits: list, min_dense_score: float) -> list:
@@ -2470,6 +2494,7 @@ def recall(
                     source.get("turn") or 0,
                     source.get("createdAt") or "",
                     source.get("chunkIndex") or 0,
+                    source.get("documentRowid") or 0,
                 )
             )
             kept = merged[:limit]

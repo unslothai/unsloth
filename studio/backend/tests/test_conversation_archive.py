@@ -2097,6 +2097,116 @@ def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, m
     assert quoted == ["1", "2", "3", "4", "5"], quoted
 
 
+def test_a_legacy_archive_written_in_one_clock_tick_is_still_ordered(conn, monkeypatch):
+    """The same reorder as the test above, with the clock tie forced instead of hoped for.
+
+    That test only reaches the bug where the archive rows carry DISTINCT timestamps, which
+    is a property of the host clock and not of the code: `store._now` reads the wall clock,
+    and Windows advances it about every 15.6 ms, far slower than five turns are written.
+    So a compaction there stamps the whole conversation identically, on Linux and macOS it
+    almost never does, and the failure shows up on one CI leg as a different permutation
+    every run. Freezing `_now` reproduces it everywhere, in one shape, on purpose.
+
+    With `archive_ordinal` NULL and `created_at` equal, the sort key is spent. `sorted` is
+    stable, so the turns keep the order RELEVANCE handed them and are quoted scrambled
+    beneath a header promising oldest first. The assertion is on the order alone, because
+    the defect is that the key stopped being a total order.
+    """
+    from core.rag import embeddings
+
+    # One tick for every row: the archive cannot see that the five turns were written in
+    # sequence, which is exactly what a coarse system clock does to it.
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 6)]
+    history = [dict(message) for turn in turns for message in turn]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 5
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    # The premise: nothing above insertion order can separate these rows any more.
+    stamps = {
+        row["created_at"]
+        for row in conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))
+    }
+    assert stamps == {"2026-01-01T00:00:00+00:00"}, stamps
+
+    identity["name"] = "st:model-b"
+    real_add = store.add_chunks
+    calls = {"n": 0}
+
+    def add_chunks_until_the_disk_fills(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("database or disk is full")
+        return real_add(*args, **kwargs)
+
+    monkeypatch.setattr(store, "add_chunks", add_chunks_until_the_disk_fills)
+    conversation_archive.archive_turns(THREAD, [dict(m) for m in history])
+    monkeypatch.setattr(store, "add_chunks", real_add)
+
+    _text, sources = conversation_archive.recall(THREAD, "pelicans", top_k = 5)
+    quoted = [source["text"].split("STATEMENT")[1][0] for source in sources]
+    assert quoted == ["1", "2", "3", "4", "5"], quoted
+
+
+def test_a_rewritten_turn_keeps_the_insertion_order_it_was_archived_in(conn, monkeypatch):
+    """A re-embed replaces a row, and the replacement has to sit where the original sat.
+
+    `created_at` is carried over already, and on a clock that can separate the turns that
+    is enough. On one that cannot it is not: insertion order is the whole of what is left,
+    and a rewrite that took a fresh position would move every turn it reached to the end of
+    the conversation. Asserted on the stored rows rather than through `recall`, so a
+    regression here is named as the write-side defect it is.
+    """
+    from core.rag import embeddings
+
+    monkeypatch.setattr(store, "_now", lambda: "2026-01-01T00:00:00+00:00")
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 4)]
+    history = [dict(message) for turn in turns for message in turn]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 3
+    scope = store.conversation_archive_scope(THREAD)
+    before = [
+        (row["rowid"], row["id"])
+        for row in conn.execute(
+            "SELECT rowid, id FROM documents WHERE scope=? ORDER BY rowid", (scope,)
+        )
+    ]
+
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, [dict(m) for m in history])
+
+    after = [
+        (row["rowid"], row["id"])
+        for row in conn.execute(
+            "SELECT rowid, id FROM documents WHERE scope=? ORDER BY rowid", (scope,)
+        )
+    ]
+    # Every row really was rewritten, and every one of them landed back where it was.
+    assert [rowid for rowid, _ in after] == [rowid for rowid, _ in before]
+    assert [document_id for _, document_id in after] != [document_id for _, document_id in before]
+
+
 def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
     """The merge key has to agree with `_conversation_order`, or the merged block
     contradicts its own "oldest first" header on an upgraded archive."""
