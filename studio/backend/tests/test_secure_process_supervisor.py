@@ -151,7 +151,9 @@ def local_supervisor(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "initialize_parent_lifetime", lambda: None)
     monkeypatch.setattr(supervisor, "adopt_pid", lambda _pid: None)
     monkeypatch.setattr(supervisor, "forget_pid", lambda _pid: None)
-    monkeypatch.setattr(supervisor, "spawn_on_lifetime_thread", lambda spawn: spawn())
+    # Keep the production lifetime thread: Linux PDEATHSIG belongs to the
+    # spawning thread, so a short-lived fixture worker would kill the child as
+    # soon as Popen returned and invalidate every process-behavior assertion.
     monkeypatch.setattr(supervisor, "_start_quarantine_retry_owner", lambda: None)
     _LocalLifecycle.instances.clear()
     monkeypatch.setattr(supervisor, "_BubblewrapLifecycle", _LocalLifecycle)

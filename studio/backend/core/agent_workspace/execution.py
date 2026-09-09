@@ -62,6 +62,7 @@ _MACOS_PROFILE = """
 (allow file-read* (subpath "/sbin"))
 (allow file-read* (subpath "/Library/Apple"))
 (allow file-read* (subpath "/Library/Developer"))
+(allow file-read* (subpath "/Library/Frameworks/Python.framework"))
 (allow file-read* (subpath "/Applications/Xcode.app"))
 (allow file-read* (subpath "/opt/homebrew/bin"))
 (allow file-read* (subpath "/opt/homebrew/sbin"))

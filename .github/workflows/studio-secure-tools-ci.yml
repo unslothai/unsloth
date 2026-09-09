@@ -45,7 +45,10 @@ jobs:
       # assert that project commands fail before Popen on unsupported backends.
       matrix:
         include:
-          - os: ubuntu-latest
+          # This image permits unprivileged user namespaces. Newer Ubuntu
+          # images may deny them through AppArmor; production detects that
+          # restriction and refuses project commands.
+          - os: ubuntu-22.04
             boundary_required: '1'
           - os: windows-latest
             boundary_required: '0'
@@ -78,6 +81,13 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends bubblewrap || { apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap; }'
 
+      - name: Verify the Linux namespace facility
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bwrap --version
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true
+
       - name: Install focused backend dependencies
         shell: bash
         run: |
@@ -96,4 +106,4 @@ jobs:
           tests/test_secure_process_supervisor.py
           tests/test_studio_pid_files.py::test_graceful_shutdown_retries_project_quarantine_before_generic_sweep
           tests/test_studio_pid_files.py::test_graceful_shutdown_retries_quarantine_even_when_generic_sweep_fails
-          -q --tb=short --timeout=60
+          -q --tb=short --timeout=60 --maxfail=1
