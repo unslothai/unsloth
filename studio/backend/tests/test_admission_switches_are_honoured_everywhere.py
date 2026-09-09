@@ -339,7 +339,8 @@ class TestExactModeIsOnlyReportedOnEvidence:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        assert "_exact_running = self._server_reports_exact_concurrency()" in source
+        assert "_server_props = self._query_server_props() or {}" in source
+        assert '_exact_running = _server_props.get("exact_concurrency") is True' in source
         assert "supports_exact = _exact_running," in source
         assert "supports_exact = bool(" not in source
 
