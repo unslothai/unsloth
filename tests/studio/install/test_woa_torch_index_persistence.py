@@ -6165,9 +6165,7 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
         assert callers, "neither probe routes through the shared lookup any more"
         own = pathlib.Path(__file__).read_text(encoding = "utf-8")
         for name in callers:
-            for match in re.finditer(
-                rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own
-            ):
+            for match in re.finditer(rf'_function_source\(INSTALL_SRC, "{re.escape(name)}"\)', own):
                 # The _script(...) call this appears in, back to its opening paren.
                 start = own.rindex("_script(", 0, match.start())
                 block = own[start : own.index("\n        )", match.end())]
