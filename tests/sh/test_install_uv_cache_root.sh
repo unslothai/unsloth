@@ -14,11 +14,14 @@ HELPERS=$(awk '
     /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
     /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
+    /^_probe_uv_cache_writable\(\) \{/ { grab = 1 }
+    /^_default_uv_cache_early\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
-    _restore_uv_cache_marker _absolutize_uv_cache_dir; do
+    _restore_uv_cache_marker _absolutize_uv_cache_dir _probe_uv_cache_writable \
+    _default_uv_cache_early; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1
@@ -452,6 +455,82 @@ EXPORTED
             "$STUDIO_CACHE"
         chmod 755 "$ROOT" 2>/dev/null || true
     fi
+done
+
+# ── The real prologue, not a paraphrase of it ──
+# `_default_uv_cache_early` runs ~2000 lines before the selector and always leaves
+# UV_CACHE_DIR set, because the uv bootstrap in between must not fill a second cache.
+# Every case above calls the selector on a bare environment and so never saw that. With
+# the placeholder in hand the selector used to answer `custom`, which made `shared`
+# unreachable on POSIX: the same box under Windows reused a warm ~/.cache/uv, and under
+# Linux or macOS downloaded every Torch and CUDA wheel again into a Studio cache.
+PROLOGUE="$WORK/prologue.sh"
+{
+    printf '%s\n' "$HELPERS"
+    cat <<'PROLOGUE_BODY'
+step() { printf 'message=%s\n' "$2"; }
+C_WARN=""
+case "$1" in
+    unset) unset UV_CACHE_DIR ;;
+    value) UV_CACHE_DIR=$2 ;;
+    *) exit 2 ;;
+esac
+_ISOLATE_UV_CACHE=$3
+HOME=$4
+STUDIO_HOME=$5
+unset XDG_CACHE_HOME
+TEST_UV_EFFECTIVE_CACHE=$6
+export TEST_UV_EFFECTIVE_CACHE
+PATH="$UV_STUB_DIR:$PATH"
+export PATH
+_UV_CACHE_DEFAULTED=false
+_default_uv_cache_early
+printf 'early=%s\n' "${UV_CACHE_DIR-<unset>}"
+_configure_uv_cache
+printf 'value=%s\nmode=%s\ndefaulted=%s\n' "${UV_CACHE_DIR-<unset>}" "$_UV_CACHE_MODE" "$_UV_CACHE_DEFAULTED"
+PROLOGUE_BODY
+} > "$PROLOGUE"
+
+run_prologue() { # shell, label, state, input, isolate, home, root, effective, early, value, mode
+    _p_shell=$1; _p_label=$2; _p_state=$3; _p_input=$4; _p_isolate=$5
+    _p_home=$6; _p_root=$7; _p_effective=$8; _p_early=$9
+    shift 9
+    _p_value=$1; _p_mode=$2
+    _p_actual=$($_p_shell "$PROLOGUE" "$_p_state" "$_p_input" "$_p_isolate" "$_p_home" \
+        "$_p_root" "$_p_effective" 2>/dev/null | grep -v '^message=')
+    _p_wanted=$(printf 'early=%s\nvalue=%s\nmode=%s\ndefaulted=false' \
+        "$_p_early" "$_p_value" "$_p_mode")
+    if [ "$_p_actual" = "$_p_wanted" ]; then
+        ok "$_p_shell: prologue: $_p_label"
+    else
+        bad "$_p_shell: prologue: $_p_label (expected [$_p_wanted], got [$_p_actual])"
+    fi
+}
+
+for shell in sh bash; do
+    command -v "$shell" >/dev/null 2>&1 || continue
+    PCASE="$WORK/$shell prologue"
+    PHOME="$PCASE/home"
+    PROOT="$PCASE/studio root"
+    PSTUDIO_CACHE="$PROOT/cache/uv"
+    PHOME_CACHE="$PHOME/.cache/uv"
+    PCOLD_CACHE="$PCASE/cold/uv"
+    mkdir -p "$PHOME" "$PROOT" "$PCOLD_CACHE"
+
+    run_prologue "$shell" "a cold default still selects the Studio cache" unset "" false \
+        "$PHOME" "$PROOT" "$PCOLD_CACHE" "$PSTUDIO_CACHE" "$PSTUDIO_CACHE" studio
+
+    mkdir -p "$PHOME_CACHE/archive-v0/package"
+    : > "$PHOME_CACHE/archive-v0/package/payload.whl"
+    run_prologue "$shell" "a warm default is adopted despite the early export" unset "" false \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PSTUDIO_CACHE" "$PHOME_CACHE" shared
+
+    PVERRIDE="$PCASE/caller cache"
+    run_prologue "$shell" "a caller value is still custom" value "$PVERRIDE" false \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PVERRIDE" "$PVERRIDE" custom
+
+    run_prologue "$shell" "isolation still beats a warm default" unset "" true \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PSTUDIO_CACHE" "$PSTUDIO_CACHE" isolated
 done
 
 _resolve_line=$(grep -n '^_resolve_studio_destinations$' "$INSTALL_SH" | head -n1 | cut -d: -f1)

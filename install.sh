@@ -639,6 +639,28 @@ _absolutize_uv_cache_dir() {
     UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
 }
 
+_probe_uv_cache_writable() {
+    # mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather
+    # than the filesystem, so probe with a real create.
+    #
+    # mktemp, not a $$-derived name: this runs for a cache directory another account can
+    # write, and there a predictable path can be pre-created as a symlink, which `: >`
+    # would follow and truncate -- as root, any file on the box. mktemp creates O_EXCL
+    # with an unpredictable suffix, so it cannot follow one, and failing to create IS the
+    # writability answer this probe wanted.
+    _uv_probe_dir="$1"
+    _uv_cache_probe=""
+    if ! mkdir -p "$_uv_probe_dir" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+        unset _uv_cache_probe
+        return 1
+    fi
+    rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+    return 0
+}
+
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point
     # every phase of the install and the marker are made to agree on one directory.
@@ -682,6 +704,19 @@ _restore_uv_cache_marker() {
 
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
+    # `_default_uv_cache_early` exported the Studio path so the uv bootstrap and this
+    # phase share one cache. That value is OURS, not the caller's, and reading it back as
+    # a custom UV_CACHE_DIR is what kept `shared` unreachable on POSIX: install.ps1 has no
+    # such early export and has always reached it, so a Linux or macOS box with a warm
+    # ~/.cache/uv re-downloaded every Torch and CUDA wheel into a second cache while the
+    # same box under Windows reused them. Dropped here so the detection below runs on the
+    # same input Windows gives it. A value the caller actually set survives untouched,
+    # because the early block returns without setting the flag when one is present -- so
+    # `custom` still outranks everything, and --isolated-uv-cache still forces Studio.
+    if [ "${_UV_CACHE_DEFAULTED:-false}" = true ]; then
+        unset UV_CACHE_DIR
+        _UV_CACHE_DEFAULTED=false
+    fi
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             _UV_CACHE_MODE=custom
@@ -749,6 +784,18 @@ _configure_uv_cache() {
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
+        # The early block probed this same path and unset on failure; that answer is
+        # discarded above, so the probe has to happen again here or uv is handed a cache
+        # it cannot create and aborts the install outright. Nothing is recorded in that
+        # case: an empty marker would point the next update at uv's default by accident.
+        if ! _probe_uv_cache_writable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+            step "uv cache" "using uv's default cache; $UV_CACHE_DIR is not writable" "$C_WARN"
+            unset UV_CACHE_DIR
+            _UV_CACHE_MODE=default
+            return 0
+        fi
     fi
     export UV_CACHE_DIR
     _record_uv_cache_choice
@@ -837,24 +884,31 @@ _claim_studio_root
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
 # STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.
-# The fallback is required, since uv aborts on a cache it cannot create. mkdir -p exits 0 for
-# an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
-# with a real create.
-if [ -z "${UV_CACHE_DIR:-}" ]; then
+# The fallback is required, since uv aborts on a cache it cannot create.
+#
+# This runs long before `_configure_uv_cache`, which is the real selector: it has to,
+# because the uv bootstrap between the two would otherwise fill uv's default cache and
+# then the selector would find it warm and adopt it -- a cache this install created
+# reading as one the user already had. `_UV_CACHE_DEFAULTED` is how the selector tells
+# our own placeholder from a value the caller set; see the note there.
+#
+# A function so tests/sh/test_install_uv_cache_root.sh can run the real prologue rather
+# than a paraphrase of it.
+_default_uv_cache_early() {
+    [ -n "${UV_CACHE_DIR:-}" ] && return 0
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    # mktemp, not a $$ name: a predictable path in another account's directory can be
-    # pre-created as a symlink for `: >` to follow and truncate as root.
-    _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+    _UV_CACHE_DEFAULTED=true
+    if ! _probe_uv_cache_writable "$UV_CACHE_DIR"; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
+        _UV_CACHE_DEFAULTED=false
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
-fi
+    return 0
+}
+_UV_CACHE_DEFAULTED=false
+_default_uv_cache_early
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
@@ -2381,9 +2435,17 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
     # An automatic path belongs to the origin distro; only an override is portable.
+    # `_UV_CACHE_DEFAULTED` is what tells the two apart: the early default block above
+    # always leaves a value here, so testing the variable alone forwarded OUR path --
+    # named after the origin distro's $HOME -- into a distro where it means a different
+    # directory, and pinned the rerouted install to `custom` on top of it.
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
-            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            if [ "${_UV_CACHE_DEFAULTED:-false}" = true ]; then
+                _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+            else
+                _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            fi
             ;;
         *)
             _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
