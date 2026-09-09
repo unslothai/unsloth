@@ -23,7 +23,7 @@ import { memo } from "react";
 import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
-import { toolArgText } from "./tool-arg-text";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -84,7 +84,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const code = toolArgText((args as { code?: unknown })?.code);
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   // Args still streaming = the model is WRITING the code, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCode = isRunning && propStatus.code === "streaming";

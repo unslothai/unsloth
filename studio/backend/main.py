@@ -1861,7 +1861,9 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
-def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]:
+def _get_cached_system_gpu_info(
+    logger, *, refresh_memory: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
@@ -1873,7 +1875,7 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
     global _system_gpu_cache
     now = time.monotonic()
     with _system_gpu_cache_lock:
-        if _system_gpu_cache is not None:
+        if not refresh_memory and _system_gpu_cache is not None:
             cached_at, cached_gpu_info = _system_gpu_cache
             if now - cached_at < _SYSTEM_GPU_CACHE_TTL_SECONDS:
                 return cached_gpu_info
@@ -1996,7 +1998,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
 
 
 @app.get("/api/system")
-def get_system_info(current_subject: str = Depends(get_current_subject)):
+def get_system_info(
+    current_subject: str = Depends(get_current_subject), refresh_memory: bool = False
+):
     """Get system information.
 
     Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
@@ -2018,7 +2022,9 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
-    gpu_info, inference_gpu_info = _get_cached_system_gpu_info(logger)
+    gpu_info, inference_gpu_info = _get_cached_system_gpu_info(
+        logger, refresh_memory = refresh_memory
+    )
 
     memory = psutil.virtual_memory()
 
@@ -2057,6 +2063,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             logger.debug(f"Failed to read {pkg} version: {e}")
 
     return {
+        "memory_refreshed": refresh_memory,
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "device_backend": _backend_label(get_device()),

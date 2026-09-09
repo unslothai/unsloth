@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
@@ -1616,6 +1617,7 @@ function useStudioRuntimeAdapters(
   backgroundedRef?: { current: boolean },
   newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): StudioRuntimeAdapters {
+  const signalReady = useAppShellReadySignal();
   const aui = useAui();
 
   useEffect(() => {
@@ -1816,7 +1818,7 @@ function useStudioRuntimeAdapters(
             !pairId &&
             loadedTheRequestedThread
           ) {
-            window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+            signalReady();
           }
           return result;
         };
@@ -2191,6 +2193,7 @@ function useStudioRuntimeAdapters(
       onInitialHistoryReady,
       pairId,
       reloadReadyThreadId,
+      signalReady,
     ],
   );
 
@@ -3255,6 +3258,7 @@ export function ChatRuntimeProvider({
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
 }): ReactElement {
+  const signalReady = useAppShellReadySignal();
   // Read by the history adapter's own active-thread publication, the sibling of
   // ThreadBackendAutosave's, which needs the same stand-down. Kept in a ref so the memo below
   // never sees it change, since rebuilding the runtime hook would rebuild the runtime.
@@ -3290,9 +3294,9 @@ export function ChatRuntimeProvider({
     if (onInitialHistoryReady) {
       onInitialHistoryReady();
     } else if (modelType === "base" && !pairId) {
-      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+      signalReady();
     }
-  }, [modelType, onInitialHistoryReady, pairId]);
+  }, [modelType, onInitialHistoryReady, pairId, signalReady]);
 
   const aui = useAui({});
   useEffect(() => {

@@ -48,11 +48,11 @@ import {
 import {
   DEFAULT_VRAM_FRACTION,
   aggregateUsableFreeVramGb,
+  aggregateVramReserveDeficitGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   type Ref,
@@ -63,6 +63,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
@@ -74,16 +75,12 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { type MemoryEstimate } from "../api/memory-estimate";
 import { resolveEstimateContext } from "../model-config/estimate-context";
+import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
 import {
-  type MemoryFitVerdict,
-  formatMemoryGb,
-  glueNoteItems,
-  resolveDraftCacheNote,
-  resolveKvNote,
-  resolveMemoryFit,
-} from "../model-config/memory-fit";
+  resolveResidentEstimateRequest,
+  selectResidentEstimateSettings,
+} from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -149,6 +146,7 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
+import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
 import {
   NumericValueInput,
@@ -165,7 +163,7 @@ const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
@@ -194,8 +192,9 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// What "Don't reserve system RAM" vetoes: mmap maps and dio streams, so neither holds a full host
-// copy. Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
+// What "Don't reserve system RAM" vetoes: mmap maps and dio streams, so neither holds a full
+// host copy. Mirrors _LOAD_MODE_MLOCK_VALUES and _LOAD_MODE_RESERVING_VALUES.
+// Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
 /** What Model Memory does to this load mode, or null when the pick reaches the command line
@@ -907,222 +906,6 @@ function AdvancedSettingsToggle({
   );
 }
 
-const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
-  fits: "text-nav-fg",
-  tight: "text-amber-500",
-  exceeds: "text-red-500",
-  unknown: "text-nav-fg",
-};
-
-function MemoryFigure({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-}) {
-  return (
-    <div className="flex shrink-0 items-center gap-1.5">
-      <span className="text-ui-11 font-medium leading-none tracking-nav text-muted-foreground">
-        {label}
-      </span>
-      <span
-        className={`inline-flex h-6 items-center ${CONTROL_SURFACE} px-2 text-ui-12 font-medium tabular-nums ${tone ?? "text-nav-fg"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function MemoryBreakdownLine({
-  label,
-  value,
-  note,
-  muted,
-}: {
-  label: string;
-  value: string;
-  note?: string;
-  muted?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
-        {label}
-        {note ? (
-          <span className="ml-1 text-muted-foreground/70">{glueNoteItems(note)}</span>
-        ) : null}
-      </span>
-      <span
-        className={`shrink-0 text-ui-11 tabular-nums ${muted ? "text-muted-foreground" : "text-nav-fg"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-/** "Estimated Memory Usage": what the settings above would cost, before they are run. Figures
- *  come from the loader's own sizing, not a weights-times-a-constant rule of thumb, so KV
- *  gets its own line and an unsizable header quotes a floor instead of a confident total. */
-function MemoryEstimateRow({
-  estimate,
-  loading,
-  stale,
-  gpuCapacityGb,
-  totalCapacityGb,
-  systemRamCapacityGb,
-  freeGpuCapacityGb,
-  usableSystemRamGb,
-  isUnifiedMemory,
-  singleMemoryPool,
-  expanded,
-  onExpandedChange,
-}: {
-  estimate: MemoryEstimate | null;
-  loading: boolean;
-  stale: boolean;
-  /** VRAM available, or the shared pool where there is only one. 0 when unknown. */
-  gpuCapacityGb: number;
-  /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
-  totalCapacityGb: number;
-  /** Host RAM alone. The bytes a load pins OUTSIDE the GPU have to fit in this, and unused VRAM cannot help them. */
-  systemRamCapacityGb: number;
-  /** VRAM free on the usable cards right now. Warns only: see the note at the call site. 0 when nothing was probed. */
-  freeGpuCapacityGb: number;
-  /** Host RAM the machine can hand out right now, less the reserve the loader keeps. Warns only,
-   *  for the same reason. 0 when unknown. */
-  usableSystemRamGb: number;
-  isUnifiedMemory: boolean;
-  /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
-  singleMemoryPool: boolean;
-  expanded: boolean;
-  onExpandedChange: (next: boolean) => void;
-}) {
-  const contentId = useId();
-  if (!estimate?.available) {
-    // Nothing honest to show. Silent while loading too, so the row does not flicker.
-    return null;
-  }
-  // Every verdict and the one advisory paragraph, resolved in ../model-config/memory-fit. Kept
-  // out of this file so the node test runner can reach it: while it lived here an arm that
-  // could never be taken shipped unnoticed.
-  const { gpuFit, totalFit, prefix, advisory } = resolveMemoryFit(estimate, {
-    gpuCapacityGb,
-    totalCapacityGb,
-    systemRamCapacityGb,
-    freeGpuCapacityGb,
-    usableSystemRamGb,
-    singleMemoryPool,
-  });
-  const kvNote = resolveKvNote(estimate);
-  const draftCacheNote = resolveDraftCacheNote(
-    estimate.drafterRuntimeGpuBytes,
-    estimate.drafterRuntimeBytes,
-  );
-  return (
-    <div className="space-y-2">
-      {/* Wraps, unlike the other rows, because this is the only header carrying a title AND two
-          figures: under a ~460px window the title absorbed the whole shortfall and truncated to
-          "E..." at 320px. The panel is w-[min(468px,...)], so it shrinks with the viewport while
-          the figures do not. Letting them drop to their own line is identical above that. */}
-      <div className={`${ROW_CLASS} flex-wrap gap-y-1`}>
-        <button
-          type="button"
-          onClick={() => onExpandedChange(!expanded)}
-          aria-expanded={expanded}
-          aria-controls={contentId}
-          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <span className={LABEL_CLASS}>Estimated Memory Usage</span>
-          <span className="shrink-0 rounded-full bg-black/[0.06] px-1.5 py-px text-ui-10 font-medium uppercase leading-[1.4] tracking-wider text-muted-foreground dark:bg-white/[0.08]">
-            Beta
-          </span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            className={`size-3 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
-            strokeWidth={1.75}
-          />
-        </button>
-        {/* ml-auto so that on the wrapped line, where justify-between has nothing to push against, the
-            figures still sit under the right edge they had. */}
-        <div
-          className={`ml-auto flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
-        >
-          {/* One pool: offloading a layer moves it within the same memory rather than out of it, so the
-              honest single figure is the total. The GPU share let a zero-layer load read as free. */}
-          <MemoryFigure
-            label={singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"}
-            value={`${prefix}${formatMemoryGb(
-              singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
-            )}`}
-            tone={MEMORY_VALUE_TONE[singleMemoryPool ? totalFit : gpuFit]}
-          />
-          {singleMemoryPool ? null : (
-            <MemoryFigure
-              label="Total"
-              value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
-              tone={MEMORY_VALUE_TONE[totalFit]}
-            />
-          )}
-        </div>
-      </div>
-      {expanded && (
-        <div id={contentId} className="space-y-1 pl-0.5">
-          <MemoryBreakdownLine
-            label="Weights"
-            value={formatMemoryGb(estimate.weightsBytes)}
-            note={
-              estimate.gpuLayers != null && estimate.layerCount != null
-                ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
-                : undefined
-            }
-          />
-          <MemoryBreakdownLine
-            label="KV cache"
-            value={
-              estimate.kvEstimable ? formatMemoryGb(estimate.kvBytes) : "unknown"
-            }
-            note={estimate.kvEstimable ? kvNote : undefined}
-            muted={!estimate.kvEstimable}
-          />
-          <MemoryBreakdownLine
-            label="Compute buffers"
-            value={formatMemoryGb(estimate.computeBytes)}
-          />
-          {/* The encoder's buffers, about 1.3x the projector file. Only on a vision load, and named
-              separately since the file is already in Weights. */}
-          {estimate.projectorRuntimeBytes > 0 && (
-            <MemoryBreakdownLine
-              label="Vision encoder"
-              value={formatMemoryGb(estimate.projectorRuntimeBytes)}
-            />
-          )}
-          {/* Only when speculation loads a separate drafter, and it is the term most likely to surprise:
-              its cache grows with context like the target's. */}
-          {estimate.drafterRuntimeBytes > 0 && (
-            <MemoryBreakdownLine
-              label="Draft cache"
-              value={formatMemoryGb(estimate.drafterRuntimeBytes)}
-              note={draftCacheNote}
-            />
-          )}
-        </div>
-      )}
-      {advisory && (
-        <p
-          className={`text-ui-11 leading-relaxed ${advisory.tone === "warn" ? "text-amber-500" : "text-muted-foreground"}`}
-        >
-          {advisory.text}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function MlxAdvancedSettings({
   config,
   update,
@@ -1310,15 +1093,18 @@ function GgufAdvancedSettings({
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
-  // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value to
-  // max(slots, 2). Surfaced so the number typed here is not silently different from the one that
-  // runs; with Slots blank only the hard floor of 2 is asserted.
+  // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value
+  // to max(slots, 2). Surfaced so the number typed here is not silently different from the
+  // one that runs. With Slots blank only the hard floor of 2 is asserted.
+  // GGML_ASSERT(n_tokens_all <= cparams.n_batch) below 2, and
+  // GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) below the slot count.
   const batchFloor = Math.max(2, config.nParallel ?? 2);
   const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
-  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so the control
-  // would keep showing a value the server never used: batch 8 / ubatch 4096 measured 8.8x slower.
-  // Measured against the EMITTED batch, or the two advisories contradict, since batch 4 / slots 8
-  // launches at 8. A blank batch runs llama.cpp's own 2048, which extras can move unseen.
+  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so the
+  // control would keep showing a value the server never used: batch 8 / ubatch 4096 measured 8.8x
+  // slower. Measured against the EMITTED batch, or the two advisories contradict, since batch 4 /
+  // slots 8 launches at 8. A blank batch runs llama.cpp's own 2048, which extras or
+  // LLAMA_ARG_BATCH can move without this page seeing it.
   const effectiveBatch =
     config.nBatch != null
       ? Math.max(config.nBatch, batchFloor)
@@ -1975,6 +1761,13 @@ export function ModelConfigPage({
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore((s) => s.loadedLlamaExtraArgs);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
+  const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const residentEstimateSettings = useChatRuntimeStore(
+    useShallow(selectResidentEstimateSettings),
+  );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2302,9 +2095,10 @@ export function ModelConfigPage({
           tokens: resolvedOverride?.llama_extra_args ?? [],
           explicit: Array.isArray(resolvedOverride?.llama_extra_args),
         };
-        // Through the resolver, not a literal lookup: the backend folds identities and reads whole entries
-        // in its own order. Sanitised before it becomes a request, since hydrating turns a stored list into
-        // an EXPLICIT one that /load validates strictly.
+        // Through the resolver, not a literal lookup: the backend folds identities and reads whole
+        // entries in its own order. Sanitised before it becomes a request, since hydrating turns a
+        // stored list into an EXPLICIT one that /load validates strictly, so an install upgraded
+        // across a denylist change would otherwise stop loading a model that worked yesterday.
         const stored = sanitizeStoredExtraArgs(
           resolvedArgs.tokens,
           managed?.managed ?? new Set<string>(),
@@ -2383,9 +2177,10 @@ export function ModelConfigPage({
                 ),
               );
 
-        // The shared row outranks the local seed for every field it carries, so LAN and Desktop cannot show
-        // different remembered values; fromApiOverride keeps the rest of this browser's config, since an
-        // absent field is as much a gap in the mirror as a chosen default. Never over an in-flight edit.
+        // The shared row outranks the local seed for every field it carries, so LAN and Desktop cannot
+        // show different remembered values; fromApiOverride keeps the rest of this browser's config,
+        // since an absent field is as much a gap in the mirror as a chosen default. Never over an
+        // edit made while the request was in flight.
         if (
           resolvedRow &&
           serverConfig &&
@@ -2420,9 +2215,10 @@ export function ModelConfigPage({
             modelId: string;
             ggufVariant: string | null;
           }[] = [];
-          // Checked for the same reason the Save path checks it: the write can fail outright and say so in
-          // the return rather than throwing. Marked saved regardless, the panel would claim the settings are
-          // remembered while quick select and background loads still saw the stale record or none.
+          // Checked for the same reason the Save path checks it: the write can fail outright and say so
+          // in the return rather than throwing. Marked saved regardless, the panel would claim the
+          // settings are remembered while quick select and background loads, which read
+          // resolveInitialConfig and never open this panel, still saw the stale record or none.
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
@@ -2438,9 +2234,10 @@ export function ModelConfigPage({
           return;
         }
         if (stored.length === 0) {
-          // An EXPLICIT empty row is a decision, not an absence: the settings page writes one when the box is
-          // cleared for a quant whose bare-repository row still carries arguments. Left undefined the panel
-          // omits the field on Load, and /load carries the resident model's arguments over.
+          // An EXPLICIT empty row is a decision, not an absence: the settings page writes one when the
+          // box is cleared for a quant whose bare-repository row still carries arguments. Left
+          // undefined the panel omits the field on Load, and /load carries the resident model's
+          // arguments over. Only when nothing was typed here meanwhile.
           const local = configRef.current.llamaExtraArgs;
           if (resolvedArgs.explicit && local === undefined) {
             setExtraArgsLoadable(true);
@@ -2600,9 +2397,10 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // The pin, else the length a self-sizing backend would serve, so the control states a context
-  // rather than declining to. Only an unread window falls back to the app default, and Reset clears
-  // the pin to null. Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
+  // The pin, else the length a self-sizing backend would serve, so the control states a
+  // context rather than declining to. Only an unread window falls back to the app default,
+  // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
+  // Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
   const servedWindow = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
@@ -2629,9 +2427,10 @@ export function ModelConfigPage({
     MAX_SEQ_LENGTH_MAX,
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
   );
-  // An auto-fit-below-native GGUF shows activeLoadedContext while customContextLength stays null. If
-  // the user fixes GPU Layers (Manual) and remembers, pin that shown context so a later fresh load
-  // keeps the fitted placement instead of sending native/0 and recreating the OOM.
+  // An auto-fit-below-native GGUF shows activeLoadedContext while
+  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
+  // remembers, pin that shown context so a later fresh load keeps the fitted
+  // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
@@ -2660,9 +2459,10 @@ export function ModelConfigPage({
     : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
-  // Priced against the config that would actually load, at the context on screen. Diffusion stands
-  // down, since its runner allocates on a different plan. The tri-state is read as a tri-state, not
-  // through resolvedIsDiffusion: a GGUF still being classified may be DiffusionGemma.
+  // Priced against the config that would actually load, at the context on screen. Diffusion
+  // stands down, since its runner allocates on a different plan. The tri-state is read as a
+  // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
+  // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
   const memoryEstimateRequest =
     target.isGguf && classifiedIsDiffusion === false
       ? {
@@ -2688,8 +2488,9 @@ export function ModelConfigPage({
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
           // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing the
-          // global fallback, so with the global Off the row charged an 11 GB sidecar to a load that disables it.
+          // override sends null, which the backend reads as Auto, while the selector has been showing
+          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
+          // charged the sidecar for a load that disables it.
           speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
           specDraftNMax: runtimeConfig.specDraftNMax,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
@@ -2707,16 +2508,56 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // No resident credit without a reported context; pending settings cannot price it.
+  const residentContext = servedWindow(activeLoadedContext);
+  const residentEstimateRequest = resolveResidentEstimateRequest(
+    isActiveModel ? memoryEstimateRequest : null,
+    residentEstimateSettings,
+    residentContext,
+  );
+  const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
+    refreshMemory: true,
+  });
+  // Only settled estimates can establish resident credit.
+  const reclaimableEstimate =
+    residentEstimateRequest &&
+    residentEstimate.estimate?.available &&
+    !residentEstimate.loading &&
+    !residentEstimate.stale
+      ? residentEstimate.estimate
+      : null;
+  const reclaimableCredit = resolveReclaimableMemoryCredit(
+    reclaimableEstimate,
+    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+    {
+      ids: runtimeConfig.selectedGpuIds ?? null,
+      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+    },
+    {
+      cpuFallback: loadedCpuFallback,
+      devices: gpuDevices,
+      // Fitted placement does not report its final layer count.
+      gpuPlacementKnown:
+        residentEstimateRequest?.gpuMemoryMode === "manual" &&
+        residentEstimateRequest.gpuLayers != null &&
+        residentEstimateRequest.gpuLayers >= 0 &&
+        !loadedLlamaExtraArgs?.length,
+      appleUnifiedMemory: isAppleUnifiedMemory,
+    },
+  );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
   // a one-card pin against a two-card total called an 8 GB load a fit on 16 GB it cannot reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
-  // Whether the devices THIS LOAD will use draw on one pool with the rest of the system, from the
-  // backend's per-device unified_memory flag rather than from the platform: adding VRAM to system RAM
-  // on a shared pool counts the same bytes twice. `.every()` is the right question for CAPACITY,
-  // since one independent-memory device means real VRAM beside system RAM. The empty set is excluded
-  // explicitly, since `[].every()` is true, and the Apple fallback stays host-wide.
+  // Whether the devices THIS LOAD will use draw on one pool with the rest of the system, from
+  // the backend's per-device unified_memory flag rather than from the platform: adding VRAM to
+  // system RAM on a shared pool counts the same bytes twice. `.every()` is the right question
+  // for CAPACITY, since one independent-memory device means real VRAM beside system RAM: reading
+  // the host-wide flag collapsed totalCapacityGb from 143.5 to 15.5 GiB, and `.some()` under a pin
+  // reported 62.1. The empty set is excluded explicitly, since `[].every()` is true, and the Apple
+  // fallback stays host-wide, covering the window before the per-device probe lands. use-gpu-info.ts
+  // deliberately uses `.some()` for its own flag, which answers a different question.
   const hasUnifiedMemory = useMemo(() => {
     if (isAppleUnifiedMemory) return true;
     const governing =
@@ -2727,9 +2568,12 @@ export function ModelConfigPage({
     return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
   // The VRAM Budget slider caps what the next load may claim per GPU, so the verdict is measured
-  // against the capped figure or the row contradicts the control above it. Subscribed as well as read
-  // once, since dragging must re-classify without a remount. Seeded with the loader's own default:
-  // the read is async and null on an older backend, and starting at 1 claimed a reserve back.
+  // against the capped figure or the row contradicts the control above it. Subscribed as well
+  // as read once, since dragging must re-classify without a remount. Seeded with the loader's
+  // own default rather than a full card, since the read is async and null on failure.
+  // Seeded with the loader's own default: the read is async and returns null on an older backend, and
+  // in both windows the launch still applies VRAM_FRACTION_DEFAULT. Starting at 1 claimed a reserve
+  // no setting of that slider ever gives back.
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
     useState(DEFAULT_VRAM_FRACTION);
   useEffect(() => {
@@ -2747,11 +2591,13 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on free-minus-reserve,
-  // not on totals. WARNS, never refuses, since the bytes a pending load reclaims are mostly the
-  // resident model's own. A fixed Manual placement is launched verbatim (load_model empties its
-  // probed GPU set and emits --gpu-layers N --fit off), so the budget never reaches the planner and
-  // discounting capacity by it called a 16 GiB fixed placement on a 24 GiB card over budget at 50%.
+  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on free-minus-
+  // reserve, not on totals. WARNS, never refuses: the bytes a pending load reclaims are mostly
+  // the resident model's own, which cannot be attributed per device from here. A fixed Manual
+  // placement is launched verbatim, so the server-wide budget never reaches the planner.
+  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU set and emits
+  // --gpu-layers N --fit off -- so the VRAM Budget never reaches the planner. Discounting capacity
+  // by it called a 16 GiB fixed placement on a 24 GiB card over budget at 50%. Auto is still budgeted.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
@@ -2765,26 +2611,56 @@ export function ModelConfigPage({
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
   );
-  const memoryFreeGpuCapacityGb = useMemo(() => {
+  const memorySystemRamReserveDeficitGb = Math.max(
+    0,
+    2 - (inferenceGpu.systemRamAvailableHostGb || 0),
+  );
+  const {
+    gb: memoryFreeGpuCapacityGb,
+    known: memoryFreeGpuCapacityKnown,
+    reserveDeficitGb: memoryFreeGpuReserveDeficitGb,
+  } = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
         ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
         : gpuDevices;
-    // Per device, and by the loader's absolute-reserve rule rather than a multiplication: the budget is
-    // subtracted from the card, not applied to what happens to be free. Aggregated with the same
-    // count-the-shared-pool-once rule the TOTALS use.
+    // Per device, and by the loader's absolute-reserve rule rather than a multiplication: the
+    // budget is subtracted from the card, not applied to what happens to be free. Aggregated
+    // with the same count-the-shared-pool-once rule the TOTALS use, since a plain sum over a
+    // mixed inventory counted the iGPU's share of host RAM twice.
     const freeVram = aggregateUsableFreeVramGb(
       pinned,
       memoryEffectiveBudgetFraction,
     );
+    const freeVramKnown =
+      pinned.length > 0 &&
+      pinned.every((device) => device.memoryFreeKnown === true);
     // On a ROCm APU this figure is the free space inside a BIOS-carved window, and resolveMemoryFit
-    // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned that a
-    // 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free memory is the
-    // host's; Apple's GPU figure already IS the pool.
+    // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned
+    // that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free
+    // memory is the host's; Apple's GPU figure already IS the pool.
+    // Those two together warned that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free,
+    // purely because it exceeds a 48 GiB window.
     if (hasUnifiedMemory && !isAppleUnifiedMemory) {
-      return Math.max(freeVram, memoryUsableSystemRamGb);
+      return {
+        gb: inferenceGpu.systemRamAvailableKnown ? memoryUsableSystemRamGb : 0,
+        known: inferenceGpu.systemRamAvailableKnown === true,
+        reserveDeficitGb: memorySystemRamReserveDeficitGb,
+      };
     }
-    return freeVram;
+    const residentDevices = loadedGpuIds?.length
+      ? pinned.filter((device) =>
+          device.indexKind === loadedGpuIndexKind &&
+          loadedGpuIds.includes(device.index))
+      : pinned;
+    return {
+      gb: freeVram,
+      known: freeVramKnown,
+      reserveDeficitGb: aggregateVramReserveDeficitGb(
+        residentDevices,
+        memoryEffectiveBudgetFraction,
+      ),
+    };
   }, [
     gpuDevices,
     pinnedGpuIds,
@@ -2792,6 +2668,10 @@ export function ModelConfigPage({
     hasUnifiedMemory,
     isAppleUnifiedMemory,
     memoryUsableSystemRamGb,
+    memorySystemRamReserveDeficitGb,
+    inferenceGpu.systemRamAvailableKnown,
+    loadedGpuIds,
+    loadedGpuIndexKind,
   ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
@@ -2917,7 +2797,8 @@ export function ModelConfigPage({
     }
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness. A forget also drops the local records for every other spelling.
+    // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
+    // A forget also drops the local records for every other spelling the server reports clearing.
     if (
       !saveFailed &&
       (target.apiLoadable ?? target.isGguf) &&
@@ -2962,10 +2843,13 @@ export function ModelConfigPage({
       : targetIsMlx
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
-    // Same reason as the numeric commits above: the budget row flushes on unmount, which for this click
-    // lands after onRun has staged the load, so that load would use the old fraction. A failed save must
-    // not swallow the load, hence finally. Closed before the settle, not after: the control has to stop
-    // taking edits at the moment this click owns the fraction.
+    // Same reason as the numeric commits above: the budget row flushes on unmount,
+    // which for this click lands after onRun has staged the load, so that load (the
+    // very one the control promises) would use the old fraction. A failed save must
+    // not swallow the load, hence finally; nothing staged stays synchronous.
+    // Closed before the settle, not after: the control has to stop taking edits at
+    // the moment this click owns the fraction, or a drag landing in between is the
+    // very race the lock exists to remove.
     setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
@@ -3037,9 +2921,15 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
+              freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
               usableSystemRamGb={memoryUsableSystemRamGb}
+              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
+              systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
+              reclaimableTotalBytes={reclaimableCredit.totalBytes}
+              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />

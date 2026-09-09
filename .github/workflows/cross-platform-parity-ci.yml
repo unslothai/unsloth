@@ -65,8 +65,13 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
@@ -132,8 +137,13 @@ on:
       - 'studio/install_*.py'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
+      # This is the only lane that executes it, and the Windows smoke workflow it moved
+      # from deliberately skips it, so without this line a PR editing only the test
+      # would never run it.
+      - 'tests/studio/test_native_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_installer_native_type_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
@@ -228,6 +238,7 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
+          tests/python/test_windows_installer_native_type_fallback.py
           tests/python/test_pwsh_runner_encoding.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
@@ -276,6 +287,14 @@ jobs:
       - name: Application Control CLI fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
+      # Linux on purpose, and the only lane that can run it. Reflection emit succeeds on
+      # this engine so the types build exactly as they do on 5.1, while kernel32 and
+      # shell32 do not resolve, so every call through them fails the way it does on a
+      # Windows host whose antivirus took the helper away. That is the build side and the
+      # call side in one run, and it is not reproducible on a healthy Windows runner.
+      - name: Native path resolver degradation tests
+        if: runner.os == 'Linux'
+        run: pwsh -NoProfile -File tests/studio/test_native_path_resolver_degrades.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

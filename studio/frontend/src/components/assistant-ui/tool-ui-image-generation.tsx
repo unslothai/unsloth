@@ -14,7 +14,7 @@ import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { downloadImagePart } from "./image";
-import { toolArgText } from "./tool-arg-text";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -170,7 +170,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const { openOverlay } = useGeneratedImageOverlay();
   const parsedArgs = (args as ImageGenerationArgs) ?? {};
   const prompt = toolArgText(parsedArgs.prompt);
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
 
   const isImageResult =
     !!result &&
@@ -225,7 +225,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     canExpand: boolean;
   } | null>(null);
   const captionRef = useRef<HTMLDivElement | null>(null);
-  const isPendingImage = !imagePart && status?.type === "running";
+  const isPendingImage = !imagePart && isRunning;
 
   const promptOverflowMeasured = promptOverflow?.prompt === captionPrompt;
   const promptCanExpand = promptOverflowMeasured
