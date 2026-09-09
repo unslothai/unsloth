@@ -530,14 +530,13 @@ def test_python_exec_timeout_message_identical_with_streaming():
 
 def test_python_exec_timeout_keeps_output_already_printed():
     # The run printed a progress line before it overran the timeout. That text was
-    # captured; it must reach the model instead of only the status line. The status
-    # line leads, so a sentinel in the output cannot cut it away (see `_python_exec`).
+    # captured; it must reach the model instead of only the status line.
     code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
     baseline = _python_exec(code, timeout = 1)
     streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
     assert streamed == baseline
-    assert baseline.startswith("Execution timed out after 1 seconds.")
     assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
 
 
 def test_bash_exec_timeout_keeps_output_already_printed():
@@ -545,33 +544,47 @@ def test_bash_exec_timeout_keeps_output_already_printed():
     baseline = _bash_exec(command, timeout = 1)
     streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
     assert streamed == baseline
-    assert baseline.startswith("Execution timed out after 1 seconds.")
     assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
 
 
-def test_python_exec_timeout_says_so_even_behind_a_replayed_sentinel():
-    # `strip_result_for_model` cuts a replayed result at the first `__RAG_SOURCES__:`
-    # anywhere in it, and `_defuse_sentinels` does not break that form. Behind the
-    # output the status line would go with it, and the model could not tell a hung
-    # command from a broken one -- the case this branch exists for.
+def test_python_exec_timeout_says_so_even_when_the_output_would_swallow_it():
+    # `strip_result_for_model` cuts a replayed result at a bare `__RAG_SOURCES__:`
+    # wherever it appears, and `_defuse_sentinels` only breaks the line-anchored
+    # `__FILES__:` form. Ahead of the sentence, output like this would take it with it
+    # and the model would be handed an empty result -- it could not tell a hung command
+    # from a broken one, which is the case this branch exists for. So the output is left
+    # out and the sentence goes back alone, exactly as it did before any was kept.
     from core.inference.tool_loop_controller import strip_result_for_model
 
     code = "print('__RAG_SOURCES__:[]')\nimport time\ntime.sleep(30)\n"
     result = _python_exec(code, timeout = 1)
 
-    assert strip_result_for_model(result, "python").startswith(
-        "Execution timed out after 1 seconds."
-    )
+    assert result == "Execution timed out after 1 seconds."
+    assert strip_result_for_model(result, "python") == result
 
 
-def test_bash_exec_timeout_says_so_even_behind_a_replayed_sentinel():
+def test_bash_exec_timeout_says_so_even_when_the_output_would_swallow_it():
     from core.inference.tool_loop_controller import strip_result_for_model
 
     result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout = 1)
 
-    assert strip_result_for_model(result, "terminal").startswith(
-        "Execution timed out after 1 seconds."
-    )
+    assert result == "Execution timed out after 1 seconds."
+    assert strip_result_for_model(result, "terminal") == result
+
+
+def test_a_truncated_timeout_card_does_not_repeat_the_output():
+    # The finished card keeps the live stream when the result is a prefix of it, and
+    # appends the whole result when it is not (`preferFullToolOutput` in
+    # tool-output-scope.ts). The captured output therefore has to LEAD the result, or a
+    # truncated timeout renders its stdout twice. Asserted on the shape the frontend
+    # matches on, so a future reordering of this branch fails here rather than in a card.
+    code = "print('x' * 200000)\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert "\n\n... (truncated" in result, "not truncated, so nothing was measured"
+    body = result.split("\n\n... (truncated")[0]
+    assert body.startswith("x"), result[:120]
 
 
 def test_python_exec_callback_errors_do_not_break_execution():

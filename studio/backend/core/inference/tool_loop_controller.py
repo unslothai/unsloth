@@ -874,6 +874,11 @@ def _is_file_entry(entry: object) -> bool:
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
 
+# Cut at wherever they appear, unlike `__FILES__:`, which is read line-anchored. Named so
+# a producer of tool text can ask what would be removed from it; see `_python_exec`.
+REPLAY_SPLIT_SENTINELS = ("__IMAGES__:", "__RAG_SOURCES__:")
+
+
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
@@ -883,7 +888,7 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
-    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
+    for sentinel in REPLAY_SPLIT_SENTINELS:
         if sentinel in result:
             result = result.split(sentinel, 1)[0].rstrip()
     return result

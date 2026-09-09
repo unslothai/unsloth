@@ -2175,9 +2175,9 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         self._captured_everything(completed)
         self._captured_everything(timed_out)
 
-        line = "Execution timed out after 1 seconds.\n"
-        assert timed_out.startswith(line)
-        body = timed_out[len(line) :]
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
 
         # In characters, at the rate the fixture's counter charges them.
         assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
@@ -2197,9 +2197,9 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         assert f"{self.PRINTED} chars total" in completed
         assert f"{self.PRINTED} chars total" in timed_out
 
-        line = "Execution timed out after 1 seconds.\n"
-        assert timed_out.startswith(line)
-        body = timed_out[len(line) :]
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
 
         assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
 
@@ -2207,7 +2207,7 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         """The invariant the deduction buys: what the model is handed is inside the room."""
         out = self._timed_out(monkeypatch, 400)
 
-        assert out.startswith("Execution timed out after 1 seconds.")
+        assert out.endswith("Execution timed out after 1 seconds.")
         assert "x" in out, "the captured output was dropped, so nothing was measured"
         _within_room(out, 400)
 

@@ -15944,6 +15944,16 @@ def _volume_timestamps_finely(workdir: str) -> bool:
     return True
 
 
+def _cut_by_the_replay_stripper(text: str) -> bool:
+    """Whether replaying ``text`` to the model would drop everything after some point.
+
+    Read from the stripper rather than restated here, so the two cannot drift apart.
+    """
+    from .tool_loop_controller import REPLAY_SPLIT_SENTINELS  # noqa: PLC0415
+
+    return any(sentinel in text for sentinel in REPLAY_SPLIT_SENTINELS)
+
+
 def _defuse_sentinels(text: str) -> str:
     """Break a marker line the executed program printed itself.
 
@@ -16260,25 +16270,28 @@ def _python_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             partial = _defuse_sentinels(output or "")
-            if partial.strip():
-                # The status line goes FIRST, and that ordering is the point: the replay
-                # stripper cuts a result at the first `__IMAGES__:` or `__RAG_SOURCES__:`
-                # it finds ANYWHERE, while `_defuse_sentinels` only breaks the
-                # line-anchored `__FILES__:` form. Behind the output, a program that
-                # printed one of those and then hung would take the sentence saying it
-                # hung down with it, and telling a hung command from a broken one is the
-                # whole reason this branch keeps the output at all.
-                #
-                # Charged to the same room, too: `_truncate` prices against
-                # `_request_result_room`, so two independent calls each take all of it
-                # and the model is handed the concatenation.
+            # Output the replay stripper would cut the whole result at is left out, and
+            # the sentence goes back alone -- exactly what this branch returned before it
+            # kept anything. `strip_result_for_model` splits at a bare `__IMAGES__:` or
+            # `__RAG_SOURCES__:` wherever it appears (`_defuse_sentinels` only breaks the
+            # line-anchored `__FILES__:` form), so ahead of the sentence such output takes
+            # it with it and the model is handed an empty result: strictly worse than the
+            # status line, and the one thing this branch exists to say. Leading with the
+            # sentence instead is not the answer either -- the finished card keeps the
+            # live stream when the result is a prefix of it (`preferFullToolOutput`), so a
+            # status prefix makes a truncated card render the captured output twice.
+            if partial.strip() and not _cut_by_the_replay_stripper(partial):
+                # `ended` goes after this cut, so its tokens come off the same room
+                # rather than being spent a second time: `_truncate` prices against
+                # `_request_result_room` and two independent calls each take all of it,
+                # while the model is handed the concatenation.
                 head = _truncate(
                     partial,
                     workdir = spill_dir,
                     scope = spill_scope,
-                    reserve_tokens = _text_token_cost(f"{ended}\n", _window_context_tokens()),
+                    reserve_tokens = _text_token_cost(f"\n{ended}", _window_context_tokens()),
                 )
-                ended = f"{ended}\n{head}"
+                ended = f"{head}\n{ended}"
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16433,25 +16446,28 @@ def _bash_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             partial = _defuse_sentinels(output or "")
-            if partial.strip():
-                # The status line goes FIRST, and that ordering is the point: the replay
-                # stripper cuts a result at the first `__IMAGES__:` or `__RAG_SOURCES__:`
-                # it finds ANYWHERE, while `_defuse_sentinels` only breaks the
-                # line-anchored `__FILES__:` form. Behind the output, a program that
-                # printed one of those and then hung would take the sentence saying it
-                # hung down with it, and telling a hung command from a broken one is the
-                # whole reason this branch keeps the output at all.
-                #
-                # Charged to the same room, too: `_truncate` prices against
-                # `_request_result_room`, so two independent calls each take all of it
-                # and the model is handed the concatenation.
+            # Output the replay stripper would cut the whole result at is left out, and
+            # the sentence goes back alone -- exactly what this branch returned before it
+            # kept anything. `strip_result_for_model` splits at a bare `__IMAGES__:` or
+            # `__RAG_SOURCES__:` wherever it appears (`_defuse_sentinels` only breaks the
+            # line-anchored `__FILES__:` form), so ahead of the sentence such output takes
+            # it with it and the model is handed an empty result: strictly worse than the
+            # status line, and the one thing this branch exists to say. Leading with the
+            # sentence instead is not the answer either -- the finished card keeps the
+            # live stream when the result is a prefix of it (`preferFullToolOutput`), so a
+            # status prefix makes a truncated card render the captured output twice.
+            if partial.strip() and not _cut_by_the_replay_stripper(partial):
+                # `ended` goes after this cut, so its tokens come off the same room
+                # rather than being spent a second time: `_truncate` prices against
+                # `_request_result_room` and two independent calls each take all of it,
+                # while the model is handed the concatenation.
                 head = _truncate(
                     partial,
                     workdir = spill_dir,
                     scope = spill_scope,
-                    reserve_tokens = _text_token_cost(f"{ended}\n", _window_context_tokens()),
+                    reserve_tokens = _text_token_cost(f"\n{ended}", _window_context_tokens()),
                 )
-                ended = f"{ended}\n{head}"
+                ended = f"{head}\n{ended}"
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
