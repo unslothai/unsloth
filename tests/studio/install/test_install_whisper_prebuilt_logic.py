@@ -2822,3 +2822,54 @@ def test_the_whisper_backfill_is_written_under_the_install_lock(tmp_path, monkey
     held["writes_under_lock"] = 0
     assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
     assert held["writes_under_lock"] == 0 and held["writes_outside"] == 0
+
+
+def test_whisper_an_upstream_pin_without_the_v_prefix_is_the_same_pin(tmp_path, monkeypatch):
+    """The full selector treats v1.9.2 and 1.9.2 as one tag (_normalized_upstream_tag);
+    a raw comparison sent every such pin down the release listing on every update."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG.lstrip("v")) is True
+
+
+def test_whisper_a_bundle_needing_a_newer_macos_is_not_intact(tmp_path, monkeypatch):
+    """An install restored onto an older same-architecture Mac has the right platform
+    tokens and the execute bit; the marker's recorded min_os is what the selector
+    would refuse it on, so the intact check refuses it too."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker["coverage"] = {"min_os": "15.0"}
+    marker_path.write_text(json.dumps(marker), encoding = "utf-8")
+    calls = []
+
+    def min_os_ok(_host, min_os):
+        calls.append(min_os)
+        return False
+
+    monkeypatch.setattr(M, "_macos_min_os_ok", min_os_ok)
+    # A Linux host never asks.
+    assert _whisper_check(install_dir, host) is True
+    assert calls == []
+    mac = M.HostInfo(**{**host.__dict__, "system": "Darwin"}) if hasattr(host, "__dict__") else host
+    monkeypatch.setattr(M, "host_platform_tokens", lambda _h: ("linux", "x64"))
+    monkeypatch.setattr(type(mac), "is_macos", property(lambda self: True), raising = False)
+    assert _whisper_check(install_dir, mac) is False
+    assert calls == ["15.0"]
+
+
+def test_a_failing_compatibility_listing_keeps_an_intact_install(tmp_path, monkeypatch, capsys):
+    """On macOS the newest release can be fetched and still not pair with this host, and
+    the listing that follows is a second API seam; a 403 there is a lookup that could
+    not answer, not a failed update."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def listing_denied(_repo):
+        raise RuntimeError("HTTP 403: rate limit")
+
+    monkeypatch.setattr(M, "_published_release_tags", listing_denied)
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_GREP in output
+    assert calls["n"] == 1

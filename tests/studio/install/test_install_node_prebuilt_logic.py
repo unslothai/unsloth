@@ -1145,7 +1145,9 @@ def test_the_record_is_written_after_the_swap_not_before() -> None:
     describes bytes that are about to be replaced."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
     swap = source.index("_swap_into_place(extracted_root, install_dir)")
-    record = source.index("record_runtime_verification(install_dir, host, version = final_version")
+    record = source.index(
+        "_record_runtime_verification_under_lock(\n        install_dir, host, installed_meta, version = final_version"
+    )
     assert swap < record
 
 

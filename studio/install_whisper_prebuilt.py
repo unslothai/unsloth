@@ -1418,7 +1418,14 @@ def _release_plan_for_host(
         assert first_error is not None
         raise first_error
 
-    for release_tag in _published_release_tags(published_repo):
+    # A lookup like the release fetch above it: an API limit (RuntimeError) or a network
+    # failure (OSError) here is the same "could not answer" the keep-existing path in
+    # install_prebuilt handles, not a failed update over an intact install.
+    try:
+        compatible_tags = _published_release_tags(published_repo)
+    except (OSError, RuntimeError) as exc:
+        raise PrebuiltFallback(f"could not list {published_repo} releases: {exc}") from exc
+    for release_tag in compatible_tags:
         if first_bundle is not None and release_tag == first_bundle.release_tag:
             continue
         try:
@@ -1524,6 +1531,13 @@ def _existing_install_is_intact(
     recorded_asset = marker.get("asset")
     if not isinstance(recorded_asset, str) or f"-{os_token}-{arch_token}-" not in recorded_asset:
         return None
+    # The bundle's macOS floor, which the selector applies (_macos_min_os_ok) and the
+    # marker records under coverage: an install restored onto an older same-architecture
+    # Mac has the right tokens and the execute bit, and fails at load time.
+    coverage = marker.get("coverage")
+    if host.is_macos and isinstance(coverage, dict) and coverage.get("min_os") is not None:
+        if not _macos_min_os_ok(host, coverage.get("min_os")):
+            return None
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:
         return None
@@ -1589,7 +1603,9 @@ def existing_install_current_without_plan(
         # release pin the marker's upstream_tag rules out a wrong pin but cannot answer
         # alone: the install is current only when it is also the release the HEAD below
         # names.
-        if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
+        if _normalized_upstream_tag(str(marker.get("upstream_tag") or "")) != _normalized_upstream_tag(
+            whisper_tag
+        ):
             return False
     if pinned:
         if pinned != recorded_release:

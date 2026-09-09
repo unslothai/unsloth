@@ -6585,3 +6585,17 @@ def test_the_full_path_holds_a_marker_to_the_runtime_files_it_recorded(tmp_path,
     marker_path.write_text(json.dumps(marker), encoding = "utf-8")
     server.write_bytes(original[: max(1, len(original) // 2)])
     assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
+
+
+def test_the_api_latest_lookup_scans_the_pages_the_selector_scans(monkeypatch):
+    """published_at ordering: a release drafted early and published late sits on a later
+    page of a big repository, and one page would report an older marker current."""
+    seen = {}
+
+    def fake_releases(repo, max_pages = 0):
+        seen["max_pages"] = max_pages
+        return [{"tag_name": "release-2", "published_at": "2026-01-02T00:00:00Z"}]
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_releases", fake_releases)
+    assert INSTALL_LLAMA_PREBUILT._api_newest_release_tag("someone/else") == "release-2"
+    assert seen["max_pages"] == INSTALL_LLAMA_PREBUILT.DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES

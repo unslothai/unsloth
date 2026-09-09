@@ -1095,8 +1095,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             f"post-install verification failed: node={final_version} npm_major={npm_major}"
         )
     # After the swap, not before: _ensure_npm_floor rewrites npm inside the staged tree,
-    # and the records have to describe the bytes that are live.
-    record_runtime_verification(install_dir, host, version = final_version, npm_major = npm_major)
+    # and the records have to describe the bytes that are live. The install lock was
+    # released above, so the write takes it again and goes ahead only over the marker
+    # this install wrote: another installer asked for a different version or --force
+    # could otherwise have swapped its tree in between the read and the replace.
+    installed_meta = load_metadata(install_dir) or {}
+    _record_runtime_verification_under_lock(
+        install_dir, host, installed_meta, version = final_version, npm_major = npm_major
+    )
     log(f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}")
     return EXIT_SUCCESS
 

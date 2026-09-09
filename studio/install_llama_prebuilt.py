@@ -7416,9 +7416,16 @@ def _newest_release_tag_from_releases(releases: "Iterable[Any]") -> "str | None"
 
 
 def _api_newest_release_tag(repo: str) -> "str | None":
-    """The API's notion of latest: one api.github.com page, published_at ordering."""
+    """The API's notion of latest, over the pages the full selector scans.
+
+    published_at ordering, so a release drafted early and published late can sit on a
+    later page of a repository with more than a hundred releases; one page would report
+    an older marker current where iter_release_payloads_by_time would install the newer one.
+    """
     try:
-        return _newest_release_tag_from_releases(github_releases(repo, max_pages = 1))
+        return _newest_release_tag_from_releases(
+            github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        )
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not resolve the latest release from the GitHub API ({exc})")
         return None
