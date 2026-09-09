@@ -1125,6 +1125,62 @@ function MemoryEstimateRow({
   );
 }
 
+const GGUF_PARALLEL_HINT =
+  "llama-server decode slots (--parallel) for concurrent requests. Leave blank " +
+  "for the server default. More slots share the context pool and use more VRAM; " +
+  "if they don't fit on GPU, fewer slots are launched.";
+
+const MLX_PARALLEL_HINT =
+  "Chat replies this model decodes at once (--parallel). Leave blank for the " +
+  "default. Replies sharing a decode finish sooner together, but each one holds " +
+  "its own context in memory for as long as it runs, and nothing reduces the " +
+  "number to fit — raise it only if the memory is there.";
+
+function ParallelSlotsRow({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Parallel Slots</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <input
+        type="number"
+        min={N_PARALLEL_MIN}
+        max={N_PARALLEL_MAX}
+        step={1}
+        value={config.nParallel ?? ""}
+        placeholder="auto"
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") {
+            update({ nParallel: null });
+            return;
+          }
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isFinite(parsed)) {
+            update({
+              nParallel: Math.max(
+                N_PARALLEL_MIN,
+                Math.min(N_PARALLEL_MAX, parsed),
+              ),
+            });
+          }
+        }}
+        aria-label="Parallel decode slots"
+        className={NUMBER_INPUT_CLASS}
+      />
+    </div>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
@@ -1185,6 +1241,7 @@ function MlxAdvancedSettings({
           {outcome}
         </p>
       ) : null}
+      <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
         </>
       )}
       <ChatTemplateSetting
@@ -1491,43 +1548,7 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Parallel Slots</span>
-          <InfoHint>
-            llama-server decode slots (--parallel) for concurrent requests.
-            Leave blank for the server default. More slots share the context
-            pool and use more VRAM; if they don't fit on GPU, fewer slots are
-            launched.
-          </InfoHint>
-        </div>
-        <input
-          type="number"
-          min={N_PARALLEL_MIN}
-          max={N_PARALLEL_MAX}
-          step={1}
-          value={config.nParallel ?? ""}
-          placeholder="auto"
-          onChange={(event) => {
-            const raw = event.target.value;
-            if (raw === "") {
-              update({ nParallel: null });
-              return;
-            }
-            const parsed = Number.parseInt(raw, 10);
-            if (Number.isFinite(parsed)) {
-              update({
-                nParallel: Math.max(
-                  N_PARALLEL_MIN,
-                  Math.min(N_PARALLEL_MAX, parsed),
-                ),
-              });
-            }
-          }}
-          aria-label="Parallel decode slots"
-          className={NUMBER_INPUT_CLASS}
-        />
-      </div>
+      <ParallelSlotsRow config={config} update={update} hint={GGUF_PARALLEL_HINT} />
 
       {!isDiffusion && (
         <div className="space-y-1">

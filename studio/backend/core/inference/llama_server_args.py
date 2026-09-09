@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
+
+def clamp_parallel_slots(n_parallel) -> int:
+    if n_parallel is None:
+        return PARALLEL_DEFAULT
+    try:
+        asked = int(n_parallel)
+    except (TypeError, ValueError):
+        return PARALLEL_DEFAULT
+    return max(PARALLEL_MIN, min(PARALLEL_MAX, asked))
+
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536

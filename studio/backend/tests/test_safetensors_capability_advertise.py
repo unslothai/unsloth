@@ -573,6 +573,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
     from core.inference.orchestrator import InferenceOrchestrator
 
     orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._stop_ledger = None
     orch.models = {}
     orch.active_model_name = None
     orch.loading_models = set()
@@ -628,6 +629,7 @@ def test_orchestrator_missing_chat_template_info_falls_back_to_all_false():
     from routes.inference import _detect_safetensors_features
 
     orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._stop_ledger = None
     orch.models = {}
     orch.active_model_name = "unsloth/Qwen3-0.6B"
 

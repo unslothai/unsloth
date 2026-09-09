@@ -2248,6 +2248,7 @@ def test_an_offline_read_leaves_the_fetch_available():
 
     started = []
     backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._stop_ledger = None
     backend._top_models_started = False
     with mock.patch.object(orch, "hf_env_offline", lambda: True):
         backend._start_top_models_fetch()
@@ -2271,6 +2272,7 @@ def test_a_slow_refresh_cannot_overwrite_a_newer_default_list():
     import utils.hardware.hardware as hw_mod
 
     backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._stop_ledger = None
     backend._static_models_lock = threading.Lock()
     backend._static_models = ["gen0"]
     backend._static_models_generation = 0
@@ -2303,6 +2305,7 @@ def test_a_refresh_whose_generation_moved_mid_build_does_not_commit():
     import utils.hardware.hardware as hw_mod
 
     backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._stop_ledger = None
     backend._static_models_lock = threading.Lock()
     backend._static_models = ["old"]
     backend._static_models_generation = 1
@@ -2331,6 +2334,7 @@ def test_an_ordinary_refresh_still_happens():
     import utils.hardware.hardware as hw_mod
 
     backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._stop_ledger = None
     backend._static_models_lock = threading.Lock()
     backend._static_models = ["old"]
     backend._static_models_generation = 1

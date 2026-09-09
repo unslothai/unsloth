@@ -19,3 +19,8 @@ export function authFetch(input: string, init?: RequestInit): Promise<Response> 
   if (!handler) throw new Error("authFetch: no network in tests");
   return Promise.resolve(handler(input, init));
 }
+
+/** Stands in for @/features/hf-auth, which pulls the whole dialog tree in. */
+export async function prepareHfTokenForUse(): Promise<null> {
+  return null;
+}

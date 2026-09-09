@@ -206,6 +206,8 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     cmd = o._build_generate_cmd(
         "req1",
         None,
