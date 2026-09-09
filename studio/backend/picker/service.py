@@ -298,15 +298,21 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
             except ValueError:
                 return path.name
 
-        # Files this variant owns outright before ones its label merely also names.
-        for owned in (True, False):
-            for path in ggufs:
-                relative = _relative(path)
-                if owned != (gguf_variant_key(relative).lower() == needle):
-                    continue
-                if _variant_matches(relative, needle):
-                    return path
-        return None
+        from hub.utils.gguf import resolve_variant_alias
+
+        by_key: dict[str, Path] = {}
+        for path in ggufs:
+            by_key.setdefault(gguf_variant_key(_relative(path)), path)
+        # Files this variant owns outright, then the ONE build its legacy bare spelling names --
+        # the same resolution the plan and both loaders apply. Falling through to the first file
+        # whose label merely matched read one arbitrary checkpoint's embedded template for a
+        # spelling those loaders refuse as ambiguous.
+        resolved = resolve_variant_alias(list(by_key), needle)
+        if resolved is not None:
+            return by_key[resolved]
+        loose = [path for path in ggufs if _variant_matches(_relative(path), needle)]
+        keys = {gguf_variant_key(_relative(path)).lower() for path in loose}
+        return loose[0] if loose and len(keys) == 1 else None
     candidates = [path for path in ggufs if not _is_nonfirst_gguf_split(path)] or ggufs
     try:
         return max(candidates, key = lambda path: path.stat().st_size)

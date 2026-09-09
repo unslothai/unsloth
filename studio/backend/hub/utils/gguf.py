@@ -979,7 +979,10 @@ def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
     passthrough: set[str] = set()
     for key in ordered:
         token = _quant_group_identity(key)
-        if token is None or "/" in (key or "").replace("\\", "/"):
+        # Root-level by the lister's own rule, not by the absence of a slash: two builds filed
+        # under a quant-only directory are both AT the root and have to collapse like root files,
+        # or the remote resolver ranks them in Hub order and the local one by size.
+        if token is None or not _keys_at_repo_root(key):
             passthrough.add(key)
             continue
         groups.setdefault(token, []).append(key)
@@ -1510,17 +1513,25 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
     """Absolute path to the (shard-1) GGUF file for ``repo_id`` + ``gguf_variant``
     if it is already downloaded in the HF cache, else ``None``. Read-only — never
     triggers a download. Lets callers read header metadata before a load."""
-    for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
-        variants, _ = list_local_gguf_variants(str(snapshot))
-        # A lone tagged build is listed under its qualified key, and the download path accepts the
-        # legacy bare quant for it; exact equality here returned None for a model that IS cached,
-        # so callers reported it not_downloaded and skipped every header-derived fact.
-        wanted = (
-            None
-            if gguf_variant is None
-            else resolve_variant_alias([variant.quant for variant in variants], gguf_variant)
+    snapshots = list(iter_snapshots_preferring_whole(repo_id, gguf_variant))
+    listed = {snapshot: list_local_gguf_variants(str(snapshot))[0] for snapshot in snapshots}
+    # A lone tagged build is listed under its qualified key, and the download path accepts the
+    # legacy bare quant for it; exact equality here returned None for a model that IS cached, so
+    # callers reported it not_downloaded and skipped every header-derived fact. Resolved against
+    # the UNION of every cached revision, not each on its own: two tagged builds of one quant in
+    # two revisions each looked unambiguous alone, and whichever revision was visited first won
+    # while every other resolver refused the spelling.
+    wanted = (
+        None
+        if gguf_variant is None
+        else resolve_variant_alias(
+            [variant.quant for variants in listed.values() for variant in variants], gguf_variant
         )
-        for variant in variants:
+    )
+    if gguf_variant is not None and wanted is None:
+        return None
+    for snapshot in snapshots:
+        for variant in listed[snapshot]:
             if gguf_variant is None or variant.quant == wanted:
                 candidate = snapshot / variant.filename
                 if candidate.is_file():

@@ -236,16 +236,23 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
         # ``_qualified_variant_name`` returns that same key, so the loop above records no legacy
         # spelling for it. The download and loader paths both still accept the bare quant for an
         # unambiguous build, so a persisted ``repo:q4_0`` has to reach the index too.
-        from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias
+        from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias, resolve_variant_alias
 
+        # Owners per bare spelling, then the SHARED resolution: a tagged root beside
+        # ``distilled/model-Q4_K_M`` is two owners, and calling that ambiguous here 404'd a
+        # persisted ``repo:Q4_K_M`` in the local index that the remote resolver had just
+        # downloaded through, because the root build owns that spelling everywhere else.
+        owners: dict[str, list[str]] = {}
         for variant in variants:
             quant = getattr(variant, "quant", None)
             if not quant or not accepts_bare_quant_alias(str(quant)):
                 continue
             key = bare_quant_alias(str(quant)).lower()
-            if not key or key in current:
+            if not key or key in current or key in seen:
                 continue
-            seen[key] = None if key in seen else str(quant)
+            owners.setdefault(key, []).append(str(quant))
+        for key, candidates in owners.items():
+            seen[key] = resolve_variant_alias(candidates, key)
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
         return ()

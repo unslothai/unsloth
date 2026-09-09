@@ -220,6 +220,7 @@ def _add_gguf_picks(
         accepts_bare_quant_alias,
         bare_quant_alias,
         collapse_same_quant_root_builds,
+        resolve_variant_alias,
     )
 
     # Ownership is decided over EVERY published row, not just the openable ones. A plain row that
@@ -238,7 +239,13 @@ def _add_gguf_picks(
     for quant, variant in openable.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant
         spellings = [quant]
-        spellings += [alias for alias, owners in alias_owners.items() if owners == [quant]]
+        # Ownership through the shared resolver, so a tagged root beside a subordinate
+        # checkpoint keeps ``repo:q4_k_m`` here as it does for chat and download.
+        spellings += [
+            alias
+            for alias, owners in alias_owners.items()
+            if resolve_variant_alias(owners, alias) == quant
+        ]
         _register(
             index,
             [f"{key}:{spelling}" for key in keys for spelling in spellings],

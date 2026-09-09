@@ -17,6 +17,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
+    resolve_variant_alias,
     accepts_bare_quant_alias,
     bare_quant_alias,
     variant_spellings_may_name_one_build,
@@ -255,14 +256,12 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
-    # Every qualified key but an H3 root stem, whose bare quant names both partitions, so it must
-    # not delete either.
-    aliased = {
-        key
-        for key in keys
-        if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == wanted
-    }
-    return aliased if len(aliased) == 1 else {wanted}
+    # The shared resolution, root precedence included: a tagged root beside
+    # ``distilled/model-Q4_K_M`` is what a legacy ``Q4_K_M`` names to the download and the
+    # loaders, so requiring global uniqueness here matched no file and 404'd the delete. An H3
+    # root stem is still excluded inside the resolver, and two root builds still refuse.
+    resolved = resolve_variant_alias(keys, wanted)
+    return {resolved.lower()} if resolved else {wanted}
 
 
 def _state_spellings_for_delete(

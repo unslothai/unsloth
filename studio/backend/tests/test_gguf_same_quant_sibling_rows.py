@@ -1047,3 +1047,108 @@ def test_a_partial_siblings_manifest_survives_a_qualified_delete(tmp_path):
     finally:
         deletion._repo_file_matches = real_matches
         deletion.download_manifest.read_manifest = real_read
+
+
+# --------------------------------------------------------------------------------------
+# The last sites deciding root precedence or ambiguity on their own
+# --------------------------------------------------------------------------------------
+
+
+def test_two_builds_under_a_quant_only_directory_collapse_like_root_files():
+    """``_keys_at_repo_root`` treats them as root-level, but the collapse passed every slashed
+    key through, so the remote resolver ranked them in Hub order and the local one by size."""
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    both = [gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf"), gguf_variant_key("Q4_K_M/model-Q4_K_M-fp16.gguf")]
+    assert len(collapse_same_quant_root_builds(both)) == 1
+    assert collapse_same_quant_root_builds(both) == collapse_same_quant_root_builds(both[::-1])
+    # A plain root row still wins the group; a real checkpoint directory still passes through.
+    assert collapse_same_quant_root_builds(["Q4_K_M", gguf_variant_key("Q4_K_M/model-Q4_K_M-mtp.gguf")]) == ["Q4_K_M"]
+    assert collapse_same_quant_root_builds(["distilled/m-Q6_K"]) == ["distilled/m-Q6_K"]
+
+
+def test_the_local_index_gives_the_bare_spelling_to_the_root_build():
+    """Two owners made the alias ``None`` here while the shared resolver hands it to the root
+    build, so a persisted ``repo:Q4_K_M`` downloaded remotely and then 404'd locally."""
+    import types
+
+    from core.inference.local_model_resolver import _legacy_variant_aliases
+
+    row = lambda q, f: types.SimpleNamespace(quant = q, filename = f)
+    aliases = dict(_legacy_variant_aliases([
+        row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+        row("distilled/model-Q4_K_M", "distilled/model-Q4_K_M.gguf"),
+    ]))
+    assert aliases["q4_k_m"] == "model-Q4_K_M-mtp"
+    two_roots = dict(_legacy_variant_aliases([
+        row("model-Q4_K_M-mtp", "model-Q4_K_M-mtp.gguf"),
+        row("model-Q4_K_M-fp16", "model-Q4_K_M-fp16.gguf"),
+    ]))
+    assert "q4_k_m" not in two_roots
+
+
+def test_deleting_by_the_bare_quant_reaches_the_root_build(monkeypatch):
+    """Requiring global uniqueness matched no file and 404'd the delete, while the download and
+    both loaders resolve the same spelling to the root build."""
+    from hub.services.models import deletion
+
+    class _Repo:
+        def __init__(self, names):
+            self._names = names
+
+    monkeypatch.setattr(
+        deletion, "_repo_file_matches",
+        lambda repo, pred: [(None, None, n) for n in repo._names if pred(n)],
+    )
+    with_subordinate = _Repo(["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"])
+    assert deletion._variant_keys_to_delete(with_subordinate, "Q4_K_M") == {"model-q4_k_m-mtp"}
+    two_roots = _Repo(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"])
+    assert deletion._variant_keys_to_delete(two_roots, "Q4_K_M") == {"q4_k_m"}
+
+
+def test_the_media_index_gives_the_bare_spelling_to_the_root_build(tmp_path, monkeypatch):
+    """Both rows were recorded as owners and ``owners == [quant]`` registered the alias for
+    neither, so a saved image request ``repo:Q4_K_M`` was rejected where chat accepts it."""
+    import types
+
+    from core.inference import media_model_index as mmi
+    from utils.models import model_config
+
+    files = ["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]
+    monkeypatch.setattr(mmi, "_gguf_load_path", lambda info, on_disk, load_dir: str(load_dir))
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda load_path, filename: True)
+    monkeypatch.setattr(model_config, "list_local_gguf_variants",
+                        lambda p: ([types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files], False))
+    index = {}
+    assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
+    alias = next(k for k in index if k.lower() == "repo:q4_k_m")
+    assert index[alias].gguf_filename == "model-Q4_K_M-mtp.gguf"
+
+
+def test_the_template_lookup_refuses_a_bare_spelling_that_names_two_builds(tmp_path):
+    """``_find_gguf_in_dir`` fell through to the first file whose label matched, so the template
+    endpoint read one arbitrary checkpoint's embedded template for a spelling the loaders refuse."""
+    from picker.service import _find_gguf_in_dir
+
+    for name in ("model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"):
+        (tmp_path / name).write_bytes(b"x")
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") is None
+    # A lone tagged build still answers to its legacy spelling, and a plain one wins outright.
+    (tmp_path / "model-Q4_K_M-fp16.gguf").unlink()
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == tmp_path / "model-Q4_K_M-mtp.gguf"
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == tmp_path / "model-Q4_K_M.gguf"
+
+
+def test_cached_path_resolution_sees_every_revision_at_once(tmp_path, monkeypatch):
+    """Two tagged builds of one quant cached in two revisions each looked unambiguous on their
+    own, so the first revision visited won a spelling every other resolver refuses."""
+    from hub.utils import gguf as gguf_module
+
+    first = _materialize(tmp_path / "rev1", [("model-Q4_K_M-mtp.gguf", 1)])
+    second = _materialize(tmp_path / "rev2", [("model-Q4_K_M-fp16.gguf", 2)])
+    monkeypatch.setattr(gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [first, second])
+    assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") is None
+    # One build across revisions is still found, under its legacy spelling.
+    monkeypatch.setattr(gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [first])
+    assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") == str(first / "model-Q4_K_M-mtp.gguf")
