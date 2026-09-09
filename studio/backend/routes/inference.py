@@ -11179,47 +11179,24 @@ def _launch_raises_projector_batch(
     an estimator that keeps pricing 512 understates the Load-Model panel and lets the
     coexistence guard admit a chat load over VRAM a running training job needs.
 
-    Mirrors the loader's own condition, which is three things OR'd: Studio's resolved
-    projector, which needs the config's vision flag; a --mmproj typed into Advanced
+    Mirrors the loader's own condition, which is two things OR'd: Studio's resolved
+    projector, which needs the config's vision flag; and a --mmproj typed into Advanced
     Arguments, which does not, because the extras are appended last and hand the child a
-    projector whatever the config says; and an inherited LLAMA_ARG_MMPROJ / _URL, which
-    arg.cpp applies before argv.
+    projector whatever the config says.
     """
-    from core.inference.llama_cpp import (
-        _extra_args_device,
-        _flag_name,
-        _metal_device_is_paravirtual,
-        _mmproj_env_is_audio_only,
-        extra_args_disable_mmproj,
-    )
+    from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
 
     # An explicitly named projector opens even under --no-mmproj, which only stops the
     # resolve and the auto-download; server-context.cpp gates on a non-empty mmproj.path.
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
     if override and Path(override).is_file():
         return True
-    # A remembered --mmproj-auto asks llama-server to find the adjacent projector on
-    # its own, so the launch opens one with nothing named anywhere.
-    if (
-        extras
-        and any(_flag_name(str(a)) == "--mmproj-auto" for a in extras)
-        and not extra_args_disable_mmproj(extras)
-    ):
-        return True
-    # An inherited one, under the loader's own two scrubs. The paravirtual guard takes
-    # both variables off the child, so there is no projector left to floor; the vision
-    # switch drops the URL and every image-capable path, keeping only an audio-only
-    # file, which is still a non-causal encoder and still floored. Cached hardware
-    # probe that answers False off darwin, so the panel pays nothing for asking.
-    if not _metal_device_is_paravirtual() and (
-        _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
-        if disable_vision
-        else (
-            (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
-            or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
-        )
-    ):
-        return True
+    # An inherited LLAMA_ARG_MMPROJ / _URL and a remembered --mmproj-auto are NOT
+    # priced at the floor, because load_model does not apply it to them: the recovery
+    # gate cannot see either source, so raising their buffers would remove the fallback
+    # from a launch that used to fit. Mirrored here so the panel keeps describing the
+    # child that actually starts. Both are tracked for a follow-up that teaches the
+    # recovery path the same sources.
     if extra_args_disable_mmproj(extras):
         return False
     if not getattr(config, "is_vision", False):

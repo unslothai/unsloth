@@ -19549,43 +19549,20 @@ class LlamaCppBackend:
                 # decide whether a --mmproj is emitted at all; here the file is already
                 # on the command line and the child will load it.
                 _extras_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-                # And an inherited one. arg.cpp applies LLAMA_ARG_MMPROJ / _URL before
-                # argv, so the env alone loads a projector the child then encodes
-                # non-causally. It reaches that child unless a later scrub takes it, and
-                # both scrub conditions are already decided here: the paravirtual guard
-                # drops both vars outright, and the vision switch drops the URL and every
-                # image-capable path, keeping only an audio-only file -- which is still a
-                # non-causal encoder, so it still needs the floor.
-                _env_mmproj_survives = not _paravirtual_cpu_forced and (
-                    bool(
-                        (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
-                        or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
-                    )
-                    if not disable_vision
-                    else _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
+                _launch_opens_projector = bool(effective_is_vision) or bool(
+                    _extras_mmproj and os.path.isfile(_extras_mmproj)
                 )
-                # And a remembered --mmproj-auto, which asks llama-server to rediscover
-                # the adjacent projector by itself. Nothing Studio resolved, nothing
-                # named, nothing inherited, and the child still ends up with a
-                # non-causal encoder.
-                #
-                # Except where the switch already countered it. The argv builder appends
-                # --no-mmproj-auto, last so it wins, on exactly the condition below, so
-                # that child rediscovers nothing and flooring it would hold four times
-                # the compute buffers for no encoder -- in the one mode whose whole
-                # purpose is giving that memory back.
-                _extras_mmproj_auto = bool(
-                    extra_args
-                    and any(_flag_name(str(a)) == "--mmproj-auto" for a in extra_args)
-                    and not extra_args_disable_mmproj(extra_args)
-                    and not (disable_vision and not launch_mmproj_path and not _env_mmproj_survives)
-                )
-                _launch_opens_projector = (
-                    bool(effective_is_vision)
-                    or bool(_extras_mmproj and os.path.isfile(_extras_mmproj))
-                    or _env_mmproj_survives
-                    or _extras_mmproj_auto
-                )
+                # An inherited LLAMA_ARG_MMPROJ / _URL and a remembered --mmproj-auto
+                # reach the child too, and they hit the same assert. They are NOT floored
+                # here, deliberately. The projector-recovery gate is a literal
+                # `"--mmproj" in cmd` (see launched_with_mmproj), so neither source can
+                # reach the CPU-projector or text-only retries: raising their compute
+                # buffers fourfold would make a launch that used to fit fail outright
+                # with no fallback, which is a worse trade than the crash it prevents.
+                # Both were already failing this way before this change and are no worse
+                # for it. Fixing them needs the recovery gate to learn the same sources
+                # and the text-only retry to scrub the env and emit --no-mmproj-auto, so
+                # it belongs in its own change rather than riding along here.
                 # Before every sizing consumer and after the resolution that decides
                 # whether there is a projector at all, so the fit, the slot search and
                 # every compute-buffer reserve are priced from the batch that launches.

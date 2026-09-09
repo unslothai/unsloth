@@ -3819,10 +3819,13 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
 
 
 @pytest.mark.parametrize("var", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
-def test_a_projector_inherited_from_the_environment_gets_the_floor(tmp_path, monkeypatch, var):
-    """arg.cpp applies LLAMA_ARG_MMPROJ / _URL before argv, so the environment alone
-    loads a projector that then encodes non-causally. Nothing is on Studio's command
-    line, so this launch emitted no batch flags and ran at llama.cpp's 512."""
+def test_an_inherited_projector_is_deliberately_not_floored(tmp_path, monkeypatch, var):
+    """arg.cpp applies these before argv, so the environment alone does load a
+    projector that encodes non-causally, and it does hit the assert. It is still not
+    floored, because the projector-recovery gate is a literal `"--mmproj" in cmd` and
+    cannot see this source: quadrupling its compute buffers would turn a launch that
+    used to fit into a startup failure with no fallback. It was already broken this way
+    and is no worse for the change. The follow-up has to teach recovery first."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3836,8 +3839,8 @@ def test_a_projector_inherited_from_the_environment_gets_the_floor(tmp_path, mon
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
-    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
-    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd
 
 
 def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path, monkeypatch):
@@ -3972,11 +3975,11 @@ def test_an_inherited_micro_batch_is_clamped_to_the_batch_before_the_floor(tmp_p
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
-def test_a_remembered_mmproj_auto_gets_the_floor(tmp_path):
-    """--mmproj-auto asks llama-server to rediscover the adjacent projector by itself,
-    the same mechanism the vision switch has to counter with --no-mmproj-auto. With
-    vision on and nothing resolved, named or inherited, that child still gets a
-    non-causal encoder, and it was getting llama.cpp's 512 with it."""
+def test_a_remembered_mmproj_auto_is_deliberately_not_floored(tmp_path):
+    """--mmproj-auto really does make llama-server rediscover the adjacent projector,
+    so this child gets a non-causal encoder at llama.cpp's 512 and can hit the assert.
+    Not floored, for the same reason as the inherited case: the recovery gate cannot
+    see this source either, so the raise would cost the fallback."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3986,8 +3989,8 @@ def test_a_remembered_mmproj_auto_gets_the_floor(tmp_path):
 
     cmd = _launch(backend, gguf, is_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
 
-    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
-    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd
 
 
 def test_mmproj_auto_turned_back_off_gets_no_floor(tmp_path):
@@ -4007,30 +4010,5 @@ def test_mmproj_auto_turned_back_off_gets_no_floor(tmp_path):
         extra_args = ["--mmproj-auto", "--no-mmproj-auto"],
     )["cmd"]
 
-    assert "--batch-size" not in cmd
-    assert "--ubatch-size" not in cmd
-
-
-def test_mmproj_auto_countered_by_the_vision_switch_gets_no_floor(tmp_path):
-    """The argv builder appends --no-mmproj-auto, last so it wins, when the switch is
-    off and nothing else kept a projector. That child rediscovers nothing, so flooring
-    it would hold 4x the compute buffers for no encoder, in the one mode whose whole
-    purpose is giving that memory back."""
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = True,
-        memory = [(0, 24_000, 24_000)],
-    )
-    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
-
-    cmd = _launch(
-        backend,
-        gguf,
-        is_vision = True,
-        disable_vision = True,
-        extra_args = ["--mmproj-auto"],
-    )["cmd"]
-
-    assert "--no-mmproj-auto" in cmd
     assert "--batch-size" not in cmd
     assert "--ubatch-size" not in cmd
