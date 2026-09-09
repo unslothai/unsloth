@@ -45,6 +45,7 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
+    notify_device_map_cannot_span_sparks,
     requested_device_map,
     _offline_aware_load,
     _resolve_checkpoint_tokenizer_name,
@@ -492,6 +493,7 @@ class FastLanguageModel(FastLlamaModel):
         # own device, else Accelerate raises device relocation errors on quantized weights.
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
         device_map = requested_device_map(device_map)
+        notify_device_map_cannot_span_sparks(device_map)
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -1383,6 +1385,7 @@ class FastModel(FastBaseModel):
         # own device, else Accelerate raises device relocation errors.
         is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
         device_map = requested_device_map(device_map)
+        notify_device_map_cannot_span_sparks(device_map)
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:

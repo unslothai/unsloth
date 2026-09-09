@@ -216,6 +216,95 @@ def requested_device_map(device_map):
     return device_map
 
 
+# Two cabled Sparks are two hosts with one GB10 each, so `device_count()` is 1 on both and a
+# multi-device map ("balanced", "auto") has nothing to split across: it silently collapses
+# onto cuda:0, giving the user no splitting and no message. Say so, and name what does work.
+# The gate costs a non-Spark host two string compares and no I/O.
+_MULTI_DEVICE_MAPS = frozenset(
+    {"balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced"}
+)
+_SPARK_NOTICE_SHOWN = [False]
+
+
+def _is_dgx_spark():
+    import platform
+
+    if platform.system() != "Linux" or platform.machine() not in ("aarch64", "arm64"):
+        return False
+    import re as _re
+
+    for path in ("/etc/dgx-release", "/sys/class/dmi/id/product_name"):
+        try:
+            with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
+                if _re.search(r"dgx[_ -]*spark", handle.read(4096), _re.IGNORECASE):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _spark_peer_cabled():
+    """A cabled ConnectX rail: IB port ACTIVE and its netdev carrying. sysfs only."""
+    import glob
+
+    for port in glob.glob("/sys/class/infiniband/*/ports/1"):
+        try:
+            with open(port + "/state", encoding = "utf-8") as handle:
+                if "ACTIVE" not in handle.read().upper():
+                    continue
+            with open(port + "/gid_attrs/ndevs/0", encoding = "utf-8") as handle:
+                netdev = handle.read().strip()
+            if not netdev:
+                continue
+            with open("/sys/class/net/%s/carrier" % netdev, encoding = "utf-8") as handle:
+                if handle.read().strip() == "1":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def notify_device_map_cannot_span_sparks(device_map):
+    """Explain, once, that a multi-device map does nothing on a single-GPU Spark."""
+    try:
+        _notify_device_map_cannot_span_sparks(device_map)
+    except Exception:
+        # A cosmetic notice on every platform's model-load path: nothing it discovers is
+        # worth failing a load that would otherwise succeed, so it fails silent.
+        pass
+
+
+def _notify_device_map_cannot_span_sparks(device_map):
+    if _SPARK_NOTICE_SHOWN[0]:
+        return
+    if not isinstance(device_map, str) or device_map not in _MULTI_DEVICE_MAPS:
+        return
+    if is_distributed():
+        return  # the distributed path already prints its own, accurate, message
+    try:
+        if torch.cuda.device_count() != 1:
+            return
+    except Exception:
+        return
+    if not _is_dgx_spark() or not _spark_peer_cabled():
+        return
+    _SPARK_NOTICE_SHOWN[0] = True
+    print(
+        'Unsloth: `device_map="%s"` cannot span two DGX Sparks. They are separate hosts\n'
+        "         with one GB10 each, so this process sees 1 GPU and the whole model stays\n"
+        "         on cuda:0. To use both Sparks:\n"
+        # NOT FSDP. spark_cluster says in as many words that Unsloth does not support it
+        # (#4858), and this notice is read by someone whose model did not fit, so pointing
+        # them at a sharding mode that does not exist sends them into a DDP launch that
+        # replicates the whole model and OOMs again. --layer-split is the mode that shards.
+        "           training  : `unsloth spark train --layer-split <model>` shards the\n"
+        "                       decoder across both; plain DDP replicates it and still\n"
+        "                       needs the whole model to fit one Spark\n"
+        "           inference : `unsloth spark serve --model <gguf>` (llama.cpp RPC splits\n"
+        "                       a model too large for one Spark across both)" % device_map
+    )
+
+
 def planner_quantization_kwargs(
     load_in_4bit = False,
     load_in_8bit = False,

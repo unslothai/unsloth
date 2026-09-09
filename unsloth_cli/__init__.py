@@ -73,6 +73,8 @@ else:
     from unsloth_cli.commands.inference import inference
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
+    from unsloth_cli.commands.doctor import doctor_app
+    from unsloth_cli.commands.spark import spark_app
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.studio import (
         run as studio_run,
@@ -213,6 +215,20 @@ if not _windows_studio_mutation_entry:
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh) "
         "against Unsloth.",
     )
+    # Registering this costs a non-Spark machine nothing: every subcommand no-ops with a
+    # message, and the module it defers to is stdlib-only.
+    # Top-level: a slow machine's owner reaches for `unsloth doctor` first. No-ops off a Spark.
+    app.add_typer(
+        doctor_app,
+        name = "doctor",
+        help = "Diagnose this machine's Unsloth setup.",
+    )
+    app.add_typer(
+        spark_app,
+        name = "spark",
+        help = "Pair a second NVIDIA DGX Spark over its 200GbE ConnectX link.",
+    )
+
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(
         start_app,
