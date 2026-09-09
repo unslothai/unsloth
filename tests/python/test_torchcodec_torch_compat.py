@@ -1254,13 +1254,33 @@ def test_cuda_13_asks_for_the_unsuffixed_npp():
 
 
 def test_the_npp_rename_is_per_package_not_a_rule_about_13():
-    """NCCL kept its suffix at 13 while the math libraries dropped theirs, so this cannot be
-    generalised into "13 means no suffix". The boundary is a named constant rather than a bare
-    13 so that the next package to move is a one-line change with somewhere to say why."""
+    """NCCL and cuDNN kept their suffix at 13 while the math libraries dropped theirs, so this
+    cannot be generalised into "13 means no suffix". Over-correcting is worse than the bug: for
+    those two the UNSUFFIXED name is itself a trap, resolving to 0.0.1.dev5 whose summary reads
+    "A fake package to warn the user they are not installing the correct package".
+
+    The boundary is a named constant rather than a bare 13 so that the next package to move is
+    a one-line change with somewhere to record why it moved."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert "_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12" in source
-    # The counterexample is recorded where the rule is, so nobody widens it from memory.
-    assert "nvidia-nccl-cu13" in source
+    # The counterexamples are recorded where the rule is, so nobody widens it from memory.
+    assert "nvidia-cudnn" in source and "nvidia-nccl" in source
+
+
+def test_the_unsuffixed_request_is_bounded_to_the_major():
+    """`nvidia-npp` carries the same junk at the bottom of its version list that the stub is
+    made of: 0.0.0a0 is a 1030 byte pure-Python wheel, 0.0.1.dev4/dev5 are sdists. Unbounded,
+    a resolver working under an exclude-newer cutoff or against a partial mirror can select
+    0.0.0a0 and install the empty payload this exists to avoid. So the request must always
+    carry a lower bound, never be a bare name."""
+    from studio.install_python_stack import _npp_requirement
+
+    for major in ("13", "14", "15"):
+        spec = _npp_requirement(major)
+        assert spec.startswith(f"nvidia-npp>={major}"), spec
+        assert spec != "nvidia-npp", "a bare name can resolve to the 0.0.0a0 placeholder"
+        # Upper bound too, so a cu14 host cannot take a 13 runtime or the reverse.
+        assert f",<{int(major) + 1}" in spec, spec
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():

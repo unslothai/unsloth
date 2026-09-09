@@ -524,16 +524,25 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
 #     single module is an empty __init__.py. That one installs cleanly, ships no NPP at all,
 #     and leaves torchcodec failing to dlopen libnppicc with nothing anywhere saying why.
 #
-# Per package, not a blanket rule for 13. `nvidia-nccl-cu13` is a real wheel and keeps its
-# suffix; only the names that actually moved may drop it.
+# Per package, not a blanket rule for 13, and the generalisation is actively dangerous. The
+# CUDA Toolkit math and runtime libraries dropped the suffix; the separately versioned NVIDIA
+# products kept it, and for those the UNSUFFIXED name is the trap. `nvidia-cudnn` and
+# `nvidia-nccl` both resolve to 0.0.1.dev5, summary "A fake package to warn the user they are
+# not installing the correct package", while `nvidia-cudnn-cu13` and `nvidia-nccl-cu13` are
+# the real wheels. So this may only ever be widened one name at a time, against the index.
 _NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12
 
 
 def _npp_requirement(cuda_major: str) -> str:
     """The NPP runtime for this CUDA major, spelled the way its publisher spells it.
 
-    Bounded to the major on the unsuffixed side, because that name keeps moving: it is 13.x
-    today, and a cu14 host must not silently take a 13 runtime or vice versa.
+    Bounded to the major on the unsuffixed side for two reasons. The name keeps moving, so a
+    cu14 host must not silently take a 13 runtime or the reverse. And `nvidia-npp` carries the
+    same junk at the bottom of its version list that the stub is made of: 0.0.0a0 is a 1030
+    byte pure-Python wheel, and 0.0.1.dev4/dev5 are sdists. An unbounded request under
+    --only-binary, behind an exclude-newer cutoff or a partial mirror, can select 0.0.0a0 and
+    land the empty-payload case this whole function exists to avoid. The bound is load
+    bearing, not decoration.
 
     Both callers derive the major from a `\\d+` match, so the digit check never fires today.
     It is here because the old spelling was an f-string that could not raise, and an installer
