@@ -3,16 +3,9 @@
 
 """Unit tests for the denoiser CUDA-graph layer (``diffusion_cuda_graph.py``).
 
-Hermetic by default: torch is a stub installed into ``sys.modules`` by the ``stub_torch``
-fixture, with a fake tensor that carries shape / stride / dtype / device and records its
-``copy_`` sources, and a fake ``torch.cuda`` whose ``graph`` context manager records the pool it
-was handed and whose ``CUDAGraph.replay`` counts. That covers the tree walk, the key, every
-refusal, the cap, poisoning and the lifecycle without a GPU and without importing real torch at
-module import time.
-
-One test at the bottom is the real thing: it imports torch inside the test body (so this file
-still imports on a torch-free host), skips without CUDA, captures a two-Linear bf16 module and
-asserts the replays are bit-identical to eager.
+Hermetic by default: the ``stub_torch`` fixture installs a fake torch into ``sys.modules``, so
+every refusal, the cap, poisoning and the lifecycle run without a GPU. The last test imports real
+torch inside the body, skips without CUDA, and asserts bit-identity.
 """
 
 from __future__ import annotations
@@ -28,7 +21,6 @@ import pytest
 from core.inference import diffusion_cuda_graph as cg
 
 
-# -- fakes --
 def _contiguous_stride(shape) -> tuple:
     stride: list = []
     acc = 1
@@ -107,12 +99,11 @@ class _FakeStream:
 
 
 def _build_stub_torch():
-    """A torch module with just enough surface for the capture path, plus a record of what the
-    layer did to it (which pool each capture was handed, how many times it synchronised)."""
+    """Just enough torch for the capture path, plus a record of what the layer did to it."""
     torch = types.ModuleType("torch")
     records = {
         "graphs": [],  # (graph, pool) per torch.cuda.graph(...)
-        "streams": [],  # every stream entered
+        "streams": [],
         "synchronize": 0,
         "empty_cache": 0,
         "inference_mode": [],
@@ -224,7 +215,6 @@ def _armed(module = None, **kwargs):
     return handle.enable()
 
 
-# -- tree walk --
 def test_flatten_rebuild_round_trip(stub_torch):
     a, b, c = _t(), _t((2, 2)), _t((3,))
     tree = ((a, [b, c]), {"guidance": None, "shapes": (1, 2), "attn": {"scale": 0.5}})
@@ -259,11 +249,11 @@ def test_flatten_refuses_unknown_object_and_keys_it_as_o(stub_torch):
 def test_graph_key_distinguishes_metadata(stub_torch):
     base = cg.graph_key(_t((2, 4)))
     assert base == cg.graph_key(_t((2, 4)))  # equal metadata -> equal key -> one graph
-    assert base != cg.graph_key(_t((2, 8)))  # shape
-    assert base != cg.graph_key(_t((2, 4), stride = (1, 2)))  # stride
-    assert base != cg.graph_key(_t((2, 4), dtype = "float16"))  # dtype
-    assert base != cg.graph_key(_t((2, 4), device_type = "cpu"))  # device type
-    assert base != cg.graph_key(_t((2, 4), device_index = 1))  # device ordinal
+    assert base != cg.graph_key(_t((2, 8)))
+    assert base != cg.graph_key(_t((2, 4), stride = (1, 2)))
+    assert base != cg.graph_key(_t((2, 4), dtype = "float16"))
+    assert base != cg.graph_key(_t((2, 4), device_type = "cpu"))
+    assert base != cg.graph_key(_t((2, 4), device_index = 1))
 
 
 def test_has_float_only_for_real_floats(stub_torch):
@@ -272,7 +262,6 @@ def test_has_float_only_for_real_floats(stub_torch):
     assert cg._has_float(cg.graph_key((1, [2, {"a": 3.0}]))) is True
 
 
-# -- the call path --
 def test_return_dict_true_or_absent_runs_eager(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -354,8 +343,7 @@ def test_host_tensor_poisons_with_capture_error(stub_torch):
     assert handle.capture_error["type"] == "RuntimeError"
     assert "not on cuda" in handle.capture_error["msg"]
     assert handle.capture_error["traceback"]
-    # The eager result came back, not an exception, and nothing was warmed up first.
-    assert module.calls == 1
+    assert module.calls == 1  # eager, and nothing was warmed up first
     assert out[0].value == ("out", 1)
     # Poisoned means eager forever, with no further capture attempts.
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -378,8 +366,7 @@ def test_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
     assert handle.poisoned is True
     assert handle.capture_error["type"] == "RuntimeError"
     assert handle.stats["fallbacks"] == 1
-    # Warm-ups ran, CUDAGraph() then raised, and the call still returned the eager result.
-    assert module.calls == cg.WARMUP_ITERS + 1
+    assert module.calls == cg.WARMUP_ITERS + 1  # warm-ups ran, then CUDAGraph() raised
     assert out[0].value == ("out", module.calls)
     assert len(logged) == 1
     assert "%s" in logged[0][0] and "capture failed" in logged[0][0]
@@ -464,7 +451,6 @@ def test_reset_drops_the_graphs(stub_torch):
     assert handle.stats["captures"] == 2  # a LoRA swap re-captures rather than serving old weights
 
 
-# -- install / uninstall / pool --
 def test_install_uninstall_restores_the_class_forward(stub_torch):
     module = _FakeDiT()
     pipe = types.SimpleNamespace(transformer = module)
@@ -522,8 +508,7 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
 
 
 def test_signature_is_the_original_forwards(stub_torch):
-    """MiniMax-H3's modular pipeline filters kwargs by ``inspect.signature(transformer.forward)``,
-    so a wrapper that reports ``(*args, **kwargs)`` silently drops half of H3's inputs."""
+    """H3 filters kwargs by ``inspect.signature``, so a ``(*args, **kwargs)`` wrapper drops them."""
     module = _FakeDiT()
     handle = _armed(module)
     expected = inspect.signature(_FakeDiT.forward.__get__(module))
@@ -538,7 +523,6 @@ def test_signature_is_the_original_forwards(stub_torch):
     assert handle.__name__ == "forward"
 
 
-# -- kill switch --
 @pytest.mark.parametrize(
     "token, disabled",
     [
@@ -562,7 +546,6 @@ def test_kill_switch_unset_is_enabled(monkeypatch):
     assert cg.cuda_graph_disabled() is False
 
 
-# -- eligibility --
 def _target(*, device = "cuda", backend = "cuda"):
     return types.SimpleNamespace(device = device, backend = backend, dtype = "bfloat16")
 
@@ -640,14 +623,12 @@ def test_graph_eligible_needs_torch_cuda(stub_torch, monkeypatch):
 
 
 def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypatch):
-    """The video backend passes family_default = False, so only a family that opts in graphs."""
     opted_in = types.SimpleNamespace(supports_cuda_graph = True)
     assert _eligible(monkeypatch, family = opted_in, family_default = False)[0] is True
     bare = types.SimpleNamespace()
     assert _eligible(monkeypatch, family = bare, family_default = False)[0] is False
 
 
-# -- reporting --
 def test_stats_and_describe_are_json_safe(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
@@ -687,9 +668,7 @@ def test_stats_reports_the_capture_error_without_the_traceback(stub_torch):
     assert cg.stats(())["graphs"] == 0
 
 
-# -- the real thing --
 def test_real_cuda_capture_replays_bit_identically():
-    """Capture a real bf16 module on a real GPU and check every replay against eager."""
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")

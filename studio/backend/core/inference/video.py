@@ -4035,8 +4035,7 @@ class VideoBackend:
                 # crashes)
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
-                # Video families measured device-bound gain nothing from a captured denoiser step; only a family that
-                # opts in via supports_cuda_graph (MiniMax-H3) is captured.
+                # Only a family that opts in via supports_cuda_graph is captured.
                 cuda_graph_default = False,
             )
             if view is pipe:
@@ -4793,7 +4792,7 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
-                # MiniMax-H3 opts in through supports_cuda_graph: one denoiser forward per step, no CFG, no step cache.
+                # Only a family that opts in via supports_cuda_graph is captured.
                 cuda_graph_default = False,
                 logger = logger,
             )
@@ -6237,7 +6236,7 @@ class VideoBackend:
             from . import diffusion_cuda_graph
 
             diffusion_gguf_compile.uninstall_all()
-            # Captured denoiser graphs and their pool go before clear_gpu_cache(), or the pool stays reserved.
+            # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )

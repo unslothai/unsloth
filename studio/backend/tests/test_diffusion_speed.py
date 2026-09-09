@@ -85,8 +85,7 @@ def _stub_torch(monkeypatch):
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
     )
-    # No CUDA on the test host, and the stub says so explicitly: the CUDA-graph arm reads torch.cuda.is_available()
-    # and must refuse deterministically here rather than depend on whatever the machine has.
+    # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
     torch.compile = lambda fn, **kwargs: fn
@@ -1009,23 +1008,16 @@ def test_video_snapshot_precedes_transformer_quant():
     )
 
 
-# ── CUDA-graph arm ────────────────────────────────────────────────────────────
-
-
 def _stub_cuda_graph(
     monkeypatch,
     *,
     eligible = True,
     reason = "ok",
 ):
-    """Replace ``core.inference.diffusion_cuda_graph`` with a recorder, so the tier gating and the
-    plumbing in apply_speed_optims are tested without capturing anything.
+    """Replace ``core.inference.diffusion_cuda_graph`` with a recorder that captures nothing.
 
-    Injected as a module rather than monkeypatched onto the real one: the arm imports it lazily by
-    name, so this works whether or not the capture layer is importable on this host (it needs
-    torch.cuda), and it never reaches a real ``torch.cuda.CUDAGraph``. It goes into BOTH sys.modules
-    and the package attribute, because ``from . import X`` reads the attribute when some earlier
-    import already bound it and falls back to sys.modules only when it has not."""
+    Into BOTH sys.modules and the package attribute: ``from . import X`` reads the attribute when
+    an earlier import already bound it, and falls back to sys.modules only when it has not."""
     import core.inference as inference_pkg
 
     calls = {"eligible": [], "installs": 0}
@@ -1049,8 +1041,7 @@ def _stub_cuda_graph(
 
 @pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
 def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
-    # Both compile tiers arm the capture, and the arm is NOT gated on the compile landing: an uncompiled quantised DiT
-    # is exactly the launch-bound case the graph helps most.
+    # The arm is NOT gated on the compile landing: an uncompiled quantised DiT is launch-bound too.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1058,13 +1049,12 @@ def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
     applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
     assert applied["cuda_graph"] is True
     assert calls["installs"] == 1
-    # The reason is stashed on the pipe so status / the resolved record can report it.
-    assert pipe._unsloth_cuda_graph_reason == "ok"
+    assert pipe._unsloth_cuda_graph_reason == "ok"  # status reports it
 
 
 @pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
 def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
-    # off is the bit-identical reference and eager is the no-compile tier: neither asks about graphs at all.
+    # off is the bit-identical reference and eager is the no-compile tier: neither asks at all.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1075,7 +1065,6 @@ def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
 
 
 def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
-    # A refusal (offload, a U-Net, a step cache, no CUDA) must record WHY, and must not capture anything.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch, eligible = False, reason = "cpu offload active")
@@ -1089,8 +1078,7 @@ def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
 
 
 def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
-    # The video backend passes cuda_graph_default=False so only a family that sets supports_cuda_graph opts in; the
-    # image backend leaves the default True. Either way it reaches graph_eligible as family_default.
+    # Video passes False so only a family setting supports_cuda_graph opts in; image leaves True.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1114,9 +1102,8 @@ def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
 
 
 def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monkeypatch):
-    # cache_active also means "auto cache that MAY toggle on later", which the compile must respect (fullgraph off)
-    # but the graph arm must not: the caller bypasses per chunk when the cache toggles, so only a cache engaged at
-    # load refuses graphs. cache_engaged is that narrower fact; when it is not given, cache_active is used as before.
+    # cache_active also covers an auto cache that MAY toggle on later, which the compile must
+    # respect but the graph arm must not, since the caller bypasses per chunk when it does.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1134,8 +1121,7 @@ def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monke
 
 
 def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
-    # Capture allocates a graph pool worth about one step of activations, so it can OOM on a big model: that must
-    # degrade to eager, never fail the load.
+    # A capture allocates a pool and can OOM: that must degrade to eager, never fail the load.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1150,5 +1136,4 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["cuda_graph"] is False and calls["installs"] == 1
-    # The rest of the tier still engaged.
-    assert applied["compiled"] is True
+    assert applied["compiled"] is True  # the rest of the tier still engaged

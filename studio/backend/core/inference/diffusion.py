@@ -857,8 +857,7 @@ class _LoadState:
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
-    # GraphedForward handles installed on the denoiser modules (CUDA-graph capture of the denoiser step); freed in
-    # _unload_locked, bypassed per chunk while a step cache is live, reset when a LoRA selection changes.
+    # GraphedForward handles installed on the denoiser modules; bypassed per chunk under a step cache.
     cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
     hf_token: Optional[str] = None
@@ -4447,8 +4446,7 @@ class DiffusionBackend:
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None or cache_may_toggle,
-                        # The graph arm bypasses per chunk when the auto cache toggles on, so only a cache engaged
-                        # at load refuses it (Flux schnell's 4-step default keeps its graphs).
+                        # Only a cache engaged at load refuses graphs; the rest bypass per chunk.
                         cache_engaged = cache_engaged is not None,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
@@ -5597,7 +5595,7 @@ class DiffusionBackend:
             pipe._unsloth_loras = ()
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
-        # load_lora_weights can re-materialise parameters, so the captured graphs are re-recorded on the next step.
+        # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
 
     def _adjust_baked_loras(
@@ -5631,8 +5629,7 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
                 pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
-                # Adapter scales are Python values read inside the LoRA forward, so a captured graph would keep
-                # replaying the old ones.
+                # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
         desired = self._resolve_lora_set(
@@ -6191,9 +6188,8 @@ class DiffusionBackend:
                             chunk_kwargs["negative_prompt"] = [
                                 chunk_kwargs["negative_prompt"]
                             ] * len(chunk)
-                    # A live step cache keys its residuals on the cond/uncond cache context, which a graph key cannot
-                    # see, so the captured denoiser step is bypassed for every chunk that runs cached. Re-asserted per
-                    # chunk because an AUTO cache decision is re-taken per generation above.
+                    # A step cache keys residuals on the cond/uncond context, which a graph key
+                    # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                     if state.cuda_graphs:
                         cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
                     # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
@@ -6380,8 +6376,7 @@ class DiffusionBackend:
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
         compile_cache.restore(state.compile_cache_ctx)
-        # Drop the captured graphs, their static buffers and the shared pool BEFORE clear_gpu_cache(), or the pool
-        # stays reserved for the life of the process.
+        # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
         if state.eager_patched:

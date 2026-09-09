@@ -270,10 +270,8 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     lives outside it and is not counted here, which is correct: it is not device memory this
     generation can allocate into.
 
-    A captured CUDA graph's private memory pool (``diffusion_cuda_graph``) is also reserved but not
-    allocated, so it is credited here although a replay needs it. That is one denoiser step's
-    activations, the same bytes the eager forward would take from the allocator, and it errs in the
-    quiet direction described above, so the arithmetic is left alone.
+    A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
+    credited here although a replay needs it; that is one denoiser step and errs the quiet way.
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":
