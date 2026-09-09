@@ -92,6 +92,9 @@ def _assert_guard_holds(
       the body.
     - Split on both `||` and `&&`: the operator carries the meaning, since an OR guard flipped
       to AND stops short-circuiting.
+    - Scan the raw source, or treat a paren inside a string as syntax. A commented-out copy
+      of the old guard would then be counted as live, masking a condition dropped from the
+      real one, and a condition holding a paren in a literal would truncate the body.
     - Accept the first guard that matches, or demand every guard mentioning a condition holds
       them all. This slice carries the guard twice, so accepting one lets the other rot; but
       nearby guards legitimately test a subset, so requiring all of them is wrong too. Counting
@@ -110,12 +113,22 @@ def _assert_guard_holds(
 
 def _parenthesised_bodies(source: str, keyword: str):
     """Each `keyword (...)` body in `source`, whitespace collapsed, parentheses balanced."""
+    source = _code_only(source)
     for match in re.finditer(rf"\b{re.escape(keyword)}\s*\(", source):
-        depth, i = 0, match.end() - 1
+        depth, i, quote = 0, match.end() - 1, ""
         while i < len(source):
-            if source[i] == "(":
+            char = source[i]
+            if quote:
+                if char == "\\":
+                    i += 2
+                    continue
+                if char == quote:
+                    quote = ""
+            elif char in "\"'`":
+                quote = char
+            elif char == "(":
                 depth += 1
-            elif source[i] == ")":
+            elif char == ")":
                 depth -= 1
                 if depth == 0:
                     break
@@ -127,13 +140,23 @@ def _parenthesised_bodies(source: str, keyword: str):
 
 def _split_top_level(body: str, operator: str) -> list[str]:
     """Split `body` on `operator`, ignoring occurrences nested inside parentheses."""
-    parts, depth, current, j = [], 0, "", 0
+    parts, depth, current, j, quote = [], 0, "", 0, ""
     while j < len(body):
-        if body[j] == "(":
+        char = body[j]
+        if quote:
+            if char == "\\":
+                current += body[j : j + 2]
+                j += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif char == "(":
             depth += 1
-        elif body[j] == ")":
+        elif char == ")":
             depth -= 1
-        if depth == 0 and body.startswith(operator, j):
+        if not quote and depth == 0 and body.startswith(operator, j):
             parts.append(current.strip())
             current, j = "", j + len(operator)
             continue
