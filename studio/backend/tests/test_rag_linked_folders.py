@@ -2327,10 +2327,11 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
 def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
     rag_home, monkeypatch
 ):
-    """The purge deletes the whole scope, so the retirement bound is moot unless it is skipped.
+    """A recreated project must be left exactly as the delete found it, not merely unpurged.
 
-    The reconciler already refuses to purge a scope whose owner exists; this is the same
-    guard on the delete route, which reached the purge unconditionally.
+    The reconciler already refuses to purge a scope whose owner exists; this is the same guard
+    on the delete route, which reached the purge unconditionally. Aborting has to put back
+    everything the pass did, which is why only the tombstone is written before this recheck.
     """
     from routes import chat_history
 
@@ -2349,7 +2350,15 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
     chat_history._delete_project_rag_sources("p1")
 
-    assert folder_sync.get_folder(folder["id"]) is not None
+    survivor = folder_sync.get_folder(folder["id"])
+    assert survivor is not None
+    # untouched, not just undeleted: a retired row keeps auto_sync off and makes create_folder
+    # refuse that path for good, so an abort that leaves one behind is not an abort
+    assert (survivor["status"], survivor["auto_sync"], survivor["last_error"]) == (
+        folder["status"],
+        folder["auto_sync"],
+        None,
+    )
     assert seen["checks"] == 2
     # and the scope is usable again immediately, not once the reconciler next runs
     assert folder_sync.scope_retired(scope) is False

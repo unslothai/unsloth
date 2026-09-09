@@ -587,8 +587,9 @@ def _retire_scope_rows(
     conn,
     scope: str,
     folder_ids: list[str] | None = None,
+    rows: bool = True,
 ) -> None:
-    folders_exist = _metadata_table_exists(conn, "linked_folders")
+    folders_exist = rows and _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
     conn.execute(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
@@ -619,12 +620,18 @@ def _retire_scope_rows(
             )
 
 
-def retire_scope(scope: str, folder_ids: list[str] | None = None) -> None:
-    """Stop all future work, even when the vector extension cannot load."""
+def retire_scope(scope: str, folder_ids: list[str] | None = None, rows: bool = True) -> None:
+    """Stop all future work, even when the vector extension cannot load.
+
+    `rows = False` writes only the tombstone, which is already enough to stop new links and
+    uploads, and is the only half a caller can take back: `unretire_scope` deletes it, while
+    the folder and job updates overwrite state nobody recorded. A caller whose ownership check
+    can still go stale takes the tombstone first and comes back for the rest.
+    """
     conn = _retirement_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _retire_scope_rows(conn, scope, folder_ids)
+        _retire_scope_rows(conn, scope, folder_ids, rows)
         conn.commit()
     except Exception:
         conn.rollback()
