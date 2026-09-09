@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from core.agent_workspace import hooks
-from core.agent_workspace.verification_context import AgentWorkspaceError
+from core.agent_workspace.hook_context import AgentWorkspaceError
 
 
 def _document(

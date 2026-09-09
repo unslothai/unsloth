@@ -1,4 +1,10 @@
 import pytest
+
+from importlib.util import find_spec
+
+if find_spec("core.agent_workspace.verification") is None:
+    pytest.skip("Requires the optional verification engine", allow_module_level = True)
+
 from core.agent_workspace import hook_runtime
 from core.agent_workspace.hook_context import AgentWorkspaceError
 from routes import project_hooks

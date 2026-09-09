@@ -10,6 +10,12 @@ from dataclasses import replace
 
 import pytest
 
+# These are integration contracts; pure discovery/payload tests run standalone.
+from importlib.util import find_spec
+
+if find_spec("core.agent_workspace.verification") is None:
+    pytest.skip("Requires the optional verification engine", allow_module_level = True)
+
 from core.agent_workspace import hook_runtime as runtime, hooks, verification, verification_state
 from core.agent_workspace.verification_context import AgentWorkspaceError, ProjectWorkspace
 from core.agent_workspace.verification_process import ProjectProcessResult

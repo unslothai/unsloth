@@ -76,10 +76,26 @@ def _event_payload(event, project_id, name, arguments, result):
         "tool_name": name,
         "tool_input": arguments,
     }
-    if result is not None:
-        payload["tool_response"] = result[:4096]
-        payload["tool_response_truncated"] = len(result) > 4096
     try:
+        if result is not None:
+            # Reserve the response envelope, then fit the actual JSON encoding.
+            # A Unicode character can consume up to twelve ASCII bytes here.
+            payload["tool_response"] = ""
+            payload["tool_response_truncated"] = True
+            empty = json.dumps(payload, ensure_ascii = True, separators = (",", ":"))
+            remaining = MAX_EVENT_BYTES - len(empty)
+            end = 0
+            for character in result[:4096]:
+                cost = len(json.dumps(character, ensure_ascii = True)) - 2
+                if cost > remaining:
+                    break
+                remaining -= cost
+                end += 1
+            payload["tool_response"] = result[:end]
+            # False is a byte longer than True in JSON; retain the conservative
+            # flag if it would otherwise cross the exact event limit.
+            if end == len(result) and remaining >= 1:
+                payload["tool_response_truncated"] = False
         encoded = json.dumps(payload, ensure_ascii = True, separators = (",", ":"))
     except (ValueError, TypeError, RecursionError) as exc:
         raise AgentWorkspaceError("Project hook input could not be represented safely.") from exc
@@ -276,7 +292,10 @@ def with_project_tool_hooks(execute):
                         result = result,
                         cancel_event = cancel_event,
                     )
-                except AgentWorkspaceError as exc:
+                except (
+                    AgentWorkspaceError,
+                    project_hook_trust_db.ProjectHookTrustStateError,
+                ) as exc:
                     after = f"Post-tool hook failed after the tool ran: {exc}"
                 reports = "\n".join(part for part in (after, before) if part)
                 if not reports:
