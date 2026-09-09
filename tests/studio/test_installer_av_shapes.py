@@ -363,7 +363,9 @@ def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
     )
     result = subprocess.run(
         ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
@@ -377,9 +379,9 @@ def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
     says nothing about whether the log was still readable during the measurement.
     """
     body = _WATCHER.read_text(encoding = "utf-8")
-    assert "-MaxEvents 1" in body, (
-        "the watcher no longer distinguishes an empty result from an unreadable log"
-    )
+    assert (
+        "-MaxEvents 1" in body
+    ), "the watcher no longer distinguishes an empty result from an unreadable log"
     assert "void rather than as clean" in body
 
 

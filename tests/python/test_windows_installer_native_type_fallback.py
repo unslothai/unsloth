@@ -1820,9 +1820,21 @@ def test_the_probe_body_carries_no_double_quote(script: str):
     [
         ("STUDIO_EMIT_OK FullLanguage", 0, "True", "ok", "the good case"),
         ("STUDIO_EMIT_OK FullLanguage", 23, "False", "blocked", "marker then a bad exit"),
-        ("STUDIO_EMIT_OK ConstrainedLanguage", 0, "False", "blocked", "a child restricted differently"),
+        (
+            "STUDIO_EMIT_OK ConstrainedLanguage",
+            0,
+            "False",
+            "blocked",
+            "a child restricted differently",
+        ),
         ("", 1, "False", "blocked", "a child that ran and refused"),
-        ("NOT_STUDIO_EMIT_OK_FAILURE", 0, "False", "indeterminate", "a line that merely contains the marker"),
+        (
+            "NOT_STUDIO_EMIT_OK_FAILURE",
+            0,
+            "False",
+            "indeterminate",
+            "a line that merely contains the marker",
+        ),
         ("", 0, "False", "indeterminate", "silence"),
     ],
 )
@@ -1843,7 +1855,7 @@ def test_the_probe_only_accepts_a_clean_exact_answer(
             [
                 '$ErrorActionPreference = "Stop"',
                 _one_function(source, "Test-StudioEmitInChildProcess"),
-                f'Write-Output "ANSWER:$(Test-StudioEmitInChildProcess -HostPath \'{fake}\')"',
+                f"Write-Output \"ANSWER:$(Test-StudioEmitInChildProcess -HostPath '{fake}')\"",
                 'Write-Output "OUTCOME:$script:StudioEmitProbeOutcome"',
             ]
         )
@@ -1887,7 +1899,7 @@ def test_only_a_probe_that_never_answered_is_retried(script: str, outcome: str, 
                 "    return $false",
                 "}",
                 _one_function(source, "Test-StudioCanDefineNativeTypes"),
-                '$answer = Test-StudioCanDefineNativeTypes',
+                "$answer = Test-StudioCanDefineNativeTypes",
                 'Write-Output "ANSWER:$answer"',
                 'Write-Output "CALLS:$script:ProbeCalls"',
             ]
@@ -1965,9 +1977,9 @@ def test_an_already_emitted_type_settles_it_without_asking_a_child():
                 "    @{ Name = 'CloseHandle'; Library = 'kernel32.dll'; Return = [bool]",
                 "       Args = @([IntPtr]); Ansi = $true }",
                 ")",
-                'Write-Output "PATHTYPE:$($null -ne (\'UnslothStudioFinalPathV3\' -as [type]))"',
+                "Write-Output \"PATHTYPE:$($null -ne ('UnslothStudioFinalPathV3' -as [type]))\"",
                 _one_function(source, "Initialize-StudioProcessImageNativeType"),
-                '$ok = Initialize-StudioProcessImageNativeType',
+                "$ok = Initialize-StudioProcessImageNativeType",
                 'Write-Output "PROCESS:$ok"',
                 'Write-Output "GATE:$script:GateCalls"',
             ]
@@ -2017,9 +2029,9 @@ def test_the_console_helper_keeps_a_type_it_already_has(script: str):
         )
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    assert _lines(result, "GATE:") == ["GATE:0"], (
-        "a published console type was discarded because a child probe said no"
-    )
+    assert _lines(result, "GATE:") == [
+        "GATE:0"
+    ], "a published console type was discarded because a child probe said no"
 
 
 @requires_pwsh
@@ -2040,7 +2052,7 @@ def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
             [
                 '$ErrorActionPreference = "Stop"',
                 _one_function(source, "Test-StudioEmitInChildProcess"),
-                f'Write-Output "ANSWER:$(Test-StudioEmitInChildProcess -HostPath \'{fake}\')"',
+                f"Write-Output \"ANSWER:$(Test-StudioEmitInChildProcess -HostPath '{fake}')\"",
             ]
         )
     )
