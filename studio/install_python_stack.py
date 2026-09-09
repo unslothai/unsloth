@@ -1132,6 +1132,13 @@ def _bnb_provenance_matches_request(provenance: str, url: "str | None") -> bool:
     return _spec_is_satisfied(_BNB_ROCM_PYPI_FALLBACK, value)
 
 
+def _refuse_bnb(reason: str) -> bool:
+    """Say why the resident ROCm bitsandbytes is fetched again, then answer False."""
+    if VERBOSE:
+        _note(f"bitsandbytes (ROCm): {reason} -- reinstalling")
+    return False
+
+
 def _bnb_rocm_install_is_current(url: "str | None") -> bool:
     """Whether this pass may leave bitsandbytes exactly as it found it.
 
@@ -1141,21 +1148,23 @@ def _bnb_rocm_install_is_current(url: "str | None") -> bool:
     """
     provenance = _installed_bnb_provenance()
     if provenance is None:
-        return False
+        return _refuse_bnb("no usable bitsandbytes on disk")
     if _BNB_ROCM_PASS_PROVENANCE is not None:
         # This pass already settled bitsandbytes. The second call skips only while what
         # is on disk is still what the first one left, because the steps BETWEEN the two
         # calls are exactly what can re-resolve it -- which is why the repair runs twice.
         return provenance == _BNB_ROCM_PASS_PROVENANCE
     if not _may_skip_on_evidence():
-        return False
+        return _refuse_bnb("no dependency pass evidence")
     # The last run has to have recorded landing this same build deliberately. Without
     # that, a generic wheel some other step pulled in reads identically on disk to the
     # PyPI fallback this path installs on purpose.
     recorded = (_PASS_EVIDENCE or {}).get("bnb_rocm")
     if not isinstance(recorded, str) or recorded != provenance:
-        return False
-    return _bnb_provenance_matches_request(provenance, url)
+        return _refuse_bnb(f"last run recorded {recorded!r}, on disk {provenance!r}")
+    if not _bnb_provenance_matches_request(provenance, url):
+        return _refuse_bnb(f"{provenance!r} is not the build this run installs ({url})")
+    return True
 
 
 def _record_bnb_rocm_provenance() -> None:
@@ -7939,6 +7948,18 @@ def _may_skip_on_evidence() -> bool:
     return _PASS_EVIDENCE is not None and not _full_deps_requested()
 
 
+def _refuse_evidence(reason: str) -> None:
+    """Say why last run's evidence is not usable, then answer "none".
+
+    Named under UNSLOTH_VERBOSE for the same reason as the closure audit's note: a
+    refusal here turns every update into a full dependency pass, which is correct, slow,
+    and otherwise indistinguishable from a pass that had no evidence to begin with.
+    """
+    if VERBOSE:
+        _note(f"dependency pass evidence not used: {reason}")
+    return None
+
+
 def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "dict | None":
     """Last run's evidence, or None when nothing may be skipped.
 
@@ -7946,46 +7967,57 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     up front precisely so a run killed mid-pass cannot leave a valid one behind.
     """
     if _full_deps_requested():
-        return None
+        return _refuse_evidence("UNSLOTH_STUDIO_FULL_DEPS requested")
     # Dev shapes: an editable overlay or a different package name means the tree on disk
     # is not the tree the manifest describes, and its digests describe neither.
     if local_repo or ci_source_overlay or package_name != "unsloth":
-        return None
+        return _refuse_evidence("development install shape")
     try:
         manifest = install_manifest.read_manifest()
     except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
-        return None
+        return _refuse_evidence("manifest unreadable")
     if not manifest or manifest.get("schema") != install_manifest.MANIFEST_SCHEMA:
-        return None
+        return _refuse_evidence("no manifest, or a schema this build does not read")
     inputs = manifest.get("pass_inputs")
     results = manifest.get("step_results")
     # Written by a build that predates this, so it can answer for nothing.
     if not isinstance(inputs, dict) or not isinstance(results, dict):
-        return None
+        return _refuse_evidence("manifest written by a build that recorded no pass inputs")
     if manifest.get("python") != platform.python_version():
-        return None
+        return _refuse_evidence(
+            f"python moved ({manifest.get('python')} -> {platform.python_version()})"
+        )
     if manifest.get("platform") != f"{sys.platform}-{platform.machine()}":
-        return None
+        return _refuse_evidence(
+            f"platform moved ({manifest.get('platform')} -> {sys.platform}-{platform.machine()})"
+        )
     # Absent is unknown, not False: an install that never recorded the mode cannot prove
     # it was built the way this run is building.
     if manifest.get("no_torch") is not bool(NO_TORCH):
-        return None
+        return _refuse_evidence(
+            f"no-torch mode moved ({manifest.get('no_torch')} -> {bool(NO_TORCH)})"
+        )
     if not NO_TORCH:
         # The flavour tag, not the index URL: a wheel family change re-resolves
         # everything torch-coupled, and only the tag is safe to keep on disk.
         try:
             expected = _recordable_torch_flavor_tag(_expected_torch_flavor_tag())
         except Exception:  # noqa: BLE001 - a probe that did not answer buys a full pass
-            return None
+            return _refuse_evidence("torch flavour probe did not answer")
         if (manifest.get("expected_torch_tag") or "") != expected:
-            return None
+            return _refuse_evidence(
+                f"torch flavour moved ({manifest.get('expected_torch_tag')!r} -> {expected!r})"
+            )
     # Last, because it is the only check that walks the filesystem: the install this
     # evidence describes has to still be there and still be complete.
     try:
-        if not install_manifest.verify_install(deep = True)["ok"]:
-            return None
-    except Exception:  # noqa: BLE001
-        return None
+        verified = install_manifest.verify_install(deep = True)
+    except Exception as exc:  # noqa: BLE001
+        return _refuse_evidence(f"deep verify raised {exc!r}")
+    if not verified.get("ok"):
+        return _refuse_evidence(
+            f"deep verify failed ({verified.get('reason')}; missing {verified.get('missing')})"
+        )
     return {
         "pass_inputs": inputs,
         "step_results": results,
@@ -8085,6 +8117,13 @@ def _local_plugin_payload_is_damaged(dist_name: str) -> bool:
         return True
 
 
+def _refuse_step(key: str, reason: str) -> bool:
+    """Say why one requirements step cannot be skipped, then answer False."""
+    if VERBOSE:
+        _note(f"{key}: {reason} -- running the step")
+    return False
+
+
 def _requirements_satisfied(
     req: Path,
     *,
@@ -8106,10 +8145,10 @@ def _requirements_satisfied(
         return False
     key = _pass_input_key(req)
     if key is None:
-        return False
+        return _refuse_step(str(req), "not under the requirements root")
     # (a) the previous run recorded that it did this exact work
     if (_PASS_EVIDENCE.get("step_results") or {}).get(key) not in ("ran", "skipped"):
-        return False
+        return _refuse_step(key, "last run did not record this step")
     # (b) the inputs are byte-identical. The constraints file is passed to every
     # constrained step, so a constraint that moved under an unchanged requirements file
     # is the one input digest equality on the file alone cannot see. Same for the macOS
@@ -8120,7 +8159,7 @@ def _requirements_satisfied(
     if IS_MAC_ARM:
         keys.append("single-env/overrides-darwin-arm64.txt")
     if not _inputs_unchanged(keys):
-        return False
+        return _refuse_step(key, "an input file changed")
     # (c) the output is still on disk. A step's own install may have landed and then
     # been removed by hand, a later resolve, or a partial uninstall.
     importlib.invalidate_caches()
@@ -8128,8 +8167,9 @@ def _requirements_satisfied(
     # Inside the try, because `effective` can be one of `temps`: the filtered copy is
     # unlinked in the finally, and an audit after that would read nothing.
     try:
-        if install_manifest.missing_requirements(effective):
-            return False
+        missing = install_manifest.missing_requirements(effective)
+        if missing:
+            return _refuse_step(key, f"not installed or outside the pin: {missing[:5]}")
         # ...and the output's own dependencies are still on disk. The file's lines stay
         # true after a transitive dependency is uninstalled -- `mammoth>=1.8.0` is
         # satisfied by a mammoth whose `cobble` is gone, and importing it raises -- and
@@ -8144,13 +8184,13 @@ def _requirements_satisfied(
                 if VERBOSE:
                     _note(f"{key}: {unmet} is not satisfied -- running the step")
                 return False
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception as exc:  # noqa: BLE001
+        return _refuse_step(key, f"audit raised {exc!r}")
     finally:
         for temp in temps:
             temp.unlink(missing_ok = True)
     if constrain and _violated_constraints():
-        return False
+        return _refuse_step(key, f"constraints violated: {_violated_constraints()[:5]}")
     return True
 
 
