@@ -5591,9 +5591,13 @@ def _extra_args_split_mode(
         found = str(raw).strip().lower()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _SPLIT_MODE_FLAGS:
+        # Through _flag_name, because llama.cpp folds an underscore in any long option
+        # to a dash before it looks the name up (common/arg.cpp:821, :1214). A raw
+        # membership test read a typed --split_mode=row as no split mode at all, and
+        # the row-split guard then planned the load as a layer split.
+        if _flag_name(arg) not in _SPLIT_MODE_FLAGS:
             continue
+        _, _, inline = arg.partition("=")
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
             found = value.strip().lower()

@@ -734,6 +734,21 @@ def test_tensor_parallel_split_still_declines(extra_args):
 
 @pytest.mark.parametrize(
     "extra_args",
+    [["--split_mode=row"], ["--split_mode", "row"]],
+)
+def test_the_underscore_spelling_of_split_mode_is_read(extra_args):
+    """llama.cpp folds an underscore in any long option to a dash before looking the
+    name up (common/arg.cpp:821, :1214), so --split_mode row IS -sm row to the child.
+    Matched raw, it read as no split mode at all and the row-split guard planned a
+    tensor-parallel launch as a layer split."""
+    from core.inference.llama_cpp import _extra_args_split_mode
+
+    assert _extra_args_split_mode(extra_args, {}) == "row"
+    assert _plan(_Stub(), extra_args = extra_args) is None
+
+
+@pytest.mark.parametrize(
+    "extra_args",
     [["--split-mode", "none"], ["-sm", "none"], ["-sm=none"]],
 )
 def test_split_mode_none_plans_against_one_card(extra_args):
