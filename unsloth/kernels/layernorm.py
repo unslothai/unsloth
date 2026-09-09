@@ -107,7 +107,7 @@ class Fast_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, b, eps):
         shape = X.shape
         dim = shape[-1]
-        X = X.view(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
@@ -140,7 +140,7 @@ class Fast_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
