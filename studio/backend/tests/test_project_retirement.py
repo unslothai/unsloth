@@ -49,7 +49,11 @@ def test_failed_retirement_preserves_project_and_its_workspace(monkeypatch, oper
         raise RuntimeError("Recover owned state first")
 
     monkeypatch.setattr(
-        lifecycle, "_feature", lambda _name: SimpleNamespace(begin_git_retirement = refuse)
+        lifecycle,
+        "_feature",
+        lambda name: None
+        if name == "task_service"
+        else SimpleNamespace(begin_git_retirement = refuse),
     )
     with _client() as client:
         response = (
@@ -93,7 +97,9 @@ def test_post_archive_holds_retirement_until_upsert_finishes(monkeypatch, existi
     monkeypatch.setattr(
         lifecycle,
         "_feature",
-        lambda _name: SimpleNamespace(begin_git_retirement = begin, finish_git_retirement = finish),
+        lambda name: None
+        if name == "task_service"
+        else SimpleNamespace(begin_git_retirement = begin, finish_git_retirement = finish),
     )
     monkeypatch.setattr(chat_history, "upsert_chat_project", upsert)
     with _client() as client:
@@ -147,6 +153,8 @@ def test_combined_features_use_only_git_retirement_owner(monkeypatch):
     git = SimpleNamespace(begin_git_retirement = begin, finish_git_retirement = finish)
 
     def feature(name):
+        if name == "task_service":
+            return None
         assert name == "git_retirement", "Verification is retired by Git, never a second owner"
         return git
 

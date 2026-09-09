@@ -10,6 +10,7 @@ from typing import Callable, Optional
 
 
 PROJECT_RETIREMENT_PROTOCOL = 1
+PROJECT_TASK_RETIREMENT_PROTOCOL = 1
 
 
 @dataclass
@@ -28,7 +29,7 @@ def _feature(name: str):
         return None
 
 
-def begin_project_retirement(project_id: str, *, deleting: bool = False) -> ProjectRetirement:
+def _begin_workspace_retirement(project_id: str, *, deleting: bool = False) -> ProjectRetirement:
     """Leave existing projects unchanged when no optional retirement feature exists.
 
     Git retirement also retires verification when present; choosing it first
@@ -48,6 +49,28 @@ def begin_project_retirement(project_id: str, *, deleting: bool = False) -> Proj
         verification.finish_project_deletion(project_id)
         raise
     return ProjectRetirement(project_id, partial(verification.finish_project_deletion, project_id))
+
+
+def begin_project_retirement(project_id: str, *, deleting: bool = False) -> ProjectRetirement:
+    # Cancel/drain tasks BEFORE acquiring Git's exclusive execution fence. A
+    # running task may need that same fence to finish its current operation.
+    tasks = _feature("task_service")
+    if tasks is None:
+        return _begin_workspace_retirement(project_id, deleting = deleting)
+    task_token = tasks.begin_task_retirement(project_id)
+    try:
+        workspace = _begin_workspace_retirement(project_id, deleting = deleting)
+    except BaseException:
+        tasks.finish_task_retirement(project_id, task_token)
+        raise
+
+    def release():
+        try:
+            finish_project_retirement(project_id, workspace)
+        finally:
+            tasks.finish_task_retirement(project_id, task_token)
+
+    return ProjectRetirement(project_id, release)
 
 
 def finish_project_retirement(project_id: str, token: ProjectRetirement) -> None:
