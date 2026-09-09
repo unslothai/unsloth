@@ -1243,6 +1243,7 @@ def quantize_transformer(
     *,
     mode: Optional[str],
     family: Optional[str] = None,
+    base_repo: Optional[str] = None,
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
     fast_accum: Optional[bool] = None,
     logger: Any = None,
@@ -1252,7 +1253,15 @@ def quantize_transformer(
     GGUF). Best-effort: never raises for an unsupported environment (failure leaves it dense).
 
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it."""
+    True/False force it.
+
+    ``base_repo`` is the UPSTREAM id of the weights being quantised, and it selects the per-layer
+    NVFP4 policy: on an image DiT whole-model nvfp4 is a quality loss the render shows, so what
+    the campaign gated is a named set of layers at 4 bits over an fp8 model. When a policy
+    resolves for ``(family, base_repo)`` this takes the same ``assign_precisions`` +
+    ``quantize_with_policy`` path the offline builder takes, so an explicit ``nvfp4`` on a base
+    with no hosted checkpoint renders the model the gate measured rather than a different one.
+    With no policy (an unnamed base, a video family, any other scheme) behaviour is unchanged."""
     scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
         return None
@@ -1261,6 +1270,33 @@ def quantize_transformer(
         return None
     try:
         from torchao.quantization import quantize_
+
+        policy = None
+        if scheme == TQ_NVFP4:
+            from .diffusion_nvfp4_policy import quantize_with_policy, resolve_policy
+            policy = resolve_policy(family, base_repo)
+        if policy is not None:
+            # Fails closed: ``quantize_with_policy`` raises ``PolicyMismatch`` when the layer set
+            # it names is not the one this model has, which lands in the except below and drops
+            # the load to GGUF rather than shipping precisions nothing measured.
+            quantize_with_policy(
+                transformer,
+                policy,
+                min_features = min_features,
+                fast_accum = fast_accum,
+                logger = logger,
+            )
+            apply_small_m_padding(transformer, scheme, family, logger = logger)
+            apply_zero_row_guard(transformer, scheme, family, logger = logger)
+            for attr, value in (
+                ("_unsloth_runtime_quant", scheme),
+                ("_unsloth_nvfp4_policy", policy.policy_id),
+            ):
+                try:
+                    setattr(transformer, attr, value)
+                except Exception:  # noqa: BLE001 - markers are best-effort
+                    pass
+            return scheme
 
         # int8 skips the M=1 projections; "lora_" keeps a baked adapter's side path high precision.
         # int8 skips the M=1 projections; fp8/mxfp8 assert a bf16 weight, so on a mixed-precision DiT they must skip

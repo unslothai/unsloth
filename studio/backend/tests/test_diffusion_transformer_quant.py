@@ -1903,3 +1903,165 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
         assert cfg.set_inductor_config is False, scheme
     if ic is not None:
         assert getattr(ic, "coordinate_descent_tuning", None) == before
+
+
+# ── per-layer NVFP4 policy on the runtime path ────────────────────────────────
+
+
+def _policy_stub(monkeypatch, *, policy, applied, resolved):
+    """Stand in for ``diffusion_nvfp4_policy`` so the runtime path can be tested without torchao.
+
+    ``resolved`` records every ``(family, base_repo)`` the selection asked about and ``applied``
+    every ``quantize_with_policy`` call."""
+    from core.inference import diffusion_nvfp4_policy as np
+
+    def _resolve(family, base_repo = None):
+        resolved.append((family, base_repo))
+        return policy
+
+    def _apply(
+        transformer,
+        policy_arg,
+        *,
+        min_features = None,
+        fast_accum = None,
+        logger = None,
+    ):
+        applied.append((transformer, policy_arg, min_features, fast_accum))
+        return {"blocks.0.attention.to_q": "nvfp4"}
+
+    monkeypatch.setattr(np, "resolve_policy", _resolve)
+    monkeypatch.setattr(np, "quantize_with_policy", _apply)
+
+
+def _nvfp4_runtime(monkeypatch, order):
+    """A stubbed Blackwell that allows nvfp4, recording the whole-model quantise and the fixups."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4})
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    monkeypatch.setattr(
+        tq,
+        "apply_small_m_padding",
+        lambda transformer, scheme, family = None, logger = None: (order.append("pad") or ()),
+    )
+    monkeypatch.setattr(
+        tq,
+        "apply_zero_row_guard",
+        lambda transformer, scheme, family = None, logger = None: (order.append("guard") or ()),
+    )
+
+
+def test_quantize_transformer_applies_the_policy_when_one_resolves(monkeypatch):
+    """An explicit nvfp4 on a gated base renders the model the gate measured: the named layers at
+    4 bits over an fp8 model, never the whole model at 4 bits."""
+    order: list = []
+    _nvfp4_runtime(monkeypatch, order)
+    policy = types.SimpleNamespace(policy_id = "zimg_f8mod_toq34_v1", version = 1)
+    applied: list = []
+    resolved: list = []
+    _policy_stub(monkeypatch, policy = policy, applied = applied, resolved = resolved)
+
+    transformer = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(transformer = transformer)
+    engaged = quantize_transformer(
+        pipe,
+        _target(),
+        mode = "nvfp4",
+        family = "z-image",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        min_features = 512,
+    )
+
+    assert engaged == TQ_NVFP4
+    assert resolved == [("z-image", "Tongyi-MAI/Z-Image-Turbo")]
+    assert len(applied) == 1 and applied[0][0] is transformer and applied[0][1] is policy
+    assert applied[0][2] == 512
+    # The whole-model pass never ran, and the two fixups still did, in order.
+    assert order == ["pad", "guard"]
+    assert transformer._unsloth_runtime_quant == TQ_NVFP4
+    assert transformer._unsloth_nvfp4_policy == "zimg_f8mod_toq34_v1"
+
+
+def test_quantize_transformer_quantises_the_whole_model_without_a_policy(monkeypatch):
+    """No policy for this base is the unchanged path, marker included."""
+    order: list = []
+    _nvfp4_runtime(monkeypatch, order)
+    applied: list = []
+    resolved: list = []
+    _policy_stub(monkeypatch, policy = None, applied = applied, resolved = resolved)
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "nvfp4", family = "z-image") == TQ_NVFP4
+    assert resolved == [("z-image", None)]
+    assert applied == []
+    assert order == ["quantize_", "pad", "guard"]
+    assert not hasattr(pipe.transformer, "_unsloth_nvfp4_policy")
+
+
+def test_quantize_transformer_only_asks_about_a_policy_for_nvfp4(monkeypatch):
+    """fp8 on a base that HAS an nvfp4 policy is still whole-model fp8: the policy is a claim
+    about one scheme, not about the base."""
+    order: list = []
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8})
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    resolved: list = []
+    _policy_stub(
+        monkeypatch,
+        policy = types.SimpleNamespace(policy_id = "zimg_f8mod_toq34_v1", version = 1),
+        applied = [],
+        resolved = resolved,
+    )
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    engaged = quantize_transformer(
+        pipe,
+        _target(),
+        mode = "fp8",
+        family = "z-image",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+    )
+    assert engaged == TQ_FP8
+    assert resolved == []
+    assert order == ["quantize_"]
+
+
+def test_a_policy_mismatch_fails_the_whole_quantise(monkeypatch):
+    """``quantize_with_policy`` raises when the layer set it names is not this model's. That is a
+    half-quantised transformer, so the load has to fall to GGUF rather than keep it."""
+    order: list = []
+    _nvfp4_runtime(monkeypatch, order)
+    from core.inference import diffusion_nvfp4_policy as np
+
+    monkeypatch.setattr(
+        np,
+        "resolve_policy",
+        lambda family, base_repo = None: types.SimpleNamespace(
+            policy_id = "zimg_f8mod_toq34_v1", version = 1
+        ),
+    )
+
+    def _boom(transformer, policy, **kwargs):
+        raise np.PolicyMismatch("rule 'attention.to_q' expects 34 layers, found 30")
+
+    monkeypatch.setattr(np, "quantize_with_policy", _boom)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert (
+        quantize_transformer(
+            pipe,
+            _target(),
+            mode = "nvfp4",
+            family = "z-image",
+            base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        )
+        is None
+    )
+    assert order == []
+    assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
+    assert not hasattr(pipe.transformer, "_unsloth_nvfp4_policy")

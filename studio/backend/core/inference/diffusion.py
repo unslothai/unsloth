@@ -176,6 +176,7 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_NVFP4,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
@@ -4796,6 +4797,16 @@ class DiffusionBackend:
                     logger = logger,
                 )
                 if transformer is not None:
+                    if scheme == TQ_NVFP4:
+                        # Autotune the FlashInfer NVFP4 GEMMs off the request path. Only the M = 1
+                        # modulation shapes are knowable here: the loader has no width or height,
+                        # and this family's other 4-bit layers see one row per token, so their M is
+                        # a function of the render's resolution. Those are tuned at the first
+                        # generate instead, in ``GraphedForward``'s warm-up, which sees the real
+                        # shapes and runs before any capture. A checkpoint on the torchao backend
+                        # has no converted layer and this is a walk that finds nothing.
+                        from .diffusion_nvfp4_linear import nvfp4_prewarm
+                        nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
                         pipeline_cls,
                         base,
@@ -4874,6 +4885,9 @@ class DiffusionBackend:
             target,
             mode = mode,
             family = getattr(fam, "name", None),
+            # The upstream id, not ``fetch_base``: the per-layer NVFP4 policy is a claim about one
+            # set of weights, and a mirror is those weights under another name.
+            base_repo = base,
             fast_accum = fast_accum,
             logger = logger,
         )
