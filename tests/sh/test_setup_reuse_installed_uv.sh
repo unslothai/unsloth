@@ -142,6 +142,23 @@ else
     bad "setup.ps1 reuses only a uv with an ok verdict"
 fi
 
+# The verdict is the only thing Get-SetupUvExecutableVerdict may return: a Write-Output
+# in it rode along in the return value, `-ne "ok"` on that array was true for every probe,
+# and the installed uv was skipped and re-downloaded on every update (observed on the
+# staging matrix, 19 MB a run). A uv that printed its version is "ok" whatever the exit
+# code says, since the timed wait can return before the code is cached.
+_verdict=$(awk '/^function Get-SetupUvExecutableVerdict \{/ { grab = 1 } grab { print } grab && /^\}/ { exit }' "$SETUP_PS1")
+if [ -n "$_verdict" ] && ! printf '%s\n' "$_verdict" | grep -q 'Write-Output'; then
+    ok "setup.ps1 uv verdict returns only the verdict"
+else
+    bad "setup.ps1 uv verdict returns only the verdict"
+fi
+if printf '%s\n' "$_verdict" | grep -q "match '\^uv \\\\d+"; then
+    ok "setup.ps1 uv verdict accepts a printed version"
+else
+    bad "setup.ps1 uv verdict accepts a printed version"
+fi
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

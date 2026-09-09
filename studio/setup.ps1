@@ -4629,6 +4629,12 @@ function Get-SetupUvExecutableVerdict {
     # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
     # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
     # no verdict, and the digest already proved the bytes are astral's pinned release.
+    #
+    # The verdict is the ONLY thing this returns. Its diagnostics go through substep: a
+    # message written to the pipeline here rode along in the return value, and a caller
+    # comparing that array with -ne "ok" read every probe as not ok. A uv that printed its version is "ok"
+    # whatever the exit code says, since the timed wait can return before the code is
+    # cached (below), and that empty code is what made the runners re-download uv.
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -4638,18 +4644,21 @@ function Get-SetupUvExecutableVerdict {
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
         if (-not $proc.WaitForExit(20000)) {
             try { $proc.Kill() } catch {}
-            Write-Output "uv did not answer --version within 20s; installing it unprobed."
+            substep "uv did not answer --version within 20s; installing it unprobed."
             return "unknown"
         }
         # The timed overload can return before the exit code is cached, which is how
         # arm64 and the Windows containers reported an EMPTY code and had a working uv
         # read as broken. The parameterless wait settles it and returns at once, since
-        # the process has already exited. No code at all is still no verdict.
+        # the process has already exited.
         try { $proc.WaitForExit() } catch {}
+        $answer = ""
+        try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
+        if ($answer -and ($answer.Trim() -match '^uv \d+\.\d+')) { return "ok" }
         $code = $null
         try { $code = $proc.ExitCode } catch {}
         if ($null -eq $code -or "$code" -eq "") {
-            Write-Output "uv --version gave no exit code; installing it unprobed."
+            substep "uv --version gave no exit code; installing it unprobed."
             return "unknown"
         }
         if ($code -eq 0) { return "ok" }
@@ -4658,10 +4667,10 @@ function Get-SetupUvExecutableVerdict {
             $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
         } catch {}
         if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
-        Write-Output "uv --version exited $code.$detail"
+        substep "uv --version exited $code.$detail"
         return "failed"
     } catch {
-        Write-Output "could not probe uv: $($_.Exception.Message); installing it unprobed."
+        substep "could not probe uv: $($_.Exception.Message); installing it unprobed."
         return "unknown"
     } finally {
         Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
