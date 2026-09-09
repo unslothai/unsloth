@@ -1069,6 +1069,87 @@ def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes
 
 
+def _qwen3next_fields(**extra):
+    """Qwen3-Next-80B-A3B's header, whose GGUF carries ssm.* and NO interval."""
+    base = {
+        "general.architecture": "qwen3next",
+        "qwen3next.block_count": 48,
+        "qwen3next.attention.head_count_kv": 2,
+        "qwen3next.attention.head_count": 16,
+        "qwen3next.embedding_length": 2048,
+        "qwen3next.attention.key_length": 256,
+        "qwen3next.attention.value_length": 256,
+        "qwen3next.context_length": 262144,
+        "qwen3next.expert_count": 512,
+        "qwen3next.expert_used_count": 10,
+        "qwen3next.ssm.inner_size": 4096,
+        "qwen3next.ssm.state_size": 128,
+        "qwen3next.ssm.conv_kernel": 4,
+        "qwen3next.ssm.group_count": 16,
+    }
+    base.update(extra)
+    return base
+
+
+def _hybrid_tensors(n = 48):
+    return [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(n)]
+
+
+def test_a_hybrid_without_the_interval_key_uses_the_architecture_default():
+    """llama.cpp defaults full_attention_interval per ARCHITECTURE and only then
+    treats every layer as attention (models/qwen3next.cpp:24). Reading the absent
+    key as 0 made Qwen3-Next look like 48 GQA layers with no state at all: 12288
+    MiB of cache at 131072 against the 3072 + 75 it really reserves, a 3.6x
+    over-count that shrinks context or spills weights that fit."""
+    layout = _layout_from_reader(_StubReader(_qwen3next_fields(), _hybrid_tensors()))
+    assert layout.complete
+    assert layout.n_attention_layers == 12
+    assert layout.kv_bytes(131072) == 3072 * MIB
+    assert layout.recurrent_bytes > 0
+
+    # The default is exactly what the key would have said.
+    spelled = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(**{"qwen3next.full_attention_interval": 4}), _hybrid_tensors()
+        )
+    )
+    assert spelled.n_attention_layers == layout.n_attention_layers
+    assert spelled.recurrent_bytes == layout.recurrent_bytes
+
+
+def test_an_explicit_recurrent_layer_mask_beats_the_interval():
+    """attention.recurrent_layers is what llama.cpp reads FIRST, and it wins over
+    both the key and the default (models/qwen3next.cpp:21)."""
+    mask = [0] * 48
+    for i in (7, 15, 23, 31):
+        mask[i] = 1
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(
+                **{
+                    "qwen3next.attention.recurrent_layers": mask,
+                    "qwen3next.full_attention_interval": 4,
+                }
+            ),
+            _hybrid_tensors(),
+        )
+    )
+    assert layout.n_attention_layers == 44
+
+
+def test_ssm_keys_with_no_recurrent_map_abstain_instead_of_reading_all_attention():
+    """An architecture this file has no default for, whose GGUF states ssm.* and
+    nothing else: the layout cannot say which rows are recurrent, and calling them
+    all attention is the 3.6x over-count above. Abstain, as the sharded case does."""
+    fields = {k.replace("qwen3next", "mysteryhybrid"): v for k, v in _qwen3next_fields().items()}
+    fields["general.architecture"] = "mysteryhybrid"
+    assert _layout_from_reader(_StubReader(fields, _hybrid_tensors())).complete is False
+
+    # A plain transformer has no ssm.* keys and is still read.
+    plain = {k: v for k, v in fields.items() if ".ssm." not in k}
+    assert _layout_from_reader(_StubReader(plain, _hybrid_tensors())).complete is True
+
+
 # ------------------------------------------------- host profile and cost integration
 
 

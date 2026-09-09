@@ -338,6 +338,18 @@ def _kv_heads_total(n_kv_head, n_attention: int) -> int:
         return 0
 
 
+# The default llama.cpp uses when a hybrid's GGUF omits full_attention_interval, per architecture. Read straight off
+# the `uint32_t full_attn_interval = N;` that precedes each optional get_key: src/models/qwen3next.cpp:24,
+# qwen35.cpp:23, qwen35moe.cpp:26, minimax-01.cpp:13. Every entry here has to come from that source; an architecture
+# not listed abstains below rather than guessing.
+_FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
+    "qwen3next": 4,
+    "qwen35": 4,
+    "qwen35moe": 4,
+    "minimax-01": 8,
+}
+
+
 def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
@@ -366,11 +378,25 @@ def _layout_from_readers(readers) -> ModelLayout:
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
 
-    # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. Absent (or 0) means
-    # every layer is attention.
-    fai = int(_field(reader, f"{arch}.full_attention_interval") or 0)
-    n_attention = -(-n_layers // fai) if fai > 0 else n_layers
-    n_recurrent = max(0, n_layers - n_attention)
+    # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. llama.cpp resolves
+    # that in three steps (models/qwen3next.cpp:21-27, and the identical block in qwen35, qwen35moe and minimax-01): an
+    # explicit per-layer mask first, then the interval key, then the ARCHITECTURE's built-in default for it. Absent from
+    # all three, every layer is attention -- true for a plain transformer, and wrong for a hybrid, which is why the
+    # ssm.* check below abstains instead.
+    recurrent_known = False
+    n_recurrent = 0
+    mask = _field(reader, f"{arch}.attention.recurrent_layers")
+    if isinstance(mask, (list, tuple)) and n_layers > 0 and len(mask) >= n_layers:
+        n_recurrent = sum(1 for flag in list(mask)[:n_layers] if flag)
+        recurrent_known = True
+    else:
+        fai = int(_field(reader, f"{arch}.full_attention_interval") or 0)
+        if fai <= 0:
+            fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
+        if fai > 0:
+            n_recurrent = max(0, n_layers - -(-n_layers // fai))
+            recurrent_known = True
+    n_attention = n_layers - n_recurrent
 
     n_kv_head = _field(reader, f"{arch}.attention.head_count_kv")
     n_head = _field(reader, f"{arch}.attention.head_count")
@@ -401,6 +427,7 @@ def _layout_from_readers(readers) -> ModelLayout:
                 n_attention = _attention_rows
                 n_recurrent = n_layers - n_attention
                 n_kv_head = [h for h in _padded if h > 0]
+                recurrent_known = True
 
     kv_heads_total = _kv_heads_total(n_kv_head, int(n_attention))
     if not kv_heads_total:
@@ -425,6 +452,14 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
         n_embd_s = d_state * d_inner
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
+
+    # ssm.* keys say the model HAS recurrent layers; nothing above could say which. Reporting it as all-attention is not
+    # a small error in the safe direction: Qwen3-Next reads as 48 GQA layers, 12288 MiB at 131072 against a real 3373.5,
+    # and the fixed state that IS there comes out as 0. Abstain, like the sharded case, so the planner falls through to
+    # --fit on rather than planning against a cache 3.6x its size.
+    if not recurrent_known and d_inner and d_state and d_conv:
+        logger.debug("offload layout: %s has ssm keys but no recurrent-layer map", arch)
+        return ModelLayout()
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)
     n_expert_used = int(_field(reader, f"{arch}.expert_used_count") or 0)
