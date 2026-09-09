@@ -6108,3 +6108,42 @@ class TestTheArmJobFailsWhenARequiredTestSkips:
         assert "if ($rc -ne 0) { exit $rc }" in step
         assert r"if ($summary -match '(\d+) skipped')" in step
         assert "exit 1" in step[step.index("skipped") :]
+
+
+class TestBothNvidiaSmiProbesSearchTheSameLocations:
+    """The presence probe searched PATH, System32 and NVSMI while the version probe searched
+    PATH and System32 only. On a host carrying nvidia-smi.exe under NVSMI alone,
+    Test-WoaNvidiaPresent said yes and Get-WoaDriverCudaVersion returned $null, so
+    Initialize-WoaNativeCudaTorch skipped the CUDA-major guard entirely and could pick a cu13x
+    wheel for a CUDA 12 driver. A guard that silently does not run is the failure this covers."""
+
+    LOCATIONS = (
+        r"$env:SystemRoot\System32\nvidia-smi.exe",
+        r"$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+    )
+
+    def test_the_shared_helper_lists_every_supported_location(self):
+        body = _function_source(INSTALL_SRC, "Get-WoaNvidiaSmiPath")
+        assert "Get-Command nvidia-smi" in body
+        for location in self.LOCATIONS:
+            assert location in body, location
+
+    @pytest.mark.parametrize("name", ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion"))
+    def test_neither_probe_keeps_its_own_candidate_list(self, name):
+        body = _function_source(INSTALL_SRC, name)
+        assert "$exe = Get-WoaNvidiaSmiPath" in body, f"{name} does not use the shared lookup"
+        # The point of the shared helper: a second list is what let the two disagree.
+        for location in self.LOCATIONS:
+            assert location not in body, f"{name} still hardcodes {location}"
+
+    def test_the_helper_is_defined_before_both_callers(self):
+        # PowerShell does not hoist, so definition order is load-bearing here.
+        helper = INSTALL_SRC.index("function Get-WoaNvidiaSmiPath")
+        for name in ("Test-WoaNvidiaPresent", "Get-WoaDriverCudaVersion"):
+            assert helper < INSTALL_SRC.index(f"function {name}"), name
+
+    def test_the_guard_this_protects_is_still_there(self):
+        # If the CUDA-major check ever goes away, this whole class is pointless; say so loudly.
+        body = _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch")
+        assert "$_woaDriver = Get-WoaDriverCudaVersion" in body
+        assert "if ($_woaDriver -and $_woaTorchVersion -match '\\+cu(\\d+)')" in body

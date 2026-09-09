@@ -1024,17 +1024,25 @@ function Install-UnslothStudio {
         }
     }
 
-    function Test-WoaNvidiaPresent {
+    # One list, because the presence probe and the driver-version probe must agree: a host only
+    # the first one finds reports a GPU with no driver version, and Initialize-WoaNativeCudaTorch
+    # then skips its CUDA-major guard entirely and can pick a cu13x wheel for a CUDA 12 driver.
+    # Same two locations the main GPU detection below searches.
+    function Get-WoaNvidiaSmiPath {
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
-        if (-not $exe) {
-            foreach ($candidate in @(
-                "$env:SystemRoot\System32\nvidia-smi.exe",
-                "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
-            )) {
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $exe = $candidate; break }
-            }
+        if ($exe) { return $exe }
+        foreach ($candidate in @(
+            "$env:SystemRoot\System32\nvidia-smi.exe",
+            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+        )) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
         }
+        return $null
+    }
+
+    function Test-WoaNvidiaPresent {
+        $exe = Get-WoaNvidiaSmiPath
         if (-not $exe) { return $false }
         # Bounded: this runs before the main GPU detection, and a wedged driver hangs an unbounded call.
         $listing = Invoke-NvidiaSmiBounded $exe @('-L')
@@ -1043,11 +1051,7 @@ function Install-UnslothStudio {
 
     # The driver's CUDA version as @(major, minor), or $null when nvidia-smi does not say.
     function Get-WoaDriverCudaVersion {
-        $exe = $null
-        try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
-        if (-not $exe -and (Test-Path -LiteralPath "$env:SystemRoot\System32\nvidia-smi.exe")) {
-            $exe = "$env:SystemRoot\System32\nvidia-smi.exe"
-        }
+        $exe = Get-WoaNvidiaSmiPath
         if (-not $exe) { return $null }
         $out = Invoke-NvidiaSmiBounded $exe
         # Newer drivers print "CUDA UMD Version"; accept both spellings.
