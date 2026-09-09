@@ -22,7 +22,15 @@ def _provider_digest(config: dict) -> str:
     return _digest(
         {
             key: config.get(key)
-            for key in ("id", "provider_type", "base_url", "is_enabled", "models", "updated_at")
+            for key in (
+                "id",
+                "provider_type",
+                "base_url",
+                "is_enabled",
+                "models",
+                "updated_at",
+                "max_output_tokens",
+            )
         }
     )
 
@@ -201,11 +209,20 @@ class TaskTransport:
         self.context.check()
         if self.remaining <= 0:
             raise TaskStateError("Task output budget exhausted.")
-        cap = min(1024, self.remaining)
-        self.remaining -= cap
-        self.reserved += cap
         runtime = validate_runtime(self.snapshot)
         local = self.snapshot["kind"] == "local"
+        cap = min(1024, self.remaining)
+        if not local and runtime.get("max_output_tokens") is not None:
+            provider_cap = runtime["max_output_tokens"]
+            if (
+                isinstance(provider_cap, bool)
+                or not isinstance(provider_cap, int)
+                or provider_cap <= 0
+            ):
+                raise TaskStateError("The provider output token limit is invalid.")
+            cap = min(cap, provider_cap)
+        self.remaining -= cap
+        self.reserved += cap
         backend = runtime if local else None
         if local:
             provider_type, base_url, api_key = "llama_cpp", runtime.base_url + "/v1", ""

@@ -38,13 +38,13 @@ TEXT = {"type": "string"}
 TOOLS = [
     _tool(
         "task_list_files",
-        "List tracked and untracked file names in your assigned checkout, up to 64 KiB. Does not read file contents.",
+        "List tracked and untracked file names in your assigned checkout. Results use the Studio tool result cap and may be truncated. Does not read file contents.",
         {},
         [],
     ),
     _tool(
         "task_read_file",
-        "Read a UTF-8 file in your assigned checkout. Paths are relative; Git metadata is forbidden.",
+        "Read a UTF-8 file in your assigned checkout. Results use the Studio tool result cap and may be truncated. Paths are relative; Git metadata is forbidden.",
         {"path": TEXT},
         ["path"],
     ),
@@ -115,7 +115,8 @@ class TaskTools:
                 raise TaskStateError("Task tools are closed.")
             self._active += 1
         try:
-            return self._execute(name, arguments)
+            from core.inference.studio_tool_loop import _truncate_for_model
+            return _truncate_for_model(self._execute(name, arguments))
         finally:
             with self._condition:
                 self._active -= 1

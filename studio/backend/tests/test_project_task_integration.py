@@ -420,3 +420,205 @@ def test_list_summaries_bound_results_without_leaking_runtime_fingerprints(repos
     assert len(summary["result"]["output"]) == 4096 and summary["resultTruncated"]
     assert "private-fingerprint" not in json.dumps(summary)
     assert len(integration.public_task(task)["result"]["output"]) == 10000
+
+
+@pytest.mark.parametrize("protocol", ["lifecycle", "worktree"])
+def test_incompatible_prerequisites_return_503_and_allow_shutdown(
+    integration, monkeypatch, protocol
+):
+    from core import project_retirement
+    from core.agent_workspace import worktrees
+
+    if protocol == "lifecycle":
+        monkeypatch.setattr(project_retirement, "PROJECT_TASK_RETIREMENT_PROTOCOL", 2)
+    else:
+        monkeypatch.setattr(worktrees, "TASK_WORKTREE_GUARD_PROTOCOL", 2)
+    monkeypatch.setattr(project_tasks, "get_chat_project", lambda _: {"id": "project"})
+    monkeypatch.setattr(
+        integration, "shutdown", lambda: pytest.fail("started incompatible service")
+    )
+    with _client() as client:
+        response = client.get("/api/agent/projects/project/tasks")
+        assert response.status_code == 503
+        assert "incompatible" in response.json()["detail"]
+        assert (
+            client.post(
+                "/api/agent/projects/project/tasks",
+                json = {"instruction": "Inspect", "kind": "local", "model": "model"},
+            ).status_code
+            == 503
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", ["ownership", "fence", "metadata", "cancel", "deadline", "insert", "commit"]
+)
+def test_failed_checkout_binding_rolls_back_only_the_new_worktree(
+    repository, integration, monkeypatch, failure
+):
+    import sqlite3
+    import time
+    from core.agent_workspace import task_workspaces, worktrees, process_fence
+
+    context = _owned_context(integration)
+    created = []
+    original_create = worktrees.create_worktree
+    original_path = worktrees.owned_worktree_path
+    original_fence = process_fence._acquire_project_execution_fence
+    original_connection = task_workspaces.get_connection
+
+    def fail():
+        raise RuntimeError("injected setup failure")
+
+    def create(*args, **kwargs):
+        record = original_create(*args, **kwargs)
+        created.append(record)
+        if failure == "cancel":
+            context.cancel_event.set()
+        elif failure == "deadline":
+            context.deadline = time.monotonic() - 1
+        return record
+
+    def path(*args):
+        root = original_path(*args)
+        if failure == "ownership":
+            fail()
+        if failure == "metadata":
+            return SimpleNamespace(stat = lambda **_: fail())
+        return root
+
+    def fence(key, *args):
+        if failure == "fence" and key.startswith("task-worktree:") and not failed_fence:
+            failed_fence.append(True)
+            fail()
+        return original_fence(key, *args)
+
+    class Connection:
+        def __init__(self):
+            self.conn = original_connection()
+            self.inserted = False
+
+        def execute(self, sql, *args):
+            if sql.startswith("INSERT INTO studio_task_workspaces"):
+                if failure == "insert":
+                    raise sqlite3.OperationalError("injected insert failure")
+                self.inserted = True
+            return self.conn.execute(sql, *args)
+
+        def commit(self):
+            if self.inserted and failure == "commit":
+                raise sqlite3.OperationalError("injected commit failure")
+            return self.conn.commit()
+
+        def close(self):
+            return self.conn.close()
+
+    failed_fence = []
+    monkeypatch.setattr(worktrees, "create_worktree", create)
+    monkeypatch.setattr(worktrees, "owned_worktree_path", path)
+    monkeypatch.setattr(process_fence, "_acquire_project_execution_fence", fence)
+    monkeypatch.setattr(task_workspaces, "get_connection", Connection)
+    with pytest.raises(Exception):
+        with task_workspaces.task_workspace(context):
+            pytest.fail("exposed an unbound checkout")
+    assert len(created) == 1
+    assert not Path(created[0]["path"]).exists()
+    assert worktrees.get_worktree(created[0]["id"])["status"] == "removed"
+    assert task_workspaces.binding("project", context.task["id"]) is None
+    assert (repository / "example.txt").read_text() == "before\n"
+
+
+def test_setup_rollback_preserves_checkout_with_unexpected_contents(
+    repository, integration, monkeypatch, caplog
+):
+    from core.agent_workspace import task_workspaces, worktrees
+
+    context = _owned_context(integration)
+    original_path = worktrees.owned_worktree_path
+    roots = []
+
+    def changed(*args):
+        root = original_path(*args)
+        roots.append(root)
+        (root / "unexpected.txt").write_text("preserve this")
+        raise RuntimeError("injected setup failure")
+
+    monkeypatch.setattr(worktrees, "owned_worktree_path", changed)
+    with pytest.raises(RuntimeError, match = "injected"):
+        with task_workspaces.task_workspace(context):
+            pytest.fail("exposed an unbound checkout")
+    assert (roots[0] / "unexpected.txt").read_text() == "preserve this"
+    assert "requires recovery" in caplog.text
+    assert len(worktrees.list_project_worktrees("project")) == 1
+
+
+def test_failure_after_binding_retains_reviewable_checkout(repository, integration):
+    from core.agent_workspace import task_workspaces
+
+    context = _owned_context(integration)
+    with pytest.raises(RuntimeError, match = "executor failure"):
+        with task_workspaces.task_workspace(context) as (workspace, worktree_id):
+            (workspace.root / "example.txt").write_text("preserved edit\n")
+            raise RuntimeError("executor failure")
+    assert task_workspaces.binding("project", context.task["id"])["worktree_id"] == worktree_id
+    assert (
+        "+preserved edit"
+        in task_workspaces.review_task_workspace("project", context.task["id"])["diff"]
+    )
+
+
+def test_full_list_page_fetches_all_bindings_in_one_connection(
+    repository, integration, monkeypatch
+):
+    from core.agent_workspace import task_workspaces
+
+    context = _owned_context(integration)
+    with task_workspaces.task_workspace(context) as (_, worktree_id):
+        pass
+    for i in range(99):
+        integration.state.create_task("project", f"Queued {i}", context.task["snapshot"])
+    calls = []
+    original_connection = task_workspaces.get_connection
+
+    def connect():
+        calls.append(True)
+        return original_connection()
+
+    monkeypatch.setattr(task_workspaces, "get_connection", connect)
+    response = _client().get("/api/agent/projects/project/tasks")
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()}
+    assert len(rows) == 100 and len(calls) == 1
+    assert rows[context.task["id"]]["worktreeId"] == worktree_id
+    assert sum(row["worktreeId"] is not None for row in rows.values()) == 1
+    assert "snapshot" not in response.text
+
+
+@pytest.mark.parametrize("name", ["task_read_file", "task_list_files", "task_wait"])
+def test_task_results_respect_shared_model_cap(repository, integration, monkeypatch, name):
+    from core.agent_workspace import task_executor, task_workspaces
+    from core.inference import tools as shared_tools
+
+    context = _owned_context(integration)
+    context.task["childLimit"] = 2
+    monkeypatch.setattr(shared_tools, "_MAX_OUTPUT_CHARS", 256)
+    context.wait_child = lambda *_, **__: {
+        "id": "child",
+        "status": "completed",
+        "result": {"output": "x" * 32000},
+        "error": None,
+    }
+    with task_workspaces.task_workspace(context) as (workspace, _):
+        (workspace.root / "large.txt").write_text("x" * 100000)
+        for i in range(50):
+            (workspace.root / f"file-{i:03d}.txt").touch()
+        arguments = (
+            {"path": "large.txt"}
+            if name == "task_read_file"
+            else {"task_id": "child"}
+            if name == "task_wait"
+            else {}
+        )
+        result = task_executor.TaskTools(context, workspace)(name, arguments)
+        assert len(result) < 320
+        assert "[truncated," in result

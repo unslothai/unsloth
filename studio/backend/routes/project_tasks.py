@@ -18,7 +18,13 @@ from storage.studio_db import get_chat_project
 def service():
     try:
         module = importlib.import_module("core.agent_workspace.task_service")
-        module.require_prerequisites()
+        try:
+            module.require_prerequisites()
+        except module.state.TaskStateError:
+            raise HTTPException(
+                503,
+                "Project task prerequisite versions are incompatible. Update task support first.",
+            ) from None
         return module
     except ImportError:
         raise HTTPException(
@@ -78,11 +84,7 @@ def invoke(call):
 @router.get("")
 def list_tasks(project_id: str, limit: int = Query(default = 100, ge = 1, le = 100)):
     project(project_id)
-    return invoke(
-        lambda m: [
-            m.public_task(t, summary = True) for t in m.state.list_tasks(project_id, limit = limit)
-        ]
-    )
+    return invoke(lambda m: m.public_tasks(project_id, limit = limit))
 
 
 @router.post("", status_code = 202)

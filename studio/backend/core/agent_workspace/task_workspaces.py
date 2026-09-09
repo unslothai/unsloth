@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import time
 import difflib
 import stat
@@ -90,18 +91,25 @@ def _schema(conn):
         device INTEGER NOT NULL, inode INTEGER NOT NULL)""")
 
 
-def binding(project_id: str, task_id: str) -> dict | None:
+def bindings(project_id: str, task_ids: list[str]) -> dict[str, dict]:
+    if not task_ids:
+        return {}
     conn = get_connection()
     try:
         _schema(conn)
-        row = conn.execute(
-            "SELECT * FROM studio_task_workspaces WHERE project_id=? AND task_id=?",
-            (project_id, task_id),
-        ).fetchone()
+        placeholders = ",".join("?" for _ in task_ids)
+        rows = conn.execute(
+            f"SELECT * FROM studio_task_workspaces WHERE project_id=? AND task_id IN ({placeholders})",
+            (project_id, *task_ids),
+        ).fetchall()
         conn.commit()
-        return dict(row) if row else None
+        return {row["task_id"]: dict(row) for row in rows}
     finally:
         conn.close()
+
+
+def binding(project_id: str, task_id: str) -> dict | None:
+    return bindings(project_id, [task_id]).get(task_id)
 
 
 def capture_workspace(project_id: str) -> dict:
@@ -164,7 +172,7 @@ def task_workspace(context):
     from .common import ProjectWorkspace
     from .git_context import project_workspace_access
     from .process_fence import _acquire_project_execution_fence, _release_project_execution_fence
-    from .worktrees import create_worktree, owned_worktree_path, project_operation
+    from .worktrees import create_worktree, cleanup_worktree, owned_worktree_path, project_operation
 
     task = context.check()
     project_id = task["projectId"]
@@ -179,24 +187,51 @@ def task_workspace(context):
                 if binding(project_id, task["id"]) is not None:
                     raise TaskStateError("This attempt already has a checkout. Retry explicitly.")
                 record = create_worktree(project_id, base_ref = task["snapshot"]["workspace"]["head"])
-                root = owned_worktree_path(project_id, record["id"])
-                descriptor = _acquire_project_execution_fence(
-                    "task-worktree:" + project_id + ":" + record["id"],
-                    context.cancel_event,
-                    context.deadline,
-                )
-                metadata = root.stat(follow_symlinks = False)
-                conn = get_connection()
+                bound = False
                 try:
-                    _schema(conn)
-                    context.check()
-                    conn.execute(
-                        "INSERT INTO studio_task_workspaces VALUES(?,?,?,?,?)",
-                        (task["id"], project_id, record["id"], metadata.st_dev, metadata.st_ino),
+                    root = owned_worktree_path(project_id, record["id"])
+                    descriptor = _acquire_project_execution_fence(
+                        "task-worktree:" + project_id + ":" + record["id"],
+                        context.cancel_event,
+                        context.deadline,
                     )
-                    conn.commit()
-                finally:
-                    conn.close()
+                    metadata = root.stat(follow_symlinks = False)
+                    conn = get_connection()
+                    try:
+                        _schema(conn)
+                        context.check()
+                        conn.execute(
+                            "INSERT INTO studio_task_workspaces VALUES(?,?,?,?,?)",
+                            (
+                                task["id"],
+                                project_id,
+                                record["id"],
+                                metadata.st_dev,
+                                metadata.st_ino,
+                            ),
+                        )
+                        conn.commit()
+                        bound = True
+                    finally:
+                        conn.close()
+                except BaseException:
+                    if not bound:
+                        # No task tool has received this checkout. Release our
+                        # own lease before cleanup reacquires the same fence,
+                        # while retaining project_operation across the rollback.
+                        if descriptor is not None:
+                            _release_project_execution_fence(descriptor)
+                            descriptor = None
+                        try:
+                            cleanup_worktree(project_id, record["id"])
+                        except Exception:
+                            # Cleanup proves ownership and refuses dirty/unsafe
+                            # paths. Preserve that durable Git record for recovery.
+                            logging.getLogger(__name__).warning(
+                                "Task checkout setup failed; worktree %s requires recovery.",
+                                record["id"],
+                            )
+                    raise
             workspace = ProjectWorkspace(
                 project_id, root, "managed", metadata.st_dev, metadata.st_ino
             )

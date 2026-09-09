@@ -16,6 +16,7 @@ from .task_runner import ProjectTaskRunner
 from .task_runtime import capture_runtime, validate_runtime
 from .task_workspaces import (
     binding,
+    bindings,
     capture_workspace,
     validate_workspace,
     acquire_task_project_fence,
@@ -82,15 +83,26 @@ def submit(
     )
 
 
-def public_task(task: dict, *, summary: bool = False) -> dict:
+def public_tasks(project_id: str, *, limit: int = 100) -> list[dict]:
+    tasks = state.list_tasks(project_id, limit = limit)
+    owned = bindings(project_id, [task["id"] for task in tasks])
+    return [public_task(task, summary = True, owned = owned) for task in tasks]
+
+
+def public_task(
+    task: dict,
+    *,
+    summary: bool = False,
+    owned: dict | None = None,
+) -> dict:
     # Return model labels, never routing/credential fingerprints, root identity,
     # full project instructions, owner tokens, or raw workspace paths.
     snapshot = task["snapshot"]
     result = {key: value for key, value in task.items() if key != "snapshot"}
     runtime = snapshot.get("runtime", {})
     result["runtime"] = {key: runtime.get(key) for key in ("kind", "model", "providerId")}
-    owned = binding(task["projectId"], task["id"])
-    result["worktreeId"] = owned["worktree_id"] if owned else None
+    record = binding(task["projectId"], task["id"]) if owned is None else owned.get(task["id"])
+    result["worktreeId"] = record["worktree_id"] if record else None
     if summary and result.get("result"):
         output = str(result["result"].get("output") or "")
         result["result"] = {"output": output[:4096]}

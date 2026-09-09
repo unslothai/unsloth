@@ -11,7 +11,8 @@ source split. Install these prerequisite layers before exposing task execution:
 | #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
 | #10594 Git and worktrees | `0e174c1ac4b808b14c37389a987f7c3a23bdfd1d` |
 
-The task endpoints return 503 when prerequisites are missing. The integration
+The task endpoints return 503 when prerequisites are missing or their protocol
+versions are incompatible. Shutdown also tolerates an unavailable task service. The integration
 requires the task retirement and worktree guard protocol markers, so an older
 Git/lifecycle implementation cannot silently admit work without its fences.
 CI checks the source split first, then merges these exact revisions and tests the
@@ -31,13 +32,17 @@ The panel shows the model, role, attempt, parent and retry relationships, budget
 status, output and owned worktree ID. Cancel signals live workers and the durable
 record. Retry creates an explicit successor with a fresh worktree; it is never
 automatic. The backend remains authoritative when a stale UI offers a retry.
-Polling returns bounded summaries for the newest 100 attempts; expanding a result
+Polling returns bounded summaries for the newest 100 attempts, fetching their
+worktree bindings in one database query; expanding a result
 fetches its full output separately. Network failures never automatically resend
 task mutations, including through Tauri's network retry wrapper.
 
 **Review worktree changes** shows tracked differences from the starting commit
 and bounded new-file previews. Symlinks, unreadable, binary or oversized new files
-are labelled unavailable. Incomplete previews say so. No commit, merge, cleanup,
+are labelled unavailable. Incomplete previews say so. Bound task worktrees are
+preserved after completion, cancellation or failure. A checkout whose setup fails
+before binding is rolled back only when Git can prove ownership and that it is
+clean; otherwise its Git record remains available for recovery. No commit, merge,
 publication or command execution occurs automatically. The existing Git panel
 can show the owned checkout location for further inspection and explicit Git work.
 
@@ -53,10 +58,14 @@ can show the owned checkout location for further inspection and explicit Git wor
   API responses. Model-process replacement and provider/key changes reject work.
 - The existing Studio tool loop receives a private callback and an explicit
   task-only catalogue. Unknown tools never fall back to the general executor.
-  Task tools cannot access shell/Python, network tools, Git metadata, arbitrary
-  roots or interactive-chat permission overrides.
-- Each model turn reserves at most 1,024 output tokens before dispatch, with no
-  refunds for absent usage metadata. The sum of requested caps is bounded by the
+  Every task tool result is capped before model replay using the shared
+  `UNSLOTH_TOOL_RESULT_MAX_CHARS` setting, including file reads, listings and child
+  results. Truncated reads cannot supply the exact whole-file contents required
+  for replacement. Task tools cannot access shell/Python, network tools, Git
+  metadata, arbitrary roots or interactive-chat permission overrides.
+- Each model turn reserves at most 1,024 output tokens before dispatch, also
+  respecting the saved provider output-token cap, with no refunds for absent
+  usage metadata. Changing that cap invalidates queued runtime snapshots. The sum of requested caps is bounded by the
   attempt allocation. The shared local model admission queue accounts for prompt,
   tool schema and output tokens using the loaded aggregate KV budget. Its slot
   and token lease end before any tool invocation or child wait.
@@ -83,7 +92,10 @@ Two parent workers delegate, wait, and finish while children edit distinct
 checkouts. Separate tests cover API authentication/scope, forbidden renderer
 authority, runtime/key drift, request-cap accounting, stalled-stream cancellation,
 role restrictions, path/symlink escape, native retirement/worktree fences, and
-bounded review/output projection. Adjacent engine, loop, lifecycle, worktree and
+bounded review/output projection. Regression cases also inject setup failures
+before worktree binding, retain dirty or bound checkouts, exercise incompatible
+prerequisite shutdown, check one binding query per full polling page, and enforce
+provider and model-visible result caps. Adjacent engine, loop, lifecycle, worktree and
 secure-edit suites are included in native CI, plus frontend API, type and build
 checks. This does not claim live-model quality, performance or GPU qualification.
 

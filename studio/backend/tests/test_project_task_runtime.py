@@ -79,9 +79,21 @@ def _context(snapshot, budget = 2300):
     )
 
 
-def test_turn_caps_sum_to_attempt_budget_even_when_provider_omits_usage(provider, monkeypatch):
+@pytest.mark.parametrize(
+    "saved_cap, expected_caps",
+    [
+        (None, [1024, 1024, 252]),
+        (64, [64] * 35 + [60]),
+        (512, [512] * 4 + [252]),
+        (2048, [1024, 1024, 252]),
+    ],
+)
+def test_turn_caps_sum_to_attempt_budget_even_when_provider_omits_usage(
+    provider, monkeypatch, saved_cap, expected_caps
+):
     from core.inference import external_provider
 
+    provider[0]["max_output_tokens"] = saved_cap
     caps = []
 
     class Client:
@@ -100,7 +112,7 @@ def test_turn_caps_sum_to_attempt_budget_even_when_provider_omits_usage(provider
     transport = runtime.TaskTransport(context)
 
     async def run():
-        for _ in range(3):
+        for _ in expected_caps:
             async for _line in transport.stream(
                 messages = [], tools = [], tool_choice = None, cancel_event = context.cancel_event
             ):
@@ -112,7 +124,7 @@ def test_turn_caps_sum_to_attempt_budget_even_when_provider_omits_usage(provider
                 pass
 
     asyncio.run(run())
-    assert caps == [1024, 1024, 252]
+    assert caps == expected_caps
     assert transport.reserved == 2300 and transport.remaining == 0
 
 
@@ -223,3 +235,36 @@ def test_local_runtime_must_clear_idle_slots_before_delegation(monkeypatch):
     )
     with pytest.raises(runtime.TaskStateError, match = "idle model slots"):
         runtime.capture_runtime("local", "model")
+
+
+def test_queued_task_rejects_changed_provider_cap_even_with_same_timestamp(provider):
+    config, _ = provider
+    config["max_output_tokens"] = 512
+    snapshot = runtime.capture_runtime("provider", "model", "provider")
+    config["max_output_tokens"] = 64
+    with pytest.raises(runtime.TaskStateError, match = "configuration changed"):
+        runtime.validate_runtime(snapshot)
+
+
+@pytest.mark.parametrize("cap", [0, -1, True, "64"])
+def test_invalid_provider_cap_cannot_start_a_model_request(provider, monkeypatch, cap):
+    from core.inference import external_provider
+
+    provider[0]["max_output_tokens"] = cap
+    monkeypatch.setattr(
+        external_provider,
+        "ExternalProviderClient",
+        lambda **_: pytest.fail("started model request"),
+    )
+    context = _context(runtime.capture_runtime("provider", "model", "provider"))
+    transport = runtime.TaskTransport(context)
+
+    async def run():
+        with pytest.raises(runtime.TaskStateError, match = "token limit is invalid"):
+            async for _ in transport.stream(
+                messages = [], tools = [], tool_choice = None, cancel_event = context.cancel_event
+            ):
+                pass
+
+    asyncio.run(run())
+    assert transport.reserved == 0
