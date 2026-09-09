@@ -354,6 +354,29 @@ def test_a_truncated_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> No
     assert "0 bytes, expected 32" in reason
 
 
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_the_file_check_kill_switch_reaches_the_setup_predicate(
+    sidecar: pathlib.Path, monkeypatch, value
+) -> None:
+    """The runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK so a false positive can be
+    turned off without a release; a setup-side scan that ignored it would be the one
+    path left that still wipes the sidecar. Package and version checks still apply."""
+    (sidecar / "transformers" / "__init__.py").write_bytes(b"")
+    monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    current, reason = im.sidecar_is_current(sidecar, ("transformers==5.5.0",) + PINS[1:])
+    assert current is False and "5.5.0" in reason
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "maybe"])
+def test_a_non_true_kill_switch_value_changes_nothing(
+    sidecar: pathlib.Path, monkeypatch, value
+) -> None:
+    (sidecar / "transformers" / "__init__.py").write_bytes(b"")
+    monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
+    assert im.sidecar_is_current(sidecar, PINS)[0] is False
+
+
 def test_a_deleted_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> None:
     (sidecar / "transformers" / "__init__.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, PINS)
