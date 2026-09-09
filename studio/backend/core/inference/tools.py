@@ -7540,18 +7540,9 @@ def _recorded_project_for_session(session_id: str) -> "tuple[str, str, bool] | N
     if len(matches) != 1:
         raise ProjectWorkspaceSessionUnavailableError("Project workspace session is ambiguous")
     project_id, record = matches[0]
-    path = str(record["path"])
-    if not os.path.isdir(path):
+    path = _orphan_record_workdir(record)
+    if path is None:
         return None
-    # A directory being present at the recorded pathname is not the same directory.
-    # Records written before this carried no identity, and those are all managed
-    # workspaces under Studio's own root, so they keep the old behaviour rather than
-    # going unreachable on upgrade. Every external workspace records one.
-    recorded_identity = (record.get("deviceId"), record.get("fileId"))
-    if all(recorded_identity):
-        from storage.studio_db import same_directory_identity
-        if not same_directory_identity(recorded_identity, _recorded_directory_identity(path)):
-            return None
     live = get_chat_project(project_id)
     if live:
         raise ProjectWorkspaceSessionUnavailableError("Project workspace changed")
@@ -7602,6 +7593,29 @@ def record_orphaned_project(
         },
         storage_id = storage_id,
     )
+
+
+def _orphan_record_workdir(record: dict) -> "str | None":
+    """The record's path, while the directory there is still the one recorded.
+
+    A directory being present at the recorded pathname is not the same directory: a
+    folder replaced at that name would otherwise be served to the old session, which
+    is how a fork's file cards start listing a directory nobody chose. Every reader
+    of a record goes through here, so none can skip the check.
+
+    Records written before this carried no identity, and those are all managed
+    workspaces under Studio's own root, so they keep the old behaviour rather than
+    going unreachable on upgrade. Every external workspace records one.
+    """
+    path = str(record["path"])
+    if not os.path.isdir(path):
+        return None
+    recorded_identity = (record.get("deviceId"), record.get("fileId"))
+    if all(recorded_identity):
+        from storage.studio_db import same_directory_identity
+        if not same_directory_identity(recorded_identity, _recorded_directory_identity(path)):
+            return None
+    return path
 
 
 def _recorded_directory_identity(path: str) -> "tuple[str | None, str | None]":
@@ -7993,10 +8007,9 @@ def _recorded_project_workdir(project_id: str, session_id: "str | None" = None) 
             return None
     elif session_id != f"{_PROJECT_SESSION_PREFIX}{project_id}":
         return None
-    path = record["path"]
-    # Only a sandbox still there: a record kept alive by the rest of its
-    # workspace names a directory nothing can be served from.
-    return path if os.path.isdir(path) else None
+    # Only a sandbox still there, and still the one recorded: a record kept alive by
+    # the rest of its workspace names a directory nothing can be served from.
+    return _orphan_record_workdir(record)
 
 
 def _orphaned_project_workdir(project_id: str, session_id: "str | None" = None) -> "str | None":

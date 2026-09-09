@@ -4450,6 +4450,49 @@ def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monk
     assert tools._recorded_project_for_session(session_id) is None
 
 
+def test_a_replaced_workspace_is_not_served_through_the_kept_folder_fallback(tmp_path, monkeypatch):
+    """The identity check has to hold on every route into a record, not one of them.
+
+    Resolving a project session tries the record twice: once keyed to the session, and
+    again through the kept-folder fallback once the project itself is gone. Only the
+    first checked what was at the pathname, so a folder replaced there was refused and
+    then handed straight back, and the tool call ran in a directory nobody chose.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id, session_id = "proj16180", "project-workspace-c2lk-16180"
+    workspace = tmp_path / "chosen folder"
+    workspace.mkdir(parents = True)
+    (workspace / "mine.csv").write_text("a,b\n", encoding = "utf-8")
+
+    assert tools.record_orphaned_project(project_id, str(workspace), session_id = session_id)
+    monkeypatch.setattr(
+        studio_db,
+        "project_id_for_workspace_session",
+        lambda s: project_id if s == session_id else None,
+    )
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda p: None)
+    monkeypatch.setattr(studio_db, "ensure_chat_project_workspace", lambda p: None)
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda t: None)
+
+    resolved = tools._get_project_workdir_info(session_id)
+    assert resolved and Path(resolved[0]) == workspace.resolve()
+
+    replacement = tmp_path / "somewhere else"
+    replacement.mkdir(parents = True)
+    (replacement / "not mine.csv").write_text("x,y\n", encoding = "utf-8")
+    shutil.rmtree(workspace)
+    replacement.rename(workspace)
+
+    with pytest.raises(tools.ProjectWorkspaceSessionUnavailableError):
+        tools._get_project_workdir_info(session_id)
+
+
 def test_a_kept_workspace_recorded_before_identity_still_resolves(tmp_path, monkeypatch):
     """Records written before identity was stored are all managed workspaces under
     Studio's own root. Requiring an identity they never had would make every one of
