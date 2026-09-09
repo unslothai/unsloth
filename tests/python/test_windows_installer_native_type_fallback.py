@@ -362,6 +362,11 @@ Write-Output "PATH:$(Get-StudioFinalPath -Path '{left}')"
 
 @requires_pwsh
 def test_unequal_paths_are_unknown_rather_than_different_when_inexact(tmp_path: Path):
+    """NO_NATIVE, not the Add-Type sabotage: the installer no longer calls Add-Type, so on a real
+    Windows host the emit succeeds, the answer is exact, and two different directories compare
+    $false. The case this test is about is the one with no exact answer, and the only way to that
+    case now is the capability gate.
+    """
     left = tmp_path / "left"
     right = tmp_path / "right"
     left.mkdir()
@@ -369,6 +374,7 @@ def test_unequal_paths_are_unknown_rather_than_different_when_inexact(tmp_path: 
     result = _run_powershell(
         _script(
             f"""
+{NO_NATIVE}
 $answer = Test-StudioPathEqual -Left '{left}' -Right '{right}'
 Write-Output "NULL:$($null -eq $answer)"
 """
@@ -536,19 +542,23 @@ def test_link_targets_of_every_windows_powershell_5_1_shape(
     assert _same_path(got[0][len("TARGET:[") : -1], expected)
 
 
-def _dead_pid() -> int:
+def _dead_pid(start: int = 4_000_000) -> int:
     """A PID that is not running, so a ust-<pid>- directory reads as abandoned."""
-    for candidate in range(4_000_000, 4_000_400):
+    for candidate in range(start, start + 400):
         try:
             os.kill(candidate, 0)
         except ProcessLookupError:
             return candidate
         except (OSError, PermissionError):
             continue
-    return 4_000_000
+    return start
 
 
 _DEAD_PID = _dead_pid()
+# A second one, so a test can put two abandoned directories side by side. It cannot reuse
+# _DEAD_PID with a different hex spelling: NTFS and the default macOS filesystem are
+# case-insensitive, so the two names would be one directory and the second mkdir would raise.
+_OTHER_DEAD_PID = _dead_pid(_DEAD_PID + 1)
 
 
 @requires_pwsh
@@ -1078,10 +1088,11 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
     (ours / "scratch.bin").write_text("x", encoding = "utf-8")
     keep = []
     # Case-insensitively ours: Windows filenames are case-insensitive, so refusing the uppercase spelling would leak a
-    # directory we created.
-    upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
+    # directory we created. A second dead PID, because on Windows and macOS the same PID with the other hex spelling is
+    # the same directory and the mkdir below would raise FileExistsError before the sweep ever ran.
+    upper = root / f"ust-{_OTHER_DEAD_PID}-ABCDEF01"
     upper.mkdir()
-    (upper / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    (upper / "owner.pid").write_text(str(_OTHER_DEAD_PID), encoding = "utf-8")
     for name in ("ust-legacy", "ust-user-cache", "ust-notapid-abcdef01", "ust-", "ust-12-abcdefg1"):
         victim = root / name
         victim.mkdir()
