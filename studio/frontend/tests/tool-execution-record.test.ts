@@ -8,6 +8,7 @@ import {
 
 let running = true;
 let remoteId: string | undefined;
+let savedMetadata: Record<string, unknown> = {};
 const contextValues = new WeakMap<object, unknown>();
 const react = {
   createContext(value: unknown) {
@@ -60,6 +61,10 @@ const records = loadWithStubs<{
   new URL("../src/features/chat/tool-execution-record.tsx", import.meta.url),
   {
     "./isolation-labels": { isolationLimitation: (value: string) => value },
+    "@assistant-ui/react": {
+      useAuiState: (selector: (state: unknown) => unknown) =>
+        selector({ message: { metadata: { custom: savedMetadata } } }),
+    },
     zustand: { create: zustandCreate },
     react,
     "./tool-output-scope": scope,
@@ -96,4 +101,25 @@ test("another run or pane cannot inherit the previous card's execution record", 
   contextValues.set(scope.ToolPaneScopeContext, scope.toolPaneScope());
   records.clearExecution(scope.toolOutputKey(scope.toolPaneScope(), "call_0:run-a"));
   assert.equal(records.ToolExecutionDetails({ toolCallId: "call_0:run-a" }), null);
+});
+
+test("saved execution labels survive reload with an empty live store", () => {
+  assert.deepEqual(records.useExecutionRecords.getState().records, {});
+  for (const [record, label] of [
+    [execution, "Sandbox · srt"],
+    [{ os_isolation: false, backend: "none", network_policy: "unrestricted", effective_mode: "auto" }, "No OS isolation"],
+    [{ os_isolation: false, backend: "none", network_policy: "unrestricted", effective_mode: "full" }, "Full access · No OS isolation"],
+  ] as const) {
+    savedMetadata = JSON.parse(JSON.stringify({ toolExecutions: { "saved-call": record } }));
+    assert.ok(JSON.stringify(records.ToolExecutionDetails({ toolCallId: "saved-call" })).includes(label));
+    assert.equal(records.ToolExecutionDetails({ toolCallId: "different-call" }), null);
+  }
+  savedMetadata = {};
+  assert.equal(records.ToolExecutionDetails({ toolCallId: "saved-call" }), null);
+});
+
+test("malformed persisted metadata cannot establish isolation", () => {
+  savedMetadata = { toolExecutions: { "saved-call": { backend: "srt" } } };
+  assert.equal(records.ToolExecutionDetails({ toolCallId: "saved-call" }), null);
+  savedMetadata = {};
 });

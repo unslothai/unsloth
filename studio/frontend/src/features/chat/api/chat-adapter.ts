@@ -1,4 +1,4 @@
-import { recordExecution, clearExecution } from "../tool-execution-record";
+import { recordExecution, clearExecution, executionRecord } from "../tool-execution-record";
 import { useIsolationStore } from "../tool-isolation";
 import { getAuthSessionEpoch } from "@/features/auth";
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -5158,12 +5158,14 @@ export function createOpenAIStreamAdapter(
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let toolExecutions: Record<string, Record<string, unknown>> = {};
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete".
       const liveCustom = () => ({
+        toolExecutions,
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
@@ -6519,7 +6521,15 @@ export function createOpenAIStreamAdapter(
                 }
                 if (toolEvent.type === "tool_execution") {
                   const liveId = resolveToolPartId((toolEvent.tool_call_id as string) || "");
-                  if (liveId) recordExecution(executionRecordKey(liveId), toolEvent.execution);
+                  const execution = executionRecord(toolEvent.execution);
+                  if (liveId && execution) {
+                    toolExecutions = { ...toolExecutions, [liveId]: execution };
+                    recordExecution(executionRecordKey(liveId), execution);
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: { custom: liveCustom() },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7769,6 +7779,7 @@ export function createOpenAIStreamAdapter(
           metadata: {
             timing: finalTiming,
             custom: {
+              toolExecutions,
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
 
@@ -7905,6 +7916,7 @@ export function createOpenAIStreamAdapter(
               metadata: {
                 timing: partialTiming,
                 custom: {
+                  toolExecutions,
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
                   // This partial is unfinished too, so it also offers Continue.
