@@ -128,6 +128,8 @@ class _LocalLifecycle:
 
 @pytest.fixture
 def local_supervisor(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("The local process fixture uses POSIX directory descriptors")
     root = tmp_path / "repository"
     scratch = tmp_path / "scratch"
     root.mkdir()
