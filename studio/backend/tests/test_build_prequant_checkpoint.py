@@ -1578,3 +1578,146 @@ def test_a_moe_video_build_calibrates_the_expert_it_was_asked_for(monkeypatch, t
     # the pipeline's boundary switch keeps the hooked expert on its own steps.
     assert built["transformer_2"] is transformer
     assert "transformer" not in built
+
+
+def test_a_replayed_correction_is_in_place_before_the_scales_are_baked(monkeypatch, tmp_path):
+    """--gptq-dir and --bake-activation-scales compose in one order only. An activation scale
+    describes the model the artifact SHIPS, so it has to be measured after the corrected weights
+    are in the module: measured before, it describes a model that is then thrown away, and every
+    layer downstream of a corrected one sees a different input than the one it was scaled for."""
+    build = _script()
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+
+    import contextlib
+    import json as _json
+
+    torch = sys.modules["torch"]
+    torch.no_grad = contextlib.nullcontext
+    torch.cuda = types.SimpleNamespace(empty_cache = lambda: None)
+    torch.Generator = lambda device = None: types.SimpleNamespace(manual_seed = lambda s: s)
+
+    class _Linear:
+        def __init__(self):
+            self.in_features = 1024
+            self.out_features = 1024
+            self.weight = types.SimpleNamespace(
+                shape = (1024, 1024), device = "cuda", dtype = "bfloat16", data = "dense"
+            )
+
+    nn = types.ModuleType("torch.nn")
+    nn.Linear = _Linear
+    torch.nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+
+    gptq = tmp_path / "gptq"
+    (gptq / "weights").mkdir(parents = True)
+    (gptq / "gptq_meta.json").write_text(
+        _json.dumps(
+            {
+                "prompts": 32,
+                "grid": "832x480x49f_50s",
+                "layers": {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12}},
+            }
+        )
+    )
+    (gptq / "gptq_score.json").write_text(
+        _json.dumps(
+            {"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}}
+        )
+    )
+    (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
+    torch.load = lambda path, weights_only = True: types.SimpleNamespace(
+        shape = (1024, 1024), to = lambda *a: "corrected"
+    )
+
+    module = _Linear()
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    transformer.named_modules = lambda: [("blocks.0.attn1.to_q", module)]
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+    monkeypatch.setattr(
+        build,
+        "verify_gptq_idempotency",
+        lambda modules, load_weight: {
+            "checked": len(modules),
+            "max_abs": 0.0,
+            "max_abs_fqn": None,
+            "frac_diff": 0.0,
+        },
+    )
+
+    class _Pipe:
+        @classmethod
+        def from_pretrained(cls, base, **kwargs):
+            return cls()
+
+        def to(self, device):
+            return self
+
+        def set_progress_bar_config(self, disable = True):
+            return None
+
+        def __call__(self, **kwargs):
+            return None
+
+    sys.modules["diffusers"].WanPipeline = _Pipe
+
+    seen: dict = {}
+
+    class _Amax:
+        def __init__(self, modules):
+            self.modules = dict(modules)
+            # What the hooks would have measured through: the weights as they stand right now.
+            seen.update({fqn: mod.weight.data for fqn, mod in self.modules.items()})
+
+        def attach(self):
+            return self
+
+        def detach(self):
+            return self
+
+        def unseen(self):
+            return []
+
+        def global_scales(self):
+            return {fqn: 224.0 for fqn in self.modules}
+
+    from core.inference import diffusion_nvfp4_gptq
+
+    monkeypatch.setattr(diffusion_nvfp4_gptq, "ActivationAmaxAccumulator", _Amax)
+    prompts = tmp_path / "prompts.py"
+    prompts.write_text('CALIB = ["a red fox"]\n')
+    code = build.main(
+        [
+            "--base",
+            str(tmp_path),
+            "--base-id",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--modality",
+            "video",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(tmp_path / "wan5b.pt"),
+            "--gptq-dir",
+            str(gptq),
+            "--bake-activation-scales",
+            "--bake-prompts",
+            "1",
+            "--calib-prompts",
+            str(prompts),
+        ]
+    )
+    assert code == 0
+    assert seen == {"blocks.0.attn1.to_q": "corrected"}
+    metadata = saved["ckpt"]["metadata"]
+    # Both provenance blocks survive the composition: which weights are corrected, and what the
+    # scales were measured on.
+    assert metadata["gptq"]["applied"] == 1
+    assert metadata["activation_scales_baked"] is True
+    assert set(metadata["act_global_scales"]) == {"blocks.0.attn1.to_q"}

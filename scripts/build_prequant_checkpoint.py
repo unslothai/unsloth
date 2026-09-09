@@ -1185,10 +1185,111 @@ def main(argv = None) -> int:
             flush = True,
         )
 
+    # REPLAYED GPTQ, before both the calibration below and quantize_: the corrected weight is a
+    # plain bf16 tensor that already lies on the NVFP4 grid, so it goes into module.weight and the
+    # quantiser then packs it exactly as it packs any other weight. Only the 4-bit operand is
+    # touched, which is the rule the campaign measured (+46% error when a correction also became
+    # the source of an fp8 replica).
+    #
+    # Before the calibration because an activation scale has to describe the model the artifact
+    # SHIPS: baking it off the uncorrected weights measures a model that is then thrown away, and
+    # every layer downstream of a corrected one sees a different input. The in-builder calibration
+    # keeps its own fixed order (Hessians on the uncorrected weights, correction, then the bake) for
+    # the same reason from the other side; the two GPTQ sources are mutually exclusive, so exactly
+    # one of them ever runs.
+    gptq_plan: Optional[dict] = None
+    gptq_pass: dict = {}
+    gptq_where: dict = {}
+    gptq_applied_modules: dict = {}
+    if args.gptq_dir:
+        import json
+
+        gptq_where = gptq_sources(
+            args.gptq_dir,
+            component,
+            meta_override = args.gptq_meta,
+            score_override = args.gptq_score,
+        )
+        try:
+            with open(gptq_where["meta"]) as handle:
+                gptq_pass = json.load(handle) or {}
+        except Exception as exc:  # noqa: BLE001 -- an unreadable meta decides nothing
+            print(f"error: cannot read the GPTQ meta {gptq_where['meta']}: {exc}", flush = True)
+            return 2
+        score_layers: dict = {}
+        if gptq_where["score"]:
+            try:
+                with open(gptq_where["score"]) as handle:
+                    score_layers = (json.load(handle) or {}).get("layers") or {}
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True
+                )
+                return 2
+        elif args.gptq_score_mode == "check":
+            print(
+                f"error: --gptq-score-mode check needs a score file; none found in {args.gptq_dir}. "
+                "Score the corrections on held-out activations first, or pass --gptq-score-mode meta.",
+                flush = True,
+            )
+            return 2
+        # Under a policy the corrections go to the NVFP4 layers and nowhere else. The campaign
+        # measured the correction on the 4-bit operand ALONE (+46% error once the corrected weight
+        # also became the source of an fp8 replica), and a static policy gives that by
+        # construction -- but only if the set it is applied to is the policy's, not the filter's.
+        if policy is not None:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if assignment.get(fqn) == PRECISION_NVFP4
+            ]
+        else:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if filter_fn(module, fqn)
+            ]
+        weights_dir = gptq_where["weights"]
+        gptq_plan = plan_gptq(
+            [fqn for fqn, _ in admitted],
+            (gptq_pass.get("layers") or {}),
+            score_layers,
+            mode = args.gptq_score_mode,
+            has_weight = lambda fqn: os.path.exists(
+                os.path.join(weights_dir, gptq_weight_filename(fqn))
+            ),
+        )
+        for fqn, module in admitted:
+            if not gptq_plan["layers"][fqn]["applied"]:
+                continue
+            corrected = torch.load(
+                os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
+            )
+            if tuple(corrected.shape) != tuple(module.weight.shape):
+                # A shape drift means the campaign and this base are not the same model. Applying
+                # what fits and skipping the rest would ship a half-corrected artifact.
+                print(
+                    f"error: GPTQ weight for {fqn} is {tuple(corrected.shape)}, module is "
+                    f"{tuple(module.weight.shape)}",
+                    flush = True,
+                )
+                return 2
+            module.weight.data = corrected.to(module.weight.device, module.weight.dtype)
+            gptq_applied_modules[fqn] = module
+        counts = gptq_plan["counts"]
+        print(
+            f"  gptq ({args.gptq_score_mode}): applied {counts['applied']} of {len(admitted)} "
+            f"admitted linears, {counts['skipped_no_gain']} no gain, "
+            f"{counts['skipped_unscored']} unscored, {counts['missing']} missing "
+            f"[{weights_dir}]",
+            flush = True,
+        )
+
     # ── in-builder calibration: Hessians -> GPTQ -> bake a_gsf, all on the DENSE model ────────
     # The order is fixed (see calibration_stage_order): a Hessian describes the activations the
     # correction is solved against, so it is accumulated before the weights move; an activation
-    # scale has to describe the model the artifact ships, so it is measured after they have.
+    # scale has to describe the model the artifact ships, so it is measured after they have --
+    # including after a REPLAYED --gptq-dir correction, which the block above has already applied.
     inbuilder_gptq: dict = {}
     act_scales: dict = {}
     act_meta: dict = {}
@@ -1403,98 +1504,6 @@ def main(argv = None) -> int:
 
         del pipe
         torch.cuda.empty_cache()
-
-    # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the
-    # NVFP4 grid, so it goes into module.weight and the quantiser then packs it exactly as it packs
-    # any other weight. Only the 4-bit operand is touched, which is the rule the campaign measured
-    # (+46% error when a correction also became the source of an fp8 replica).
-    gptq_plan: Optional[dict] = None
-    gptq_pass: dict = {}
-    gptq_where: dict = {}
-    gptq_applied_modules: dict = {}
-    if args.gptq_dir:
-        import json
-
-        gptq_where = gptq_sources(
-            args.gptq_dir,
-            component,
-            meta_override = args.gptq_meta,
-            score_override = args.gptq_score,
-        )
-        try:
-            with open(gptq_where["meta"]) as handle:
-                gptq_pass = json.load(handle) or {}
-        except Exception as exc:  # noqa: BLE001 -- an unreadable meta decides nothing
-            print(f"error: cannot read the GPTQ meta {gptq_where['meta']}: {exc}", flush = True)
-            return 2
-        score_layers: dict = {}
-        if gptq_where["score"]:
-            try:
-                with open(gptq_where["score"]) as handle:
-                    score_layers = (json.load(handle) or {}).get("layers") or {}
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True
-                )
-                return 2
-        elif args.gptq_score_mode == "check":
-            print(
-                f"error: --gptq-score-mode check needs a score file; none found in {args.gptq_dir}. "
-                "Score the corrections on held-out activations first, or pass --gptq-score-mode meta.",
-                flush = True,
-            )
-            return 2
-        # Under a policy the corrections go to the NVFP4 layers and nowhere else. The campaign
-        # measured the correction on the 4-bit operand ALONE (+46% error once the corrected weight
-        # also became the source of an fp8 replica), and a static policy gives that by
-        # construction -- but only if the set it is applied to is the policy's, not the filter's.
-        if policy is not None:
-            admitted = [
-                (fqn, module)
-                for fqn, module in transformer.named_modules()
-                if assignment.get(fqn) == PRECISION_NVFP4
-            ]
-        else:
-            admitted = [
-                (fqn, module)
-                for fqn, module in transformer.named_modules()
-                if filter_fn(module, fqn)
-            ]
-        weights_dir = gptq_where["weights"]
-        gptq_plan = plan_gptq(
-            [fqn for fqn, _ in admitted],
-            (gptq_pass.get("layers") or {}),
-            score_layers,
-            mode = args.gptq_score_mode,
-            has_weight = lambda fqn: os.path.exists(
-                os.path.join(weights_dir, gptq_weight_filename(fqn))
-            ),
-        )
-        for fqn, module in admitted:
-            if not gptq_plan["layers"][fqn]["applied"]:
-                continue
-            corrected = torch.load(
-                os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
-            )
-            if tuple(corrected.shape) != tuple(module.weight.shape):
-                # A shape drift means the campaign and this base are not the same model. Applying
-                # what fits and skipping the rest would ship a half-corrected artifact.
-                print(
-                    f"error: GPTQ weight for {fqn} is {tuple(corrected.shape)}, module is "
-                    f"{tuple(module.weight.shape)}",
-                    flush = True,
-                )
-                return 2
-            module.weight.data = corrected.to(module.weight.device, module.weight.dtype)
-            gptq_applied_modules[fqn] = module
-        counts = gptq_plan["counts"]
-        print(
-            f"  gptq ({args.gptq_score_mode}): applied {counts['applied']} of {len(admitted)} "
-            f"admitted linears, {counts['skipped_no_gain']} no gain, "
-            f"{counts['skipped_unscored']} unscored, {counts['missing']} missing "
-            f"[{weights_dir}]",
-            flush = True,
-        )
 
     # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
     # distribution. The fqn list is recorded, never re-derived at load time.
