@@ -219,7 +219,11 @@ def _hf_hub_dirs() -> list[Path]:
 
 def _hf_child_dirs(name: str, env_key: str) -> list[Path]:
     # HF reads the variable INSTEAD of <home>/<name>, so these are alternatives.
-    return _first(_env_dir(env_key), _hf_paths().cache_home / name)
+    # The effective home, not the displayed one: an explicit HF_HUB_CACHE makes
+    # the display home the hub's parent, which is somebody else's directory and
+    # holds none of these children.
+    from utils.hf_cache_settings import effective_cache_home
+    return _first(_env_dir(env_key), effective_cache_home() / name)
 
 
 def _hf_datasets_dirs() -> list[Path]:
@@ -864,24 +868,31 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 # that would offer space that is already gone.
 _INVENTORY_TTL_SECONDS = 60.0
 _size_cache: dict[str, tuple[float, dict]] = {}
+# Bumped by every invalidation, so a walk that began before one cannot store its
+# answer after it. Dropping the entry is not enough on its own: a forced scan in
+# one tab starts before a purge in another, finishes after it, and would install
+# the pre-purge size for the rest of the window.
+_size_epochs: dict[str, int] = {}
 _size_cache_lock = threading.Lock()
 
 
 def invalidate_cache_size(key: str) -> None:
     with _size_cache_lock:
         _size_cache.pop(key, None)
+        _size_epochs[key] = _size_epochs.get(key, 0) + 1
 
 
 def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
     now = time.monotonic()
-    if not refresh:
-        with _size_cache_lock:
-            remembered = _size_cache.get(definition.key)
-        if remembered is not None and now - remembered[0] < _INVENTORY_TTL_SECONDS:
-            return remembered[1]
+    with _size_cache_lock:
+        began_at = _size_epochs.get(definition.key, 0)
+        remembered = None if refresh else _size_cache.get(definition.key)
+    if remembered is not None and now - remembered[0] < _INVENTORY_TTL_SECONDS:
+        return remembered[1]
     entry = describe_cache(definition)
     with _size_cache_lock:
-        _size_cache[definition.key] = (time.monotonic(), entry)
+        if _size_epochs.get(definition.key, 0) == began_at:
+            _size_cache[definition.key] = (time.monotonic(), entry)
     return entry
 
 

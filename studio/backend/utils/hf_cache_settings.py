@@ -347,6 +347,22 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     return get_hf_cache_paths()
 
 
+def effective_cache_home() -> Path:
+    """The directory Hugging Face itself treats as HF_HOME.
+
+    Not ``HuggingFaceCachePaths.cache_home``, which is the DISPLAY home: an
+    explicit ``HF_HUB_CACHE=/mnt/project/hub`` makes that the hub's parent so
+    Settings names the folder the models are in, while HF keeps the token,
+    ``assets`` and ``datasets`` under the real home. Anything that resolves one
+    of those children has to ask here.
+    """
+    paths = get_hf_cache_paths()
+    if paths.source != "environment":
+        return paths.cache_home
+    explicit_home = _EXPLICIT_CACHE_ENV.get("HF_HOME")
+    return _canonical(explicit_home) if explicit_home else _default_cache_home()
+
+
 def known_hf_cache_homes() -> list[Path]:
     paths = get_hf_cache_paths()
     stored = _stored_cache_home()

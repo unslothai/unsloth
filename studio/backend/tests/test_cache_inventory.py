@@ -78,6 +78,7 @@ def isolated_caches(tmp_path, monkeypatch):
     # Sizes are memoized for a minute in production; a test must never read one
     # another test measured.
     monkeypatch.setattr(cache_inventory, "_size_cache", {})
+    monkeypatch.setattr(cache_inventory, "_size_epochs", {})
     return hf_home
 
 
@@ -772,3 +773,63 @@ def test_the_pip_probe_runs_once_and_survives_a_failure(tmp_path, monkeypatch, i
     assert len(calls) == 1
     # ...and the platform default still answers, so the row does not vanish.
     assert module._pip_dirs() == [tmp_path / "xdg" / "pip"]
+
+
+def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """An explicit HF_HUB_CACHE makes cache_home the hub's PARENT, for display.
+
+    Hugging Face still keeps assets and datasets under the real home, so reading
+    the display home both misses the caches that exist and offers a directory of
+    somebody else's next to the hub.
+    """
+    from utils import hf_cache_settings
+
+    project = tmp_path / "project"
+    hub = project / "hub"
+    hub.mkdir(parents = True)
+    theirs = _write(project / "assets" / "not-a-cache.bin", "d" * 10)
+    real_home = tmp_path / "xdg" / "huggingface"
+    mine = _write(real_home / "assets" / "asset.bin", "a" * 10)
+
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        project, hub, real_home / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {"HF_HUB_CACHE": str(hub)})
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+
+    entry = describe_cache(definition_for("hf_assets"))
+    assert entry["paths"] == [str(real_home / "assets")]
+    purge_caches(["hf_assets"])
+    assert theirs.exists()
+    assert not mine.exists()
+
+
+def test_a_measurement_that_began_before_a_purge_is_not_remembered(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """A forced scan in one tab can finish after a purge in another.
+
+    It read the cache before the deletion, so storing its answer would go on
+    offering space that is already gone for the rest of the memo window.
+    """
+    root = tmp_path / "uv"
+    _write(root / "wheel.whl", "w" * 100)
+    definition = definition_for("uv")
+    real_describe = cache_inventory.describe_cache
+    before_the_purge = real_describe(definition)
+    assert before_the_purge["size_bytes"] == 100
+
+    def measure_then_purge(_definition):
+        # The purge lands while this walk is still running.
+        for child in root.iterdir():
+            child.unlink()
+        cache_inventory.invalidate_cache_size("uv")
+        return before_the_purge
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", measure_then_purge)
+    assert cache_inventory._described(definition, refresh = True)["size_bytes"] == 100
+    monkeypatch.setattr(cache_inventory, "describe_cache", real_describe)
+    assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 0
