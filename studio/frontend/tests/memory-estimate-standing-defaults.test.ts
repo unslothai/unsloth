@@ -10,27 +10,16 @@
 // already uses for logic that lives inside the component.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { DEFAULT_VRAM_FRACTION } from "../src/hooks/gpu-vram.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (relative: string) =>
-  readFileSync(path.join(HERE, "..", relative), "utf8");
+import { readSrc, readText } from "./helpers/kit.ts";
 
-const CONFIG_PAGE = read(
-  "src/features/model-picker/components/model-config-page.tsx",
-);
-const APPLY_CONFIG = read(
-  "src/features/model-picker/model-config/apply-per-model-config.ts",
-);
-const NORMALIZE_CONFIG = read(
-  "src/features/model-picker/model-config/per-model-config.ts",
-);
-const BUDGET_SETTINGS = read("../backend/utils/vram_budget_settings.py");
+const CONFIG_PAGE = readSrc("features/model-picker/components/model-config-page.tsx");
+const APPLY_CONFIG = readSrc("features/model-picker/model-config/apply-per-model-config.ts");
+const NORMALIZE_CONFIG = readSrc("features/model-picker/model-config/per-model-config.ts");
+const BUDGET_SETTINGS = readText("../../backend/utils/vram_budget_settings.py");
 
 test("only Manual is persisted per model, so an absent mode is not Auto", () => {
   // The premise of the whole fix. If this stopped holding, reading the absence as

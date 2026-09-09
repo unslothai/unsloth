@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,11 +13,15 @@ import {
   MATH_BLOCK_CONTAINMENT_ON,
 } from "../src/components/assistant-ui/math-block-mode.ts";
 
+import { readText } from "./helpers/kit.ts";
+
 /*
  * THE THREE PIECES ONLY WORK TOGETHER, and nothing in the type system joins them:
  *
- *   1. the marker has to be composed onto the MATHS plugin, not passed as a `rehypePlugins` prop,
- *      because that prop switches off Streamdown's `allowedTags` sanitizer;
+ *   1. the marker has to be composed onto the MATHS plugin's own rehype pass. A `rehypePlugins` prop
+ *      entry would run before that pass, and the prop itself replaces Streamdown's default pipeline
+ *      (the `allowedTags` schema then rides only on what the passed pipeline carries -- see
+ *      `lib/markdown-data-images.ts`);
  *   2. the stylesheet has to name the class the marker writes and the attribute the resolver sets;
  *   3. `main.tsx` has to set that attribute before the first render.
  *
@@ -27,16 +30,15 @@ import {
  * change that does nothing.
  */
 
-const read = (relative: string): string =>
-  readFileSync(new URL(relative, import.meta.url), "utf8");
-
-const MARKDOWN_TEXT = read("../src/components/assistant-ui/markdown-text.tsx");
-const INDEX_CSS = read("../src/index.css");
-const MAIN_TSX = read("../src/main.tsx");
-const MATH_BLOCK_MODE = read(
+const MARKDOWN_TEXT = readText(
+  "../src/components/assistant-ui/markdown-text.tsx",
+);
+const INDEX_CSS = readText("../src/index.css");
+const MAIN_TSX = readText("../src/main.tsx");
+const MATH_BLOCK_MODE = readText(
   "../src/components/assistant-ui/math-block-mode.ts",
 );
-const CONTAINMENT = read(
+const CONTAINMENT = readText(
   "../src/components/assistant-ui/math-block-containment.ts",
 );
 
@@ -53,17 +55,19 @@ test("the marker is composed onto the maths plugin", () => {
   );
 });
 
-test("the chat renderer does NOT pass a rehypePlugins prop", () => {
-  // Passing one makes Streamdown skip its `allowedTags` sanitizer schema, because it only installs
-  // that schema while `rehypePlugins === defaultRehypePlugins`. This is the reason the marker is
-  // composed rather than appended, and it is worth more than the class it buys.
+test("the chat renderer's rehypePlugins pipeline carries the allowedTags merge itself", () => {
+  // Streamdown auto-merges `allowedTags` into its sanitize schema only while `rehypePlugins` is
+  // still its default pipeline (identity check). The renderer now passes one, so it must carry the
+  // merge itself; a passed pipeline that dropped it would silently drop the sanitizer instead.
   assert.ok(
     MARKDOWN_TEXT.includes("allowedTags={STREAMDOWN_ALLOWED_TAGS}"),
     "PRECONDITION: the chat renderer relies on the allowedTags sanitizer",
   );
   assert.ok(
-    !/\brehypePlugins=\{/.test(MARKDOWN_TEXT),
-    "no rehypePlugins prop, or the sanitizer schema above is silently dropped",
+    /const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport\(STREAMDOWN_ALLOWED_TAGS\);/.test(
+      MARKDOWN_TEXT,
+    ) && MARKDOWN_TEXT.includes("rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}"),
+    "the passed pipeline must be derived from the defaults AND carry the allowedTags merge",
   );
 });
 

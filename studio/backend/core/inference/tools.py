@@ -122,9 +122,11 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Raster-image allowlist for sandbox file serving.
+# Raster-image allowlist for sandbox file serving; what a tool call reports inline (`__IMAGES__`)
+# and what the route serves inline (_SANDBOX_MEDIA_TYPES in routes/inference.py) are one set, pinned
+# equal by test_sandbox_files_and_storage_roots -- drift means a model's photo previews on one path only.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
-_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"})
 
 
 def _env_int(name: str, default: int) -> int:
@@ -2033,6 +2035,18 @@ _AUTO_SAFE_WRAPPERS = frozenset(
         "setsid",
     }
 )
+
+# These read-named tools launch unsandboxed Blender on a caller-selected file.
+_BLENDER_CLI_SUMMARY_TOOLS = frozenset(
+    {
+        "get_blendfile_summary_datablocks_for_cli",
+        "get_blendfile_summary_missing_files_for_cli",
+        "get_blendfile_summary_of_linked_libraries_for_cli",
+        "get_blendfile_summary_path_info_for_cli",
+        "get_blendfile_summary_usage_guess_for_cli",
+    }
+)
+
 
 # MCP tools whose names look read-only auto-run; anything else asks.
 _AUTO_SAFE_MCP_TOOL_RE = re.compile(
@@ -4621,6 +4635,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+            return True
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
@@ -6609,6 +6625,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+            return True
         # Split camelCase into `_`-delimited terms so the term-boundary regexes
         # below match camelCase names too.
         tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
@@ -10237,7 +10255,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
-        name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+        server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
         # Bad chars or oversized names would 400 the whole request; skip + warn
         # so the rest of the tools still ship.
         if not _OPENAI_FN_NAME_RE.fullmatch(name):
@@ -10480,9 +10499,10 @@ def execute_tool(
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
             return f"Error: malformed MCP tool name '{name}'"
-        server = mcp_servers_db.get_server(server_id)
+        server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"
+        server_id = server["id"]
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
@@ -11239,6 +11259,37 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
     )
 
+    def _fits(candidate_text, max_tokens) -> bool:
+        # None means the estimate itself failed; zero is a measured "no room left".
+        if max_tokens is None:
+            return True
+        if max_tokens <= 0:
+            return False
+        # Priced by the serving GGUF when it can, doubled when it cannot, so dense
+        # ASCII is not charged the English four characters per token.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
+
+    def _trim(
+        hit_text,
+        hit_sources,
+        max_tokens,
+        keep_first = 1,
+    ):
+        """Drop passages from the tail until the rendered block fits, else None.
+
+        Re-renders only when something is dropped. None when not even the first
+        ``keep_first`` passages fit: the block joins the current turn, which the
+        window may not evict, so it fails the request rather than degrading it.
+        ``keep_first`` is the floor of the tail: one for ranked retrieval, but a
+        whole document must never be eaten into.
+        """
+        floor = max(1, keep_first)
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > floor and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
+
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
     # sources are still retrieved top-K and appended under one citation
@@ -11266,42 +11317,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
                 if proj is not None:
+                    # Trim into the project tail only: the document was admitted whole
+                    # and stays whole, so a combination that will not fit falls back
+                    # to the document alone.
                     merged = sources + proj[1]
-                    merged_text = render_sources(merged)
-                    if max(1, len(merged_text) // 4) <= budget:
-                        sources = merged
-                        text = merged_text
+                    trimmed = _trim(render_sources(merged), merged, budget, keep_first = len(sources))
+                    if trimmed is not None:
+                        text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
-
-    def _fits(candidate_text, max_tokens) -> bool:
-        # None means the estimate itself failed, so there is nothing to enforce.
-        # Zero is the opposite: a measured "no room left".
-        if max_tokens is None:
-            return True
-        if max_tokens <= 0:
-            return False
-        # Priced by the serving GGUF when it can, doubled when it cannot. The
-        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
-        # nearer two characters per token) being charged the English four.
-        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
-
-    def _trim(hit_text, hit_sources, max_tokens):
-        """Drop passages from the tail until the rendered block fits, else None.
-
-        Re-renders only when something is dropped, so an untrimmed result comes
-        back exactly as retrieval built it.
-
-        None when not even the top passage fits: the block joins the current
-        turn, which the window may not evict, so an overflowing injection fails
-        the request rather than degrading the answer. Losing the attachment is
-        what this branch exists to prevent, but main already loses it here, and
-        that beats an error instead of an answer.
-        """
-        kept, rendered = list(hit_sources), hit_text
-        while len(kept) > 1 and not _fits(rendered, max_tokens):
-            kept = kept[:-1]
-            rendered = render_sources(kept)
-        return (rendered, kept) if _fits(rendered, max_tokens) else None
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
@@ -12104,12 +12127,25 @@ def _fetch_url_raw(
             )
 
         declared = resp.headers.get_content_charset()
-        declared_codec = codecs.lookup(declared).name if declared else None
+        declared_codec = None
+        try:
+            if declared:
+                declared_codec = codecs.lookup(declared).name
+        except (LookupError, ValueError):
+            # ValueError, not only LookupError: a NUL inside the label.
+            declared = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        try:
+            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        except (LookupError, ValueError):
+            # Survives lookup, fails the decode: base64/hex/zlib are not text codecs,
+            # "undefined" always raises, idna rejects replace. The fallback cannot raise.
+            declared = None
+            declared_codec = None
+            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):

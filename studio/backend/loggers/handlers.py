@@ -69,15 +69,8 @@ _QUIET_POLL_PATHS = {
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
-    # Generation is fire-and-forget: its outcome only reaches the UI via these polls.
-    "/api/inference/images/generate-progress",
-    "/api/inference/video/generate-progress",
     # Polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
-    # These handlers log nothing and diffusion.loaded / video.loaded are terminal, so a minutes-long
-    # load would otherwise emit nothing at all.
-    "/api/inference/images/load-progress",
-    "/api/inference/video/load-progress",
     # Templated; matched through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
     "/api/chat/threads/{id}",
     "/api/chat/threads/{id}/forks",
@@ -122,10 +115,15 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
-# GET polls whose 2xx line carries no signal, so drop it entirely; non-2xx still logs. Only /api/hub
-# download polls emit events.
+# GET polls whose 2xx line carries no signal, so drop it entirely; non-2xx still logs.
+# Media progress and /api/hub download polls emit structured events.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    # Their route handlers publish structured phase and 10 percent milestones.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
+    "/api/inference/images/generate-progress",
+    "/api/inference/video/generate-progress",
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
@@ -289,7 +287,7 @@ class LoggingMiddleware:
         if window_ms <= 0:
             return False
         # The liveness group shares one bucket, so a burst logs once rather than once per path; only the
-        # query-less form joins it.
+        # query-less form joins it, so a parameterized call still gets its own status and latency line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:

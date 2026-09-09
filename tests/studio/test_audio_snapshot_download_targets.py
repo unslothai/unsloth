@@ -44,8 +44,7 @@ if _REPO_ROOT is None:
         allow_module_level = True,
     )
 
-# Every module that fetches a Spark-TTS repo: TTS inference, the GGUF BiCodec decoder
-# and the trainer.
+# Every module that fetches a Spark-TTS repo: TTS inference, the GGUF BiCodec decoder and the trainer.
 _AUDIO_SOURCES = (
     "studio/backend/core/inference/inference.py",
     "studio/backend/core/inference/llama_cpp.py",

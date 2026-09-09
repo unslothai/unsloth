@@ -624,6 +624,16 @@ class XetNoticeResponse(BaseModel):
     limit: int
 
 
+class IgpuCarveoutNoticeDismissPayload(BaseModel):
+    # The allocation being dismissed at, so raising it and running short again can
+    # speak once more. Absent means "keep whatever is recorded", never lowering it.
+    current_gb: Optional[float] = None
+
+
+class IgpuCarveoutNoticeResponse(BaseModel):
+    dismissed_at_gb: Optional[float] = None
+
+
 class ChatPreferencesPayload(BaseModel):
     show_model_disclaimer: StrictBool
 
@@ -812,6 +822,9 @@ class ModelOverridePayload(BaseModel):
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
+    # Which index space gpu_ids is in. Absent means physical, the only thing a client
+    # written before this field could have meant.
+    gpu_index_kind: Optional[Literal["physical", "vulkan"]] = None
     # An all-default save carries no fields, like a forget; None keeps the legacy contract.
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
@@ -861,6 +874,8 @@ class ModelOverridesResponse(BaseModel):
     # casefold is not toLowerCase, and an ambiguous fold matches nothing on purpose.
     resolved: Optional[dict] = None
     resolved_key: Optional[str] = None
+    # What an explicit remove cleared; empty for a save.
+    removed_keys: list[str] = []
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -1178,6 +1193,30 @@ def post_xet_notice_reserve(
             log = logger,
         ) from exc
     return XetNoticeResponse(**result)
+
+
+@router.post("/igpu-carveout-notice/dismiss", response_model = IgpuCarveoutNoticeResponse)
+def post_igpu_carveout_notice_dismiss(
+    payload: IgpuCarveoutNoticeDismissPayload, current_subject: str = Depends(get_current_subject)
+) -> IgpuCarveoutNoticeResponse:
+    """Stop offering the integrated-GPU memory advice at this allocation.
+
+    Stored server-side rather than in the browser: an Unsloth origin is not stable,
+    so a per-origin store hands out a fresh notice every time the port moves.
+    """
+    from utils.igpu_carveout_notice_settings import dismiss_notice
+
+    try:
+        stored = dismiss_notice(payload.current_gb)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not dismiss the GPU memory notice."),
+            event = "settings.dismiss_igpu_carveout_notice_failed",
+            log = logger,
+        ) from exc
+    return IgpuCarveoutNoticeResponse(dismissed_at_gb = stored)
 
 
 @router.get("/chat-preferences", response_model = ChatPreferencesResponse)
@@ -1712,7 +1751,7 @@ def update_openai_auto_switch_override(
             # Load order, not collection order: a lookup reads the concrete load path before the advertised repo id, so
             # reading the repo row first adopts tuning no load has used.
             _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
-            # Taken as a unit from the first row that exists.
+            # Taken as a unit from the first row that exists, not field by field down the list.
             # A load stops at the first non-empty row (resolve_override_for_load) rather than merging, so filling a gap
             # in the winner from a loser would switch dormant tuning on.
             for _alias_id in _alias_ids:
@@ -1723,6 +1762,7 @@ def update_openai_auto_switch_override(
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
+        removed_keys: list[str] = []
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1730,17 +1770,12 @@ def update_openai_auto_switch_override(
             target_ids = resolve_model_override_keys(payload.model_id) or [
                 payload.model_id,
             ]
-            for target_id in target_ids:
-                set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+            removed_keys.extend(target_ids)
             # A standalone .gguf is keyed by its bare path now, but a load also reads the
             # filename-derived <path>:LABEL an upgraded install holds, which would outlive this.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
-                set_model_override(
-                    legacy_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
+                removed_keys.append(legacy_id)
             # The mirror image of the carry-over above: a save under repo:QUANT copies the flags off a legacy bare
             # `repo` entry and leaves it in place, and the loader falls back to it when the qualified key misses, so
             # clearing only the qualified key hands the same flags straight back and the forget does nothing. Nothing in
@@ -1755,15 +1790,14 @@ def update_openai_auto_switch_override(
                     target_ids,
                 )
             ):
-                set_model_override(
-                    bare_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
+                removed_keys.append(bare_id)
             # And the other spelling of a cached repo: the loader reads the load path before
             # the advertised id, so clearing only the id leaves the path entry still applying.
             for alias_id in cached_repo_alias_keys(payload.model_id):
-                set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
+                if alias_id not in removed_keys:
+                    removed_keys.append(alias_id)
+            for removed_id in removed_keys:
+                set_model_override(removed_id, llama_extra_args = [], max_seq_length = None)
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
@@ -1804,6 +1838,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
             # A repo cached outside the active HF cache is keyed here by its repo id
@@ -1818,7 +1853,7 @@ def update_openai_auto_switch_override(
             event = "settings.update_model_override_failed",
             log = logger,
         ) from exc
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
 
 
 class EmbeddingModelPayload(BaseModel):

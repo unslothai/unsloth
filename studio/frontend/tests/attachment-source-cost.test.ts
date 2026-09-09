@@ -8,10 +8,9 @@
 // AttachmentThumb and AttachmentPreviewDialog each mount the hook.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -28,10 +27,6 @@ const ATTACHMENT_ID_ROOT_KEY_RE =
   /<AttachmentPrimitive\.Root\s+key=\{attachmentId\}/;
 const PASTED_TEXT_ID_KEY_RE =
   /<PastedTextAttachmentUI\s+key=\{attachmentId\}/;
-
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
 
 function audioAttachment(payload: string) {
   return {
@@ -75,7 +70,7 @@ test("the attachment selector does not rebuild the audio payload per run", () =>
  * DialogContent once the dialog opens, which is where the join belongs.
  */
 test("the audio data URL is built in the dialog, not on every attachment tile", () => {
-  const hook = source("components/assistant-ui/use-attachment-source.ts");
+  const hook = readSrc("components/assistant-ui/use-attachment-source.ts");
   assert.doesNotMatch(
     hook,
     /attachmentAudioSrc/,
@@ -83,7 +78,7 @@ test("the audio data URL is built in the dialog, not on every attachment tile", 
   );
   assert.match(hook, /audio: source\.audio/);
 
-  const preview = source("components/assistant-ui/attachment-preview.tsx");
+  const preview = readSrc("components/assistant-ui/attachment-preview.tsx");
   const body = preview.indexOf("const AttachmentAudioBody");
   assert.notEqual(body, -1, "no component owns the audio data URL");
   assert.equal(
@@ -125,7 +120,7 @@ test("the attachment selector still resolves text and image attachments", () => 
 // every stateful preview/source branch needs the attachment identity as its own
 // reset boundary.
 test("attachment previews reset when an index is reused for another attachment", () => {
-  const attachment = source("components/assistant-ui/attachment.tsx");
+  const attachment = readSrc("components/assistant-ui/attachment.tsx");
   const ui = attachment.slice(
     attachment.indexOf("const AttachmentUI"),
     attachment.indexOf("const AttachmentRemove"),
@@ -151,7 +146,7 @@ test("attachment previews reset when an index is reused for another attachment",
 // throw leaves the user with no file and no reason, as the audio adapter's
 // toast avoids.
 test("the pdf and docx adapters refuse an oversized file at add, with a toast", () => {
-  const provider = source("features/chat/runtime-provider.tsx");
+  const provider = readSrc("features/chat/runtime-provider.tsx");
 
   // DOCX also has to clear its per-part bound at add: a small archive can
   // still declare a part mammoth would inflate past the cap.
