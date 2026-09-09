@@ -112,6 +112,11 @@ def nvfp4_linear_class():
                 return flat.new_zeros((0, self.out_features)).reshape(
                     *shape[:-1], self.out_features
                 )
+            # The guard stays under torch.compile. It is a live context manager inside a traced
+            # region, which is a plausible graph break, so it was measured: a two-layer NVFP4 block
+            # compiles fullgraph to ONE graph with zero breaks on torch 2.12
+            # (test_a_two_layer_block_compiles_fullgraph). Free, and the alternative is a launch
+            # that can reach the card the process is not currently on.
             with _device_guard(flat):
                 xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                 out = torch.ops.unsloth_nvfp4.mm(

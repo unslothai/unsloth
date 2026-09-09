@@ -89,6 +89,27 @@ def _device_guard(t: Any):
 
     See this module's docstring: FlashInfer installs no device guard of its own, and launching its
     cutlass kernels against a foreign current device bricks the card rather than raising.
+
+    The audited sites, which is the whole list and is what the AST test enforces:
+
+    1. ``_quantize_impl`` -- the activation quantiser.
+    2. ``_mm_impl`` -- spans the ordering barrier AND the GEMM, because the barrier has to fire on
+       the same device the GEMM will read from; two separate guards would be two chances to get it
+       wrong.
+    3. the dispatch plan builder (``diffusion_nvfp4_dispatch.gemm_plan``): ``_get_cache_buf``
+       allocates the workspace on the CURRENT device, ``get_cutlass_fp4_gemm_module`` and
+       ``AutoTuner.choose_one`` both launch, and ``choose_one`` in particular launches every
+       candidate tactic while profiling.
+    4. ``nvfp4_preflight`` -- the probe, which is the one call that exists to find a bad device.
+    5. ``nvfp4_prewarm`` in ``diffusion_nvfp4_linear`` -- the warm-up entry, whose whole job is to
+       run the GEMM outside the request path.
+
+    The traced layer ``forward`` keeps its guard too. A live context manager inside a traced region
+    is a plausible graph break, so this was measured rather than assumed: on torch 2.12 a two-layer
+    NVFP4 block with the guard in ``forward`` compiles ``fullgraph = True`` to one graph with zero
+    breaks (``test_a_two_layer_block_compiles_fullgraph``). Since it costs no graph, it stays --
+    inductor's own wrapper opens a device guard for the generated code, but the eager prologue that
+    reaches the custom op is not obviously inside it, and being wrong here costs a card.
     """
     import torch
     return torch.cuda.device(t.device)

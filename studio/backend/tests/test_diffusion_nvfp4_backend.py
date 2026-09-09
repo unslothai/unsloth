@@ -237,11 +237,43 @@ def test_every_flashinfer_launch_in_the_nvfp4_modules_sits_inside_a_device_guard
     assert not offences, "\n".join(offences)
 
 
-def test_the_modules_never_set_the_current_stream():
-    # ``torch.cuda.set_stream`` silently sets the current DEVICE as well, which is the exact
-    # mistake the device guard exists to prevent.
+_STREAM_BANNED = ("set_stream", "set_device", "setDevice")
+
+
+def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
+    """Lines that switch the current device or stream behind the guard's back.
+
+    ``torch.cuda.set_stream`` silently sets the current DEVICE as well (it is documented as a
+    stream call and is not one), and ``set_device`` moves the very thing the guard restores. Both
+    are the exact mistake the device guard exists to prevent, and both cost cards on this host.
+    Matched on the ATTRIBUTE rather than by substring so that a local named ``reset_stream_cache``
+    does not read as an offence and so that an aliased ``cuda.set_stream`` still does.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
+            found.append((node.lineno, _dotted(node) or node.attr))
+        elif isinstance(node, ast.Name) and node.id in _STREAM_BANNED:
+            found.append((node.lineno, node.id))
+    return found
+
+
+def test_the_banned_call_detector_sees_an_aliased_set_stream():
+    assert _banned_stream_calls("import torch\ncuda = torch.cuda\ncuda.set_stream(s)\n")
+    assert _banned_stream_calls("from torch.cuda import set_device\nset_device(1)\n")
+    # A name that merely CONTAINS one of the tokens is not an offence, which is what the previous
+    # substring check could not tell apart.
+    assert not _banned_stream_calls("def reset_stream_cache():\n    return None\n")
+
+
+def test_the_modules_never_set_the_current_stream_or_device():
+    offences: list[str] = []
     for path in _nvfp4_sources():
-        assert "set_stream" not in path.read_text(encoding = "utf-8"), path.name
+        offences += [
+            f"{path.name}:{line}: {name} switches the current device behind the guard"
+            for line, name in _banned_stream_calls(path.read_text(encoding = "utf-8"))
+        ]
+    assert not offences, "\n".join(offences)
 
 
 # ── T-16: the fake shapes ─────────────────────────────────────────────────────────────────────
