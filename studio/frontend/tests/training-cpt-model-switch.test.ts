@@ -16,6 +16,9 @@ const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { useTrainingConfigStore } = await import(
   "../src/features/training/stores/training-config-store.ts"
 );
+const { countNonDefaultAdvancedSettings } = await import(
+  "../src/features/studio/wizard/advanced-settings-summary.ts"
+);
 
 const LLAMA_TARGETS = [
   "q_proj",
@@ -561,4 +564,51 @@ test("a target-modules edit does not strand the previous model adapter params", 
   assert.equal(state.loraRank, 64);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
+});
+
+test("leaving CPT does not report untouched adapter params as modified", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() =>
+    Promise.resolve(
+      Response.json({
+        id: "old/llama",
+        config: {
+          lora: {
+            lora_r: 8,
+            lora_alpha: 8,
+            target_modules: [...LLAMA_TARGETS],
+          },
+        },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    ),
+  );
+  // The model is chosen while CPT is already active, so the baseline is frozen
+  // during CPT -- the case where its LoRA half used to keep CPT's own triple.
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+  await waitForModelDefaults("old/llama");
+
+  // Inside CPT the summary reads CPT's own values, so nothing is modified there.
+  const inCpt = useTrainingConfigStore.getState();
+  assert.equal(
+    countNonDefaultAdvancedSettings(inCpt, inCpt.advancedSettingsBaseline),
+    0,
+  );
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.loraRank, 8);
+  assert.equal(state.loraAlpha, 8);
+  assert.equal(
+    countNonDefaultAdvancedSettings(state, state.advancedSettingsBaseline),
+    0,
+  );
 });

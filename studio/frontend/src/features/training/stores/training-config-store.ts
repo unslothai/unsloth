@@ -314,9 +314,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const cptTargetOverrides = shouldApplyCptTargetDefaults
               ? { targetModules: cptDefaultsPatch.targetModules }
               : {};
+            // Of the values CPT forces, only trainOnCompletions belongs in the summary
+            // baseline. The adapter rank, alpha, variant and targets are not the
+            // model's defaults, and the summary compares against this baseline once
+            // the user has left CPT; inside CPT it reads CPT's own values instead.
+            const cptBaselineOverride = {
+              trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
+            };
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
-              ...(get().trainingMethod === "cpt" ? cptDefaultsPatch : {}),
+              ...(get().trainingMethod === "cpt" ? cptBaselineOverride : {}),
             };
             const advancedSettingsBaseline =
               get().advancedSettingsBaseline ?? modelDefaultsBaseline;
@@ -408,10 +415,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   : {}),
               advancedSettingsBaseline: shouldApplyTrainingDefaults
                 ? modelDefaultsBaseline
-                : shouldApplyCptTargetDefaults
+                : shouldApplyCptTargetDefaults &&
+                    modelDefaultsPatch.targetModules !== undefined
                   ? {
                       ...advancedSettingsBaseline,
-                      targetModules: cptDefaultsPatch.targetModules,
+                      targetModules: modelDefaultsPatch.targetModules,
                     }
                   : advancedSettingsBaseline,
               modelType: inferredModelType,
