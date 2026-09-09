@@ -98,6 +98,30 @@ test("a scan that never happened does not retire a job", () => {
   assert.equal(idleProbeVerdict(0, null, null, undefined), "gone");
 });
 
+test("live idle polls retire an explicitly missing target before the grace period", () => {
+  const src = readFileSync(
+    new URL(
+      "../src/features/hub/download-manager/poll-loop.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = src.indexOf("function handleIdleAfterProgress");
+  const end = src.indexOf("\nfunction handleTickError", start);
+  const handler = src.slice(start, end);
+
+  assert.match(
+    handler,
+    /idleProbeVerdict\([\s\S]*progressResp\.target_present[\s\S]*\) === "gone"/,
+    "an authoritative missing-target response must bypass the idle grace period",
+  );
+  assert.match(
+    src,
+    /handleIdleAfterProgress\(rt, key, madeProgress, progressResp\)/,
+    "the live poll must pass its progress response to the idle verdict",
+  );
+});
+
 test("the held-transfer marker travels with the counters it describes", () => {
   // Keeping the bytes while dropping it restores undefined, which reads as
   // measured, and the row goes back to "0 B left".

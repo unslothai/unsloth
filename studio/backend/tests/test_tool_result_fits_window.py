@@ -481,7 +481,7 @@ class TestEveryToolIsHeldToTheRoom:
         monkeypatch.setattr(
             tools.mcp_servers_db,
             "get_server",
-            lambda _id: {"url": "https://example.invalid/mcp", "is_enabled": True},
+            lambda _id: {"id": "srv", "url": "https://example.invalid/mcp", "is_enabled": True},
         )
         monkeypatch.setattr(tools, "parse_server_headers", lambda _s: {})
         monkeypatch.setattr(tools, "is_stdio", lambda _u: False)
@@ -616,7 +616,7 @@ class TestTheFrontendEnvelopeSurvivesTheCap:
         monkeypatch.setattr(
             tools.mcp_servers_db,
             "get_server",
-            lambda _id: {"url": "https://example.invalid/mcp", "is_enabled": True},
+            lambda _id: {"id": "srv", "url": "https://example.invalid/mcp", "is_enabled": True},
         )
         monkeypatch.setattr(tools, "parse_server_headers", lambda _s: {})
         monkeypatch.setattr(tools, "is_stdio", lambda _u: False)

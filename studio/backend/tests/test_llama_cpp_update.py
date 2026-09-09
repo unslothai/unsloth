@@ -67,7 +67,17 @@ _REAL_POPEN = subprocess.Popen
 
 
 def _installer_command(cmd) -> bool:
-    return any("install_llama_prebuilt" in str(part) for part in cmd)
+    """An INSTALL spawn, not one of the installer's read-only resolvers.
+
+    The same script answers --resolve-prebuilt / --resolve-backends, and the status
+    poll runs one to spot a drifted automatic backend. Faking those would hand the
+    caller's captured argv to a probe instead of to the install, which is the #8170
+    failure the docstring below describes, arriving from inside this module.
+    """
+    parts = [str(part) for part in cmd]
+    if not any("install_llama_prebuilt" in part for part in parts):
+        return False
+    return not any(part.startswith("--resolve-") for part in parts)
 
 
 def _patch_installer_popen(
@@ -144,6 +154,7 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
     # Isolate the freshness disk cache so the suite never writes the real
     # ~/.unsloth cache (the default when storage_roots can't be imported).
     monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".freshness_cache")
@@ -159,6 +170,7 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
 
 
 def _no_prebuilt(monkeypatch):

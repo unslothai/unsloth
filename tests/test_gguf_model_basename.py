@@ -52,8 +52,8 @@ def _load_helper():
 
 
 # Table A: the basename contract.
-# (label, config._name_or_path, expected model_name)
-# Rows marked REGRESSION must be byte-identical to the old .split("/")[-1].
+# (label, config._name_or_path, expected model_name) Rows marked REGRESSION must be byte-identical to the old
+# .split("/")[-1].
 _TABLE_A = [
     # -- REGRESSION rows: behaviour must not change -------------------------
     ("hf_id", "unsloth/Qwen3-8B", "Qwen3-8B"),
@@ -144,7 +144,6 @@ def test_helper_is_idempotent():
 
 
 # The join arithmetic this protects (real ntpath, no mocking).
-
 _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 
 
@@ -173,9 +172,6 @@ def test_unfixed_derivation_really_did_escape():
     escaped = ntpath.join(_GGUF_DIR, f"{broken}.Q5_K_M.gguf")
     assert escaped == r"D:\Models\Merged Models\MyModel.Q5_K_M.gguf"
     assert ntpath.dirname(escaped) != _GGUF_DIR
-
-
-# Source guards.
 
 
 def _gguf_func_src(name: str) -> str:
@@ -218,7 +214,6 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
     fn = ast.parse(body).body[0]
 
     def _is_locals_snapshot(stmt) -> bool:
-        # `arguments = dict(locals())`
         if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Call):
             return False
         call = stmt.value

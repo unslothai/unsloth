@@ -9,6 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
@@ -73,6 +74,27 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
       model,
     );
     assert.equal(getExternalMaxOutputTokens("openai", model), 128000, model);
+  }
+});
+
+test("Astra exposes mandatory reasoning with its full effort ladder", () => {
+  const caps = getExternalReasoningCapabilities("openai_codex", "gpt-6-astra");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.deepEqual(
+    [...caps.reasoningEffortLevels],
+    ["low", "medium", "high", "xhigh", "max"],
+  );
+  for (const effort of ["none", "minimal"] as const) {
+    assert.equal(clampReasoningEffortToLevels(effort, caps.reasoningEffortLevels), "low");
+  }
+  assert.equal(clampReasoningEffortToLevels("max", caps.reasoningEffortLevels), "max");
+});
+
+test("Astra reasoning does not enable unrelated model families", () => {
+  for (const model of ["gpt-6-other", "gpt-60-astra"]) {
+    assert.equal(getExternalReasoningCapabilities("openai_codex", model).supportsReasoning, false);
   }
 });
 
@@ -149,8 +171,9 @@ test("ChatGPT subscription models expose Unsloth-owned search and code tools", (
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
     "gpt-5.4": { vision: true, studio_tools: true },
     "gpt-5.6-sol": { vision: true, studio_tools: true },
+    "gpt-6-astra": { vision: true, studio_tools: true },
   });
-  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol"]) {
+  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol", "gpt-6-astra"]) {
     const caps = getExternalReasoningCapabilities("openai_codex", model);
     assert.equal(caps.supportsReasoning, true, model);
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);

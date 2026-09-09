@@ -1031,8 +1031,10 @@ class CellRunner:
             # The harness layer's attestation, load-bearing rather than decorative:
             # `scoring/schema._walk_for_bare_zeros` rejects a bare zero with no sibling `*_attempted` flag,
             # and this block has legitimate zeros -- a thread with no mounted code blocks records
-            # `code_token_spans: 0`, and Chromium coarsens `performance.now()` to 100 us.
-            # Which is what `forced_layout_ms` is built from.
+            # `code_token_spans: 0`, and `blur_inpage_ms` and `forced_layout_ms` come from
+            # `performance.now()`, which Chromium coarsens to 100 us outside a cross-origin-isolated
+            # context, so an operation shorter than that reads exactly 0. Without this flag `--report`
+            # refuses the whole payload of a completed probe run.
             "click_attribution_attempted": True,
             "first_touch_ms": decay[0],
             "settled_touch_ms": min(decay[1:]),

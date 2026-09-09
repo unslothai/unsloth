@@ -266,12 +266,6 @@ function liveDownloadInventoryRows(
           inventory_id: cachedInventoryId(modelFormat, job.repoId),
           load_id: job.repoId,
           model_format: modelFormat,
-          runtime:
-            modelFormat === "gguf"
-              ? "llama_cpp"
-              : modelFormat === "safetensors"
-                ? "transformers"
-                : "unknown",
           size_bytes: job.displayBytes,
           // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
@@ -547,7 +541,6 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
-          runtime: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),
           updatedAt: normalizeTimestamp(ds.updated_at),

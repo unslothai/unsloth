@@ -128,7 +128,16 @@ _SHARED_PAYLOAD = {
         "libggml-cpu.so",
         "libmtmd.so",
     ],
-    "windows": ["llama.dll"],
+    # Written unconditionally: the check is "has", not "has only".
+    "windows": [
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "mtmd.dll",
+    ],
     "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
 }
 _BACKEND_PAYLOAD = {
@@ -534,6 +543,7 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     assert ILP.persisted_backend_request(install_dir) == expected
 
 
+# ---------------------------------------------------------------------------
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
     system = "Darwin",

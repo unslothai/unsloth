@@ -57,6 +57,74 @@ def _backend(
     return export_mod, backend, save_dir, cwd
 
 
+def _hub_doubles(export_mod, monkeypatch, calls: dict):
+    class _RepoUrl(str):
+        repo_id = "org/model"
+
+    class _HfApi:
+        def __init__(self, token = None):
+            calls["token"] = token
+
+        def create_repo(
+            self,
+            repo_id,
+            private = False,
+            exist_ok = False,
+        ):
+            calls["repo"] = {"repo_id": repo_id, "private": private}
+            return _RepoUrl("https://huggingface.co/org/model")
+
+        def update_repo_settings(
+            self,
+            repo_id,
+            private = None,
+            repo_type = None,
+        ):
+            calls["visibility"] = {"repo_id": repo_id, "private": private}
+
+        def repo_info(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            return None
+
+        def upload_file(
+            self,
+            path_or_fileobj,
+            path_in_repo,
+            repo_id,
+            repo_type = None,
+            commit_message = None,
+        ):
+            calls[path_in_repo] = path_or_fileobj
+
+        def upload_folder(
+            self,
+            folder_path,
+            repo_id,
+            repo_type,
+            allow_patterns = None,
+            ignore_patterns = None,
+        ):
+            calls["upload"] = folder_path
+
+    class _ModelCard:
+        def __init__(self, content):
+            calls["card"] = content
+
+        def push_to_hub(
+            self,
+            repo_id,
+            token = None,
+            commit_message = None,
+        ):
+            calls["card_repo"] = repo_id
+
+    monkeypatch.setattr(export_mod, "HfApi", _HfApi)
+    monkeypatch.setattr(export_mod, "ModelCard", _ModelCard)
+
+
 def _gguf(path: Path, payload: bytes = b"GGUF") -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(payload)
@@ -487,12 +555,15 @@ def test_local_gguf_export_forwards_the_token_for_the_upstream_imatrix(monkeypat
     assert calls["save"] == {"imatrix_file": True, "token": "hf_secret"}
 
 
-def test_hub_push_with_an_imatrix_passes_the_token_exactly_once(monkeypatch, tmp_path):
-    """push_to_hub_gguf already names token=, so the local extra must not reach it as well."""
+def test_hub_push_uploads_the_local_export_instead_of_converting_again(monkeypatch, tmp_path):
+    """push_to_hub_gguf would re-run the whole conversion into the system temp dir."""
     calls: dict = {}
-    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+    export_mod, backend, save_dir, _cwd = _backend(
+        monkeypatch, tmp_path, _imatrix_model(True, calls)
+    )
+    _hub_doubles(export_mod, monkeypatch, calls)
 
-    success, message, _p = backend.export_gguf(
+    success, message, output_path = backend.export_gguf(
         str(save_dir),
         "iq2_xxs",
         push_to_hub = True,
@@ -502,20 +573,20 @@ def test_hub_push_with_an_imatrix_passes_the_token_exactly_once(monkeypatch, tmp
     )
 
     assert success is True, message
-    assert calls["push"] == {
-        "repo_id": "org/model",
-        "token": "hf_secret",
-        "imatrix_file": True,
-        "private": False,
-    }
+    assert "push" not in calls
+    assert calls["token"] == "hf_secret"
+    assert calls["upload"] == output_path == str(save_dir.resolve())
 
 
 @pytest.mark.parametrize("imatrix_file", [None, False, True])
 @pytest.mark.parametrize("private", [True, False])
 def test_hub_push_gguf_forwards_private_flag(monkeypatch, tmp_path, imatrix_file, private):
-    """push_to_hub_gguf receives the requested private flag for both standard and imatrix exports."""
+    """The created repo receives the requested private flag for standard and imatrix exports."""
     calls: dict = {}
-    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+    export_mod, backend, save_dir, _cwd = _backend(
+        monkeypatch, tmp_path, _imatrix_model(True, calls)
+    )
+    _hub_doubles(export_mod, monkeypatch, calls)
 
     success, message, _p = backend.export_gguf(
         str(save_dir),
@@ -528,7 +599,7 @@ def test_hub_push_gguf_forwards_private_flag(monkeypatch, tmp_path, imatrix_file
     )
 
     assert success is True, message
-    assert calls["push"]["private"] is private
+    assert calls["repo"] == {"repo_id": "org/model", "private": private}
 
 
 def test_gguf_export_without_an_imatrix_does_not_forward_the_token(monkeypatch, tmp_path):
