@@ -797,7 +797,21 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    # Resolved here, before the stop pass: a loaded llama-server.exe under the master root keeps
+    # its own tree locked, and the removal below would exhaust its retries and leave it installed.
+    $masterRootToStop = _MasterRoot
+    $masterChildrenToStop = @()
+    if ($masterRootToStop -and -not (_IsUnsafeRoot $masterRootToStop)) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+            $childPath = Join-Path $masterRootToStop $childName
+            # Only the trees this uninstall is going to delete, so an unmarked neighbour's
+            # process is never killed.
+            if (Test-Path -LiteralPath (Join-Path $childPath ".unsloth-studio-owned") -PathType Leaf) {
+                $masterChildrenToStop += $childPath
+            }
+        }
+    }
+    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop) + @($masterChildrenToStop)
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
@@ -857,8 +871,15 @@ Environment:
             }
         }
         foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock",
-                                ".whisper.cpp.install.lock", ".sd.cpp.install.lock", ".staging")) {
+                                ".whisper.cpp.install.lock", ".sd.cpp.install.lock")) {
             _RemovePath (Join-Path $masterRoot $lockName)
+        }
+        # The prebuilt installers SHARE <root>\.staging and prune it only when empty, so
+        # anything left in it here is not ours: remove the directory only, never its contents.
+        $masterStaging = Join-Path $masterRoot ".staging"
+        if ((Test-Path -LiteralPath $masterStaging) -and
+            -not (Get-ChildItem -LiteralPath $masterStaging -Force -ErrorAction SilentlyContinue)) {
+            _RemovePath $masterStaging
         }
         if (Test-Path -LiteralPath $masterRoot) {
             foreach ($stale in @(Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue |

@@ -411,3 +411,28 @@ def test_both_uninstallers_clear_the_master_root_children():
     # storage_roots.studio_root().
     assert '_emit "$(_master_root)/studio"' in sh
     assert '$envRoot = (Join-Path $master "studio")' in ps
+
+
+def test_the_stop_pass_covers_the_master_root_runtimes():
+    """Windows locks a loaded executable, so a runtime still running under the master root has
+    to be stopped before its tree is removed or the delete exhausts its retries. _MasterRoot is
+    resolved before the stop pass, and only marker-owned children join it, so an unmarked
+    neighbour's process is never killed."""
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    stop_line = next(l for l in ps.splitlines() if l.strip().startswith("$stopRoots = "))
+    assert "$masterChildrenToStop" in stop_line, stop_line
+    block = _slice(ps, "$masterRootToStop = _MasterRoot", "$stopRoots = ")
+    assert ".unsloth-studio-owned" in block, block
+    assert "_IsUnsafeRoot $masterRootToStop" in block, block
+    assert ps.index("$masterRootToStop = _MasterRoot") < ps.index("_StopProcessesLockingRoots -Roots")
+
+
+def test_a_shared_staging_directory_is_pruned_not_deleted():
+    """The prebuilt installers share <root>/.staging and prune it only when empty, so anything
+    left in a user-chosen root is not ours to delete recursively."""
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    assert 'rmdir "$_mr_root/.staging"' in sh
+    assert '_remove_path "$_mr_root/.staging"' not in sh
+    staging = _slice(ps, "$masterStaging = Join-Path $masterRoot", "# Shared llama.cpp build")
+    assert "Get-ChildItem -LiteralPath $masterStaging" in staging, staging

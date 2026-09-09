@@ -88,6 +88,18 @@ mkdir -p "$MR5/node"
 run_block "$HOME" "  ~/tilde-root  "
 assert_nodir "padded tilde value resolved" "$MR5/node"
 
+echo "== a shared .staging keeps whatever is not ours =="
+MR6="$_TMP_ROOT/staged"
+mkdir -p "$MR6/node" "$MR6/.staging/somebody-elses"
+: > "$MR6/node/.unsloth-studio-owned"
+run_block "$HOME" "$MR6"
+assert_dir "a non-empty .staging is kept whole" "$MR6/.staging/somebody-elses"
+MR7="$_TMP_ROOT/staged-empty"
+mkdir -p "$MR7/node" "$MR7/.staging"
+: > "$MR7/node/.unsloth-studio-owned"
+run_block "$HOME" "$MR7"
+assert_nodir "an empty .staging is pruned" "$MR7/.staging"
+
 echo "== an unset or default root selects nothing =="
 got=$( ( HOME="$HOME"; export HOME; unset UNSLOTH_HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "unset UNSLOTH_HOME yields nothing" "$got" ""

@@ -601,9 +601,13 @@ _unsloth_uninstall_main() {
                 fi
             done
             for _mr_lock in .llama.cpp.install.lock .node.install.lock \
-                    .whisper.cpp.install.lock .sd.cpp.install.lock .staging; do
+                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
                 _remove_path "$_mr_root/$_mr_lock"
             done
+            # The prebuilt installers SHARE <root>/.staging and prune it only when empty, so
+            # anything left in it here is not ours. rmdir, not _remove_path: in a user-chosen
+            # root a recursive delete would take files an install was content to leave.
+            rmdir "$_mr_root/.staging" 2>/dev/null || true
             for _mr_stale in "$_mr_root"/.*.install.lock.stale.*; do
                 [ -e "$_mr_stale" ] && _remove_path "$_mr_stale"
             done
