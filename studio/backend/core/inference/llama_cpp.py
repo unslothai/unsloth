@@ -2526,30 +2526,6 @@ def _extract_model_size_b(model_id: str):
     return extract_model_size_b(model_id)
 
 
-# Tool support, matched on the Jinja construct rather than on one spelling of it. The literal
-# list this replaced held `"{%- if tools %}"` and three whitespace variants, so Granite 3.3
-# (`{%- if tools and not available_tools -%}`) and Phi-4-mini (tools on the system message)
-# read as tool-less. A false greys out the Search and Code pills, so the user cannot correct it.
-_TOOL_TEMPLATE_PATTERNS = (
-    # Any if/elif testing `tools`, whatever the trim markers, spacing or predicate.
-    # `\btools\b` keeps Llama 3.1's `builtin_tools` and `tools_in_user_message` out: those are
-    # separate switches and neither renders a schema.
-    re.compile(r"\{%[-+]?\s*(?:el)?if\b[^%]*\btools\b"),
-    # No guard at all, straight into the loop.
-    re.compile(r"\{%[-+]?\s*for\b[^%]*\bin\s+tools\b"),
-    # message.role == "tool" / message['role'] == 'tool', either quoting. Equality only:
-    # `role != "tool"` excludes tool turns, which is not evidence of handling them.
-    re.compile(r"""(?:\.role|\[\s*['"]role['"]\s*\])\s*==\s*['"]tool['"]"""),
-    re.compile(r"""['"]role['"]\s*==\s*['"]tool['"]"""),
-    # DeepSeek gates on tool_calls rather than on `tools`. Access or test only, so the bare
-    # word in a Jinja comment is not a capability.
-    re.compile(
-        r"""(?:\.tool_calls\b|\[\s*['"]tool_calls['"]\s*\]"""
-        r"""|\btool_calls\s+is\s+(?:defined|not\s+none))"""
-    ),
-)
-
-
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
@@ -2720,9 +2696,9 @@ def detect_reasoning_flags(
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
 
-    # "tool" first: one pass, and it skips the regex arms for most templates. This classifier
-    # is re-derived several times per request.
-    if "tool" in tpl and any(pattern.search(tpl) for pattern in _TOOL_TEMPLATE_PATTERNS):
+    from core.inference.template_capabilities import template_supports_tools
+
+    if isinstance(tpl, str) and template_supports_tools(tpl):
         flags["supports_tools"] = True
         _log(f"{prefix}model supports tool calling")
 
