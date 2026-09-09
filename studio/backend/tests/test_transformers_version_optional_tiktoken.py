@@ -180,3 +180,32 @@ def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypa
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_t5_latest_exists() is True
     assert installed == [("tiktoken", str(latest))]
+
+
+def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, monkeypatch):
+    """Workers activate tiers on their own: offline, none of them should sit through
+    network retries for a best-effort package, and two finding it absent at once must
+    not both write into the shared sidecar."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    packages = tv._VENV_T5_550_PACKAGES
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == []
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == []
+    monkeypatch.delenv("UV_OFFLINE")
+    # Another process holds the sidecar's top-up lock: this one leaves it to them.
+    with tv._optional_top_up_lock(str(root)) as held:
+        assert held is True
+        tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+        tv._top_up_optional_packages(str(root), packages)
+        assert installed == []
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == ["tiktoken"]
