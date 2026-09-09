@@ -20,8 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
-from utils.utils import hf_env_offline
+from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
@@ -329,6 +329,16 @@ def inspect_seed_dataset(
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
 
+    split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
+    subset = _normalize_optional_text(payload.subset)
+    # From the caller: a hardcoded False takes the ambient fallback from UI sessions too.
+    token = hf_token_arg(
+        _normalize_optional_text(payload.hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
+    preview_size = int(payload.preview_size)
+    refuse_unauthorized_dataset_preview(token, dataset_name)
+
     try:
         from datasets import load_dataset
     except ImportError as exc:
@@ -339,24 +349,6 @@ def inspect_seed_dataset(
             event = "data_recipe.seed.dependencies_unavailable",
             log = logger,
         ) from exc
-
-    split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
-    subset = _normalize_optional_text(payload.subset)
-    # From the caller, like every other Hub-reaching route: a hardcoded False would take
-    # the ambient fallback from UI sessions too.
-    token = hf_token_arg(
-        _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = allow_ambient_token,
-    )
-    preview_size = int(payload.preview_size)
-    if is_anonymous(token) and hf_env_offline():
-        # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
-        # never reaches an authorization check, so a previously cached private dataset would
-        # come back as rows. The check-format path refuses the same way.
-        raise HTTPException(
-            status_code = 404,
-            detail = "Dataset preview is not available without Hub authorization.",
-        )
 
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
