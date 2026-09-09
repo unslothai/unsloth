@@ -81,11 +81,7 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) closeDialog();
       }}
-    >
-      <div className="rounded-xl border border-border bg-popover px-6 py-4 text-popover-foreground shadow-xl">
-        {t("common.loading")}
-      </div>
-    </dialog>
+    />
   );
 }
 

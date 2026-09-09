@@ -237,6 +237,9 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
     2,
   );
   assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
+  // Keep the accessible loading name, but do not flash a button-like loading card.
+  assert.match(SETTINGS_MOUNT_SOURCE, /aria-label=\{t\("common\.loading"\)\}/);
+  assert.doesNotMatch(SETTINGS_MOUNT_SOURCE, />\s*\{t\("common\.loading"\)\}/);
   assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
   assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
   assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);

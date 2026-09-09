@@ -71,9 +71,11 @@ function RouteFallback() {
   const t = useT();
 
   return (
-    <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
-      {t("common.loading")}
-    </div>
+    <div
+      className="h-full min-h-0 flex-1"
+      role="status"
+      aria-label={t("common.loading")}
+    />
   );
 }
 
