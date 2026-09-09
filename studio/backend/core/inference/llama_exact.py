@@ -18,6 +18,7 @@ byte-identical output being unable to notice a downgrade).
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Mapping, Optional, Sequence
 
 
@@ -48,17 +49,16 @@ def normalize_setting(value: Any) -> Optional[str]:
 
 
 def _truthy(value: Optional[str]) -> bool:
-    """llama.cpp reads this variable with ``atoi() != 0``, so match that, plus the spellings a
-    person types where a C program would have read zero."""
+    """llama.cpp reads this variable with ``atoi() != 0``, so match that (the leading integer,
+    whatever follows it), plus the spellings a person types where a C program would have
+    read zero."""
     if value is None:
         return False
     text = value.strip().lower()
     if text in {"true", "yes", "on"}:
         return True
-    try:
-        return int(text, 10) != 0
-    except ValueError:
-        return False
+    leading = re.match(r"[+-]?\d+", text)
+    return leading is not None and int(leading.group(0), 10) != 0
 
 
 def child_flag_set(environ: Mapping[str, str]) -> bool:

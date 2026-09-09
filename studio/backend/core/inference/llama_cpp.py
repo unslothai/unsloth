@@ -23706,6 +23706,7 @@ class LlamaCppBackend:
                             "share the KV cache. Set it to 'on' to fail the load instead."
                         )
                 self._exact_parking_short = None
+                self._exact_host_short = None
                 self._server_park_notices = False
                 self._exact_pool_unknown = False
                 if _exact_wanted:
@@ -23749,16 +23750,21 @@ class LlamaCppBackend:
                                 _exact_draft_bytes // (1024 * 1024),
                                 n_parallel,
                             )
-                            # A cap, not an allocation: parks past what the host can give fail
-                            # their allocation and are re-prefilled, so say so up front.
+                            # A cap, not an allocation: a park past what the host can give
+                            # fails its allocation and is re-prefilled, so a budget the host
+                            # cannot back is judged like one too small.
                             _host_free_mib = _available_host_memory_mib()
                             if _host_free_mib is not None and _exact_budget > _host_free_mib:
+                                self._exact_host_short = (_exact_budget, _host_free_mib)
                                 self._record_load_warning(
                                     "Exact concurrency may park up to %d MiB of KV state in host "
                                     "RAM, and this host has %d MiB free. A park the host cannot "
-                                    "hold is re-prefilled, and that answer is not guaranteed "
-                                    "byte-identical." % (_exact_budget, _host_free_mib)
+                                    "hold is re-prefilled, which is not byte-identical. The load "
+                                    "will run without exact concurrency, or fail, depending on "
+                                    "the setting." % (_exact_budget, _host_free_mib)
                                 )
+                                if _exact_setting == _exact.EXACT_AUTO:
+                                    _exact_wanted = False
                         # An auto-fit context leaves the pool unknown, so no budget is sized: the
                         # server's default is judged after launch off the context it chose. A
                         # budget guessed here survives every abandoned attempt, parking unlimited.
@@ -26020,6 +26026,7 @@ class LlamaCppBackend:
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent: respawns rewrite them.
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
+                _exact_host_short = getattr(self, "_exact_host_short", None)
                 if (
                     _exact_short is not None
                     and _mtp_will_engage
@@ -26088,7 +26095,7 @@ class LlamaCppBackend:
                     args = _last_spawn_cmd or cmd,
                     supports_exact = _exact_running,
                     server_parks = self.server_preempts_kv,
-                    parking_holds = _exact_short is None,
+                    parking_holds = _exact_short is None and _exact_host_short is None,
                 )
                 if self._exact_concurrency == _exact.EXACT_STATE_UNAVAILABLE:
                     if not self.server_preempts_kv:
@@ -26108,6 +26115,12 @@ class LlamaCppBackend:
                             f" --preempt-ram {_exact_short[0]} MiB cannot hold the "
                             f"{_exact_short[1]} MiB of KV and draft state a park saves; raise it "
                             f"to at least {_exact_short[2]} MiB, or set an explicit context."
+                        )
+                    elif _exact_host_short is not None:
+                        _exact_why = (
+                            f" The {_exact_host_short[0]} MiB parking budget is more than the "
+                            f"{_exact_host_short[1]} MiB of host RAM free at load; free host "
+                            "memory, or lower the context or the slot count."
                         )
                     else:
                         _exact_why = ""

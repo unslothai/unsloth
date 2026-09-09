@@ -308,13 +308,19 @@ class TestTheNamedBudgetIsJudged:
             is None
         )
 
-    def test_a_budget_past_the_hosts_free_memory_is_warned_about(self, monkeypatch):
+    def test_a_budget_past_the_hosts_free_memory_is_a_shortfall(self, monkeypatch):
         # The budget is a cap the server parks up to, not an allocation: a park the host
-        # cannot hold fails its allocation and is re-prefilled, so the load says so.
+        # cannot hold fails its allocation and is re-prefilled, so it is judged like a
+        # budget too small: `auto` runs without the mode and `on` fails the load.
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
-        assert "_available_host_memory_mib()" in source[site : site + 900]
-        assert "_exact_budget > _host_free_mib" in source[site : site + 1200]
+        window = source[site : site + 1600]
+        assert "_available_host_memory_mib()" in window
+        assert "_exact_budget > _host_free_mib" in window
+        assert "self._exact_host_short = (_exact_budget, _host_free_mib)" in window
+        assert "if _exact_setting == _exact.EXACT_AUTO: _exact_wanted = False" in window
+        assert "parking_holds = _exact_short is None and _exact_host_short is None" in source
+        assert "self._exact_host_short = None" in source
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: None)
         assert llama_mod._available_host_memory_mib() is None
         real = llama_mod.__dict__["_available_host_memory_mib"]

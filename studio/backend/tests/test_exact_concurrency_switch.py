@@ -117,6 +117,15 @@ class TestTheSetting:
             ("true", True),
             ("on", True),
             ("yes", True),
+            # atoi reads the leading integer and stops, and reads nothing as zero.
+            ("1.0", True),
+            ("1foo", True),
+            (" +3 ", True),
+            ("-1", True),
+            ("0x1", False),
+            ("0.5", False),
+            ("foo1", False),
+            (".1", False),
         ],
     )
     def test_what_counts_as_an_inherited_variable_being_set(self, raw, set_):
