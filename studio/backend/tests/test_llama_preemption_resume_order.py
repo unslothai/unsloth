@@ -213,9 +213,9 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         epoch = controller.residency_epoch()
         controller.note_measured("raw")
         controller.note_resident(5000, started_at_seq = epoch)
-        assert controller.snapshot().committed == 9000, (
-            "a reading taken before the prefill swallowed the whole charge"
-        )
+        assert (
+            controller.snapshot().committed == 9000
+        ), "a reading taken before the prefill swallowed the whole charge"
         # The next probe starts after the mark, and that one does hold its cells.
         later = controller.residency_epoch()
         controller.note_resident(5000, started_at_seq = later)

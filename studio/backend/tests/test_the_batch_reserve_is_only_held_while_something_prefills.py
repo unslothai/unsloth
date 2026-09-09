@@ -429,7 +429,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
     def test_an_unusable_llama_arg_batch_falls_back_to_the_default(self):
         import routes.inference as inference
-
         class _Unstated:
             requested_n_batch = None
             _requested_n_batch = None
