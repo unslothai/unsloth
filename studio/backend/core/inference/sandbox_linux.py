@@ -391,9 +391,7 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         # shared scan's os.path.ismount compares device numbers and misses a
         # same-filesystem bind mount, which this recursive WRITABLE bind would
         # otherwise carry in.
-        nested = next(
-            (m for m in _host_mount_points() if m != path and _within(m, path)), None
-        )
+        nested = next((m for m in _host_mount_points() if m != path and _within(m, path)), None)
         hazard = f"contains a nested host mount: {nested}" if nested else cache_share_hazard(path)
         if hazard is not None:
             logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
