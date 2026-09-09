@@ -2198,13 +2198,17 @@ def _plan_at(
 
     if needed <= budget:
         gave_up = _knob_description(knobs, opts)
-        if n_devices > 1 and gave_up:
-            # A pooled fit is not a per-device fit, and a knob-only plan is emitted
-            # as ``-ngl -1 --fit off`` (llama_cpp.py:_spill_plan_flags_for), which
-            # takes llama.cpp's own per-device fitter out of the loop. A card that
-            # is still over then throws on load ("unable to allocate %s buffer" in
-            # llama_model_base::load_tensors) rather than loading slowly. Spilling
-            # plans already run this check; run it here too.
+        if n_devices > 1:
+            # A pooled fit is not a per-device fit, and a plan that spills nothing
+            # is still emitted as ``-ngl -1 --fit off`` whenever it reshapes the
+            # launch (llama_cpp.py:_spill_plan_flags_for): a knob it gave up, a
+            # context the ladder shrank, or a context the seam restores above the
+            # one Auto capped to, which this function cannot tell from a plain
+            # fit. All of those take llama.cpp's own per-device fitter out of the
+            # loop, and a card that is still over then throws on load ("unable to
+            # allocate %s buffer" in llama_model_base::load_tensors) rather than
+            # loading slowly. Spilling plans already run this check; run it for
+            # every fit across a split.
             uneven = _per_device_shortfall(
                 layout,
                 opts,
@@ -2223,8 +2227,9 @@ def _plan_at(
                 return Plan(
                     n_ctx = n_ctx,
                     reason = (
-                        f"the pooled budget fits after {gave_up}, but {uneven}; "
-                        "leaving llama.cpp's own fitter to place it"
+                        "the pooled budget fits"
+                        + (f" after {gave_up}" if gave_up else "")
+                        + f", but {uneven}; leaving llama.cpp's own fitter to place it"
                     ),
                 )
         return _finish(
@@ -2642,14 +2647,16 @@ def _cost_gate(
         # the measured vetoes above still apply.
         return None, 0.0, 0.0
 
-    # The prompt was priced per slot at the caller's slot count. Without a
-    # unified cache each remaining slot's window grows as rung 1 lowers the count,
-    # so the plan is scored at the window it will actually serve; under
-    # --kv-unified the window was the whole context already.
-    n_prompt = max(1, opts.workload_prompt_tokens)
-    caller_slots = max(1, opts.n_parallel)
-    if not opts.kv_unified and n_slots < caller_slots:
-        n_prompt = min(max(1, n_ctx // n_slots), n_prompt * caller_slots // n_slots)
+    # The workload is a request, and a request does not get longer because the
+    # server takes fewer of them at once: rung 1 lowering the slot count leaves
+    # it alone. (It was scaled by the old/new slot ratio here, which at four
+    # slots to one quadrupled the prompt, charged prefill once per micro-batch
+    # of a request that never launches, and swung the verdict.) What a slot
+    # count does bound is the window a slot can serve, the whole context under
+    # a unified cache and n_ctx / slots without one, so the prompt is capped
+    # there and nowhere else.
+    window = n_ctx if opts.kv_unified else n_ctx // n_slots
+    n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
     scored = rank(
         [plan, fallback],
         opts.host,

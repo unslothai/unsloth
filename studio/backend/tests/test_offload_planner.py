@@ -2648,3 +2648,21 @@ def test_layout_from_gguf_marks_a_latent_attention_cache():
         _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64)))).has_mla
         is False
     )
+
+
+def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_given_up():
+    """A no-spill plan is emitted as ``-ngl -1 --fit off`` whenever it reshapes
+    the launch, and a context the ladder shrank or the seam restores above the
+    Auto cap reshapes it as much as a knob does; the per-device check ran only
+    when a knob had been given up, so a pooled fit could pin a row split one
+    card cannot hold and the server threw on load."""
+    layout = _mixed_card_vision_layout()
+    opts = PlanOptions(overhead_bytes_per_device = 1 * GIB, pipeline_overhead_bytes = 0)
+    vram = [24 * GIB, 8 * GIB]
+    assert all_resident_bytes(layout, 8192) <= 30 * GIB  # the pool says yes
+    split = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
+    assert not split.priced and not split.spills_anything and not split.changed
+    assert "device 1" in split.reason and "fitter" in split.reason, split.reason
+    # One card holding the same pool is a plain fit.
+    whole = plan_placement(layout, [32 * GIB], 128 * GIB, 8192, opts = opts)
+    assert whole.priced and "fits in VRAM" in whole.reason

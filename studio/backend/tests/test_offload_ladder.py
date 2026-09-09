@@ -1125,10 +1125,13 @@ def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
     assert plain.kv_bytes_per_token_f16 == 24 * (32 + 32) * 2
 
 
-def test_the_gate_prices_the_prompt_at_the_window_the_reduced_slots_serve(monkeypatch):
-    """Rung 1 gives each remaining slot a larger private window, so the prompt the
-    gate scores grows with it; under a unified cache it was the whole window
-    already and does not move."""
+def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypatch):
+    """A request does not get longer because the server takes fewer at once. The
+    gate scaled the prompt by the old/new slot ratio after rung 1, which at four
+    slots to one quadrupled it and charged prefill once per micro-batch of a
+    request that never launches; the prompt stays what the caller stated and is
+    only capped at the window a slot can serve, n_ctx / slots without a unified
+    cache and the whole context with one."""
     from core.inference import offload_planner as planner
 
     layout = graded_moe()
@@ -1158,12 +1161,22 @@ def test_the_gate_prices_the_prompt_at_the_window_the_reduced_slots_serve(monkey
     )
     plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
     assert plan.n_parallel == 1, plan.reason
-    assert seen and seen[-1] == 2048, seen
+    assert seen and seen[-1] == 1024, seen
     seen.clear()
     plan_placement(
         layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, kv_unified = True)
     )
     assert seen and seen[-1] == 1024, seen
+    # A request longer than a slot's window is capped there, and only there.
+    seen.clear()
+    wide = dict(base, workload_prompt_tokens = 8192, min_parallel = 2)
+    plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**wide))
+    assert seen and seen[-1] == ctx // 2, seen
+    seen.clear()
+    plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**wide, kv_unified = True)
+    )
+    assert seen and seen[-1] == ctx, seen
 
 
 def test_a_repeated_rung_class_is_walked_once():
