@@ -472,11 +472,8 @@ def test_a_stop_with_no_persisted_marker_still_reads_as_a_stop():
 
 
 def test_a_generation_that_failed_is_not_replayed_as_a_stop():
-    """A failed turn has the same empty shape, marked ``reason: "error"``.
-
-    Its prompt was never answered either, so it stays for the same reason a Stop's does, but
-    the cancelled label would tell the model the user stopped a response the backend dropped.
-    """
+    """A failed turn has the same empty shape under ``reason: "error"``. Its prompt was never
+    answered either, so it stays; the cancelled label would misreport why to the model."""
     for is_external in ("false", "true"):
         out = _run(
             _send_script(f"[{_user('first')}, {FAILED_UNMARKED}, {_user('second')}]", is_external)

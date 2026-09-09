@@ -1472,10 +1472,9 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
   );
 }
 
-/** A Stop with no output would otherwise serialise empty, so pruneOutboundHistory would
- *  drop the user prompt once a later turn follows it (#10428 after #10445). Nothing was
- *  yielded, so `status` is the only record left, and only `cancelled` there is a Stop:
- *  a failed generation must not be replayed to the model as one. */
+/** A Stop with no output serialises empty, so pruneOutboundHistory would drop the user
+ *  prompt once a later turn follows it (#10428 after #10445). Nothing was yielded, so
+ *  `status` is the only record left, and only `cancelled` there is a deliberate Stop. */
 function stoppedAssistantReplayText(message: RunMessage): string {
   const info = readIncompleteInfo(
     (message as { metadata?: unknown }).metadata,
