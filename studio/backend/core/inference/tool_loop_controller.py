@@ -870,25 +870,30 @@ def _is_file_entry(entry: object) -> bool:
 
 
 def _strip_images_sentinel(result: str) -> str:
-    """Drop a trailing ``__IMAGES__`` envelope, and only that.
+    """Drop the trailing ``__IMAGES__`` envelopes, and only those.
 
     Validated rather than split on sight, like the two above and like
     ``studio_tool_loop._carries_image_sentinel``: a tool whose own output quotes
     the marker would otherwise lose everything after it while the card the user
     reads still shows the whole result.
+
+    Peeled in a loop because a Gemini ``code_execution`` turn that drew two
+    figures stacks one envelope per ``inlineData`` part, and stopping after the
+    last one would replay the earlier plot's whole base64 data URI to the model.
     """
-    head, sep, payload = result.rpartition("\n__IMAGES__:")
-    if not sep:
-        return result
-    try:
-        images = json.loads(payload)
-    except (ValueError, RecursionError):
-        return result
-    if not isinstance(images, list) or not images:
-        return result
-    if not all(isinstance(image, str) and image for image in images):
-        return result
-    return head.rstrip()
+    while True:
+        head, sep, payload = result.rpartition("\n__IMAGES__:")
+        if not sep:
+            return result
+        try:
+            images = json.loads(payload)
+        except (ValueError, RecursionError):
+            return result
+        if not isinstance(images, list) or not images:
+            return result
+        if not all(isinstance(image, str) and image for image in images):
+            return result
+        result = head.rstrip()
 
 
 def _strip_rag_sources_sentinel(result: str) -> str:

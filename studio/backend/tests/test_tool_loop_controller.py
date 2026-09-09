@@ -307,6 +307,21 @@ def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
     )
 
 
+def test_two_plots_in_one_code_execution_turn_replay_no_base64():
+    """A Gemini `code_execution` turn that draws two figures stacks one envelope per
+    `inlineData` part (external_provider re-appends to the result it just emitted), so
+    peeling once would hand the model the earlier plot's whole data URI."""
+    first = "data:image/png;base64," + "A" * 64
+    second = "data:image/png;base64," + "B" * 64
+    stacked = (
+        "Figures saved."
+        + f"\n__IMAGES__:{json.dumps([first])}"
+        + f"\n__IMAGES__:{json.dumps([second])}"
+    )
+
+    assert strip_result_for_model(stacked, "code_execution") == "Figures saved."
+
+
 def test_the_card_text_keeps_digits_the_browser_would_round():
     """`JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the
     parsed arguments in the browser would show a record the tool is not being run with."""
