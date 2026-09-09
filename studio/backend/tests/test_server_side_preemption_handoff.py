@@ -361,6 +361,41 @@ class TestEverySignalTheClientReadsHasAProducer:
         }
 
 
+class TestTheAggregateReadingIsOnlyTheFallback:
+    """`requests_preempted` counts every request, so it cannot say that THIS stream is the parked
+    one: a stream stalled for its own reason was excused while an unrelated chat sat parked, and
+    one that had already resumed stayed excused. The per-request notices decide where the build
+    sends them; the aggregate is what is left for a swap build that predates them."""
+
+    def test_the_stream_wrapper_puts_the_notices_in_front_of_the_probe(self):
+        import inspect
+
+        opened = inspect.getsource(LlamaCppBackend._open_stream)
+        assert "stall_grace = self._server_park_grace if self.server_preempts_kv else None" in (
+            opened
+        )
+        wrapper = inspect.getsource(LlamaCppBackend._install_cancel_aware_read)
+        assert "ServerParkNotices(stall_grace)" in wrapper
+        assert "notices.excuses_silence()" in wrapper
+
+    def test_the_probe_itself_says_it_is_the_fallback(self):
+        doc = (LlamaCppBackend._server_park_grace.__doc__ or "").lower()
+        assert "aggregate" in doc and "fallback" in doc
+
+    def test_this_streams_notice_excuses_it_and_a_resume_ends_that(self):
+        asked = []
+        notices = preemption.ServerParkNotices(lambda: asked.append(1) or True)
+        notices.feed_line(": preempted")
+        assert notices.excuses_silence() is True
+        assert asked == [], "its own notice needs no /metrics read"
+        notices.feed_line(": resumed")
+        assert notices.excuses_silence() is False
+        assert asked == [], "a neighbour's park is not this stream's excuse"
+
+    def test_a_build_without_notices_keeps_the_old_behaviour(self):
+        assert preemption.ServerParkNotices(lambda: True).excuses_silence() is True
+
+
 class _Obj:
     pass
 

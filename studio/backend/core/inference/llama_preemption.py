@@ -33,6 +33,82 @@ _log = get_logger(__name__)
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
 DEFAULT_PREEMPT_ENABLED = True
 
+
+# The park notices a llama-server built with unslothai/llama.cpp#197 writes on the very stream it
+# parks, matched as bytes at the start of a line so a `data:` payload quoting one is not mistaken
+# for it. `llama_cpp` spells the same two comments for its own relay; a test pins the pair.
+_PARK_NOTICE_PARKED = b"\n: preempted"
+_PARK_NOTICE_RESUMED = b"\n: resumed"
+_PARK_NOTICE_TAIL = max(len(_PARK_NOTICE_PARKED), len(_PARK_NOTICE_RESUMED))
+
+
+class ServerParkNotices:
+    """One stream's own park state, with the aggregate `/metrics` probe behind it.
+
+    `requests_preempted` counts every request, so ANY stalled stream was excused while an
+    unrelated chat sat parked, and a stream that had already resumed stayed excused for as long
+    as the neighbour did. A build that writes the notices says which request is parked, so they
+    decide; the aggregate probe stays as the documented fallback for a swap build that predates
+    them (unslothai/llama.cpp#184), bounded by the same cap, and it stops applying to a stream
+    that has said anything about itself.
+    """
+
+    __slots__ = ("_probe", "_parked", "_heard", "_tail")
+
+    def __init__(self, probe: Optional[Callable[[], bool]] = None) -> None:
+        self._probe = probe
+        self._parked = False
+        self._heard = False
+        # A notice on the first body line has no newline in front of it yet.
+        self._tail = b"\n"
+
+    def feed(self, data) -> None:
+        """Read a piece of this stream's body for its own park notices."""
+        if not data or not isinstance(data, (str, bytes, bytearray)):
+            return
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        blob = self._tail + bytes(data)
+        parked_at = blob.rfind(_PARK_NOTICE_PARKED)
+        resumed_at = blob.rfind(_PARK_NOTICE_RESUMED)
+        if parked_at >= 0 or resumed_at >= 0:
+            self._heard = True
+            # Whichever came last: one read can carry a whole park and its resume.
+            self._parked = parked_at > resumed_at
+        self._tail = blob[-_PARK_NOTICE_TAIL:]
+
+    def feed_line(self, line) -> None:
+        """One line from a line-oriented source, which has stripped the newline the match reads
+        on. A line always starts one, so the carried tail is that newline."""
+        if isinstance(line, (str, bytes, bytearray)):
+            self._tail = b"\n"
+            self.feed(line)
+
+    @property
+    def heard_a_notice(self) -> bool:
+        """Whether this build says anything per request, which retires the aggregate probe."""
+        return self._heard
+
+    @property
+    def parked(self) -> bool:
+        return self._parked
+
+    def excuses_silence(self) -> bool:
+        """Whether this stream's silence is its own park. Blocks when it falls back to the probe,
+        so callers on an event loop run it off the loop as they did the probe itself."""
+        if self._parked:
+            return True
+        if self._heard:
+            # It said it resumed: whatever this silence is, it is not that park.
+            return False
+        if self._probe is None:
+            return False
+        try:
+            return bool(self._probe())
+        except Exception:
+            return False
+
+
 # `server` is llama-server's own --preempt-ram parking (unslothai/llama.cpp#184). Exclusive:
 # with both on, the lower Studio watermark always fires first.
 PREEMPT_MODE_ENV = "UNSLOTH_LLAMA_PREEMPT_MODE"

@@ -765,8 +765,13 @@ class TestTheParkGraceLivesBelowTheHttpxIterators:
         second = SimpleNamespace(extensions = {"network_stream": stream})
         one, two = (lambda: True), (lambda: False)
         assert inference._install_park_aware_read(first, one) is True
+        first_state = stream._unsloth_park_state
         assert inference._install_park_aware_read(second, two) is True
-        assert stream._unsloth_park_state["stall_grace"] is two
+        # A second request gets its own notice reader, so the first one's park is not this
+        # stream's excuse, and the aggregate probe behind it is the second's.
+        assert stream._unsloth_park_state is not first_state
+        assert stream._unsloth_park_state["park"].excuses_silence() is False
+        assert first_state["park"].excuses_silence() is True
         assert inference._install_park_aware_read(SimpleNamespace(extensions = {}), one) is False
 
     def test_every_raw_relay_reads_through_the_response(self):
@@ -866,8 +871,135 @@ class TestTheGraceStartsAtTheDeadlineAndTheProbeLeavesTheLoopAlone:
 
     def test_the_grace_above_the_iterator_asks_off_the_loop_too(self):
         source = inspect.getsource(inference._aiter_llama_stream_items)
-        assert "grace_above()" not in source
-        assert source.count("await _probe_off_the_loop(grace_above)") == 2
+        assert "park_above.excuses_silence()" not in source
+        assert source.count("await _probe_off_the_loop(park_above.excuses_silence)") == 2
+
+    def test_this_streams_own_park_excuses_it_without_asking_the_aggregate(self, monkeypatch):
+        import httpcore
+
+        asked = {"n": 0}
+
+        def probe():
+            asked["n"] += 1
+            return False
+
+        reads = [b": preempted\n\n", httpcore.ReadTimeout("parked"), b"data: a\n\n"]
+
+        async def read(max_bytes, timeout = None):
+            item = reads.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        stream = self._wrapped(monkeypatch, read, probe)
+
+        async def run():
+            first = await stream.read(65536, timeout = 1200.0)
+            return first, await stream.read(65536, timeout = 1200.0)
+
+        first, second = asyncio.run(run())
+        assert first == b": preempted\n\n" and second == b"data: a\n\n"
+        # The aggregate reading is never consulted: this stream said it was parked.
+        assert asked["n"] == 0
+
+    def test_a_stream_that_resumed_is_no_longer_excused_by_a_neighbours_park(self, monkeypatch):
+        import httpcore
+
+        # `/metrics` still counts the neighbour as parked; this stream has said it resumed, so
+        # its silence is its own stall and the relay must end rather than wait out the cap.
+        reads = [b": preempted\n\n: resumed\n\n", httpcore.ReadTimeout("stalled")]
+
+        async def read(max_bytes, timeout = None):
+            item = reads.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        stream = self._wrapped(monkeypatch, read, lambda: True)
+
+        async def run():
+            await stream.read(65536, timeout = 1200.0)
+            await stream.read(65536, timeout = 1200.0)
+
+        with pytest.raises(httpcore.ReadTimeout):
+            asyncio.run(run())
+
+
+class TestAStreamsOwnParkIsTheExcuse:
+    """`/metrics` counts every request, so the aggregate reading excused a stream stalled for its
+    own reason while an unrelated chat sat parked, and kept excusing one that had resumed."""
+
+    def test_the_notices_are_the_ones_the_backend_relays(self):
+        assert preemption_mod._PARK_NOTICE_PARKED == (
+            b"\n" + llama_mod._SERVER_PARKED_COMMENT.encode()
+        )
+        assert preemption_mod._PARK_NOTICE_RESUMED == (
+            b"\n" + llama_mod._SERVER_RESUMED_COMMENT.encode()
+        )
+
+    def test_a_park_this_stream_was_told_of_needs_no_probe(self):
+        notices = preemption_mod.ServerParkNotices(lambda: False)
+        notices.feed(b"data: a\n\n: preempted\n\n")
+        assert notices.parked is True
+        assert notices.excuses_silence() is True
+
+    def test_a_resume_retires_the_aggregate_for_this_stream(self):
+        notices = preemption_mod.ServerParkNotices(lambda: True)
+        notices.feed(b": preempted\n\n")
+        assert notices.excuses_silence() is True
+        notices.feed(b": resumed\n\n")
+        assert notices.parked is False
+        assert notices.heard_a_notice is True
+        assert notices.excuses_silence() is False
+
+    def test_one_read_carrying_both_takes_the_last(self):
+        notices = preemption_mod.ServerParkNotices(lambda: True)
+        notices.feed(b": preempted\n\n: resumed\n\n")
+        assert notices.excuses_silence() is False
+        notices.feed(b": resumed\n\n: preempted\n\n")
+        assert notices.excuses_silence() is True
+
+    def test_a_notice_split_across_two_reads_is_still_read(self):
+        notices = preemption_mod.ServerParkNotices(lambda: False)
+        notices.feed(b"data: a\n\n: preem")
+        assert notices.excuses_silence() is False
+        notices.feed(b"pted\n\n")
+        assert notices.excuses_silence() is True
+
+    def test_a_payload_quoting_a_notice_is_not_one(self):
+        # The notices are SSE comments, so they start a line; a model writing about one does not.
+        notices = preemption_mod.ServerParkNotices(lambda: False)
+        notices.feed(b'data: {"content":"the log said : preempted"}\n\n')
+        assert notices.heard_a_notice is False
+        assert notices.excuses_silence() is False
+
+    def test_a_build_that_sends_nothing_still_gets_the_aggregate(self):
+        assert preemption_mod.ServerParkNotices(lambda: True).excuses_silence() is True
+        assert preemption_mod.ServerParkNotices(lambda: False).excuses_silence() is False
+        assert preemption_mod.ServerParkNotices(None).excuses_silence() is False
+
+        def raises():
+            raise RuntimeError("/metrics is down")
+
+        assert preemption_mod.ServerParkNotices(raises).excuses_silence() is False
+
+    def test_a_line_oriented_source_is_read_the_same(self):
+        notices = preemption_mod.ServerParkNotices(lambda: False)
+        notices.feed_line("data: a")
+        notices.feed_line(": preempted")
+        assert notices.excuses_silence() is True
+        notices.feed_line(": resumed")
+        assert notices.excuses_silence() is False
+        # A non-text item from a parsed iterator is not a notice and must not raise.
+        notices.feed_line({"type": "preempt"})
+        assert notices.excuses_silence() is False
+
+    def test_the_backends_own_stream_reads_its_notices_too(self):
+        source = inspect.getsource(LlamaCppBackend._install_cancel_aware_read)
+        assert "notices = _preemption.ServerParkNotices(stall_grace)" in source
+        assert "notices.feed(data)" in source
+        assert "parked = notices.excuses_silence()" in source
+        assert "bool(stall_grace())" not in source
 
 
 class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:

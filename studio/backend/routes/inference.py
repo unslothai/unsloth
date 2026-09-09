@@ -109,6 +109,7 @@ from core.inference.llama_preemption import (
     DeferredPreemptionPolicy,
     PreemptSignal,
     ParticipantState,
+    ServerParkNotices,
     get_preemption_controller,
     preemption_eligible,
     read_slot_occupancy,
@@ -3597,10 +3598,11 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
     as `_install_cancel_aware_read` does for the synchronous streams.
 
     An async generator that raised is closed, so retrying `aiter_lines()` after a read timeout ends
-    the relay as if the parked answer were complete. Handled here instead: at the deadline the park
-    probe is asked, and a parked slot buys another read window, up to `_RAW_PARK_STALL_CAP_S`. The
-    live read timeout is re-read per call; the probe blocks, so it runs off the event loop. Returns
-    False when there is no stream to wrap."""
+    the relay as if the parked answer were complete. Handled here instead: at the deadline this
+    stream's own park notices are asked, with the aggregate probe behind them for a build that
+    sends none, and a park buys another read window, up to `_RAW_PARK_STALL_CAP_S`. The live read
+    timeout is re-read per call; the probe blocks, so it runs off the event loop. Returns False
+    when there is no stream to wrap."""
     import httpcore
 
     try:
@@ -3609,7 +3611,7 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
         stream = None
     if stream is None:
         return False
-    state = {"response": response, "stall_grace": stall_grace}
+    state = {"response": response, "park": ServerParkNotices(stall_grace)}
     if getattr(stream, "_unsloth_park_wrapped", False):
         # A kept-alive connection serves the next request: follow it, not the first one.
         stream._unsloth_park_state = state
@@ -3625,13 +3627,15 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
         live = _live_read_timeout(current["response"])
         effective = timeout if live is _NO_LIVE_READ_TIMEOUT else live
         if effective is None:
-            return await _orig(max_bytes, timeout = None)
+            data = await _orig(max_bytes, timeout = None)
+            current["park"].feed(data)
+            return data
         # The grace starts at the deadline, not at the read: the normal window is not park.
         crossed_at: Optional[float] = None
         window = effective
         while True:
             try:
-                return await _orig(max_bytes, timeout = window)
+                data = await _orig(max_bytes, timeout = window)
             except httpcore.ReadTimeout:
                 now = time.monotonic()
                 if crossed_at is None:
@@ -3640,13 +3644,17 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
                 if grace_left <= 0:
                     raise
                 # Asked only at the deadline, so an idle stream costs nothing.
-                if not await _probe_off_the_loop(current["stall_grace"]):
+                if not await _probe_off_the_loop(current["park"].excuses_silence):
                     raise
                 logger.info(
                     "llama stream silent for %.0fs with a slot parked by the server; waiting",
                     now - crossed_at + effective,
                 )
                 window = min(effective, grace_left)
+            else:
+                # This stream's own notices, read off the wire before anything above sees them.
+                current["park"].feed(data)
+                return data
 
     stream.read = read
     stream._unsloth_park_wrapped = True
@@ -3687,9 +3695,10 @@ async def _aiter_llama_stream_items(
     stall_grace: Optional[Callable[[], bool]] = None,
 ):
     """``stall_grace`` is asked each time the stall timeout would fire after the first item: True
-    excuses the silence for another stall window, up to ``_RAW_PARK_STALL_CAP_S``. It is the
-    backend's `/metrics` park probe (`_raw_park_grace`), a swap build predating the stream notices
-    being silent while parked, so a parked raw request was cut off as a stall. With an httpx
+    excuses the silence for another stall window, up to ``_RAW_PARK_STALL_CAP_S``. This stream's
+    own `: preempted` notice is the excuse where the build sends one; behind it is the backend's
+    aggregate `/metrics` probe (`_raw_park_grace`), for a swap build that predates the notices and
+    is silent while parked, so a parked raw request was cut off as a stall. With an httpx
     ``response`` the grace is applied below its iterators by `_install_park_aware_read`, an iterator
     that raised not being retryable."""
     if first_token_deadline is None:
@@ -3704,17 +3713,19 @@ async def _aiter_llama_stream_items(
         and stall_grace is not None
         and _install_park_aware_read(response, stall_grace)
     )
-    grace_above = None if grace_below else stall_grace
+    # Only when the grace was not installed below: there the wrapper reads the notices off the
+    # wire, and a second reader above it would only see what it already acted on.
+    park_above = None if grace_below or stall_grace is None else ServerParkNotices(stall_grace)
 
     async def _first_item_excused(now: float) -> bool:
         nonlocal first_token_deadline, first_deadline_crossed_at
-        if grace_above is None or _async_iterator_is_closed(async_iter):
+        if park_above is None or _async_iterator_is_closed(async_iter):
             return False
         if first_deadline_crossed_at is None:
             first_deadline_crossed_at = now
         if now - first_deadline_crossed_at >= _RAW_PARK_STALL_CAP_S:
             return False
-        parked = await _probe_off_the_loop(grace_above)
+        parked = await _probe_off_the_loop(park_above.excuses_silence)
         if parked:
             first_token_deadline = now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         return parked
@@ -3782,11 +3793,11 @@ async def _aiter_llama_stream_items(
                 raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
             if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
                 continue
-            if grace_above is not None and timeout_s is not None:
+            if park_above is not None and timeout_s is not None:
                 if park_since is None:
                     park_since = last_item_at
                 if now - park_since < _RAW_PARK_STALL_CAP_S:
-                    if await _probe_off_the_loop(grace_above):
+                    if await _probe_off_the_loop(park_above.excuses_silence):
                         last_item_at = now
                         continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
@@ -3798,6 +3809,9 @@ async def _aiter_llama_stream_items(
             _set_stream_response_read_timeout(response, _post_first_timeout_s())
         last_item_at = time.monotonic()
         park_since = None
+        if park_above is not None:
+            # `aiter_lines` strips the newline the notices are matched on.
+            park_above.feed_line(item)
         yield item
 
 

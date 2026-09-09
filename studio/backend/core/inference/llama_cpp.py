@@ -6989,8 +6989,10 @@ class LlamaCppBackend:
         return _preemption.resolve_preempt_mode(True) == _preemption.PREEMPT_MODE_SERVER
 
     def _server_park_grace(self) -> bool:
-        """Consulted only when the stall timeout would fire: is a slot parked right now? A swap
-        build predating the stream comments is silent while parked, and `/metrics` says so."""
+        """The AGGREGATE park reading, and the legacy fallback only: `requests_preempted` counts
+        every request, so it cannot say that THIS stream is the parked one. A build that writes
+        the stream notices is read per request instead (`ServerParkNotices`); this is what is
+        left for a swap build predating them, which is silent for the whole park."""
         try:
             from core.inference.llama_stats import scrape_llama_metrics
 
@@ -29291,13 +29293,18 @@ class LlamaCppBackend:
         given ``response`` we re-read the live value per call to honor the post-first-token
         stall timeout instead of the long prefill timeout.
 
-        ``preempt_event`` aborts the same way, indistinguishable to the read. ``stall_grace``, asked
-        at each read timeout, waits again up to ``_SERVER_PARK_STALL_CAP_S``: a raised iterator is done.
+        ``preempt_event`` aborts the same way, indistinguishable to the read. At each read timeout
+        this stream's own `: preempted` notice excuses the silence, with ``stall_grace`` (the
+        aggregate `/metrics` probe) behind it for a build that sends no notices; either way the wait
+        is bounded by ``_SERVER_PARK_STALL_CAP_S``, a raised iterator being done.
         """
         import httpcore
 
         if preempt_event is not None:
             cancel_event = _interrupt_event(cancel_event, preempt_event)
+        # One per stream: `max_keepalive_connections = 0`, so the connections wrapped below serve
+        # this request only.
+        notices = _preemption.ServerParkNotices(stall_grace)
 
         def _live_read_timeout() -> Optional[float]:
             if response is None:
@@ -29346,10 +29353,7 @@ class LlamaCppBackend:
                         grace_left = crossed_at + _SERVER_PARK_STALL_CAP_S - now
                         if grace_left <= 0:
                             return None
-                        try:
-                            parked = bool(stall_grace())
-                        except Exception:
-                            parked = False
+                        parked = notices.excuses_silence()
                         if not parked:
                             return None
                         logger.info(
@@ -29373,7 +29377,7 @@ class LlamaCppBackend:
                                 raise httpcore.ReadTimeout("read operation timed out")
                             step = min(poll_s, remaining)
                         try:
-                            return _orig(max_bytes, timeout = step)
+                            data = _orig(max_bytes, timeout = step)
                         except httpcore.ReadTimeout:
                             if deadline is not None and time.monotonic() >= deadline:
                                 deadline = _parked_by_the_server()
@@ -29381,6 +29385,9 @@ class LlamaCppBackend:
                                     continue
                                 raise
                             continue  # slow but alive: keep reading
+                        # This stream's own notices, before anything above it parses a line.
+                        notices.feed(data)
+                        return data
 
                 stream.read = read
                 stream._unsloth_cancel_wrapped = True
