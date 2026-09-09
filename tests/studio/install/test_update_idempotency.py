@@ -547,21 +547,6 @@ def diff(before: dict, after: dict) -> list[str]:
 # ── run 1 and run 2 ──
 
 
-@pytest.fixture(scope = "session")
-def desktop_path(install) -> bool:
-    """Whether a non-local update can short-circuit: True only when the installed
-    version is the one PyPI would hand back.
-
-    Which EXPECTATIONS apply, not whether the case runs. The measurement a version
-    mismatch invalidates is the fast path itself; everything a `studio update` must
-    never do -- refetch a llama.cpp release, list a GitHub release, refetch a Node
-    tarball -- holds whether or not unsloth itself is being upgraded, and dropping
-    those assertions is how a regression in them reaches a release unnoticed.
-    """
-    installed, latest = _installed_version(install), _pypi_latest()
-    print(f"[idempotency] installed={installed!r} pypi={latest!r}", flush = True)
-    return bool(installed) and installed == latest
-
 
 @pytest.fixture(scope = "session")
 def settled(install, tmp_path_factory):
@@ -746,6 +731,17 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     assert untouched == [], (
         "a pass with no evidence redid work on already-valid components: " + ", ".join(untouched)
     )
+    # Names and versions cannot see a reinstall at the same version; the RECORD mtime can.
+    # --local reinstalls the checkout's own two packages on every pass (a local directory
+    # is never "already satisfied"), so those are expected to move; nothing else may.
+    local_core = {"unsloth", "unsloth-zoo", "unsloth_zoo"}
+    was = {tuple(record) for record in before["dist_records"]}
+    moved = sorted(
+        record[0]
+        for record in after["dist_records"]
+        if tuple(record) not in was and record[0] not in local_core
+    )
+    assert moved == [], "a pass with no evidence reinstalled: " + ", ".join(moved)
 
 
 def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled):
@@ -798,8 +794,12 @@ def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
     no requirements digest sees), so there would be nothing to observe. That gate is
     covered by tests/studio/install/test_dependency_pass_skips.py.
     """
-    _directory, before = settled
-    manifest = before["manifest"]
+    _directory, _before = settled
+    # The manifest on disk now, not the settled snapshot's copy: the fault case before this
+    # one deleted and regenerated it, and the regenerated one is what the next update's
+    # skips read, so it is the one that has to carry the evidence.
+    manifest_path = install.parent.parent / "unsloth_install_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     assert manifest is not None, "the install finished without a manifest"
     inputs = manifest.get("pass_inputs")
     assert isinstance(inputs, dict) and inputs, "no pass_inputs recorded"
@@ -855,13 +855,34 @@ def test_the_install_is_left_working(install, settled):
 
 
 def test_the_harness_measures_a_real_proxy(tmp_path):
-    """A proxy that silently failed to start would make every assertion above pass."""
-    module = _load_proxy_module()
-    process, url, log_path = _start_proxy(tmp_path, "--refuse")
-    try:
-        import urllib.error
-        import urllib.request
+    """A proxy that silently failed to start would make every assertion above pass, and
+    so would one that relays a tunnel without counting its bytes: the byte ceilings are
+    the only bound on hosts that are allowed through. So both halves are exercised: a
+    refused CONNECT, and an allowed one carrying a response of known size."""
+    import http.server
+    import socket
+    import threading
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlsplit
 
+    body = b"x" * 4096
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    upstream = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target = upstream.serve_forever, daemon = True).start()
+    module = _load_proxy_module()
+    process, url, log_path = _start_proxy(tmp_path, "--deny-hosts", "pypi.org")
+    try:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({"http": url, "https": url})
         )
@@ -877,11 +898,42 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
         # loudly rather than be papered over, hence the deadline and the failure below.
         if not _wait_until(lambda: module.summary(str(log_path))["connections"] >= 1):
             pytest.fail(f"the proxy answered 403 but never journalled the connection: {log_path}")
+        # An allowed tunnel, driven by hand: CONNECT to the local server, then a plain
+        # GET through it, and the bytes that came back must be the bytes the journal
+        # attributes to that host.
+        proxy = urlsplit(url)
+        port = upstream.server_address[1]
+        with socket.create_connection((proxy.hostname, proxy.port), timeout = 30) as tunnel:
+            tunnel.sendall(
+                f"CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
+            )
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = tunnel.recv(4096)
+                assert chunk, "the proxy closed the tunnel before answering CONNECT"
+                head += chunk
+            assert head.split(b"\r\n", 1)[0].split()[1] == b"200", head
+            tunnel.sendall(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            received = b""
+            while True:
+                chunk = tunnel.recv(65536)
+                if not chunk:
+                    break
+                received += chunk
+        assert received.endswith(body), received[:200]
+        counted = lambda: module.summary(str(log_path))["by_host"].get("127.0.0.1", {}).get("bytes_down", 0)
+        if not _wait_until(lambda: counted() >= len(body)):
+            pytest.fail(
+                f"the proxy relayed {len(received)} bytes but journalled {counted()} for the host: {log_path}"
+            )
     finally:
         process.terminate()
         process.wait(timeout = 10)
+        upstream.shutdown()
     summary = module.summary(str(log_path))
-    assert summary["connections"] == 1 and summary["refused"] == 1
+    assert summary["connections"] == 2 and summary["refused"] == 1
+    assert summary["by_host"]["127.0.0.1"]["bytes_down"] >= len(body)
+    assert summary["by_host"]["pypi.org"]["bytes_down"] == 0
 
 
 # ── the desktop path, last ──
@@ -892,11 +944,13 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
 # fail on every version-bump commit with the offline behaviour perfectly correct.
 
 
-def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_path):
+def test_the_desktop_update_path_does_no_network_work(install, settled):
     """No --local: the flow the desktop app and the Repair button run. Its whole cost on
     a settled install should be one version check and the prebuilt HEADs.
 
-    Judged only when the version check short-circuits (desktop_path). With a version
+    Judged only when the version check short-circuited, read off the measured run's own
+    log rather than a separate request to PyPI made earlier (which can fail or see another
+    release than the one the update saw). With a version
     mismatch this run IS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
     whisper.cpp pins can differ from the checkout's, and an upgrade that rebuilds or
     downloads those is behaving correctly; a version bump would otherwise fail this
@@ -909,7 +963,9 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
     before = snapshot(install)
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
-    if not desktop_path:
+    print(f"[idempotency] installed={_installed_version(install)!r} pypi={_pypi_latest()!r}", flush = True)
+    took_fast_path = NO_WORK_MARKERS[0] in run.log
+    if not took_fast_path:
         # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
         # whisper.cpp pins can legitimately differ from the checkout's: it may rebuild or
         # download any of them, so nothing below can be asserted of it. What can is that
