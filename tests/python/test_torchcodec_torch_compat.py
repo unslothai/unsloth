@@ -1221,58 +1221,32 @@ def test_a_cuda_index_codec_also_installs_npp():
 
 
 def test_cuda_13_asks_for_the_unsuffixed_npp():
-    """`nvidia-npp-cu13` exists on PyPI but is a stub: version 0.0.1, summary "DEPRECATED: Use
-    nvidia-npp instead", sdist and no wheels. Asking for it does not fail, it builds NPP from
-    source on every clean machine, which is what the clean-machine gate caught:
-
-        ::error::built from source: nvidia-npp-cu13 -- these must resolve to wheels
-
-    Under --only-binary it is worse and silent: pip takes 0.0.0a0, a 1.1 kB placeholder whose
-    only module is an empty __init__.py, installs it happily, and torchcodec still cannot
-    dlopen libnppicc.
-
-    The 13.x runtime is plain `nvidia-npp`, which does publish manylinux aarch64 and x86_64
-    wheels."""
+    """`nvidia-npp-cu13` is a wheel-less stub, so asking for it builds from source (or takes a
+    1.1 kB placeholder under --only-binary); plain `nvidia-npp` is the 13.x runtime."""
     from studio.install_python_stack import _npp_requirement
 
-    # Suffixed through 12, where the suffixed names are the real ones.
     assert _npp_requirement("11") == "nvidia-npp-cu11"
     assert _npp_requirement("12") == "nvidia-npp-cu12"
-
-    # 13 and later take the unsuffixed name, bounded so the major cannot drift.
     assert _npp_requirement("13") == "nvidia-npp>=13,<14"
     assert _npp_requirement("14") == "nvidia-npp>=14,<15"
-
-    # No major may resolve to the stub, whatever _cuda_major_for_npp returns.
     assert not any(
         _npp_requirement(str(major)).startswith("nvidia-npp-cu13") for major in range(11, 20)
     )
-
-    # Resolving an optional audio dependency must not be able to kill the install, so a major
-    # that is not a number degrades to the old spelling instead of raising out of int().
     assert _npp_requirement("not-a-major") == "nvidia-npp-cunot-a-major"
 
 
 def test_the_npp_rename_is_per_package_not_a_rule_about_13():
-    """NCCL and cuDNN kept their suffix at 13 while the math libraries dropped theirs, so this
-    cannot be generalised into "13 means no suffix". Over-correcting is worse than the bug: for
-    those two the UNSUFFIXED name is itself a trap, resolving to 0.0.1.dev5 whose summary reads
-    "A fake package to warn the user they are not installing the correct package".
-
-    The boundary is a named constant rather than a bare 13 so that the next package to move is
-    a one-line change with somewhere to record why it moved."""
+    """ "13 means no suffix" is WRONG: NCCL and cuDNN kept theirs, and their unsuffixed names
+    resolve to "A fake package to warn the user they are not installing the correct package".
+    Hence a named constant with the counterexamples beside it, not a bare 13."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert "_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12" in source
-    # The counterexamples are recorded where the rule is, so nobody widens it from memory.
     assert "nvidia-cudnn" in source and "nvidia-nccl" in source
 
 
 def test_the_unsuffixed_request_is_bounded_to_the_major():
-    """`nvidia-npp` carries the same junk at the bottom of its version list that the stub is
-    made of: 0.0.0a0 is a 1030 byte pure-Python wheel, 0.0.1.dev4/dev5 are sdists. Unbounded,
-    a resolver working under an exclude-newer cutoff or against a partial mirror can select
-    0.0.0a0 and install the empty payload this exists to avoid. So the request must always
-    carry a lower bound, never be a bare name."""
+    """`nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, which an unbounded
+    resolve behind an exclude-newer cutoff or a partial mirror can select."""
     from studio.install_python_stack import _npp_requirement
     for major in ("13", "14", "15"):
         spec = _npp_requirement(major)
@@ -1283,28 +1257,16 @@ def test_the_unsuffixed_request_is_bounded_to_the_major():
 
 
 def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
-    """The whole point of the digit check is that audio is optional: an unrecognised major has
-    to keep the old spelling rather than take the install down. `isdigit()` alone does not
-    deliver that, because it is true for a wider set of characters than `int()` accepts.
-
-    Two separate gaps, and they fail in different directions:
-
-      - the superscripts are `isdigit()` but not `int()`-able, so `int(cuda_major)` raises
-        ValueError straight out of a helper resolving an OPTIONAL dependency;
-      - the non-ASCII decimal digits are both `isdigit()` and `int()`-able, so they sail past
-        the guard and emit `nvidia-npp>=١٣,<14`, which is not a PEP 440 requirement at all.
-
-    The second one is reachable rather than theoretical: `_cuda_major_for_npp` matches with a
-    str pattern, and `\\d` in a str pattern is every Unicode decimal digit, not `[0-9]`.
-
-    `_hsa_override_gfx_arch` already rejects `"١١.0.0"` for the same reason, so the fix is the
-    idiom already in this file rather than a new one."""
+    """`isdigit()` accepts more than `int()` does, and both gaps land here: the superscripts
+    raise ValueError out of an OPTIONAL dependency, and the non-ASCII decimal digits pass
+    `int()` but emit a non-PEP-440 `>=١٣`. The latter is reachable, since `_cuda_major_for_npp`
+    matches with a str pattern where `\\d` is every Unicode decimal digit."""
     from studio.install_python_stack import _npp_requirement
 
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    assert 'if not re.fullmatch(r"[0-9]+", cuda_major):' in source, (
-        "the major check must be an explicit ASCII digit match, not str.isdigit()"
-    )
+    assert (
+        'if not re.fullmatch(r"[0-9]+", cuda_major):' in source
+    ), "the major check must be an explicit ASCII digit match, not str.isdigit()"
 
     # int()-hostile: must degrade, never raise.
     for major in ("²", "³", "⁵"):
@@ -1315,18 +1277,16 @@ def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
     for major in ("١٣", "۱۳", "१३"):
         assert major.isdigit() and int(major) == 13
         spec = _npp_requirement(major)
-        assert not spec.startswith("nvidia-npp>="), (
-            f"{major!r} reached a PEP 440 version bound as {spec!r}"
-        )
+        assert not spec.startswith(
+            "nvidia-npp>="
+        ), f"{major!r} reached a PEP 440 version bound as {spec!r}"
         assert spec == f"nvidia-npp-cu{major}"
 
-    # Every requirement this can emit for a real major must parse. Both majors reach the
-    # helper as a one or two character slice of an ASCII match, so that is the domain.
+    # The real domain: a one or two character slice of an ASCII match. All of it must parse.
     packaging_req = pytest.importorskip("packaging.requirements").Requirement
     for major in [str(n) for n in range(0, 100)]:
         packaging_req(_npp_requirement(major))
 
-    # And nothing may raise, whatever arrives.
     for major in ("", " ", "12.0", "-1", "+13", "13a", "1" * 64, "\U0001d7d9\U0001d7db"):
         assert isinstance(_npp_requirement(major), str)
 

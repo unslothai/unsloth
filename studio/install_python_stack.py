@@ -513,49 +513,19 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
-# CUDA 13 is where NVIDIA dropped the `-cuNN` suffix from the math libraries. `nvidia-npp` is
-# the 13.x runtime, and the `nvidia-npp-cu13` this would otherwise ask for is a stub whose own
-# summary reads "DEPRECATED: Use nvidia-npp instead". Neither way of resolving it is any good:
-#
-#   - normally, pip prefers the stable 0.0.1 over the prerelease and gets an sdist with no
-#     wheels, so a clean machine builds NPP from source. That is the loud one, and the only
-#     reason it is visible at all is that CI fails the build-from-source gate on it.
-#   - under --only-binary it takes 0.0.0a0, a 1.1 kB "Zero version placeholder" wheel whose
-#     single module is an empty __init__.py. That one installs cleanly, ships no NPP at all,
-#     and leaves torchcodec failing to dlopen libnppicc with nothing anywhere saying why.
-#
-# Per package, not a blanket rule for 13, and the generalisation is actively dangerous. The
-# CUDA Toolkit math and runtime libraries dropped the suffix; the separately versioned NVIDIA
-# products kept it, and for those the UNSUFFIXED name is the trap. `nvidia-cudnn` and
-# `nvidia-nccl` both resolve to 0.0.1.dev5, summary "A fake package to warn the user they are
-# not installing the correct package", while `nvidia-cudnn-cu13` and `nvidia-nccl-cu13` are
-# the real wheels. So this may only ever be widened one name at a time, against the index.
+# `nvidia-npp-cu13` is a wheel-less stub ("DEPRECATED: Use nvidia-npp instead"); plain
+# `nvidia-npp` is the 13.x runtime. WRONG to widen into "13 drops the suffix": `nvidia-cudnn`
+# and `nvidia-nccl` kept theirs, and their unsuffixed names are fake warning packages.
 _NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12
 
 
 def _npp_requirement(cuda_major: str) -> str:
     """The NPP runtime for this CUDA major, spelled the way its publisher spells it.
 
-    Bounded to the major on the unsuffixed side for two reasons. The name keeps moving, so a
-    cu14 host must not silently take a 13 runtime or the reverse. And `nvidia-npp` carries the
-    same junk at the bottom of its version list that the stub is made of: 0.0.0a0 is a 1030
-    byte pure-Python wheel, and 0.0.1.dev4/dev5 are sdists. An unbounded request under
-    --only-binary, behind an exclude-newer cutoff or a partial mirror, can select 0.0.0a0 and
-    land the empty-payload case this whole function exists to avoid. The bound is load
-    bearing, not decoration.
-
-    Neither major arrives as anything but ASCII today: both come off a `[:2]` or `[-2:]` slice
-    of a digit match. The check is here because the old spelling was an f-string that could not
-    raise, and an installer that dies resolving an OPTIONAL audio dependency would be a worse
-    bug than the one this fixes, so an unrecognised major keeps the previous behaviour instead.
-
-    `[0-9]+` rather than `str.isdigit()`, for the reason already recorded in
-    _hsa_override_gfx_arch: `isdigit()` and `\\d` both accept non-ASCII digits, and here that
-    leaks in two directions. The superscripts are `isdigit()` but not `int()`-able, so the
-    guard would pass and `int()` would raise out of the next line. The non-ASCII decimal digits
-    are both, so they would sail through to `nvidia-npp>=١٣,<14`, which pip cannot parse as a
-    requirement at all -- and that half is reachable rather than hypothetical, because
-    _cuda_major_for_npp matches with a str pattern, where `\\d` is every Unicode decimal digit.
+    Bounded because `nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, and a cu14
+    host must not take a 13 runtime. `[0-9]+` not `isdigit()`, as in _hsa_override_gfx_arch:
+    isdigit() also takes the superscripts, where `int()` below raises, and the non-ASCII digits,
+    which reach a str `\\d` and emit an unparseable `>=١٣`.
     """
     if not re.fullmatch(r"[0-9]+", cuda_major):
         return f"nvidia-npp-cu{cuda_major}"
@@ -8158,12 +8128,9 @@ def install_python_stack() -> int:
                 "the rest of the install is unaffected"
             )
         elif _codec_index:
-            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
-            # torch's own dependency set, so a --no-deps install from a cuNNN index reports
-            # success and then fails to import, disabling audio for a reason nothing here
-            # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
-            # same wheel for exactly this. cu13x wheels want plain nvidia-npp; see
-            # _npp_requirement for why the suffix stops at 12.
+            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
+            # dependency set, so a --no-deps install from a cuNNN index imports and then fails.
+            # _npp_requirement spells the name, which stops being suffixed after 12.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
                 # The pin is gone, so the tag no longer describes this wheel. Probe EVERY
