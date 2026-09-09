@@ -718,6 +718,21 @@ class PreemptionController:
                 participant.state = ParticipantState.PAUSED
                 participant.prefill_done()
 
+    def _my_resident_locked(self, gen_id: str) -> int:
+        """Of the residency reading, the part this generation can claim as its own.
+
+        Only a holder whose prompt is known to be IN the cache owns cells. A PAUSED one
+        owns none, and neither does one whose cells an idle reclaim erased, so subtracting
+        its saved replay size from the reading credited it with room that reading says is
+        somebody else's: an 8000-token pause was granted a resume with 11000 of 16384
+        cells resident. A RESUMING holder has not prefilled yet either, which is what
+        ``measured`` says.
+        """
+        participant = self._participants.get(gen_id)
+        if participant is None or not participant.holds_kv or not participant.measured:
+            return 0
+        return max(0, int(participant.tokens or 0))
+
     def _room_for_locked(self, gen_id: str, want: int) -> bool:
         """The arithmetic behind `room_for`, callable by a holder of the lock."""
         # `want` REPLACES this generation's own announcement: saying yes here causes the
@@ -731,11 +746,10 @@ class PreemptionController:
         # leftovers are invisible here exactly as they were to the watermark.
         others = ledger_others
         if self._resident is not None:
-            mine = self._participants.get(gen_id)
             # Minus the idle residue, erased for the waiter rather than waited out:
             # counting it refused every resume against a ceiling the slots already passed.
             occupied = self._resident - self._reclaimable
-            others = max(others, occupied - (mine.tokens if mine else 0))
+            others = max(others, occupied - self._my_resident_locked(gen_id))
         need = max(0, int(want or 0))
         others = max(0, others)
         if others + need <= ceiling:
