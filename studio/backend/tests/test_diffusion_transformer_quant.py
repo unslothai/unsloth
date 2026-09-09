@@ -1494,3 +1494,107 @@ def test_paths_are_stripped_without_eating_dotted_module_names():
     assert "C:\\Users" not in tq._strip_paths(
         r"ImportError: DLL load failed: C:\Users\me\.venv\Lib\site-packages\torchao\_C.pyd"
     )
+
+
+class _RecordingConfig:
+    """Stands in for a torchao config dataclass: records every kwarg it was built with."""
+
+    built: list = []
+
+    def __init__(
+        self,
+        *,
+        set_inductor_config = True,
+        **kw,
+    ):
+        self.set_inductor_config = set_inductor_config
+        self.kw = kw
+        type(self).built.append(self)
+
+
+def _stub_torchao_configs(
+    monkeypatch,
+    *,
+    int8 = None,
+    fp8 = None,
+):
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda *a, **k: None
+    tqz.PerRow = lambda: "per_row"
+    tqz.Int8DynamicActivationInt8WeightConfig = int8 or _RecordingConfig
+    tqz.Float8DynamicActivationFloat8WeightConfig = fp8 or _RecordingConfig
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    # _make_quant_config(fp8) also reaches for these two; the older-torchao shape is absent.
+    monkeypatch.setitem(sys.modules, "torchao.float8", None)
+    monkeypatch.setitem(sys.modules, "torchao.quantization.quantize_", None)
+    return tqz
+
+
+def test_int8_config_disables_torchao_inductor_config(monkeypatch):
+    _RecordingConfig.built = []
+    _stub_torchao_configs(monkeypatch)
+    cfg = tq._make_quant_config(TQ_INT8)
+    assert isinstance(cfg, _RecordingConfig)
+    assert cfg.set_inductor_config is False
+    assert cfg.kw == {}
+
+
+def test_fp8_config_disables_torchao_inductor_config_and_keeps_its_kwargs(monkeypatch):
+    _RecordingConfig.built = []
+    _stub_torchao_configs(monkeypatch)
+    cfg = tq._make_quant_config(TQ_FP8)
+    assert isinstance(cfg, _RecordingConfig)
+    assert cfg.set_inductor_config is False
+    assert cfg.kw["granularity"] == "per_row"
+
+
+def test_quiet_config_omits_the_kwarg_when_the_class_does_not_accept_it():
+    """The mx_formats configs have no set_inductor_config, so the helper must not raise TypeError on them."""
+
+    class _NoKnob:
+        def __init__(self, use_triton_kernel = True):
+            self.use_triton_kernel = use_triton_kernel
+
+    cfg = tq._quiet_config(_NoKnob, use_triton_kernel = False)
+    assert cfg.use_triton_kernel is False and not hasattr(cfg, "set_inductor_config")
+    assert tq._quiet_config(lambda: "cfg") == "cfg"
+
+
+def test_quiet_config_is_reenabled_by_env(monkeypatch):
+    """UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores torchao's default so the two behaviours can be benchmarked A/B."""
+    monkeypatch.setenv("UNSLOTH_TORCHAO_INDUCTOR_CONFIG", "1")
+    assert tq._quiet_config(_RecordingConfig).set_inductor_config is True
+    monkeypatch.setenv("UNSLOTH_TORCHAO_INDUCTOR_CONFIG", "0")
+    assert tq._quiet_config(_RecordingConfig).set_inductor_config is False
+    monkeypatch.delenv("UNSLOTH_TORCHAO_INDUCTOR_CONFIG")
+    assert tq._quiet_config(_RecordingConfig).set_inductor_config is False
+
+
+def test_quiet_config_tolerates_an_unintrospectable_class(monkeypatch):
+    import inspect
+
+    real = inspect.signature
+
+    def _boom(obj):
+        if obj is _RecordingConfig:
+            raise ValueError("no signature found for builtin")
+        return real(obj)
+
+    monkeypatch.setattr(tq._inspect, "signature", _boom)
+    cfg = tq._quiet_config(_RecordingConfig)
+    # The kwarg could not be proven to exist, so the class is built with its own default rather than crashing.
+    assert cfg.set_inductor_config is True
+
+
+def test_real_torchao_configs_carry_set_inductor_config_false():
+    pytest.importorskip("torchao.quantization")
+    torch = pytest.importorskip("torch")
+    ic = getattr(getattr(torch, "_inductor", None), "config", None)
+    before = getattr(ic, "coordinate_descent_tuning", None) if ic is not None else None
+    for scheme in (TQ_INT8, TQ_FP8):
+        cfg = tq._make_quant_config(scheme)
+        if not hasattr(cfg, "set_inductor_config"):
+            pytest.skip("torchao config without set_inductor_config")
+        assert cfg.set_inductor_config is False, scheme
+    if ic is not None:
+        assert getattr(ic, "coordinate_descent_tuning", None) == before
