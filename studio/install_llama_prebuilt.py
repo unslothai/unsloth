@@ -6941,11 +6941,47 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
+# ggml-org/llama.cpp#23462 split per-binary entry code into ``lib<binary>-impl``
+# libraries between b9279 and b9283; an older archive is monolithic and healthy
+# without llama-server-impl.dll, so requiring it there forces a source build.
+LLAMA_SERVER_IMPL_SPLIT_BUILD = 9283
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    """Build number of a ``bNNNN`` tag, also matching the fork's ``bNNNN-mix-<sha>``.
+    None for a branch or commit pin, which callers treat as "assume current"."""
+    if not isinstance(tag, str):
+        return None
+    match = re.match(r"b(\d+)(?:[-.]|$)", tag.strip())
+    return int(match.group(1)) if match else None
+
+
+def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> list[list[str]]:
+    """Runtime files every Windows install kind owes, before its backend DLL.
+
+    Requiring only ``llama.dll`` let a truncated extract validate then fail at exec.
+    Prebuilt sources only: ``setup.ps1`` links statically and ships none of these.
+    """
+    groups: list[list[str]] = [["llama.dll"]]
+    if source_label in {"published", "upstream"}:
+        groups.append(["llama-common.dll"])
+        groups.append(["llama-server.exe"])
+        build = _release_build_number(tag)
+        if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            groups.append(["llama-server-impl.dll"])
+        groups.append(["ggml.dll"])
+        groups.append(["ggml-base.dll"])
+        groups.append(["ggml-cpu*.dll"])
+        groups.append(["mtmd.dll"])
+    return groups
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
     source_label: str | None = None,
     runtime_name: str | None = None,
+    tag: str | None = None,
 ) -> list[list[str]]:
     """Return required runtime file groups for an install kind."""
     if install_kind in {"linux-cpu", "linux-arm64"}:
@@ -7001,9 +7037,9 @@ def runtime_payload_health_groups(
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
-        return [["llama.dll"]]
+        return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
-        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
@@ -7011,9 +7047,9 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return [["llama.dll"], ["*hip*.dll"]]
+        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
     if install_kind == "windows-vulkan":
-        groups = [["llama.dll"], ["ggml-vulkan.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
@@ -7049,6 +7085,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             choice.install_kind,
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
+            tag = choice.tag,
         ),
     )
 
@@ -7069,12 +7106,16 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(
             {
                 tuple(group)
                 for group in runtime_payload_health_groups(
-                    kind, source_label = source_label, runtime_name = runtime_asset
+                    kind,
+                    source_label = source_label,
+                    runtime_name = runtime_asset,
+                    tag = marker_tag if isinstance(marker_tag, str) else None,
                 )
             }
             for kind in kinds
@@ -7317,10 +7358,14 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
-        install_dir, host, choice
-    ):
-        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
+    # Every WINDOWS kind: gating only Vulkan activated a fresh tree missing
+    # llama-common.dll and reported success.
+    if (
+        choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
+    ) and not runtime_payload_is_healthy(install_dir, host, choice):
+        raise PrebuiltFallback(
+            f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
+        )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)

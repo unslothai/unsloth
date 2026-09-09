@@ -596,11 +596,12 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
   // fan out per model.
   openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compat connections use the OpenAI path, but vLLM/Ollama/llama.cpp users
-  // want top_k/min_p/repetition, so be permissive.
-  custom: ALL_SUPPORTED,
+  // An OpenAI-shaped gateway 400s on unrecognized fields; vllm / llama_cpp take any base URL.
+  custom: OPENAI_COMPAT_BASE,
   vllm: ALL_SUPPORTED,
-  ollama: ALL_SUPPORTED,
+  // Ollama's /v1 silently drops top_k / min_p / repeat_penalty (native /api/chat options).
+  // https://docs.ollama.com/api/openai-compatibility
+  ollama: OPENAI_COMPAT_BASE,
   llama_cpp: ALL_SUPPORTED,
 };
 
