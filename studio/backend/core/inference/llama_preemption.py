@@ -886,7 +886,12 @@ class PreemptionController:
             return 0
         return max(0, int(participant.tokens or 0))
 
-    def _room_for_locked(self, gen_id: str, want: int, reserved: int = 0) -> bool:
+    def _room_for_locked(
+        self,
+        gen_id: str,
+        want: int,
+        reserved: int = 0,
+    ) -> bool:
         # ``reserved``: room the resume waits ahead of this one are owed, held back from it.
         # `want` REPLACES this generation's own announcement: saying yes here is what causes
         # the prefill, and a chat that announced must not pay twice.
