@@ -695,16 +695,21 @@ fn counted(entries: fs::ReadDir) -> String {
     let mut bytes: u64 = 0;
     let mut links: u64 = 0;
     let mut modes: u64 = 0;
+    let mut names: u64 = 0;
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else {
             continue;
         };
+        // Every entry this walk counts, link or file, contributes its name. A
+        // subdirectory still does not, matching the counters.
         if meta.is_symlink() {
             links += 1;
+            names = names.wrapping_add(name_hash(&entry.file_name()));
             continue;
         }
         if meta.is_file() {
             count += 1;
+            names = names.wrapping_add(name_hash(&entry.file_name()));
             bytes += meta.len();
             #[cfg(unix)]
             {
@@ -721,7 +726,35 @@ fn counted(entries: fs::ReadDir) -> String {
             }
         }
     }
-    format!("{count}:{bytes}:{links}:{modes}")
+    format!("{count}:{bytes}:{links}:{modes}:{names}")
+}
+
+/// FNV-1a over one entry's name, summed into the fingerprint by the caller.
+///
+/// Names are here because the four counters are all aggregates, and a rename in
+/// place moves none of them: security software that renames ggml-base.dll to a
+/// quarantine suffix beside itself leaves the count, the byte total, the link
+/// count and the mode sum identical, so installed_runtime_health rejected the
+/// tree while the cached Ready still matched and preflight answered Ready without
+/// ever running the capability probe. The launch then failed with no repair
+/// offered, which is the exact hole the runtime half of this fingerprint exists
+/// to close.
+///
+/// Summed rather than folded in sequence, because read_dir order is unspecified
+/// and the counters beside it are order-independent for that reason; sorting
+/// would cost an allocation per entry on a walk that runs before the window
+/// opens. FNV-1a rather than DefaultHasher so the value is stable across Rust
+/// releases: a hash that moved on a toolchain bump would invalidate every cached
+/// verdict on the first launch after an upgrade. A sum admits collisions in
+/// principle, but the thing being detected is a rename, and a renamed file has to
+/// collide with the name it replaced, not with any name.
+fn name_hash(name: &std::ffi::OsStr) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
@@ -1445,7 +1478,7 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some("bin:0:0:0:0")
+            Some("bin:0:0:0:0:0")
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1812,6 +1845,14 @@ mod tests {
 
     /// A tree shaped like a prebuilt install: a server binary and one shared
     /// library, the smallest thing quarantine can take a file out of.
+    /// The names half of an expected fingerprint, so the counters beside it stay
+    /// readable as literals.
+    fn names_sum(names: &[&str]) -> u64 {
+        names.iter().fold(0u64, |acc, name| {
+            acc.wrapping_add(name_hash(std::ffi::OsStr::new(name)))
+        })
+    }
+
     fn install_fake_runtime(root: &Path) -> PathBuf {
         let bin = runtime_bin_dir(root);
         fs::create_dir_all(&bin).unwrap();
@@ -2255,6 +2296,46 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_runtime_file_in_place_moves_the_fingerprint() {
+        // Codex 3962938547, P2. Quarantine does not always delete: some products
+        // rename the file beside itself. The count, the byte total, the link count
+        // and the mode sum are all aggregates and none of them moves for that, so
+        // the cached Ready kept matching a tree installed_runtime_health rejects
+        // and preflight answered Ready without running the capability probe. The
+        // launch then failed with no repair offered.
+        let root = scratch_dir("runtime-renamed-in-place");
+        let bin = install_fake_runtime(&root);
+
+        let intact = llama_runtime_fingerprint_at(&root).unwrap();
+        fs::rename(
+            bin.join("libggml-base.so"),
+            bin.join("libggml-base.so.quarantine"),
+        )
+        .unwrap();
+        let renamed = llama_runtime_fingerprint_at(&root).unwrap();
+        assert_ne!(
+            intact, renamed,
+            "a required library renamed in place must not fingerprint as the healthy tree"
+        );
+        // And the counters really are blind to it, which is why the names are here.
+        assert_eq!(
+            intact.rsplit_once(':').unwrap().0,
+            renamed.rsplit_once(':').unwrap().0
+        );
+
+        // Renaming it back restores the original exactly, so the sum is a property
+        // of the tree rather than of the order the names arrived in.
+        fs::rename(
+            bin.join("libggml-base.so.quarantine"),
+            bin.join("libggml-base.so"),
+        )
+        .unwrap();
+        assert_eq!(intact, llama_runtime_fingerprint_at(&root).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_runtime_root_that_is_a_file_fingerprints_as_no_runtime() {
         // UNSLOTH_LLAMA_CPP_PATH can point at anything a user typed. Joining
         // build/bin onto a regular file must degrade rather than panic.
@@ -2274,7 +2355,14 @@ mod tests {
         install_fake_runtime(&root);
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some(if cfg!(unix) { "bin:2:6144:0:913" } else { "bin:2:6144:0:0" })
+            Some(
+                format!(
+                    "bin:2:6144:0:{}:{}",
+                    if cfg!(unix) { 913 } else { 0 },
+                    names_sum(&["llama-server", "libggml-base.so"])
+                )
+                .as_str()
+            )
         );
         let _ = fs::remove_dir_all(&parent);
     }
@@ -2336,7 +2424,21 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(
             fingerprint.as_deref(),
-            Some(if cfg!(unix) { "bin:5000:5000:0:2100000" } else { "bin:5000:5000:0:0" })
+            Some(
+                format!(
+                    "bin:5000:5000:0:{}:{}",
+                    if cfg!(unix) { 2100000 } else { 0 },
+                    names_sum(
+                        &(0..5000)
+                            .map(|index| format!("artifact-{index:05}.o"))
+                            .collect::<Vec<_>>()
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                    )
+                )
+                .as_str()
+            )
         );
         assert!(
             elapsed < Duration::from_secs(2),
@@ -2367,7 +2469,14 @@ mod tests {
         fs::remove_file(bin.join("libggml-base.so")).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&linked).as_deref(),
-            Some(if cfg!(unix) { "bin:1:4096:0:493" } else { "bin:1:4096:0:0" })
+            Some(
+                format!(
+                    "bin:1:4096:0:{}:{}",
+                    if cfg!(unix) { 493 } else { 0 },
+                    names_sum(&["llama-server"])
+                )
+                .as_str()
+            )
         );
 
         let _ = fs::remove_dir_all(&parent);

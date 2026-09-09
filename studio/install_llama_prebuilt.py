@@ -6968,7 +6968,13 @@ def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> 
         groups.append(["llama-server.exe"])
         build = _release_build_number(tag)
         if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            # Both halves of the split, not just the server's. llama-quantize.exe
+            # links against llama-quantize-impl.dll exactly as llama-server.exe
+            # links against llama-server-impl.dll, and a b10798 windows-x64-rocm
+            # bundle ships both; requiring only one let a quarantined quantize
+            # implementation read as healthy while quantization could not start.
             groups.append(["llama-server-impl.dll"])
+            groups.append(["llama-quantize-impl.dll"])
         groups.append(["ggml.dll"])
         groups.append(["ggml-base.dll"])
         groups.append(["ggml-cpu*.dll"])
@@ -7094,7 +7100,12 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
+        # ggml-hip.dll by name. A real ROCm bundle carries amdhip64_7.dll,
+        # hipblas.dll and libhipblaslt.dll beside it, all of which match a
+        # "*hip*.dll" group, so quarantining the one module ggml actually loads
+        # left the group satisfied by three libraries that cannot stand in for it.
+        # Measured on app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip.
+        return _windows_shared_groups(source_label, tag) + [["ggml-hip*.dll"]]
     if install_kind == "windows-vulkan":
         groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
@@ -7235,6 +7246,43 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
     )
 
 
+"""Files only a published bundle ships, per platform.
+
+A source build links these into its binaries: ``setup.ps1`` builds statically, and
+no source tree produces a per-binary ``-impl`` library. So finding one is evidence
+that the tree came from a release even when the marker cannot say so.
+"""
+_PREBUILT_TREE_EVIDENCE = {
+    "windows": ["llama-common.dll", "mtmd.dll", "llama-server-impl.dll"],
+    "linux": ["libllama-server-impl.so*", "libmtmd.so*"],
+    "macos": ["libllama-server-impl*.dylib", "libmtmd*.dylib"],
+}
+
+
+def _tree_looks_prebuilt(install_dir: Path, host: HostInfo) -> bool:
+    """Whether the runtime tree carries a file only a published bundle ships.
+
+    An unparseable marker names no source, and grading such a tree as though it
+    might be a source build drops every source-gated group: on Windows that left
+    ``llama.dll`` alone standing for the whole payload, so an interrupted marker
+    plus a quarantined ``ggml-base.dll`` still answered healthy and the runtime
+    launched into the loader error this check exists to pre-empt.
+
+    Reading the tree rather than assuming either answer keeps the other half
+    honest too: a statically linked source build ships none of these names, and
+    requiring a published payload of it would fail health on a tree the setup
+    scripts keep, which is the repair loop the docstring above forbids. When
+    quarantine has taken the evidence as well, the lenient answer stands, and the
+    entrypoint checks below still grade the tree.
+    """
+    key = "windows" if host.is_windows else "macos" if host.is_macos else "linux"
+    runtime_dir = install_runtime_dir(install_dir, host)
+    return any(
+        any(_payload_match_is_loadable(match) for match in runtime_dir.glob(pattern))
+        for pattern in _PREBUILT_TREE_EVIDENCE[key]
+    )
+
+
 def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     """Check the payload shared by install kinds allowed by the tree's marker."""
     marker = load_prebuilt_metadata(install_dir)
@@ -7251,6 +7299,9 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    if not isinstance(source_label, str) or not source_label:
+        # No marker to read, or one that parsed without a source. Ask the tree.
+        source_label = "published" if _tree_looks_prebuilt(install_dir, host) else None
     marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(

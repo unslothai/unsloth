@@ -137,6 +137,7 @@ _SHARED_PAYLOAD = {
         "llama.dll",
         "llama-common.dll",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu.dll",

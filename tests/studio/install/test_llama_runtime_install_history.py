@@ -172,6 +172,7 @@ def test_a_real_release_bundle_is_healthy(asset, backend, tag, source, host, tmp
         "llama.dll",
         "llama-common.dll",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "mtmd.dll",

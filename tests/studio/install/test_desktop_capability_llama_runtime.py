@@ -566,6 +566,44 @@ def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(tmp_path, m
     assert active() is False
 
 
+def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path, monkeypatch):
+    """Codex 3962938538, P2. Under a custom STUDIO_HOME the CLI's
+    _ensure_studio_env_exported writes STUDIO_HOME/llama.cpp into
+    UNSLOTH_LLAMA_CPP_PATH and sets no marker, while the backend calls
+    mark_managed_llama_cpp_path on the same value before discovery and its finder
+    then walks past the override to the stored folder. Reading the marker alone
+    made this grade the managed tree as an explicit pin, so a damaged managed tree
+    blocked launch and was sent for repair though the backend would never open it."""
+    active = _active_helper()
+    studio_home = tmp_path / "custom-studio"
+    managed = studio_home / "llama.cpp"
+    server = (
+        managed / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    )
+    server.parent.mkdir(parents = True)
+    server.write_text("", encoding = "utf-8")
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
+    _stub_stored_selection(monkeypatch, "/home/someone/older-build")
+    assert active() is False, (
+        "the CLI's own inferred override names the managed tree, so the finder skips "
+        "it and the stored folder is what the backend opens"
+    )
+
+    # A pin somewhere else under the same studio home is a real user pin and still
+    # outranks the stored folder, which is the case the marker check protects.
+    elsewhere = tmp_path / "hand-built" / "llama.cpp"
+    pinned = (
+        elsewhere / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    )
+    pinned.parent.mkdir(parents = True)
+    pinned.write_text("", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(elsewhere))
+    assert active() is True
+
+
 def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp_path, monkeypatch):
     """Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or missing
     UNSLOTH_LLAMA_CPP_PATH and walks on to the stored folder, so treating the override as
@@ -582,6 +620,23 @@ def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp
     # something to grade again.
     _stub_stored_selection(monkeypatch, None)
     assert active() is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX ~name expansion")
+def test_an_override_naming_no_account_answers_instead_of_raising(tmp_path, monkeypatch):
+    """Codex 3962938521, P2. Path.expanduser raises RuntimeError for a "~name" that resolves
+    to no account, which an override left in a service unit or a .env after a rename does, and
+    this doctor's whole job is to answer. Every other reader of the variable goes through
+    expanded_user_path, which hands an unresolvable name back unchanged, so the override then
+    reaches the search as an ordinary path, finds nothing, and the documented order continues."""
+    active = _active_helper()
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "~no-such-account-9d3f/llama.cpp")
+    with pytest.raises(RuntimeError):
+        pathlib.Path("~no-such-account-9d3f/llama.cpp").expanduser()
+    _stub_stored_selection(monkeypatch, None)
+    assert active() is True, "an unexpandable override holds no server, so the search walks on"
 
 
 def _stub_stored_selection(monkeypatch, selected):
@@ -601,15 +656,32 @@ def _stub_stored_selection(monkeypatch, selected):
     # The real layout contract, so the helper and the finder cannot disagree about
     # which folders hold a server.
     settings.llama_server_candidates = _real_llama_server_candidates
+    # The real reader, not Path.expanduser: leaving it off the stub made the
+    # helper's import fail, and the import is wrapped in a fallback, so every test
+    # here silently graded the except branch instead of the code it names.
+    settings.expanded_user_path = lambda value: pathlib.Path(os.path.expanduser(str(value)))
     monkeypatch.setitem(sys.modules, "studio.backend.utils.llama_cpp_path_settings", settings)
     # The helper asks install_llama_prebuilt for the managed root, and the stub
     # package above hides the real module, so it is stubbed to the same rule.
     prebuilt = types.ModuleType("studio.install_llama_prebuilt")
-    prebuilt.default_managed_llama_dir = lambda: pathlib.Path(
-        (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-        or (pathlib.Path.home() / ".unsloth" / "llama.cpp")
-    ).expanduser()
+    prebuilt.default_managed_llama_dir = _managed_dir_rule
     monkeypatch.setitem(sys.modules, "studio.install_llama_prebuilt", prebuilt)
+
+
+def _managed_dir_rule():
+    """``default_managed_llama_dir``'s rule, retyped only because the stub package
+    above hides the real module: the override, else a custom studio home's
+    llama.cpp, else the legacy root. The studio-home arm is not decoration, since
+    that is the value the helper compares an override against."""
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    if override:
+        return pathlib.Path(override).expanduser()
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if home:
+        root = pathlib.Path(home).expanduser()
+        if root != pathlib.Path.home() / ".unsloth" / "studio":
+            return root / "llama.cpp"
+    return pathlib.Path.home() / ".unsloth" / "llama.cpp"
 
 
 def _real_llama_server_candidates(directory):

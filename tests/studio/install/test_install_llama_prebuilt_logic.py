@@ -2428,6 +2428,7 @@ def write_windows_install_shape(
         for name in (
             "llama-common.dll",
             "llama-server-impl.dll",
+            "llama-quantize-impl.dll",
             "ggml.dll",
             "ggml-base.dll",
             "ggml-cpu-x64.dll",
@@ -6942,6 +6943,7 @@ def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
         "llama-common.dll",
         "llama-server.exe",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu*.dll",
@@ -6955,7 +6957,12 @@ def test_windows_source_build_does_not_require_the_shared_runtime():
     fail a healthy tree."""
     patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
     assert "llama.dll" in patterns
-    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+    for absent in (
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
+        "mtmd.dll",
+    ):
         assert absent not in patterns
 
 
@@ -6975,7 +6982,12 @@ _PRE_SPLIT_WINDOWS_PAYLOAD = (
     "ggml-cpu-haswell.dll",
     "mtmd.dll",
 )
-_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+# Both halves of the split, which is what a post-b9283 bundle ships: llama-quantize.exe
+# links against its own impl library exactly as llama-server.exe does against the server's.
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + (
+    "llama-server-impl.dll",
+    "llama-quantize-impl.dll",
+)
 
 
 @pytest.mark.parametrize(

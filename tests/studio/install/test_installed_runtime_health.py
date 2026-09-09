@@ -194,6 +194,134 @@ def test_an_absent_marker_is_still_not_installed(tmp_path):
     assert ILP.installed_runtime_health(root) is None
 
 
+def _windows_host():
+    """A Windows HostInfo, so these run on the CI machines we actually have."""
+    host = ILP.platform_only_host()
+    return type(host)(
+        **{
+            **host.__dict__,
+            "system": "Windows",
+            "machine": "amd64",
+            "is_windows": True,
+            "is_linux": False,
+            "is_macos": False,
+            "is_x86_64": True,
+            "is_arm64": False,
+        }
+    )
+
+
+"""What a published Windows bundle ships, checked against
+app-b10798-mix-659e406-windows-x64-cpu.zip."""
+_PUBLISHED_WINDOWS_PAYLOAD = (
+    "llama.dll",
+    "llama-common.dll",
+    "llama-server.exe",
+    "llama-server-impl.dll",
+    "llama-quantize.exe",
+    "llama-quantize-impl.dll",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu-haswell.dll",
+    "mtmd.dll",
+)
+
+
+def _windows_tree(tmp_path: Path, names, *, marker: str) -> Path:
+    root = tmp_path / "llama.cpp"
+    host = _windows_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    runtime_dir.mkdir(parents = True)
+    for name in names:
+        binary = runtime_dir / name
+        binary.write_text("", encoding = "utf-8")
+        os.chmod(binary, 0o755)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(marker, encoding = "utf-8")
+    return root
+
+
+def test_an_unparseable_marker_over_a_prebuilt_tree_still_owes_the_shared_payload(tmp_path):
+    """Codex 3962938529, P2. An unreadable marker names no source, and the source-gated
+    groups were dropped with it, so on Windows llama.dll stood in for the whole payload: an
+    interrupted marker plus a quarantined ggml-base.dll answered healthy and the runtime
+    launched into the loader error this probe exists to pre-empt. The source is read off the
+    tree instead, from a name only a published bundle ships."""
+    host = _windows_host()
+    root = _windows_tree(tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker = '{"release_tag": "b108')
+    assert ILP.load_prebuilt_metadata(root) is None
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+
+    quarantined = ILP.install_runtime_dir(root, host) / "ggml-base.dll"
+    quarantined.rename(quarantined.with_suffix(".dll.quarantine"))
+    assert ILP.installed_runtime_health(root, host = host) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+def test_an_unparseable_marker_over_a_source_build_stays_lenient(tmp_path):
+    """The other half of the same rule, and the reason it reads the tree rather than assuming
+    published: setup.ps1 links statically and ships none of those names, so requiring them
+    would fail health on a tree _existing_install_runs keeps, and the repair would run every
+    launch with nothing to change."""
+    host = _windows_host()
+    root = _windows_tree(
+        tmp_path,
+        ("llama.dll", "llama-server.exe", "llama-quantize.exe"),
+        marker = "not json",
+    )
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP._tree_looks_prebuilt(root, host) is False
+
+
+def test_the_windows_quantize_implementation_is_required_alongside_the_server_one(tmp_path):
+    """Codex 3962938556, P2. The upstream split gives llama-quantize.exe its own -impl library
+    exactly as it gives llama-server.exe one, and a b10798 bundle ships both, so requiring only
+    the server's left a quarantined llama-quantize-impl.dll reading as healthy while
+    quantization could not start."""
+    host = _windows_host()
+    root = _windows_tree(
+        tmp_path,
+        _PUBLISHED_WINDOWS_PAYLOAD,
+        marker = json.dumps({"source": "published", "tag": "b10798"}),
+    )
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    (ILP.install_runtime_dir(root, host) / "llama-quantize-impl.dll").unlink()
+    assert ILP.installed_runtime_health(root, host = host) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(tmp_path):
+    """Codex 3962938550, P1. A real ROCm bundle carries amdhip64_7.dll, hipblas.dll and
+    libhipblaslt.dll beside ggml-hip.dll, all four matching a "*hip*.dll" group, so
+    quarantining the one module ggml loads left the group satisfied by three libraries that
+    cannot stand in for it. Names read off
+    app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip."""
+    groups = ILP.runtime_payload_health_groups(
+        "windows-rocm", source_label = "published", tag = "b10798"
+    )
+    hip_groups = [group for group in groups if any("hip" in name for name in group)]
+    assert hip_groups == [["ggml-hip*.dll"]]
+
+    host = _windows_host()
+    root = _windows_tree(
+        tmp_path,
+        _PUBLISHED_WINDOWS_PAYLOAD
+        + ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll", "ggml-hip.dll"),
+        marker = json.dumps(
+            {"source": "published", "tag": "b10798", "install_kind": "windows-rocm"}
+        ),
+    )
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    assert ILP._runtime_payload_has(root, host, groups) is True
+    (runtime_dir / "ggml-hip.dll").unlink()
+    assert ILP._runtime_payload_has(root, host, groups) is False, (
+        "the three remaining hip-named libraries must not stand in for the ggml backend"
+    )
+
+
 def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
     """The tar payloads ship versioned chains (libggml.so -> libggml.so.0 -> libggml.so.0.9.8)
     and Path.glob does not follow links, so quarantining the versioned target left every

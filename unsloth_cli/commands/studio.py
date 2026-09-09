@@ -5018,6 +5018,7 @@ def _llama_runtime_to_grade() -> Path | None:
         sys.path.insert(0, str(backend_dir))
     try:
         from studio.backend.utils.llama_cpp_path_settings import (
+            expanded_user_path,
             get_stored_custom_llama_cpp_path,
             llama_server_candidates,
         )
@@ -5034,24 +5035,56 @@ def _llama_runtime_to_grade() -> Path | None:
     # The managed marker is the exception: the finder skips the override when the
     # desktop set it, so the stored folder wins again.
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-    desktop_set_the_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
-    if override and not desktop_set_the_override:
+    # Classified, not merely read off the marker. studio/backend/main.py calls
+    # mark_managed_llama_cpp_path(managed) before discovery, which marks any
+    # override equal to the managed tree however it got there, and the finder then
+    # skips it. _ensure_studio_env_exported writes exactly that value under a
+    # custom STUDIO_HOME and sets no marker, so trusting the marker alone made
+    # this grade the managed tree as a user pin while the backend walked past it
+    # to the stored selection: a damaged managed tree blocked launch and was sent
+    # for repair though nothing would ever open it.
+    managed_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+    if override and not managed_override:
+        # Against the tree the studio home names with the override out of the way,
+        # never default_managed_llama_dir(): that reads the override first and
+        # would call every user pin managed. The backend compares against exactly
+        # this value, STUDIO_ROOT/llama.cpp computed before it exported anything.
+        managed_override = _same_runtime_tree(
+            expanded_user_path(override), _managed_llama_dir_ignoring_the_override()
+        )
+    if override and not managed_override:
         # Only a folder that holds a server stops discovery. _scan_pinned finds no
         # candidate under an empty or missing override and walks on, so returning
         # that tree here graded a directory nobody loads, answered "not installed",
         # and left the runtime the backend really opens ungraded.
-        if _layout_stops_discovery(llama_server_candidates(Path(override).expanduser())):
+        # expanded_user_path, not Path.expanduser: the finder reads the same
+        # variable through it, and a "~name" naming no account makes expanduser
+        # raise RuntimeError out of a doctor whose whole job is to answer.
+        if _layout_stops_discovery(llama_server_candidates(expanded_user_path(override))):
             return default_managed_llama_dir()
     if get_stored_custom_llama_cpp_path() is not None:
         return None
-    if desktop_set_the_override:
-        # The finder skips an override the desktop wrote, and the desktop only
-        # ever points it at the managed tree, so that tree is still the answer.
+    if managed_override:
+        # The finder skips an override that names the managed tree, and that tree
+        # is the one this install owns, so it is still the answer.
         return default_managed_llama_dir()
     # The finder has walked past the override, so the tree it reaches is the one
     # the managed root names with that override out of the way. Reading it with
     # the variable still set would name the folder just ruled out.
     return _managed_llama_dir_ignoring_the_override()
+
+
+def _same_runtime_tree(left: Path, right: Path) -> bool:
+    """Whether two runtime paths name one tree, the way the backend compares them.
+
+    ``mark_managed_llama_cpp_path`` resolves both sides non-strictly and swallows
+    the same errors, so a path that has not been created yet still compares, and
+    an unreadable one answers "different" rather than raising out of the doctor.
+    """
+    try:
+        return left.resolve(strict = False) == right.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _layout_stops_discovery(candidates) -> bool:

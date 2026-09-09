@@ -121,6 +121,7 @@ _SHARED_PAYLOAD = {
         "llama.dll",
         "llama-common.dll",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu.dll",
@@ -300,6 +301,7 @@ def required_runtime_files(platform: str, backend: str, marker: dict) -> list[st
         build = ILP._release_build_number(marker.get("tag"))
         if build is not None and build < _IMPL_SPLIT_BUILD:
             files.remove("llama-server-impl.dll")
+            files.remove("llama-quantize-impl.dll")
         files.append("llama-server.exe")
     # The same split, on the side that names the libraries lib<binary>-impl.so.
     # llama-server and llama-quantize load them by DT_NEEDED, so a Linux bundle from
