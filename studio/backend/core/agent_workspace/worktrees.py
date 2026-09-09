@@ -59,6 +59,7 @@ _SCAN_LIMIT = 8192
 _ACTIVE_STATUSES = frozenset({"creating", "active", "removing", "needs_attention"})
 
 TASK_WORKTREE_GUARD_PROTOCOL = 1
+OWNED_WORKTREE_LOOKUP_PROTOCOL = 1
 
 
 def _task_worktree_guard(project_id: str, worktree_id: str):
@@ -607,17 +608,22 @@ def list_worktrees_for_project(project_id: str) -> list[dict]:
 
 def owned_worktree_path(project_id: str, worktree_id: str) -> Path:
     with _project_operation(project_id):
-        record = get_worktree(worktree_id)
-        if record is None or record["projectId"] != project_id:
-            raise AgentWorkspaceError("Studio worktree not found.")
-        if record["status"] != "active":
-            raise AgentWorkspaceError("Studio worktree is not active.")
-        path, _, _ = _verify_owned_marker(record)
-        repository = git_root(Path(record["gitRoot"]))
-        entry = _registered_entry(worktree_entries(repository), path)
-        if not _registration_matches(record, entry):
-            raise AgentWorkspaceError("Studio worktree registration no longer matches.")
-        return path
+        return _owned_worktree_path(project_id, worktree_id)
+
+
+def _owned_worktree_path(project_id: str, worktree_id: str) -> Path:
+    """Trusted lookup while the caller already owns the project execution fence."""
+    record = get_worktree(worktree_id)
+    if record is None or record["projectId"] != project_id:
+        raise AgentWorkspaceError("Studio worktree not found.")
+    if record["status"] != "active":
+        raise AgentWorkspaceError("Studio worktree is not active.")
+    path, _, _ = _verify_owned_marker(record)
+    repository = git_root(Path(record["gitRoot"]))
+    entry = _registered_entry(worktree_entries(repository), path)
+    if not _registration_matches(record, entry):
+        raise AgentWorkspaceError("Studio worktree registration no longer matches.")
+    return path
 
 
 def cleanup_worktree(project_id: str, worktree_id: str) -> dict:
