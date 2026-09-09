@@ -156,54 +156,33 @@ def find_cloudflared() -> Optional[str]:
     return None
 
 
-_DOWNLOAD_ATTEMPTS = 3
-
-
-def _download(
-    url: str,
-    dest: Path,
-    *,
-    attempts: int = _DOWNLOAD_ATTEMPTS,
-) -> bool:
-    """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool."""
+def _download(url: str, dest: Path) -> bool:
+    """Download url to dest via urllib (temp file + atomic rename). Best-effort -> bool."""
     import tempfile
     import urllib.request
 
-    for attempt in range(1, attempts + 1):
-        tmp_path: Optional[Path] = None
-        try:
-            dest.parent.mkdir(parents = True, exist_ok = True)
-            with tempfile.NamedTemporaryFile(
-                prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
-            ) as handle:
-                tmp_path = Path(handle.name)
-                # GitHub's CDN 403s the default Python-urllib User-Agent.
-                req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-                with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
-                    shutil.copyfileobj(response, handle)
-            if tmp_path.stat().st_size == 0:
-                raise RuntimeError("empty download")
-            os.replace(tmp_path, dest)
-            return True
-        except Exception as exc:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink(missing_ok = True)
-                except Exception:
-                    pass
-            timed_out = isinstance(exc, TimeoutError) or isinstance(
-                getattr(exc, "reason", None), TimeoutError
-            )
-            if attempt >= attempts or timed_out:
-                print(
-                    f"[cloudflare] could not download cloudflared from {url} ({exc}); "
-                    "install cloudflared on PATH to use a public tunnel",
-                    file = sys.stderr,
-                    flush = True,
-                )
-                return False
-            time.sleep(1.5 * attempt)
-    return False
+    tmp_path: Optional[Path] = None
+    try:
+        dest.parent.mkdir(parents = True, exist_ok = True)
+        with tempfile.NamedTemporaryFile(
+            prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
+        ) as handle:
+            tmp_path = Path(handle.name)
+            # GitHub's CDN 403s the default Python-urllib User-Agent.
+            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
+                shutil.copyfileobj(response, handle)
+        if tmp_path.stat().st_size == 0:
+            raise RuntimeError("empty download")
+        os.replace(tmp_path, dest)
+        return True
+    except Exception:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok = True)
+            except Exception:
+                pass
+        return False
 
 
 def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
