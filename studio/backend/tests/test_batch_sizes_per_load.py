@@ -651,9 +651,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     # sizing pass, embedding slot clamp, fit-time reduction, the spill planner's
     # per-slot cache floors (one derivation per candidate slot count it may step
     # down to), the per-slot micro-batch map the cost gate scores each of those
-    # candidates at (_spill_ubatch_by_parallel), the planner's own slot
+    # candidates at (_spill_ubatch_by_parallel), the _kv_bytes_at closure that
+    # re-prices that same cache at an arbitrary context, the planner's own slot
     # reduction, then the post-launch record
-    assert len(calls) == 7, f"expected seven re-derivations, found {len(calls)}"
+    assert len(calls) == 8, f"expected eight re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact

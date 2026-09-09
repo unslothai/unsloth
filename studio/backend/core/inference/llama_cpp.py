@@ -22045,6 +22045,29 @@ class LlamaCppBackend:
                         if _planner_owns_fit
                         else {}
                     )
+
+                    # The same estimator call at an ARBITRARY context, so the planner can
+                    # re-price the cache instead of scaling the floor by a ratio. Its own
+                    # rules cannot: a fixed recurrent state does not shrink with context,
+                    # an MLA latent is not the per-head product, and an iSWA cache is
+                    # flat in one half and linear in the other. This is the one term
+                    # that knows all three, and it is what the floor map above already
+                    # is, freed of its fixed slot count. Memoised because the ladder
+                    # asks at every rung, and clamped so a walked-down candidate cannot
+                    # ask for a context llama.cpp would refuse.
+                    @functools.lru_cache(maxsize = 256)
+                    def _kv_bytes_at(ctx: int, slots: int) -> int:
+                        return self._estimate_kv_cache_bytes(
+                            max(256, int(ctx)),
+                            cache_type_kv,
+                            n_parallel = max(1, int(slots)),
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _ubatch_for_slots(max(1, int(slots))),
+                            ctx_checkpoints = 0,
+                            flash_attn = planned_flash_attn,
+                        )
+
                     # --cache-ram bounded to the host RAM the fallback leaves free, so
                     # the prompt cache is a term the load-mode rule can see rather than
                     # an uncounted 8 GiB. Only when the user typed none and the planner
@@ -22171,6 +22194,10 @@ class LlamaCppBackend:
                         "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
+                        # The floor map without its fixed context: the planner asks
+                        # this rather than scaling a measurement it cannot decompose.
+                        # A callable, and this dict is never serialised.
+                        "kv_bytes_at": _kv_bytes_at if _planner_owns_fit else None,
                         "n_ubatch_by_parallel": _spill_ubatch_by_parallel,
                         # The recurrent half of those figures, per slot.
                         # _estimate_kv_cache_bytes returns ONE number for the whole
@@ -28551,6 +28578,10 @@ class LlamaCppBackend:
                     int(_p): _attention_floor(_v, int(_p))
                     for _p, _v in (inputs.get("kv_bytes_floor_by_parallel") or {}).items()
                 },
+                # The same measurement at any context, so the ladder re-prices the
+                # cache instead of scaling the floor. Absent from a caller that did
+                # not supply it, which leaves the planner's own rules in place.
+                kv_bytes_at = inputs.get("kv_bytes_at"),
                 draft_bytes = draft_bytes,
                 draft_droppable = draft_droppable,
                 cache_ram_default_mib = int(inputs.get("cache_ram_default_mib") or 0),

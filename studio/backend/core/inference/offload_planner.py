@@ -478,14 +478,9 @@ class PlanOptions:
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
     # (n_ctx, n_parallel) -> the KV cache bytes llama.cpp allocates for this launch,
     # fixed recurrent state included; the seam passes its own estimator. Authoritative
-    # when set: every helper here asks it instead of re-pricing one scalar floor.
-    #
-    # One scalar cannot be re-priced correctly. A hybrid's floor is part fixed state
-    # and part growing cache, a windowed cache is flat on some layers and linear on
-    # others, and an MLA cache is a compressed latent the layout's product misses by
-    # two orders of magnitude, so every scaling rule below is wrong for one of them.
-    # The seam already computes the right answer per (context, slots); this is how it
-    # says so. None keeps the scaling rules documented in ``_kv_floor_at``.
+    # when set: no scalar floor can be re-priced for a hybrid (fixed + growing), a
+    # windowed cache (flat + linear) or an MLA latent at once. None keeps the
+    # scaling rules in ``_kv_floor_at``.
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
     # The micro-batch the launch normalises at each slot count, keyed like the
     # floor map. The emitted batch floor is max(slots, 2), so a first-class

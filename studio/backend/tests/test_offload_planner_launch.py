@@ -699,6 +699,33 @@ def test_the_flag_off_load_mode_matches_main_on_a_spill_the_host_holds(tmp_path,
     assert "--load-mode" not in on, on
 
 
+def test_the_snapshot_carries_the_cache_estimator_as_a_callable(tmp_path, monkeypatch):
+    """The floor map is one measurement per slot count at ONE context. The ladder
+    also walks the context, and the planner's own re-pricing rules cannot follow it:
+    a fixed recurrent state does not shrink, an MLA latent is not the per-head
+    product, and an iSWA cache is flat in one half. Hand it the estimator instead,
+    and pin that the callable agrees with the map where the two overlap."""
+    _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    at = seen["inputs"]["kv_bytes_at"]
+    assert callable(at)
+
+    ctx = seen["inputs"]["n_ctx"]
+    floors = seen["inputs"]["kv_bytes_floor_by_parallel"]
+    assert floors, "not vacuous: there is a map to agree with"
+    for slots, floor in floors.items():
+        assert floor > 0 and at(ctx, slots) == floor
+
+    # A context the map has no entry for is answered, and clamped rather than
+    # refused: the ladder walks down and must not be able to ask for a window
+    # llama.cpp would not allocate.
+    assert at(ctx // 2, 1) > 0
+    assert at(0, 0) == at(256, 1)
+
+    # Flag off, no callable: the planner keeps the rules it always had.
+    _cmd, _b, off = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"), owns = False)
+    assert off["inputs"]["kv_bytes_at"] is None
+
+
 def test_a_caller_nkvo_cache_is_host_ram_the_planner_admits_against(tmp_path, monkeypatch):
     """-nkvo puts the WHOLE cache in host RAM whatever the layer placement says
     (llama-kv-cache.cpp upgrades a layer's buffer type only inside `if (offload)`),

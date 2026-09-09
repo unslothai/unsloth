@@ -201,6 +201,7 @@ def _inputs(
     n_ubatch = None,
     reserve_floor = 0,
     host_unpriced = 0,
+    kv_bytes_at = None,
 ):
     return {
         "model_size": model_size,
@@ -222,6 +223,7 @@ def _inputs(
         "n_threads": n_threads,
         "shared_gpu_ids": set() if shared is None else set(shared),
         "host_ram_unpriced_bytes": host_unpriced,
+        "kv_bytes_at": kv_bytes_at,
         "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
@@ -938,6 +940,32 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
 
 
 # ------------------------------------------------- KV placement is placement too
+
+
+def test_the_cache_estimator_reaches_the_planner(monkeypatch):
+    """The snapshot half is pinned in the launch suite; this is the other end. A
+    callable that re-prices the cache at an arbitrary context is the one term that
+    knows a fixed recurrent state, an MLA latent and an iSWA split, none of which the
+    planner's own ratio rules can follow, so it has to arrive on PlanOptions and not
+    merely in the dict."""
+    from core.inference import offload_planner
+
+    seen = {}
+    real = offload_planner.plan_placement
+
+    def capture(*a, **k):
+        seen["opts"] = k.get("opts")
+        return real(*a, **k)
+
+    monkeypatch.setattr(offload_planner, "plan_placement", capture)
+    _plan(_Stub(), free_mib = 14 * 1024, kv_bytes_at = lambda ctx, p: 7 * MIB)
+    assert seen["opts"].kv_bytes_at is not None
+    assert seen["opts"].kv_bytes_at(4096, 1) == 7 * MIB
+
+    # Not supplied is not a callable: the planner keeps the rules it always had.
+    seen.clear()
+    _plan(_Stub(), free_mib = 14 * 1024)
+    assert seen["opts"].kv_bytes_at is None
 
 
 @pytest.mark.parametrize("extra_args", [["-nkvo"], ["--no-kv-offload"]])
