@@ -47,15 +47,25 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
+# (attribute, snapshot key). All but the first are what torchao's recommended_inductor_config_setter() flips.
+_INDUCTOR_FLAGS = (
+    ("emulate_precision_casts", "inductor_emulate_precision_casts"),
+    ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
+    ("coordinate_descent_check_all_directions", "inductor_coordinate_descent_check_all_directions"),
+    ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
+    ("fx_graph_cache", "inductor_fx_graph_cache"),
+)
+_INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+
+
 def snapshot_backend_flags() -> Optional[dict]:
-    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload.
-    None if torch is unavailable. Each flag is read defensively so a build missing one (e.g. no
-    cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag."""
+    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
+    without torch. Each flag is read defensively: a build missing one still captures the rest."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
         return None
-    state: dict[str, bool] = {}
+    state: dict[str, Any] = {}
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     if matmul is not None and hasattr(matmul, "allow_tf32"):
         state["matmul_tf32"] = bool(matmul.allow_tf32)
@@ -68,8 +78,21 @@ def snapshot_backend_flags() -> Optional[dict]:
         if hasattr(cudnn, "benchmark"):
             state["cudnn_benchmark"] = bool(cudnn.benchmark)
     inductor_cfg = _inductor_config()
-    if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
-        state["inductor_emulate_precision_casts"] = bool(inductor_cfg.emulate_precision_casts)
+    if inductor_cfg is not None:
+        for attr, key in _INDUCTOR_FLAGS:
+            if hasattr(inductor_cfg, attr):
+                state[key] = bool(getattr(inductor_cfg, attr))
+        triton_cfg = getattr(inductor_cfg, "triton", None)
+        if triton_cfg is not None:
+            for attr, key in _INDUCTOR_TRITON_FLAGS:
+                if hasattr(triton_cfg, attr):
+                    state[key] = bool(getattr(triton_cfg, attr))
+    getter = getattr(torch, "get_float32_matmul_precision", None)
+    if callable(getter):
+        try:
+            state["matmul_precision"] = str(getter())
+        except Exception:  # noqa: BLE001 - unreadable on this build: restore the rest
+            pass
     return state
 
 
@@ -90,13 +113,25 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             except Exception:  # noqa: BLE001 - best-effort per-flag restore
                 pass
 
+    # FIRST: on some builds set_float32_matmul_precision also writes matmul.allow_tf32.
+    setter = getattr(torch, "set_float32_matmul_precision", None)
+    if state.get("matmul_precision") and callable(setter):
+        try:
+            setter(state["matmul_precision"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     _set(matmul, "allow_tf32", "matmul_tf32")
     _set(matmul, "allow_fp16_accumulation", "matmul_fp16_accum")
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
-    _set(_inductor_config(), "emulate_precision_casts", "inductor_emulate_precision_casts")
+    inductor_cfg = _inductor_config()
+    for attr, key in _INDUCTOR_FLAGS:
+        _set(inductor_cfg, attr, key)
+    triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
+    for attr, key in _INDUCTOR_TRITON_FLAGS:
+        _set(triton_cfg, attr, key)
 
 
 def _inductor_config() -> Any:
@@ -201,13 +236,21 @@ def apply_speed_optims(
     speed_mode: str = SPEED_OFF,
     cache_active: bool = False,
     offload_active: bool = False,
+    cuda_graph_default: bool = True,
+    cache_engaged: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
     offload. Returns which engaged; every step is best-effort (unsupported ones are skipped).
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
-    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1."""
+    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+
+    ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
+    True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
+
+    ``cache_active`` also covers a step cache that may still toggle on at generation time. The
+    CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -217,6 +260,7 @@ def apply_speed_optims(
         "compiled": False,
         "compiled_dequant": False,
         "compiled_vae_decode": False,
+        "cuda_graph": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark are process-global
@@ -277,6 +321,35 @@ def apply_speed_optims(
         if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
+
+    # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        cuda_graph = None
+        ok, reason = False, "cuda graph layer unavailable"
+        try:
+            from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
+            ok, reason = cuda_graph.graph_eligible(
+                target,
+                family = family,
+                pipe = pipe,
+                offload_active = offload_active,
+                cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
+                speed_mode = mode,
+                family_default = cuda_graph_default,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
+            _warn(logger, "cuda graph eligibility", exc)
+        # Stashed either way: status reports WHY graphs are off, not just that they are.
+        try:
+            pipe._unsloth_cuda_graph_reason = reason
+        except Exception:  # noqa: BLE001
+            pass
+        if ok and cuda_graph is not None:
+            try:
+                applied["cuda_graph"] = bool(cuda_graph.install_cuda_graphs(pipe, logger = logger))
+            except Exception as exc:  # noqa: BLE001 - the load proceeds eager
+                _warn(logger, "cuda graph capture", exc)
 
     return applied
 
@@ -348,8 +421,9 @@ def _compile_repeated_blocks(
     if not dits and unet is None:
         return False
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # dynamic=False, a few % more for a longer compile and a recompile per resolution (CUDA-graph modes crash on the
-    # regional block). fullgraph drops to False under a step cache or offload.
+    # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
+    # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
+    # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
         "dynamic": not max_autotune,
