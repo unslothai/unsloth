@@ -2081,7 +2081,12 @@ def test_rung2_drops_the_draft_only_after_the_slots_are_exhausted():
     assert "--parallel" not in plan_to_args(pinned)
 
 
-def test_rungs_0_to_2_alone_run_no_cost_gate():
+def test_rungs_0_to_2_alone_are_ranked_against_the_launch_the_caller_typed():
+    """These used to skip the gate outright, on the argument that a plan with no
+    spill has no fallback arm. It has one: the launch as the caller typed it,
+    fitted by llama.cpp. So the plan is ranked, and a projector moved for free
+    still wins -- what changes is that both figures are computed and reported
+    rather than left at zero for a decision nobody could check."""
     layout = q4_layout()
     mmproj = 600 * MIB
     card = _card_short_by(layout, 100 * MIB) + mmproj
@@ -2095,7 +2100,8 @@ def test_rungs_0_to_2_alone_run_no_cost_gate():
         ),
     )
     assert plan.mmproj_to_host and plan.changed
-    assert plan.predicted_request_ms == 0.0 and plan.predicted_fit_request_ms == 0.0
+    assert plan.predicted_request_ms == 0.0, "nothing is on the host to charge for"
+    assert plan.predicted_fit_request_ms > 0.0, "the fitter's arm is priced"
     assert not plan.declined_by_gate
 
 

@@ -2916,6 +2916,84 @@ def _cost_gate(
     )
 
 
+def _knob_only_gate(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    budget: int,
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    knobs: Optional[_Knobs],
+) -> tuple[Optional[Plan], float, float]:
+    """The same ranking for a plan that spills nothing but gave a knob up.
+
+    ``_cost_gate`` prices a SPILL, so a plan that only pins the projector, drops
+    the draft or serves fewer slots was never ranked at all and
+    ``draft_drop_penalty_frac`` applied to no comparison. The arm to rank it
+    against is the launch as the caller typed it, fitted by llama.cpp: the same
+    fallback the spill path uses, at the budget the knobs have NOT relieved,
+    since the fitter keeps the projector and the draft on the card.
+
+    ``rank`` prices deviation from a fully resident launch rather than a request
+    time, so a plan that moves nothing scores 0 and there is no absolute figure
+    for the draft's fraction to take a share of. The fallback's own cost is the
+    only request-scale number here, so the fraction is charged against it: the
+    draft is worth giving up unless keeping it is worth more than the whole of
+    what the alternative costs. At the shipped 0.05 that accepts every knob-only
+    plan the fitter has real work to do on, which is the measured answer; what
+    changes is that the two figures are now computed and reported instead of
+    left at zero.
+    """
+    n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
+    kept_on_card = _outside_layout_bytes(opts) - _outside_layout_bytes(opts, knobs)
+    fallback = _fit_fallback_placement(
+        layout,
+        opts,
+        budget - max(0, kept_on_card),
+        n_ctx,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = opts.kv_on_host,
+        n_seq = n_slots,
+    )
+    if fallback is None:
+        # Nothing to compare to, exactly as in _cost_gate.
+        return None, 0.0, 0.0
+    plan = Placement(host_groups = [])
+    window = n_ctx if opts.kv_unified else n_ctx // n_slots
+    scored = rank(
+        [plan, fallback],
+        opts.host,
+        n_generated = opts.workload_generated_tokens,
+        n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window)),
+        n_ubatch = opts.n_ubatch_by_parallel.get(n_slots) or opts.n_ubatch,
+    )
+    plan_ms = _score_of(plan, scored)
+    fit_ms = _score_of(fallback, scored)
+    if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
+        plan_ms += opts.draft_drop_penalty_frac * fit_ms
+    if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
+        return None, plan_ms, fit_ms
+    gave_up = _knob_description(knobs, opts) if knobs is not None else "this plan"
+    return (
+        Plan(
+            n_ctx = n_ctx,
+            declined_by_gate = True,
+            predicted_request_ms = plan_ms,
+            predicted_fit_request_ms = fit_ms,
+            reason = (
+                f"planning this load is not worth it: {gave_up} "
+                f"costs {plan_ms:.0f} ms against {fit_ms:.0f} ms for llama.cpp's own fit "
+                f"over {opts.workload_prompt_tokens} prompt and "
+                f"{opts.workload_generated_tokens} generated tokens, so it is left to --fit on"
+            ),
+        ),
+        plan_ms,
+        fit_ms,
+    )
+
+
 def _patterns_for(layout: ModelLayout, units: Sequence[SpillUnit]) -> list[str]:
     """One ``-ot`` pattern per rung, each naming only the blocks that rung moved.
 
@@ -3029,6 +3107,12 @@ def _finish(
         if refused is not None:
             return refused
 
+    # A plan can give something up without moving a weight, and those were never
+    # ranked: the fallback arm of a no-spill plan is the launch as the caller
+    # typed it, which is as priceable as any other.
+    gave_up_a_knob = knobs is not None and (
+        knobs.mmproj_to_host or knobs.draft_dropped or knobs.n_parallel < max(1, opts.n_parallel)
+    )
     plan_ms = fit_ms = 0.0
     if opts.require_cost_win and budget is not None and (units or spill_lm_head):
         declined, plan_ms, fit_ms = _cost_gate(
@@ -3042,6 +3126,18 @@ def _finish(
             kv_bytes_floor = kv_bytes_floor,
             host_bytes = layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes,
             host_ram_bytes = host_ram_bytes,
+            knobs = knobs,
+        )
+        if declined is not None:
+            return declined
+    elif opts.require_cost_win and budget is not None and gave_up_a_knob:
+        declined, plan_ms, fit_ms = _knob_only_gate(
+            layout,
+            opts,
+            n_ctx,
+            budget,
+            quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
             knobs = knobs,
         )
         if declined is not None:

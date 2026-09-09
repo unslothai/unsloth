@@ -960,3 +960,34 @@ def test_a_fallback_that_cannot_be_modelled_declines_rather_than_waves_the_spill
         opts = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0),
     )
     assert ungated.spilled_lm_head, ungated.reason
+
+
+def test_a_knob_only_plan_is_ranked_against_the_launch_the_caller_typed():
+    """A plan that spills nothing but drops the draft was never scored at all.
+
+    ``_cost_gate`` ran only for a plan with host bytes, so rung 2 could give the
+    draft away for free: ``draft_drop_penalty_frac`` multiplied a spill cost
+    that did not exist. The fallback arm of a no-spill plan is the caller's own
+    launch as llama.cpp would fit it, which is priceable, so it is priced.
+    """
+    from core.inference.offload_planner import _device_reserve, all_resident_bytes
+
+    layout = dense_layout()
+    draft = 2 * GIB
+    # Short by half the draft, so rung 2 closes it and no weight moves.
+    needed = all_resident_bytes(layout, 32768)
+    card = [needed + _device_reserve(PlanOptions(), 32768) + draft - GIB // 2]
+    base = dict(host = HostProfile(threads = 6), draft_bytes = draft, draft_droppable = True)
+    free = plan_placement(
+        layout, card, 94 * GIB, 32768, opts = gated(**base, draft_drop_penalty_frac = 0.0)
+    )
+    assert free.draft_dropped and not free.spills_anything, free.reason
+    assert free.predicted_fit_request_ms > 0.0, "the fitter's arm has to be priced"
+    assert free.predicted_request_ms == 0.0, "nothing on the host, so nothing to charge"
+
+    priced = plan_placement(
+        layout, card, 94 * GIB, 32768, opts = gated(**base, draft_drop_penalty_frac = 5.0)
+    )
+    assert priced.declined_by_gate and not priced.draft_dropped, priced.reason
+    assert priced.predicted_request_ms > priced.predicted_fit_request_ms
+    assert "not worth it" in priced.reason and "--fit on" in priced.reason
