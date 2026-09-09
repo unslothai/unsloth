@@ -5,7 +5,7 @@
 
 It is a static copy: nothing refreshes it, so any change to these bytes is either
 a deliberate version bump that must update the manifest with it, or an accident.
-The accident is the dangerous one, since it means Studio verifies certificates
+The accident is the dangerous one, since it means Unsloth verifies certificates
 with code no upstream release ever shipped.
 """
 

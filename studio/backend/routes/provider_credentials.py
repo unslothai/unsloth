@@ -67,11 +67,16 @@ def resolve_provider_api_key_or_400(
     encrypted_api_key: str | None,
     *,
     allow_saved_key: bool = True,
+    prefer_saved_key: bool = False,
 ) -> str:
     """Resolve an explicit key, or a saved key only for an interactive UI session."""
 
     try:
         saved_provider_id = provider_id if allow_saved_key else None
+        if prefer_saved_key and saved_provider_id:
+            saved_key = credential_secrets.get_provider_api_key(saved_provider_id)
+            if saved_key is not None:
+                return saved_key
         return credential_secrets.resolve_provider_api_key(saved_provider_id, encrypted_api_key)
     except Exception as exc:
         logger.warning(

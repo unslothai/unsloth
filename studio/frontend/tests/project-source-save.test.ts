@@ -50,6 +50,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Answer a job poll only when it is *this* test's job. A save leaves its
+ * ingest watcher polling for as long as 300s, and node runs the next test
+ * immediately, so without this the watcher of a finished test is answered by
+ * the handler of the running one, and toasts and announces off the back of it. */
+function jobFor(jobId: string, input: string, body: unknown): Response {
+  return input.includes(`/jobs/${jobId}`)
+    ? json(body)
+    : json({ detail: `no such job: ${input}` }, 404);
+}
+
 test.beforeEach(() => {
   recordedToasts.length = 0;
   setAuthFetchHandler(null);
@@ -90,7 +100,7 @@ test("uploads the chat under its sanitised name and reports it once", async () =
 test("a quiet save stays silent so a pair can report the count itself", async () => {
   setAuthFetchHandler((input) =>
     input.includes("/jobs/")
-      ? json({ id: "j2", documentId: "d2", status: "completed" })
+      ? jobFor("j2", input, { id: "j2", documentId: "d2", status: "completed" })
       : json({ documentId: "d2", jobId: "j2", filename: "Chat.md" }),
   );
   assert.equal(
@@ -131,31 +141,48 @@ test("a quiet save still reports its own failure", async () => {
 
 test("an ingest that fails after the upload is not left silent", async () => {
   const seen = collectUpdates();
+  // A filename of its own, so a toast can be attributed to this save and not to
+  // some other test's watcher that happens to have uploaded a "Chat.md" too.
   setAuthFetchHandler((input) => {
     if (input.includes("/jobs/")) {
-      return json({
+      return jobFor("j4", input, {
         id: "j4",
         documentId: "d4",
         status: "failed",
         error: "Could not parse the document",
       });
     }
-    return json({ documentId: "d4", jobId: "j4", filename: "Chat.md" });
+    return json({ documentId: "d4", jobId: "j4", filename: "Unparsable.md" });
   });
-  await saveMarkdownAsProjectSource("p4", "# Chat\n", "Chat");
+  await saveMarkdownAsProjectSource("p4", "# Chat\n", "Unparsable");
+  // Wait on the announce, not on the toast: the watcher toasts and *then*
+  // announces, with no await between the two, so the announce is the last
+  // thing the failed ingest does. Polling for the toast and then asserting the
+  // count reads the count in the window between them, and fails on a runner
+  // slow enough to land a poll there.
+  const announcedTwice = await waitFor(() =>
+    seen.filter((id) => id === "p4").length >= 2 || undefined,
+  );
+  assert.ok(
+    announcedTwice,
+    `the failed ingest never re-announced p4, so a chip left "pending" never resolves; saw ${JSON.stringify(seen)}`,
+  );
   // The panel hides failed documents, so the success toast would otherwise be
   // the only thing the user ever sees about a source that never arrives.
-  const failure = await waitFor(() =>
-    recordedToasts.find((t) => t.message === "Couldn't index Chat.md"),
+  const failure = recordedToasts.find(
+    (t) => t.message === "Couldn't index Unparsable.md",
   );
   assert.equal(failure?.kind, "error");
   assert.equal(failure?.description, "Could not parse the document");
-  // And the panel is told again, so a chip left "pending" resolves.
+  // Told exactly twice: once for the upload, once for the ingest that failed.
   assert.equal(seen.filter((id) => id === "p4").length, 2);
 });
 
+/** Poll `read` until it answers, for well past the 2s ingest poll. Anything
+ * asserted on the strength of it must be something the code under test does
+ * *before* what is polled for, or the wait races it. */
 async function waitFor<T>(read: () => T | undefined): Promise<T | undefined> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 300; attempt++) {
     const value = read();
     if (value !== undefined) return value;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -179,7 +206,11 @@ test("a mounted sources list refetches when a chat is saved into its project", a
   });
   setAuthFetchHandler((input) => {
     if (input.includes("/jobs/")) {
-      return json({ id: "j5", documentId: "d5", status: "completed" });
+      return jobFor("j5", input, {
+        id: "j5",
+        documentId: "d5",
+        status: "completed",
+      });
     }
     // The upload is what puts the row on the server.
     rows = ["Chat.md"];

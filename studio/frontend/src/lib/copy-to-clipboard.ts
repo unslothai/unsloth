@@ -72,3 +72,46 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   // Fallback: execCommand (works in Safari when called during user gesture)
   return copyWithExecCommand(text);
 }
+
+/**
+ * Copy the result of a read that has to happen first, without losing the
+ * gesture that asked for it. Safari drops transient activation across an
+ * await, so both writers below fail when the text only arrives after one; the
+ * write starts synchronously with a promised payload instead, where the
+ * browser has it. A payload that rejects, which is how a caller says it found
+ * nothing to copy, leaves the clipboard untouched.
+ */
+export async function copyToClipboardFrom(
+  load: () => Promise<string>,
+): Promise<boolean> {
+  const payload = load();
+  // The write paths below each decide what to do with a rejection; this keeps
+  // it from being reported as unhandled in the meantime.
+  payload.catch(() => undefined);
+
+  if (
+    !isTauri &&
+    typeof ClipboardItem === "function" &&
+    typeof navigator?.clipboard?.write === "function"
+  ) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": payload.then((text) => {
+            if (!text) throw new Error("nothing to copy");
+            return new Blob([text], { type: "text/plain" });
+          }),
+        }),
+      ]);
+      return true;
+    } catch (error) {
+      console.warn("Promised clipboard write failed, falling back", error);
+    }
+  }
+
+  try {
+    return await copyToClipboard(await payload);
+  } catch {
+    return false;
+  }
+}

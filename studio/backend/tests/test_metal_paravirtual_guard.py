@@ -461,7 +461,7 @@ def test_a_user_owned_drafter_is_pinned_to_cpu_too():
     """A user --spec-type makes _build_speculative_flags emit nothing, so their
     --model-draft never appeared in spec_flags and the drafter kept running corrupt."""
     user_extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
-    # Studio emits no spec block at all here, which is why spec_flags alone is blind.
+    # Unsloth emits no spec block at all here, which is why spec_flags alone is blind.
     backend = llama_cpp.LlamaCppBackend()
     assert (
         backend._build_speculative_flags(
@@ -580,6 +580,9 @@ def _mmproj_gate(
         ),
         "model_path": "/m.gguf",
         "mmproj_path": None,
+        # This harness is about the paravirtual gate, so vision is on; the toggle's
+        # own effect on the same block is covered in test_mmproj_placement_policy.py.
+        "disable_vision": False,
         "_paravirtual_cpu_forced": paravirtual,
         "server_caps": caps,
         "is_vision": is_vision,

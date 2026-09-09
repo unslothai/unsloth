@@ -69,6 +69,10 @@ const NAMED_CASES: Array<[string, string]> = [
   ["adjacent-spans", "`a $5` `b $6` `c $7`\n\n"],
   ["link-parens", "See [docs](https://e.com/a_(b)) and $5.\n\n"],
   ["list-with-math", "- rate \\(\\alpha\\)\n- budget $250\n- decay \\(\\lambda\\)\n\n"],
+  [
+    "list-with-escaped-dollar-math",
+    "- rate \\$\\alpha\\$\n- budget $250\n- decay \\$\\lambda\\$\n\n",
+  ],
   ["loose-list", "- item one\n\n  continued body $5\n\n- item two\n\n  more \\(x\\)\n\n"],
   ["blockquote", "> quoted \\(x\\) and $5\n> more\n\nafter\n\n"],
   ["setext", "Heading text\n===\n\nBody with $5.\n\n"],

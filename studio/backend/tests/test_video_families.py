@@ -381,7 +381,7 @@ def test_video_resolution_presets_are_upstream_sanctioned():
 def test_curated_gguf_repos_are_unsloth_mirrors():
     """No curated video GGUF pick may point at a community repack.
 
-    ``gguf_repo`` is a one-click download, so its availability is Studio's problem: a rename or
+    ``gguf_repo`` is a one-click download, so its availability is Unsloth's problem: a rename or
     takedown upstream turns the pick into a 404 no client can fix.
     """
     from core.inference.video_families import _FAMILIES

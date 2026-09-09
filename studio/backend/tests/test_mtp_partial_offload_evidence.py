@@ -6,7 +6,7 @@
 Auto stands the embedded Hybrid Mamba MTP head down by emitting
 ``--spec-type none`` when the placement is partial, because the recurrent
 rollback copies then cost more layers than the drafting wins back. Getting the
-EVIDENCE test wrong is expensive in both directions: too strict and Studio is
+EVIDENCE test wrong is expensive in both directions: too strict and Unsloth is
 back to the 3.11 token/s of the reported regression, too loose and it gives up a
 real speedup on a card that had room for every layer.
 
@@ -507,7 +507,7 @@ def test_the_reported_regression_is_still_fixed(tmp_path):
     Qwen3.8-27B UD-IQ2_M, about 12 GiB free, Auto, four slots: nvidia-smi answers,
     the planner runs over a real device list and cannot fit the model, so --fit on
     IS a verdict here and the stand-down must fire. If a tightening of the fit arm
-    ever breaks this, Studio is back to 3.11 token/s.
+    ever breaks this, Unsloth is back to 3.11 token/s.
 
     See https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/discussions/18.
     """

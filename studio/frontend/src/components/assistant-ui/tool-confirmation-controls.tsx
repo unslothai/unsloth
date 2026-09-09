@@ -6,11 +6,17 @@
 import { Button } from "@/components/ui/button";
 import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import { useChatActive, useChatNavigationStore } from "@/features/chat";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -97,6 +103,64 @@ export function ToolConfirmationControls({
       void resolve("allow");
     }
   }, [showControls, autoAllowed, pending, failed, resolve]);
+
+  // ⏎ / Esc, only while this card is asking: an auto-approved one answers
+  // itself. Off route the chat pane is hidden rather than unmounted, so
+  // without the active check a bare key would decide a request nobody can
+  // see. With a second request parked, in the other Compare pane or further
+  // up the thread, the chord has no way to say which one it means, so both
+  // cards fall back to their buttons.
+  const chatActive = useChatActive();
+  const soleRequest = useChatRuntimeStore(
+    (s) => Object.keys(s.toolConfirmations).length === 1,
+  );
+  // A sidebar selection answers Escape already, and that listener does not
+  // consume the key, so both would run off one press and deny a call the user
+  // was only dismissing a selection with. Escape there costs nothing to undo
+  // and this does not, so this is the one that waits. Enter goes with it: the
+  // buttons are still there, and a card that takes half its keys is worse to
+  // explain than one that takes none.
+  const selectionActive = useChatNavigationStore((s) => s.selectionActive);
+  const keyboardReady =
+    chatActive &&
+    soleRequest &&
+    !selectionActive &&
+    showControls &&
+    pending === null &&
+    !(autoAllowed && !failed);
+  // The Chat route stays mounted under a dialog, so `keyboardReady` still says
+  // yes while the request is hidden behind one. Answering a tool call the user
+  // cannot see must not be reachable by accident, so both chords ask here.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "approveToolRequest",
+    () => {
+      if (chatCovered()) return;
+      void resolve("allow");
+    },
+    {
+      enabled: keyboardReady,
+      // Enter belongs to the composer while it has focus.
+      skipInTextFields: true,
+    },
+  );
+  useShortcut(
+    "declineToolRequest",
+    () => {
+      if (chatCovered()) return;
+      void resolve("deny");
+    },
+    {
+      enabled: keyboardReady,
+      skipInTextFields: true,
+      // A request usually arrives with the composer still focused from the
+      // prompt that caused it, and Escape types nothing there, so the gate
+      // would hold the decline back at the one moment it is most wanted. Enter
+      // above gets no such pass: that key sends. Every other field keeps its
+      // Escape, the queued-prompt editor and the settings search included.
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.

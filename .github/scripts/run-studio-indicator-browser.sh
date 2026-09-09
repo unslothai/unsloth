@@ -34,9 +34,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Same signal report as run-studio-permission-browser.sh; see the comment there for the
+# failure this exists to make readable. This script has the identical shape (background
+# server, EXIT trap, suite as the last command), so it can lose a passing run to a late
+# signal the same way, and it now runs concurrently with the chat lane on Windows.
+suite_done=0
+_on_signal() {
+  name="$1"; number="$2"
+  echo "[indicator] SIG${name} received at $(date -u +%H:%M:%S) after suite_done=${suite_done}" >&2
+  # comm, not args: this lands in a public CI log, and a command line can carry a
+  # token that ::add-mask:: never saw. Process names answer "what was still alive"
+  # without quoting anyone's argv.
+  ps -o pid,ppid,comm 2>/dev/null | tail -20 >&2 || true
+  exit $((128 + number))
+}
+trap '_on_signal TERM 15' TERM
+trap '_on_signal INT 2' INT
+trap '_on_signal HUP 1' HUP
+
 healthy=0
-for _ in $(seq 1 180); do
-  if curl -fs "http://127.0.0.1:$port/api/health" >/dev/null; then
+# --max-time, or only the loop counter is bounded and a server that binds the
+# port then wedges parks the first iteration forever. And a real deadline
+# rather than an iteration count, because once a probe can cost --max-time,
+# 180 iterations is up to 18 minutes rather than the 180s it reads as. See
+# wait-for-health.sh, which had both halves of the same hole.
+health_deadline=$(( SECONDS + 180 ))
+while [ "$SECONDS" -lt "$health_deadline" ]; do
+  if curl -fs --connect-timeout 3 --max-time 5 \
+       "http://127.0.0.1:$port/api/health" >/dev/null; then
     healthy=1
     break
   fi
@@ -70,3 +95,5 @@ else
 fi
 
 python tests/studio/playwright_loaded_models_indicator.py
+# Only after a clean return; see the permission script's comment.
+suite_done=1

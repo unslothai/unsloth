@@ -48,8 +48,8 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
     )
 
     assert download_registry.incomplete_blob_hashes("model", "Org/Model") == {_BLOB_HASH}
-    # Nonce partials are refetched rather than resumed, so none of those bytes are bytes the
-    # next attempt gets to skip. Their grouping is still asserted, one blob not two.
+    # Nonce partials are refetched rather than resumed, so none of those bytes are bytes the next
+    # attempt skips; their grouping is still asserted, one blob not two.
     assert (
         download_registry.existing_blob_bytes(
             "model",
@@ -60,7 +60,7 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
     )
 
     # The same grouping where the bytes DO count: a legacy partial under a writer that appends.
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
     assert (
         download_registry.existing_blob_bytes(
             "model",

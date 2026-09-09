@@ -41,15 +41,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # No macOS leg on purpose. The only command this job runs is
-        # `pytest tests/test_export_capability.py`, and every test in that file
-        # goes through `_patch()`, which monkeypatches `_has_torch`,
-        # `get_device` and `is_apple_silicon`. Nothing in it touches Metal, MLX
-        # or any Apple binary, so a real Mac proves nothing a Linux runner does
-        # not already prove -- and studio-backend-ci.yml runs the same file on
-        # ubuntu-latest as part of `pytest tests/`. macOS concurrency is capped
-        # at 5 account-wide, so a leg that buys no signal is worth reclaiming.
-        os: [ubuntu-latest, windows-latest]
+        # Windows only, and the reason is the same one that already removed the
+        # macOS leg: the only command this job runs is `pytest
+        # tests/test_export_capability.py`, and every test in that file goes
+        # through `_patch()`, which monkeypatches `_has_torch`, `get_device` and
+        # `is_apple_silicon`. Nothing in it touches Metal, MLX or any Apple
+        # binary, so a real Mac proved nothing a Linux runner did not.
+        #
+        # That argument reaches one step further than it was taken. It rests on
+        # studio-backend-ci.yml running the same file on ubuntu-latest as part of
+        # `pytest tests/` -- which it does, the file is not in that job's
+        # --ignore list -- and if that is true then the ubuntu leg HERE is the
+        # duplicate, not just the macOS one. The import-safety test does not need
+        # a torch-free image to be honest either: it installs its own
+        # `builtins.__import__` blocker and drops preloaded torch/unsloth from
+        # sys.modules, so it proves the same thing inside Backend CI's fully
+        # installed environment.
+        #
+        # Windows stays, because nothing else in CI runs this file there and
+        # `_has_torch`'s import probe is the per-OS behaviour the job exists for.
+        # Measured 67s of execution behind a 10642s queue, so the ubuntu leg was
+        # a runner slot spent re-proving a Linux result.
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
@@ -71,6 +84,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: studio-export
           key-files: |
             .github/workflows/studio-export-capability-ci.yml
 

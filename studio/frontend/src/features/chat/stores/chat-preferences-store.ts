@@ -8,15 +8,11 @@ import {
   PASTED_TEXT_THRESHOLD_CHOICES,
 } from "../utils/pasted-text.ts";
 
-// Client-side chat UI prefs kept in localStorage, not the chat DB.
-// confirmDeleteChats: when off, deleting a chat skips the confirm dialog.
-// alwaysDeleteChatFiles: when on, deleting a chat also removes its sandbox
-// folder, without having to ask for it each time.
-// showModelDisclaimer: when off, hide the "LLMs can make mistakes" footer note.
-// showResponseModel: when on, assistant responses show the producing model.
-// collapseThinkingByDefault: when on, thinking stays collapsed instead of
-// streaming open.
-// pastedTextMinChars: paste length that becomes a .txt attachment. 0 is off.
+// Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
+// the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
+// showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
+// the producing model on responses. collapseThinkingByDefault: on keeps thinking collapsed.
+// pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 export interface ChatPreferencesState {
   confirmDeleteChats: boolean;
   setConfirmDeleteChats: (value: boolean) => void;
@@ -28,6 +24,8 @@ export interface ChatPreferencesState {
   setShowResponseModel: (value: boolean) => void;
   collapseThinkingByDefault: boolean;
   setCollapseThinkingByDefault: (value: boolean) => void;
+  collapseToolActivityByDefault: boolean;
+  setCollapseToolActivityByDefault: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
 }
@@ -51,7 +49,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       alwaysDeleteChatFiles: false,
       setAlwaysDeleteChatFiles: (alwaysDeleteChatFiles) =>
         set({ alwaysDeleteChatFiles }),
-      showModelDisclaimer: true,
+      showModelDisclaimer: false,
       setShowModelDisclaimer: (showModelDisclaimer) =>
         set({ showModelDisclaimer }),
       showResponseModel: false,
@@ -59,6 +57,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       collapseThinkingByDefault: false,
       setCollapseThinkingByDefault: (collapseThinkingByDefault) =>
         set({ collapseThinkingByDefault }),
+      collapseToolActivityByDefault: true,
+      setCollapseToolActivityByDefault: (collapseToolActivityByDefault) =>
+        set({ collapseToolActivityByDefault }),
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
@@ -71,9 +72,11 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           ...current,
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
-          showModelDisclaimer: saved?.showModelDisclaimer ?? true,
+          showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
           collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
+          collapseToolActivityByDefault:
+            saved?.collapseToolActivityByDefault ?? true,
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),

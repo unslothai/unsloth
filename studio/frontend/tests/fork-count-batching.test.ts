@@ -10,9 +10,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test, { mock } from "node:test";
 
-// The real one, not a stub: what counts as a local thread is the rule under test,
-// and a hand-written copy of the prefix here could drift from the app's.
-import { isAssistantLocalThreadId } from "../src/features/chat/utils/thread-ids.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
@@ -47,7 +44,10 @@ function fireHistoryUpdated(): void {
 }
 
 /** A fresh module instance plus the request log its fetches write to. */
-function freshStore(counts: Record<string, number> = {}): {
+function freshStore(
+  counts: Record<string, number> = {},
+  incognito: readonly string[] = [],
+): {
   store: Store;
   requests: string[];
 } {
@@ -62,7 +62,9 @@ function freshStore(counts: Record<string, number> = {}): {
           return new Map(Object.entries(counts));
         },
       },
-      "./thread-ids": { isAssistantLocalThreadId },
+      "./chat-history-storage": {
+        isThreadIncognito: (threadId: string) => incognito.includes(threadId),
+      },
     },
   );
   return { store, requests };
@@ -358,41 +360,50 @@ test("unsubscribing cancels the ceiling as well as the trailing edge", async (t)
   second();
 });
 
-test("a local thread never asks the server for forks it cannot have", async (t) => {
-  // #8992 added this store; it did not exclude threads the server has never seen.
-  // A `__LOCALID_` thread has no server record, so the request can only 404, and
-  // getThreadForkCounts maps 404 to the empty map the entry already holds.
-  //
-  // It is not a rounding error. A new chat is in exactly this state, and this store
-  // refreshes on CHAT_HISTORY_UPDATED_EVENT, which fires once per streaming chunk --
-  // so the first reply in a new chat paid one useless request per debounce window
-  // for as long as it streamed. The heavy-thread smoke, which counts requests issued
-  // inside a measured interaction, is what caught it.
+test("a chat created in the app asks for its fork counts", async (t) => {
+  // A `__LOCALID_` id is the permanent primary key of every chat Studio creates, so skipping
+  // the fetch on that prefix left their badges reading 0 for good.
   mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => mock.timers.reset());
   const { store, requests } = freshStore({ m1: 2 });
 
   const unsubscribe = store.subscribeForkCounts("__LOCALID_abc123", () => {});
   await flush();
-  assert.deepEqual(
-    requests,
-    [],
-    "subscribing to a local thread must not fetch",
-  );
+  assert.deepEqual(requests, ["__LOCALID_abc123"]);
+  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 2);
+
+  unsubscribe();
+});
+
+test("a temporary chat is the one thread that never asks", async (t) => {
+  // An incognito thread has no row, so its forks cannot exist. The saved chat beside it still
+  // asks: the guard is the row, not the `__LOCALID_` prefix both of them carry.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 }, ["__LOCALID_temp"]);
+
+  const stop = [
+    store.subscribeForkCounts("__LOCALID_temp", () => {}),
+    store.subscribeForkCounts("__LOCALID_saved", () => {}),
+  ];
+  await flush();
+  assert.deepEqual(requests, ["__LOCALID_saved"]);
 
   for (let i = 0; i < 20; i++) fireHistoryUpdated();
   mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
   await flush();
-  assert.deepEqual(requests, [], "nor must a burst of history events");
+  assert.equal(
+    requests.filter((id) => id === "__LOCALID_temp").length,
+    0,
+    "nor must a burst of history events reach a temporary chat",
+  );
+  assert.equal(store.forkCountFor("__LOCALID_temp", "m1"), 0);
+  assert.equal(store.forkCountFor("__LOCALID_saved", "m1"), 2);
 
-  // The badge still reads, it just reads the empty answer without asking.
-  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 0);
-  unsubscribe();
+  for (const unsubscribe of stop) unsubscribe();
 });
 
-test("a saved thread alongside a local one still refreshes", async (t) => {
-  // The guard must be per thread, not a global off switch: the local thread is the
-  // one being composed, and a saved thread is on screen next to it.
+test("every subscribed thread refreshes, whatever its id looks like", async (t) => {
   mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => mock.timers.reset());
   const { store, requests } = freshStore({ m1: 2 });
@@ -402,13 +413,21 @@ test("a saved thread alongside a local one still refreshes", async (t) => {
     store.subscribeForkCounts("thread-saved", () => {}),
   ];
   await flush();
-  assert.deepEqual(requests, ["thread-saved"]);
+  assert.deepEqual(requests.slice().sort(), [
+    "__LOCALID_abc123",
+    "thread-saved",
+  ]);
 
+  requests.length = 0;
   fireHistoryUpdated();
   mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
   await flush();
-  assert.deepEqual(requests, ["thread-saved", "thread-saved"]);
+  assert.deepEqual(requests.slice().sort(), [
+    "__LOCALID_abc123",
+    "thread-saved",
+  ]);
   assert.equal(store.forkCountFor("thread-saved", "m1"), 2);
+  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 2);
 
   for (const unsubscribe of stop) unsubscribe();
 });
