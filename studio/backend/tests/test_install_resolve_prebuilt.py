@@ -2830,8 +2830,6 @@ def test_the_icd_search_path_is_built_per_call_not_at_import(monkeypatch):
 
 
 class _FakeKeyHandle:
-    """Context manager for a fake registry key."""
-
     def __init__(self, payload):
         self.payload = payload
 
@@ -2858,7 +2856,6 @@ class _FakeIcdWinreg:
         devices = None,
     ):
         self._by_key = by_key
-        # Class key path -> _FakeDeviceClass.
         self._devices = devices or {}
 
     def OpenKey(self, parent, name):
@@ -2898,9 +2895,7 @@ def _icd_paths(
     devices = None,
     present = None,
 ):
-    """Discover manifests in a fake registry, treating all instances as present
-    unless a per-class presence callback is supplied.
-    """
+    """Every instance counts as present unless a per-class callback says otherwise."""
     monkeypatch.setattr(ilp.sys, "platform", "win32")
     for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         monkeypatch.delenv(name, raising = False)
@@ -3064,7 +3059,6 @@ def test_a_manifest_registered_twice_is_listed_once(monkeypatch, _present_manife
 
 
 def test_a_relative_device_registration_is_not_guessed_at(monkeypatch):
-    # The registration alone cannot resolve a relative path.
     assert _icd_paths(monkeypatch, {}, _display_class(value = "amd-vulkan64.json")) == []
 
 
@@ -3116,7 +3110,6 @@ def test_the_legacy_key_still_answers_on_its_own(monkeypatch, _present_manifest)
 
 
 def test_a_removed_device_registration_is_not_evidence(monkeypatch, tmp_path):
-    # Removed devices can retain registrations and files; presence must still be checked.
     left_behind = _icd(tmp_path / "removed" / "amd-vulkan64.json")
     devices = {
         _DISPLAY_CLASS_KEY: _FakeDeviceClass(
@@ -3129,7 +3122,6 @@ def test_a_removed_device_registration_is_not_evidence(monkeypatch, tmp_path):
     assert os.path.isfile(left_behind)
     assert _icd_paths(monkeypatch, {}, devices, present = lambda _key: {"0001"}) == []
 
-    # Reconnecting the device makes its registration eligible again.
     assert _icd_paths(monkeypatch, {}, devices, present = lambda _key: {"0000"}) == [left_behind]
 
 
@@ -3167,7 +3159,6 @@ def test_presence_is_resolved_per_class_key(monkeypatch, tmp_path):
 def test_an_unknowable_presence_answer_keeps_the_legacy_key_alone(
     monkeypatch, tmp_path, _present_manifest
 ):
-    # Failed presence detection must not allow an unfiltered device scan.
     device_only = _display_class(value = _icd(tmp_path / "device" / "amd-vulkan64.json"))
     assert _icd_paths(monkeypatch, {}, device_only, present = lambda _key: None) == []
 
@@ -3192,8 +3183,7 @@ class _FakeCfgMgr:
         driver_of = None,
         # device id -> (CM_Get_DevNode_Status, problem number). Absent means healthy.
         status_of = None,
-        # Ids that appear only once the list has been sized, i.e. a device that
-        # arrives mid-enumeration and makes the block outgrow the buffer.
+        # Ids that arrive after the list is sized, outgrowing the caller's buffer.
         arriving = None,
     ):
         # class guid -> device ids; device id -> CM_DRP_DRIVER value.
@@ -3216,8 +3206,7 @@ class _FakeCfgMgr:
 
     def CM_Get_Device_ID_ListW(self, guid, buffer, length, flags):
         self.calls.append(("list", guid, flags))
-        # Anything queued joins the class now, i.e. after the caller sized its buffer
-        # from a list that did not contain it yet.
+        # Queued ids join the class now, after the caller sized its buffer without them.
         if self._arriving:
             self._by_class[guid] = list(self._by_class.get(guid, [])) + self._arriving
             self._arriving = []
@@ -3281,7 +3270,6 @@ def test_the_presence_probe_reads_the_present_device_list(monkeypatch):
         "0000",
         "0003",
     }
-    # Require both class and presence filters.
     assert fake.calls[0] == (
         "size",
         _DISPLAY_GUID,
@@ -3320,7 +3308,6 @@ def test_a_failed_cm_call_answers_none(monkeypatch, failing_call):
 
 
 def test_the_presence_probe_answers_none_when_cfgmgr_cannot_be_loaded(monkeypatch):
-    # Simulate a missing library on every platform, including Windows.
     def _no_library(_name):
         raise OSError("cfgmgr32.dll not found")
 
@@ -3345,8 +3332,8 @@ def test_the_presence_probe_answers_none_when_the_walk_raises(monkeypatch):
 class _Utf16Buffer:
     """create_unicode_buffer over Windows' 2-byte code units.
 
-    Indexing matches a ctypes unicode buffer: an int index is one character, a
-    slice keeps embedded NULs, and .value stops at the first NUL.
+    Indexing matches ctypes: int index is one character, a slice keeps embedded NULs,
+    .value stops at the first NUL.
     """
 
     def __init__(self, length):
@@ -3398,12 +3385,10 @@ class _WindowsWcharT:
 class _WindowsCfgMgr(_FakeCfgMgr):
     """_FakeCfgMgr speaking the units the API documents, not this host's.
 
-    CM_Get_DevNode_Registry_PropertyW sizes its buffer in BYTES
-    (_Out_writes_bytes_opt_(*pulLength) PVOID Buffer), which is twice the
-    element count under a 2-byte wchar_t. ``under_allocated`` records a caller
-    that got the conversion wrong; assert it from OUTSIDE the probe, which
-    catches Exception around the whole walk and would read a failed assert as a
-    clean skip.
+    CM_Get_DevNode_Registry_PropertyW sizes in BYTES
+    (_Out_writes_bytes_opt_(*pulLength) PVOID Buffer), twice the element count under a
+    2-byte wchar_t. Assert ``under_allocated`` from OUTSIDE the probe: it catches
+    Exception around the whole walk and would read a failed assert as a clean skip.
     """
 
     under_allocated = False
@@ -3428,13 +3413,10 @@ class _WindowsCfgMgr(_FakeCfgMgr):
 def _windows_widths(cfgmgr):
     """Run the probe as Windows runs it: 2-byte wchar_t, 32-bit scalars.
 
-    _FakeCfgMgr answers through native ctypes, where sizeof(c_wchar) is 4 on
-    Linux and 2 on Windows and create_unicode_buffer counts Python characters.
-    The byte-to-element conversion in _windows_present_class_instances is
-    therefore only ever exercised at the runner's width, so a green suite says
-    nothing about the arithmetic that actually ships. The probe imports ctypes
-    inside the function, so swapping sys.modules is enough and nothing outside
-    this block is affected.
+    Native ctypes makes sizeof(c_wchar) 4 here and 2 on Windows, so the byte-to-element
+    conversion in _windows_present_class_instances is only ever exercised at the runner's
+    width and a green suite says nothing about the arithmetic that ships. The probe
+    imports ctypes inside the function, so swapping sys.modules is enough.
     """
     shim = ModuleType("ctypes")
     wintypes = ModuleType("ctypes.wintypes")
@@ -3455,10 +3437,8 @@ def _windows_widths(cfgmgr):
 
 
 def test_the_driver_property_survives_a_two_byte_wchar():
-    # "{4d36e968-...}\0000" is 43 characters, i.e. 88 bytes on Windows. Dividing
-    # that by this host's 4-byte wchar_t would allocate 23 elements, the callee
-    # would refuse the undersized buffer, and the instance the fix exists to find
-    # would be dropped: Automatic would stay on ROCm exactly as before.
+    # 43 characters, i.e. 88 bytes on Windows. Divided by this host's 4-byte wchar_t it
+    # allocates 23, the callee refuses the undersized buffer, and the instance is lost.
     driver = _DISPLAY_GUID + "\\0000"
     fake = _WindowsCfgMgr(
         {_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0"]},
@@ -3471,9 +3451,8 @@ def test_the_driver_property_survives_a_two_byte_wchar():
 
 
 def test_the_device_id_list_is_sized_in_characters_not_bytes():
-    # CM_Get_Device_ID_ListW's BufferLen is a CHARACTER count
-    # (_Out_writes_(BufferLen) PZZWSTR), so the size query's answer is passed
-    # through unscaled. Two ids plus their terminators exercise the split.
+    # BufferLen is a CHARACTER count (_Out_writes_(BufferLen) PZZWSTR), so the size
+    # query's answer passes through unscaled.
     fake = _WindowsCfgMgr(
         {_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0", "PCI\\VEN_1002&DEV_7448\\1"]},
         driver_of = {
@@ -3487,9 +3466,7 @@ def test_the_device_id_list_is_sized_in_characters_not_bytes():
 
 
 def test_the_forced_loader_list_reads_neither_the_registry_nor_cfgmgr():
-    # Asserting the returned paths alone would still pass if the override were
-    # applied after a full device walk, which on a real host is two CfgMgr32
-    # enumerations and two class-key walks per call.
+    # The paths alone would be right even if the override ran after a full device walk.
     class _CountingWinreg(_FakeIcdWinreg):
         def __init__(self):
             super().__init__({}, None)
@@ -3544,9 +3521,8 @@ class _WindowsPaths:
     ],
 )
 def test_a_registration_is_taken_only_when_windows_calls_it_absolute(monkeypatch, value, taken):
-    # tmp_path is POSIX here, so every other test in this file exercises
-    # os.path.isabs as posixpath, which answers False for "C:\..." and True for
-    # "/...". Neither spelling is what a real VulkanDriverName holds.
+    # tmp_path is POSIX, so every other test here runs os.path.isabs as posixpath,
+    # which answers False for "C:\..." and True for "/...". Neither is a real value.
     monkeypatch.setattr(ilp, "os", _WindowsPaths({value.strip()}))
     got = ilp._windows_vulkan_driver_value_paths(_FakeIcdWinreg, value, _FakeIcdWinreg.REG_SZ)
     assert got == ([value.strip()] if taken else [])
@@ -3576,10 +3552,7 @@ _DN_NEED_RESTART = 0x00000100  # DN_LIAR
 
 @pytest.mark.parametrize("problem", [_CM_PROB_NEED_RESTART, _DN_NEED_RESTART])
 def test_a_device_pending_reboot_is_not_evidence_of_a_loadable_driver(monkeypatch, problem):
-    # A driver update writes VulkanDriverName and drops its manifest before the reboot
-    # that binds it. Between the two the adapter is PRESENT, the file is on disk, and
-    # the loader skips the devnode: routing to Vulkan there installs a bundle whose
-    # driver cannot load, i.e. the silent CPU fallback the probe exists to prevent.
+    # Present with its manifest on disk, yet unloadable until the reboot binds it.
     device = "PCI\\VEN_1002&DEV_1586\\0"
     fake = _FakeCfgMgr(
         {_DISPLAY_GUID: [device]},
@@ -3591,8 +3564,7 @@ def test_a_device_pending_reboot_is_not_evidence_of_a_loadable_driver(monkeypatc
 
 
 def test_an_unrelated_device_problem_does_not_hide_a_working_adapter(monkeypatch):
-    # Only the pending-reboot problem codes are disqualifying; the loader reads every
-    # other flagged devnode, so a disabled sibling must not cost the real adapter.
+    # Only the pending-reboot codes disqualify, so a disabled sibling costs nothing.
     working = "PCI\\VEN_1002&DEV_1586\\0"
     disabled = "PCI\\VEN_1002&DEV_7448\\1"
     fake = _FakeCfgMgr(
@@ -3611,8 +3583,7 @@ def test_an_unrelated_device_problem_does_not_hide_a_working_adapter(monkeypatch
 
 
 def test_a_device_whose_status_cannot_be_read_is_skipped(monkeypatch):
-    # Same call the loader makes and the same answer it gives: a status it cannot read
-    # is not a device it will use. Failing towards ROCm leaves the host where it was.
+    # The loader's own answer: a status it cannot read is not a device it will use.
     device = "PCI\\VEN_1002&DEV_1586\\0"
     fake = _FakeCfgMgr(
         {_DISPLAY_GUID: [device]},
@@ -3624,11 +3595,8 @@ def test_a_device_whose_status_cannot_be_read_is_skipped(monkeypatch):
 
 
 def test_a_device_arriving_mid_enumeration_is_read_on_the_retry(monkeypatch):
-    # CM_Get_Device_ID_ListW refuses an undersized buffer rather than truncating, so a
-    # panel or a finishing driver install landing between the size and the read answers
-    # CR_BUFFER_SMALL. Without the resize retry that transient reports presence as
-    # unknown, both classes are skipped, and the gfx115x host this feature exists for
-    # quietly installs the HIP bundle instead.
+    # A device landing between the size and the read answers CR_BUFFER_SMALL; unretried,
+    # that transient drops the whole scan.
     settled = "PCI\\VEN_1002&DEV_1586\\0"
     late = "PCI\\VEN_1002&DEV_7448\\1"
     fake = _FakeCfgMgr(
@@ -3657,8 +3625,7 @@ def test_a_list_that_never_settles_answers_unknown_rather_than_spinning(monkeypa
 
 
 def test_one_unreadable_instance_does_not_cost_the_rest_of_the_class(monkeypatch, tmp_path):
-    # The catch is per instance, not per class. An integrated part often enumerates
-    # first, so a class-wide catch would drop the very registration being looked for.
+    # Per instance, not per class: the integrated part often enumerates first.
     manifest = _icd(tmp_path / "store" / "amd-vulkan64.json")
 
     class _HalfBrokenWinreg(_FakeIcdWinreg):

@@ -7849,30 +7849,21 @@ _CM_GETIDLIST_FILTER_PRESENT = 0x00000100
 _CM_GETIDLIST_FILTER_CLASS = 0x00000200
 _CM_DRP_DRIVER = 0x0000000A
 _CR_SUCCESS = 0x00000000
-# The list can grow between sizing and reading it, exactly as it can for the loader.
 _CR_BUFFER_SMALL = 0x0000001A
-# A device pending reboot is present and registered but the loader skips it, so counting
-# it would install the Vulkan bundle for a driver that will not load until the restart.
 _DN_HAS_PROBLEM = 0x00000400
 _CM_PROB_NEED_RESTART = 0x0000000E
-_DN_NEED_RESTART = 0x00000100  # DN_LIAR, the second spelling the loader accepts.
-# One resize is what a settled machine needs; more means the list is churning faster than
-# it can be read, and answering "unknown" beats spinning inside an installer.
+_DN_NEED_RESTART = 0x00000100  # cfg.h spells this one DN_LIAR.
 _CM_DEVICE_LIST_ATTEMPTS = 4
 
 
 def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
     """Return present class instances ("0000"), or None if enumeration fails.
 
-    CM_DRP_DRIVER maps each device to "{class guid}\\NNNN". An empty set means
-    no devices are present.
-
-    Follows windows_get_device_registry_files in the loader's loader_windows.c
-    for everything that decides whether a devnode counts: the same class +
-    present filters, the same CR_BUFFER_SMALL resize retry, and the same
-    pending-reboot skip. It does NOT reproduce the loader's traversal, which
-    reaches SoftwareComponents only as children of a present display adapter;
-    the caller enumerates that class directly, so discovery there is wider.
+    CM_DRP_DRIVER maps each device to "{class guid}\\NNNN"; an empty set means none
+    are present. Every devnode filter here is the loader's own
+    (windows_get_device_registry_files), but its traversal is NOT: the loader reaches
+    SoftwareComponents only as children of a present adapter, and the caller
+    enumerates that class directly, so discovery there is wider.
     """
     guid = class_key_path.rsplit("\\", 1)[-1]
     try:
@@ -7884,11 +7875,8 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
     try:
         length = wintypes.ULONG(0)
         flags = _CM_GETIDLIST_FILTER_CLASS | _CM_GETIDLIST_FILTER_PRESENT
-        # A device arriving between the two calls (a hotplugged panel, a driver install
-        # finishing) makes the block outgrow the buffer, and the API refuses rather than
-        # truncating. Without the retry that transient turns the whole feature off for
-        # the run: presence reads as unknown, both classes are skipped, and a gfx115x
-        # host silently installs the HIP bundle it was meant to be routed away from.
+        # A device arriving between the two calls outgrows the buffer and the API refuses
+        # rather than truncating; unretried, that transient drops the whole scan.
         for _attempt in range(_CM_DEVICE_LIST_ATTEMPTS):
             if (
                 cfgmgr.CM_Get_Device_ID_List_SizeW(ctypes.pointer(length), guid, flags)
@@ -7943,14 +7931,11 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
 def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst: Any) -> bool:
     """Whether this devnode is one the Vulkan loader would read, not merely present.
 
-    A driver update registers VulkanDriverName and drops its manifest before the
-    reboot that binds it, so between the two the adapter is PRESENT, the file is on
-    disk and the driver cannot load. The loader skips that devnode; counting it would
-    hand a gfx115x host the Vulkan bundle and let llama-server fall back to CPU, the
-    outcome _amd_vulkan_icd_present exists to prevent. An unreadable status is skipped
-    for the same reason the loader skips it: the answer would be a guess, and guessing
-    wrong here replaces a working ROCm install, while guessing conservatively only
-    leaves the host where it already was.
+    A driver update registers VulkanDriverName and drops its manifest before the reboot
+    that binds it: until then the adapter is present, the file is on disk, and the driver
+    cannot load. Counting that window hands the host a Vulkan bundle and lets llama-server
+    fall back to CPU, which is what _amd_vulkan_icd_present exists to prevent. An
+    unreadable status is skipped too, since guessing wrong replaces a working ROCm install.
     """
     status = wintypes.ULONG(0)
     problem = wintypes.ULONG(0)
@@ -7967,14 +7952,13 @@ def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst:
 def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
     """Read Vulkan manifests from present adapters and SoftwareComponents.
 
-    Removed devices can retain both registrations and driver files, so check
-    presence before reading their keys. Skip classes whose presence is unknown.
+    A removed device keeps its registration AND its files, so presence decides, and a
+    class whose presence is unknown is skipped rather than trusted.
     """
     paths: list[str] = []
     for class_key_path in _WINDOWS_VULKAN_DEVICE_CLASS_KEYS:
         present = _windows_present_class_instances(class_key_path)
         if present is None:
-            # Do not trust device registrations without a presence check.
             continue
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, class_key_path) as class_key:
@@ -7989,9 +7973,7 @@ def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
                                 device_key, _WINDOWS_VULKAN_DRIVER_VALUE
                             )
                         paths.extend(_windows_vulkan_driver_value_paths(winreg, value, kind))
-                    # Per instance, not per class: a two-adapter host whose first entry
-                    # is unreadable must still reach the second, which is where the AMD
-                    # registration lives when the integrated part enumerates first.
+                    # Per instance: the integrated part often enumerates first.
                     except Exception:
                         continue
         except OSError:
@@ -8003,9 +7985,8 @@ def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
 
 
 def _windows_vulkan_driver_value_paths(winreg: Any, value: Any, kind: Any) -> list[str]:
-    """Read existing absolute manifest paths from REG_SZ or REG_MULTI_SZ.
-
-    Relative paths require the device's DriverStore directory, so skip them.
+    """Existing absolute manifest paths from REG_SZ or REG_MULTI_SZ. Relative ones need
+    the device's DriverStore directory, which is not reachable here, so they are skipped.
     """
     if kind == winreg.REG_SZ:
         entries = [value]
@@ -8055,7 +8036,6 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
             import winreg
         except ImportError:
             return []
-        # Device registrations first, matching the loader's own order.
         paths: list[str] = _windows_device_icd_manifest_paths(winreg)
         for key_path in _VULKAN_ICD_REGISTRY_KEYS:
             try:
