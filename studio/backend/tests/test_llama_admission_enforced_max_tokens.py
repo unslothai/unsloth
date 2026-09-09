@@ -99,6 +99,7 @@ class TestEveryChatIsPermittedItsWholeWindow:
     ):
         assert _enforced(payload, backend) is None
 
+
 class TestWhatIsLeftAlone:
     def test_a_stated_cap_is_never_clamped(self):
         """It is already honest: charged and sent as the same number."""

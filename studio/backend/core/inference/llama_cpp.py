@@ -30646,6 +30646,7 @@ class LlamaCppBackend:
                 if k not in ("predicted_ms", "predicted_n", "predicted_per_second")
             }
             return (_u or None), (_t or None)
+
         # The prompt side of the last attempt that completed, for an ending that sends
         # nothing: its generation is already in the accumulators, its prompt is not.
         _last_attempt: dict = {}

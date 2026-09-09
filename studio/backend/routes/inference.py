@@ -2956,8 +2956,7 @@ def _openai_llama_admission_enforced_max_tokens(
         prompt_tokens = prompt_tokens,
         window = window or budget,
         budget = budget,
-        preemption_active = pausable
-        and _openai_llama_preemption_will_apply(llama_backend, budget),
+        preemption_active = pausable and _openai_llama_preemption_will_apply(llama_backend, budget),
     )
 
 
@@ -3001,8 +3000,7 @@ def _openai_llama_admission_retry_max_tokens(
         prompt_tokens = prompt_tokens,
         window = _openai_llama_admission_context_window(llama_backend) or budget or share,
         budget = budget,
-        preemption_active = pausable
-        and _openai_llama_preemption_will_apply(llama_backend, budget),
+        preemption_active = pausable and _openai_llama_preemption_will_apply(llama_backend, budget),
     )
     if first_messages is not None:
         first_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(

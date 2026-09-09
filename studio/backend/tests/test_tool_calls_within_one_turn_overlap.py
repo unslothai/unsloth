@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from pathlib import Path
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
@@ -22,7 +21,10 @@ from core.inference import llama_cpp as llama_mod  # noqa: E402
 from core.inference import studio_tool_loop as loop_mod  # noqa: E402
 from core.inference import tool_loop_controller as controller_mod  # noqa: E402
 
-from .preempt_fakes import executed, rendezvous  # noqa: E402, F401
+from .preempt_fakes import executed, rendezvous  # noqa: E402
+
+# pytest finds these by name; named here so the import reads as a use.
+_FIXTURES = (executed, rendezvous)
 
 # The scripted transport and the SSE readers, rather than a second copy: a fake that drifts
 # from the one the rest of the loop is tested against would be testing a different loop.

@@ -15,7 +15,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference import llama_admission
 from core.inference.llama_admission import LlamaAdmissionConfig, get_llama_admission_queue
 from core.inference.llama_preemption import (
     ParticipantState,
@@ -28,7 +27,10 @@ import routes.inference as inference
 
 from .asgi_stream_helpers import wait_for_frame
 from .llama_backend_double import FakeLlamaCppBackend
-from .preempt_fakes import clean_admission_queues, clean_preemption_registry  # noqa: F401
+from .preempt_fakes import clean_admission_queues, clean_preemption_registry
+
+# pytest finds these by name; named here so the import reads as a use.
+_FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 
 BASE = "http://llama.test"

@@ -18,7 +18,7 @@ byte-identical output being unable to notice a downgrade).
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 
 # Studio's own switch, overriding the request field and the stored setting.

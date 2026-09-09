@@ -34,10 +34,10 @@ from core.inference.llama_preemption import (
 from fastapi import HTTPException
 from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 
-from .preempt_fakes import (  # noqa: F401  (autouse registry/queue cleanup)
-    clean_admission_queues,
-    clean_preemption_registry,
-)
+from .preempt_fakes import clean_admission_queues, clean_preemption_registry
+
+# pytest finds these by name; named here so the import reads as a use.
+_FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 _BUDGET = 16384
 _SLOTS = 4

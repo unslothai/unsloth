@@ -14,7 +14,6 @@ import urllib.request
 
 import pytest
 
-from core.inference import llama_admission
 from core.inference import llama_preemption as preemption
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 from core.inference.llama_cpp import LlamaCppBackend, _CombinedCancelEvent, _interrupt_event
@@ -37,7 +36,10 @@ from core.inference.llama_preemption import (
 )
 from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 
-from .preempt_fakes import clean_admission_queues, clean_preemption_registry  # noqa: F401
+from .preempt_fakes import clean_admission_queues, clean_preemption_registry
+
+# pytest finds these by name; named here so the import reads as a use.
+_FIXTURES = (clean_admission_queues, clean_preemption_registry)
 
 
 def _controller(
