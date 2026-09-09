@@ -10,7 +10,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from ctypes import wintypes
 from pathlib import Path
 from types import SimpleNamespace
