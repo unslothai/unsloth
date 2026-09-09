@@ -1780,8 +1780,16 @@ def detect_mmproj_file(
     path: str,
     search_root: Optional[str] = None,
     allow_disjoint_search_root: bool = False,
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
-    """Find the mmproj GGUF for a model. ``path`` is a directory or a .gguf file; ``search_root`` is an optional ancestor to also walk, for snapshot layouts where the weight is in ``snapshot/BF16/`` but the projector sits at ``snapshot/``. A trusted cache resolver may set ``allow_disjoint_search_root`` for another revision of the same repository. Returns the projector path or ``None``."""
+    """Find the mmproj GGUF for a model.
+
+    ``path``: directory or a .gguf file. ``search_root``: optional ancestor
+    to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
+    but the projector sits at ``snapshot/``). A trusted cache resolver may set
+    ``allow_disjoint_search_root`` for another revision of the same repository.
+    ``accept`` applies caller authorization before candidate metadata is read.
+    Returns the projector path or ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1803,6 +1811,9 @@ def detect_mmproj_file(
         scan_order.append(resolved)
 
     _add(start_dir)
+    # Hermes stages the projector for a one-click download under models/assets/ so its own
+    # router never lists it as a model; the weight sits one level up as a flat file.
+    _add(start_dir / "assets")
 
     # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:
@@ -1843,6 +1854,8 @@ def detect_mmproj_file(
         except OSError:
             continue
         for f in files:
+            if accept is not None and not accept(str(f)):
+                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -1892,12 +1905,13 @@ def detect_mmproj_file(
     if not scored:
         return None
 
-    # Score first, then longest shared prefix, then shorter stem.
+    # Score first, then longest shared prefix, then shorter stem. The prefix is read past
+    # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
     best = max(
         scored,
         key = lambda sc: (
             sc[0],
-            _shared_prefix_len(model_stem, sc[1].stem.lower()),
+            _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
             -len(sc[1].stem),
         ),
     )
@@ -1968,7 +1982,8 @@ def detect_mtp_file(
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
     # Both tiers are collected before either is emitted: two sidecars can prefix-match the same weight (mtp-model.gguf and mtp-model_v2-Q8_0.gguf beside model_v2-*.gguf), across layouts as well as within one, and only the one naming this family is really its drafter.
@@ -2077,7 +2092,8 @@ def detect_dspark_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
 
@@ -3507,14 +3523,31 @@ class ModelConfig:
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
         gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+        mmproj_accept: Optional[Callable[[str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local path), for FastAPI routes that send sanitized paths. Returns a ModelConfig, or None if it cannot be created.
 
-        ``gguf_variant`` is the GGUF quant to load via -hf for remote repos; None auto-selects via _pick_best_gguf(). ``hf_token`` covers vision detection on gated models, and ``is_lora`` marks a LoRA adapter.
-
-        ``drafter_accept`` is ``(candidate, gguf_file, kind, search_root) -> bool``, the caller's extra admission rule for a discovered drafter: a native-grant load passes the lease boundary here so it is applied BEFORE this scan inspects a candidate, since detect_dflash_file reads the header of the file it is about to accept and a ``dflash-*.gguf`` symlink in a granted directory can point at a target outside the lease, which the validated rescan on the load route rejects only after the read already happened. Left None by every caller that has no boundary to impose.
-
-        ``gguf_companion_roots`` are trusted snapshot directories belonging to the resolver-selected local cache entry, used only to locate a compatible mmproj without changing the selected main weights.
+        Args:
+            model_id: Clean model identifier (HF repo name or local path)
+            hf_token: Optional HF token for vision detection on gated models
+            is_lora: Whether this is a LoRA adapter
+            gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
+                via -hf for remote repos; None auto-selects via _pick_best_gguf().
+            drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
+                the caller's extra admission rule for a discovered drafter. A
+                native-grant load passes the lease boundary here so it is applied
+                BEFORE this scan inspects a candidate: detect_dflash_file reads
+                the header of the file it is about to accept, and a
+                ``dflash-*.gguf`` symlink in a granted directory can point at a
+                target outside the lease, which the validated rescan on the load
+                route rejects only after the read already happened. Left None by
+                every caller that has no boundary to impose, which sees the same
+                candidates in the same order as before.
+            gguf_companion_roots: Trusted snapshot directories belonging to the
+                resolver-selected local cache entry. Used only to locate a
+                compatible mmproj without changing the selected main weights.
+            mmproj_accept: ``(candidate, gguf_file) -> bool`` admission rule
+                applied before reading projector metadata for native loads.
         """
         if not model_id or not model_id.strip():
             return None
@@ -3592,6 +3625,11 @@ class ModelConfig:
                                 gguf_file,
                                 search_root = root,
                                 allow_disjoint_search_root = gguf_companion_roots is not None,
+                                accept = (
+                                    (lambda candidate: mmproj_accept(candidate, gguf_file))
+                                    if mmproj_accept is not None
+                                    else None
+                                ),
                             )
                         )
                     ),

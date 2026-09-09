@@ -30,7 +30,7 @@ from utils.audio_tokens import detect_local_tts_audio_type
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
-LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
+LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"]
 
 
 def _safe_is_dir(path) -> bool:
