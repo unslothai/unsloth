@@ -977,6 +977,50 @@ def test_a_permission_403_is_not_shared_as_a_rate_limit(notes_module, monkeypatc
         notes_module.reset_release_notes_cache()
 
 
+def test_the_notes_fetch_picks_the_same_token_as_the_freshness_checks(notes_module, monkeypatch):
+    """They share one process-wide lockout, so authenticating as a different identity
+    would let one token's exhaustion silence requests the other could still make."""
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout = None):
+        seen.append(request.get_header("Authorization"))
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    monkeypatch.setenv("GH_TOKEN", "ghp_gh")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
+    notes_module.reset_release_notes_cache()
+    notes_module._fetch_latest_release()
+    # freshness_flow and llama_cpp_changelog both read GITHUB_TOKEN first.
+    assert seen == ["Bearer ghp_github"]
+
+
+def test_a_429_is_shared_as_a_rate_limit_despite_the_quota_header(notes_module, monkeypatch):
+    """A secondary limit answers 429 without touching X-RateLimit-Remaining."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "4998"
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 429, "too many", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        notes_module.get_latest_release()
+        assert freshness_flow.github_rate_limit_remaining() > 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
     wins over the back-off. Only the first wait used to be bounded, so the fetch
