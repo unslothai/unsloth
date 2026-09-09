@@ -260,9 +260,10 @@ def test_orchestrator_cmd_carries_the_tool_protocol_flag():
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
-    assert o._build_generate_cmd("r", None, tool_protocol_active = True, **base)[
-        "tool_protocol_active"
-    ] is True
+    assert (
+        o._build_generate_cmd("r", None, tool_protocol_active = True, **base)["tool_protocol_active"]
+        is True
+    )
     # Omitted when unset, so an older worker keeps its bool(tools) default.
     assert "tool_protocol_active" not in o._build_generate_cmd("r", None, **base)
 
@@ -276,9 +277,9 @@ def test_the_orchestrator_single_turn_accepts_the_tool_protocol_flag():
 
     src = inspect.getsource(InferenceOrchestrator.generate_chat_completion_with_tools)
     signature = src[src.index("def _single_turn(") : src.index("turn_stats.clear()")]
-    assert "tool_protocol_active" in signature, (
-        "the orchestrator's _single_turn must accept the flag or _call_single_turn drops it"
-    )
+    assert (
+        "tool_protocol_active" in signature
+    ), "the orchestrator's _single_turn must accept the flag or _call_single_turn drops it"
 
 
 def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():

@@ -1112,6 +1112,7 @@
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
       "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
+      "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
       "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
       "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
@@ -1120,6 +1121,7 @@
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
       "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
+      "_LEADING_JSON_FENCE_RE": "'^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n' flags=32",
       "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_KEY_RE": "'\\\\w+' flags=32",
       "_LLAMA3_LIT_RE": "'true|false|null' flags=32",
@@ -1194,6 +1196,7 @@
       "re.compile('<tool_call>\\\\s*\\\\{')": 1,
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -1206,6 +1209,7 @@
       "re.compile('\\\\w+')": 1,
       "re.compile('\\ue000+')": 1,
       "re.compile('^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$')": 1,
+      "re.compile('^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n')": 1,
       "re.compile('```[\\\\s\\\\r\\\\n]*' + re.escape(_DEEPSEEK_CALL_END))": 1,
       "re.compile('true|false|null')": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
@@ -1360,6 +1364,9 @@
       "_EXTENSION_SAMPLE": {
         "kind": "assign"
       },
+      "_FENCE_ONLY_RE": {
+        "kind": "assign"
+      },
       "_FUNC_CLOSE_TAG_RE": {
         "kind": "assign"
       },
@@ -1433,6 +1440,9 @@
         "kind": "assign"
       },
       "_KIMI_SECTION_END": {
+        "kind": "assign"
+      },
+      "_LEADING_JSON_FENCE_RE": {
         "kind": "assign"
       },
       "_LENGTH_PROGRESS_TAIL_CHARS": {
@@ -1714,6 +1724,11 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "_only_a_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "between: str"
+      },
       "_parse_bare_rehearsals": {
         "decorators": [],
         "kind": "def",
@@ -1828,6 +1843,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, *, final: bool"
+      },
+      "_strip_leading_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_strip_mistral_closed_calls": {
         "decorators": [],

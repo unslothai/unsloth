@@ -758,8 +758,12 @@ def _top_level_args_values(text: str, start: int, end: int) -> list:
                     k += 1
                     while k < end and text[k].isspace():
                         k += 1
-                    if k < end and text[k] == "{":
-                        stop = _balanced_brace_end(text, k)
+                    # An ARRAY too: not a valid call shape, but the healer still reads the
+                    # markup inside it, so ``{"name":"terminal","arguments":["<function=..."]}``
+                    # went unmasked and was promoted.
+                    if k < end and text[k] in "{[":
+                        closer = _balanced_brace_end if text[k] == "{" else _balanced_bracket_end
+                        stop = closer(text, k)
                         if stop is None:
                             # Truncated mid-stream: the body still reaches the healer, so it
                             # runs to ``end`` rather than going unmasked.
@@ -945,6 +949,19 @@ def _balanced_paren_end(text: str, paren_start: int) -> "int | None":
     return None
 
 
+def _only_a_code_fence(between: str) -> bool:
+    """Whether ``between`` is nothing but blank space and an opening code fence.
+
+    DeepSeek-R1 fences its argument object (``<｜tool▁sep｜>name\\n```json\\n{...}``), so a
+    whitespace-only test refused to trust the body and the mask rewrote a genuine call's
+    arguments. Deliberately narrow: a fence token, not arbitrary text."""
+    stripped = between.strip()
+    return not stripped or _FENCE_ONLY_RE.fullmatch(stripped) is not None
+
+
+_FENCE_ONLY_RE = re.compile(r"[\w.\-]*[ \t]*\n?[ \t]*`{3,}[a-zA-Z0-9_+-]*")
+
+
 def _inference_wrapper_spans(text: str) -> list:
     """Spans covering the argument object of each inference-only wrapped call."""
     spans: list = []
@@ -953,7 +970,7 @@ def _inference_wrapper_spans(text: str) -> list:
         while pos != -1:
             brace = text.find("{", pos + len(opener))
             # Only the object that follows the marker directly; anything else is not its body.
-            if brace != -1 and not text[pos + len(opener) : brace].strip():
+            if brace != -1 and _only_a_code_fence(text[pos + len(opener) : brace]):
                 end = _balanced_brace_end(text, brace)
                 if end is not None:
                     spans.append((pos, end + 1))
@@ -990,6 +1007,19 @@ def _has_gemma_bare_trigger(text: str) -> bool:
     return False
 
 
+# A fenced ``json`` block is a REAL call for the templates that emit one (see
+# ``test_rehearsal_in_code_block``), so a blocked body inside one has to mask like any other.
+# Skipping the fence is what lets the walk below reach it; without this a leading fence was
+# enough to carry an execution call's quoted wrapper past the guard untouched.
+_LEADING_JSON_FENCE_RE = re.compile(r"^`{3,}[a-zA-Z0-9_+-]*[ \t]*\r?\n")
+
+
+def _strip_leading_code_fence(text: str) -> str:
+    """``text`` without an opening code fence line, else unchanged."""
+    m = _LEADING_JSON_FENCE_RE.match(text)
+    return text[m.end() :] if m else text
+
+
 def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     """``(start, end)`` of the argument body of every blocked markerless call, ordered.
 
@@ -1007,7 +1037,7 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     cursor = 0
     while cursor < len(text):
         rest = text[cursor:]
-        probe = strip_llama3_leading_sentinels(rest.lstrip(" \t\r\n;"))
+        probe = _strip_leading_code_fence(strip_llama3_leading_sentinels(rest.lstrip(" \t\r\n;")))
         shift = cursor + len(rest) - len(probe)
         lead = _leading_json_value_end(probe)
         if not lead:
@@ -1021,13 +1051,13 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
                     (a + shift, b + shift)
                     for a, b in _top_level_maskable_values(probe, 0, len(probe))
                 )
-                for begin, stop, is_string in _top_level_args_values(probe, 0, len(probe)):
-                    inner = (
-                        _escaped_string_content_spans(probe, begin, stop)
-                        if is_string
-                        else _string_content_spans(probe, begin, stop)
-                    )
-                    spans.extend((a + shift, b + shift) for a, b in inner)
+                # The WHOLE argument span, not just its quoted strings: an unresolved object is
+                # not a call whose structure has to survive, and raw wrapped syntax sitting
+                # outside a string literal was left intact for the healer to promote.
+                spans.extend(
+                    (begin + shift, stop + shift)
+                    for begin, stop, _ in _top_level_args_values(probe, 0, len(probe))
+                )
             break
         # A leading ARRAY is a valid JSON value with no object in it, so ``index`` raised.
         obj = probe.find("{", 0, lead)
@@ -3244,14 +3274,16 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             name_value = value if isinstance(value, str) else ""
             i += consumed
             continue
-        if key == "function" and function_value is None and i < n and probe[i] == '"':
-            # ``"function"`` aliases the call name.
+        if key == "function" and i < n:
+            # ``"function"`` aliases the call name, and like ``name`` the LAST duplicate is the
+            # one ``json.loads`` keeps: retaining the first read
+            # ``{"function":"web_search","function":"terminal",...}`` as promotable web_search
+            # and left the terminal body visible for the healer to promote.
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
                 return name_value or function_value
-            if isinstance(value, str):
-                function_value = value
+            function_value = value if isinstance(value, str) else ""
             i += consumed
             continue
         # Skip a non-name top-level value; a truncated one can't prove a FURTHER name exists,
