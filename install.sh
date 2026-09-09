@@ -5589,12 +5589,28 @@ _torch_opens_amd_nodes() {
     return 0
 }
 
+# An unset or `auto` request is not a decision here, but it is not a coin toss either:
+# install_llama_prebuilt resolves it, and _linux_published_attempts takes the CUDA bundle
+# under `if host.has_usable_nvidia:` and only reaches ROCm in the `elif host.has_rocm`
+# below it. So on a hybrid box with a usable NVIDIA GPU the automatic bundle opens no AMD
+# node, and the AMD-evidence gates cannot tell: the card IS there and its nodes ARE shut,
+# they are simply nothing this install will use. An explicit rocm request still passes,
+# being a decision the resolver honours.
+_auto_bundle_opens_amd_nodes() {
+    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
+            | awk '{$1=$1; print tolower($0)}')" in
+        ""|auto) _has_usable_nvidia_gpu && return 1 ;;
+    esac
+    return 0
+}
+
 _run_may_open_kfd() {
     _torch_opens_amd_nodes && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | awk '{$1=$1; print tolower($0)}')" in
         vulkan|cpu|cuda) return 1 ;;
     esac
+    _auto_bundle_opens_amd_nodes || return 1
     return 0
 }
 
@@ -5608,6 +5624,7 @@ _run_may_open_a_gpu_node() {
             | awk '{$1=$1; print tolower($0)}')" in
         cpu|cuda) return 1 ;;
     esac
+    _auto_bundle_opens_amd_nodes || return 1
     return 0
 }
 
@@ -5726,7 +5743,12 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     # Who the mode tests above answered for. $USER is inherited, so a container that changes
     # its numeric user without resetting it names somebody else, and the usermod below would
     # then modify an account that is not the one holding the device shut.
-    _amd_repair_user=$(id -un 2>/dev/null || printf '%s' "${USER:-\$USER}")
+    #
+    # `id -un` FAILS for a uid with no passwd entry, which is the ordinary shape of
+    # `docker run --user 1234`, and the inherited USER there commonly still says root. So
+    # empty means "no account to name" and the branches below print the container repair
+    # instead of a usermod that would succeed against an identity nothing is running as.
+    _amd_repair_user=$(id -un 2>/dev/null || printf '')
     # The documented pair is the fallback for nodes that could not be stat'd at all, where
     # some advice beats none. A node that WAS read and offers no joinable group gets the
     # sentences below instead of a command that would fail.
@@ -5735,7 +5757,13 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
        [ -z "$_closed_amd_owned" ] && [ -z "$_closed_amd_priv" ]; then
         _closed_amd_groups="render,video"
     fi
-    if [ -n "$_closed_amd_groups" ]; then
+    if [ -n "$_closed_amd_groups" ] && [ -z "$_amd_repair_user" ]; then
+        _closed_amd_group_adds=$(printf '%s' "$_closed_amd_groups" | tr ',' '\n' \
+            | sed 's/^/--group-add /' | tr '\n' ' ' | sed 's/ *$//')
+        substep "  This uid has no passwd entry, so usermod has no account to name:" "$C_WARN"
+        substep "  recreate the container passing $_closed_amd_group_adds, or run it"
+        substep "  as an account this system knows."
+    elif [ -n "$_closed_amd_groups" ]; then
         case "$_closed_amd_groups" in
             *,*) substep "  Add yourself to the $_closed_amd_groups groups, then log out" ;;
             *)   substep "  Add yourself to the $_closed_amd_groups group, then log out" ;;
@@ -5759,16 +5787,25 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
             *)   substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no" "$C_WARN"
                  substep "  group entry here, so usermod cannot name it: create a group for it" ;;
         esac
-        substep "  and add yourself to every one of them, then log out and back in:"
-        for _amd_gid in $(printf '%s' "$_closed_amd_gids" | tr ',' ' '); do
-            # Generated, not a <name> placeholder: this is a command to paste, and angle
-            # brackets are redirection operators, so `groupadd -g 993 <name>` is a syntax
-            # error before groupadd runs. Keyed on the GID, which has no entry by definition.
-            _amd_gid_name="amdgpu$_amd_gid"
-            substep "  sudo groupadd -g $_amd_gid $_amd_gid_name"
-            substep "  sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
-        done
-        substep "  or recreate the container passing $_closed_amd_gid_adds."
+        if [ -n "$_amd_repair_user" ]; then
+            substep "  and add yourself to every one of them, then log out and back in:"
+            for _amd_gid in $(printf '%s' "$_closed_amd_gids" | tr ',' ' '); do
+                # Generated, not a <name> placeholder: this is a command to paste, and angle
+                # brackets are redirection operators, so `groupadd -g 993 <name>` is a syntax
+                # error before groupadd runs. Keyed on the GID, which has no entry by
+                # definition here, so the name is free.
+                _amd_gid_name="amdgpu$_amd_gid"
+                substep "  sudo groupadd -g $_amd_gid $_amd_gid_name"
+                substep "  sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
+            done
+            substep "  or recreate the container passing $_closed_amd_gid_adds."
+        else
+            # The bare-host half needs an account to add and there is none, so the container
+            # half is the whole repair for this shape.
+            substep "  and this uid has no passwd entry either, so neither groupadd nor"
+            substep "  usermod has anything to name: recreate the container passing"
+            substep "  $_closed_amd_gid_adds."
+        fi
     fi
     if [ -n "$_closed_amd_modes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"

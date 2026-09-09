@@ -199,12 +199,46 @@ def _no_passwd_entry(monkeypatch):
     monkeypatch.setattr(pwd, "getpwuid", _missing)
 
 
-def test_the_hint_survives_an_environment_with_no_user(monkeypatch, linux):
+def test_a_uid_with_no_passwd_entry_is_not_given_a_usermod(monkeypatch, linux):
+    """`docker run --user 1234` leaves the uid with no passwd entry while USER commonly
+    still says root. usermod against that name succeeds, changes an identity nothing is
+    running as, and leaves the nodes exactly as shut -- so the repair here is the
+    container's group wiring, not an account.
+
+    Fails before the fix, which fell back to USER and then to a literal $USER."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.delenv("USER", raising = False)
-    monkeypatch.delenv("LOGNAME", raising = False)
+    monkeypatch.setenv("USER", "root")
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], []))
     _no_passwd_entry(monkeypatch)
-    assert "$USER" in amd.amd_node_permission_hint()
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G" not in hint and "root" not in hint
+    assert "--group-add render" in hint
+
+
+def test_an_account_the_system_knows_still_gets_the_command(monkeypatch, linux):
+    """The control: a uid with a passwd entry is an account usermod can name, and that is
+    the repair on every ordinary host. Without it the fix could be "never prescribe
+    usermod", which removes what #10466 asked for."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setenv("USER", "root")
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], []))
+    monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "sudo usermod -a -G render ada" in hint
+    assert "--group-add" not in hint
+
+
+def test_an_unnamed_gid_under_that_uid_drops_the_groupadd_half_too(monkeypatch, linux):
+    """The unnamed-GID repair is a groupadd AND a usermod, and the second half needs the
+    same account the first branch does. With no passwd entry the container flag is the
+    whole repair, so printing the pair would be two commands that cannot both work."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setenv("USER", "root")
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
+    _no_passwd_entry(monkeypatch)
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G" not in hint and "groupadd -g" not in hint
+    assert "--group-add 993" in hint
 
 
 def test_a_node_that_cannot_be_stat_ed_is_skipped(monkeypatch, linux):
@@ -488,7 +522,12 @@ def test_a_gpu_wheel_beside_a_closed_node_is_told_only_the_permission(monkeypatc
     assert "Repair installation" not in message
 
 
-def _kernel_stack_hint_runs(closed_nodes: str, *, route: bool = True) -> bool:
+def _kernel_stack_hint_runs(
+    closed_nodes: str,
+    *,
+    route: bool = True,
+    nvidia: bool = False,
+) -> bool:
     """Whether install.sh's missing-kernel-stack branch fires for this closed set.
 
     The guard is lifted out of install.sh by text rather than restated here: a test
@@ -525,6 +564,11 @@ def _kernel_stack_hint_runs(closed_nodes: str, *, route: bool = True) -> bool:
             # test. Lifted, not stubbed, so this arm goes through the installer's own rule.
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             # The route gate. True by default for the same reason the two probes are
             # stubbed: this harness asks about the closed-node reasoning, and the route
@@ -920,7 +964,8 @@ def _install_sh_hint(
     backend: "str | None" = None,
     torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
     env_user: str = "ada",
-    id_user: str = "ada",
+    id_user: "str | None" = "ada",
+    nvidia: bool = False,
 ) -> str:
     """The installer's closed-node message, run for a given closed set.
 
@@ -959,7 +1004,14 @@ def _install_sh_hint(
             # Stubbed so the arms below choose which case they are testing.
             # Both spellings: the owner-class test asks `id -u`, the repair command asks
             # `id -un`, and a stub answering one for the other names a uid as an account.
-            f'id() {{ case "$1" in -un) echo {id_user} ;; *) echo {self_uid} ;; esac; }}',
+            # id_user None is a uid with no passwd entry, where the real `id -un` FAILS:
+            # the ordinary shape of `docker run --user 1234`, and the case the container
+            # repair exists for.
+            (
+                f'id() {{ case "$1" in -un) echo {id_user} ;; *) echo {self_uid} ;; esac; }}'
+                if id_user is not None
+                else f'id() {{ case "$1" in -un) return 1 ;; *) echo {self_uid} ;; esac; }}'
+            ),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if amd_present else 1}; }}",
             # Stubbed for the same reason as _amd_render_node_present: the real one reads
             # /dev and /sys, so a live one would answer from the runner's own hardware.
@@ -970,6 +1022,11 @@ def _install_sh_hint(
             # The run-scope predicate the block now asks. Lifted rather than stubbed, so
             # the default arms below go through the same rule the installer applies.
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             # The block also asks which nodes THIS run opens, to name the right --device
             # pair, so the predicate has to exist before the span that calls it.
@@ -1258,7 +1315,12 @@ def test_a_rocm_wheel_on_the_same_host_still_replaces_it(monkeypatch, linux):
     assert "Repair installation" not in message
 
 
-def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
+def _installer_index_summary(
+    index_url: str,
+    closed_nodes: str,
+    *,
+    nvidia: bool = False,
+) -> str:
     """install.sh's index summary and the two diagnoses that follow it, run for one index.
 
     The whole span is lifted rather than the guard alone, because the thing under test is
@@ -1302,6 +1364,11 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
             # without carrying them; a shell function has to exist before the call.
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
@@ -1489,6 +1556,7 @@ def _diag_route(
     *,
     skip_torch: bool = False,
     backend: "str | None" = None,
+    nvidia: bool = False,
 ) -> bool:
     """Whether install.sh routes the two node diagnoses for this wheel index.
 
@@ -1515,6 +1583,11 @@ def _diag_route(
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
             'echo "$_amd_node_diag_route"',
@@ -2090,7 +2163,7 @@ def test_the_installer_stops_at_the_owner_class_too(tmp_path):
     assert "owned by this account" in out
 
 
-def _kernel_stack_hint_text(*, topology: bool) -> str:
+def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
     """What install.sh actually PRINTS in the missing-/dev/kfd branch.
 
     `_kernel_stack_hint_runs` above lifts only the guard, so it answers whether the
@@ -2122,6 +2195,11 @@ def _kernel_stack_hint_text(*, topology: bool) -> str:
             "_amd_node_diag_route=true",
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             block,
         ]
@@ -2175,6 +2253,7 @@ def _install_sh_missing_kfd(
     amd_smi_sees_it: bool,
     skip_torch: bool = False,
     backend: "str | None" = None,
+    nvidia: bool = False,
 ) -> str:
     """What the installer says when /dev/kfd is absent, for a given pair of probes.
 
@@ -2209,6 +2288,11 @@ def _install_sh_missing_kfd(
             "_amd_node_diag_route=true",
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
             f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
@@ -2518,6 +2602,7 @@ def _install_sh_kfd_scope(
     skip_torch: bool,
     backend: "str | None",
     torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
+    nvidia: bool = False,
 ) -> str:
     """The closed-node message with the KFD scoping in front of it.
 
@@ -2547,6 +2632,11 @@ def _install_sh_kfd_scope(
             "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
+            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
+            # live one would answer from the runner's own hardware. False by default, so
+            # every arm below reads as the AMD-only host it was written for.
+            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "\n".join(lines[_filter_start : _filter_end + 1]),
@@ -3433,7 +3523,9 @@ def test_a_cuda_wheel_install_is_still_off_the_route():
     assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "vulkan") is False
 
 
-def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(monkeypatch, linux):
+def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(
+    monkeypatch, linux, tmp_path
+):
     """VK_DRIVER_FILES REPLACES the loader's driver search rather than adding to it, and
     the probe child inherits it, so a list naming AMD alone means the loader never opened
     the other vendor's driver. Crediting its node then suppressed the closed-node hint on
@@ -3444,7 +3536,7 @@ def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(mo
 
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
-    monkeypatch.setenv("VK_DRIVER_FILES", "/etc/vulkan/icd.d/radeon_icd.x86_64.json")
+    monkeypatch.setenv("VK_DRIVER_FILES", _icd_manifest(tmp_path, "radeon_icd.json"))
     monkeypatch.setattr(
         LlamaCppBackend,
         "_installed_ggml_backends",
@@ -3455,7 +3547,7 @@ def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(mo
     assert "usermod" in reason
 
 
-def test_the_deprecated_spelling_of_that_override_counts_too(monkeypatch, linux):
+def test_the_deprecated_spelling_of_that_override_counts_too(monkeypatch, linux, tmp_path):
     """VK_ICD_FILENAMES is the deprecated name for the same replacing list, and the loader
     still honours it when VK_DRIVER_FILES is unset."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -3463,7 +3555,7 @@ def test_the_deprecated_spelling_of_that_override_counts_too(monkeypatch, linux)
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
     monkeypatch.delenv("VK_DRIVER_FILES", raising = False)
-    monkeypatch.setenv("VK_ICD_FILENAMES", "/etc/vulkan/icd.d/radeon_icd.x86_64.json")
+    monkeypatch.setenv("VK_ICD_FILENAMES", _icd_manifest(tmp_path, "radeon_icd.json"))
     monkeypatch.setattr(
         LlamaCppBackend,
         "_installed_ggml_backends",
@@ -3639,3 +3731,254 @@ def test_a_blocking_mask_drops_amd_from_the_vendors_the_node_hint_needs(monkeypa
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     kept = hardware._devices_that_can_establish_a_mismatch(devices)
     assert {device["vendor"] for device in kept} == set()
+
+
+def _icd_manifest(
+    tmp_path,
+    name,
+    *,
+    library = "libvulkan_radeon.so",
+    present = True,
+):
+    """A Vulkan ICD manifest on disk, and the path to it.
+
+    Written rather than named, because the rule under test is that a manifest has to point
+    at a library that is actually there: a path string alone proves nothing.
+    """
+    import json
+
+    lib = tmp_path / library
+    if present:
+        lib.write_bytes(b"")
+    path = tmp_path / name
+    path.write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.0.0",
+                "ICD": {"library_path": str(lib), "api_version": "1.3.0"},
+            }
+        ),
+        encoding = "utf-8",
+    )
+    return str(path)
+
+
+def _vulkan_reason_under_icd_list(
+    monkeypatch,
+    value,
+    *,
+    var = "VK_DRIVER_FILES",
+):
+    """The empty-probe reason for a Vulkan build with the AMD node shut and another
+    vendor's node open, under a given forced driver list."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        monkeypatch.delenv(_var, raising = False)
+    monkeypatch.setenv(var, value)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+
+
+def test_an_amd_manifest_whose_library_is_gone_is_not_a_driver(monkeypatch, linux, tmp_path):
+    """A registration with no library behind it loads nothing, so a list holding only that
+    leaves the loader with no driver at all -- and then the closed AMD node is not why the
+    probe was empty either. The filename says AMD; the manifest says nothing is there.
+
+    Fails before the fix, which read the name alone."""
+    manifest = _icd_manifest(tmp_path, "radeon_icd.json", present = False)
+    reason = _vulkan_reason_under_icd_list(monkeypatch, manifest)
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_an_amd_manifest_that_is_not_there_at_all_is_not_a_driver(monkeypatch, linux):
+    """The same for the manifest itself, which is the shape a stale VK_DRIVER_FILES has
+    after a driver is uninstalled."""
+    reason = _vulkan_reason_under_icd_list(monkeypatch, "/nonexistent/icd.d/radeon_icd.x86_64.json")
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_an_amd_driver_the_loader_filters_out_is_not_a_driver(monkeypatch, linux, tmp_path):
+    """VK_LOADER_DRIVERS_DISABLE applies to a forced list too, so naming AMD and then
+    disabling it leaves the loader with nothing. The manifest here is entirely valid; only
+    the filter makes it unloadable, which is what separates this from the two arms above."""
+    manifest = _icd_manifest(tmp_path, "radeon_icd.json")
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "radeon*")
+    reason = _vulkan_reason_under_icd_list(monkeypatch, manifest)
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_a_valid_amd_manifest_still_suppresses(monkeypatch, linux, tmp_path):
+    """The control for all three: a manifest that is present, parses, points at a library
+    that exists and survives the loader's filters IS an AMD-only driver list, and the other
+    vendor's node is then unreachable. Without it the fix could be "never suppress"."""
+    manifest = _icd_manifest(tmp_path, "radeon_icd.json")
+    monkeypatch.delenv("VK_LOADER_DRIVERS_DISABLE", raising = False)
+    reason = _vulkan_reason_under_icd_list(monkeypatch, manifest)
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_the_loader_filter_rule_matches_the_installers(tmp_path):
+    """Both halves implement the loader's four globs, and a host where they disagree gets
+    one answer from the Vulkan route and another from this diagnosis."""
+    import install_llama_prebuilt
+
+    cases = [
+        ("radeon_icd.x86_64.json", "radeon*"),
+        ("radeon_icd.x86_64.json", "*radeon*"),
+        ("radeon_icd.x86_64.json", "*json"),
+        ("radeon_icd.x86_64.json", "radeon_icd.x86_64.json"),
+        ("radeon_icd.x86_64.json", "nvidia*"),
+        ("nvidia_icd.json", "radeon*"),
+    ]
+    for name, pattern in cases:
+        for var in ("VK_LOADER_DRIVERS_DISABLE", "VK_LOADER_DRIVERS_SELECT"):
+            os.environ.pop("VK_LOADER_DRIVERS_DISABLE", None)
+            os.environ.pop("VK_LOADER_DRIVERS_SELECT", None)
+            os.environ[var] = pattern
+            try:
+                assert amd._vulkan_loader_allows(name) == (
+                    install_llama_prebuilt._vulkan_loader_allows(name)
+                ), (name, pattern, var)
+            finally:
+                os.environ.pop(var, None)
+
+
+def _blocks_under_selector(
+    monkeypatch,
+    value,
+    *,
+    count,
+    var = "HIP_VISIBLE_DEVICES",
+):
+    """Whether a closed render node blocks a HIP runtime, with one sibling open."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/kfd"],
+        openable = {"/dev/dri/renderD129", "/dev/kfd"},
+    )
+    monkeypatch.setattr(amd, "amd_kfd_gpu_node_count", lambda: count)
+    for _name in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(_name, raising = False)
+    if value is not None:
+        monkeypatch.setenv(var, value)
+    return amd.amd_closed_nodes_block_the_runtime()
+
+
+def test_a_selector_naming_every_gpu_leaves_the_open_sibling_as_evidence(monkeypatch, linux):
+    """HIP_VISIBLE_DEVICES=0,1 on a two-GPU host selects the whole host, so the open
+    sibling is still a complete ROCm path and the closed node is a second finding rather
+    than the cause. Reading any selector as a narrowing handed that host the group repair
+    in place of the driver diagnosis it needs.
+
+    Fails before the fix, which asked only whether a selector was set."""
+    assert _blocks_under_selector(monkeypatch, "0,1", count = 2) is False
+
+
+def test_a_selector_naming_one_of_them_still_discards_the_sibling(monkeypatch, linux):
+    """The control, and the reason the rule exists: nothing here maps a render node back to
+    the index a selector chose it by, so under a real narrowing the open node may be the
+    excluded GPU's and stops being evidence."""
+    assert _blocks_under_selector(monkeypatch, "0", count = 2) is True
+
+
+def test_a_selector_this_cannot_map_still_discards_it(monkeypatch, linux):
+    """A UUID names a device by identity, and an unreadable GPU count answers nothing.
+    Both leave the selector unmapped, and unmapped goes on meaning narrowed."""
+    assert _blocks_under_selector(monkeypatch, "GPU-abcdef0123456789", count = 2) is True
+    assert _blocks_under_selector(monkeypatch, "0,1", count = None) is True
+
+
+def test_no_selector_at_all_still_keeps_the_sibling(monkeypatch, linux):
+    """The second control: with nothing set the sibling was always evidence, and the fix
+    must not have made every host look narrowed."""
+    assert _blocks_under_selector(monkeypatch, None, count = 2) is False
+
+
+def test_a_hybrid_host_is_not_told_to_repair_the_card_its_bundle_will_not_use(tmp_path):
+    """An unset or `auto` backend is resolved by _linux_published_attempts, which takes the
+    CUDA bundle under `if host.has_usable_nvidia:` and reaches ROCm only in the `elif
+    host.has_rocm` below it. So on a hybrid box with a usable NVIDIA GPU neither a CPU
+    torch nor the automatic bundle opens an AMD node, and the AMD-evidence gates cannot
+    tell -- the card is there and its nodes are shut, they are just unused.
+
+    Fails before the fix, which read an unresolved `auto` as "may open"."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(
+        str(node),
+        torch_index = "https://download.pytorch.org/whl/cpu",
+        nvidia = True,
+    )
+    assert out.strip() == ""
+
+
+def test_the_same_host_with_an_explicit_rocm_request_is_still_told(tmp_path):
+    """The control: an explicit rocm request IS a decision, and the resolver honours it, so
+    the nodes that bundle opens are the user's problem to repair whatever else is on the
+    bus."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(
+        str(node),
+        torch_index = "https://download.pytorch.org/whl/cpu",
+        backend = "rocm",
+        nvidia = True,
+    )
+    assert "cannot open its device nodes" in out
+
+
+def test_an_amd_only_host_on_the_same_route_is_still_told(tmp_path):
+    """The second control, and the #10466 host: with no NVIDIA GPU the automatic bundle may
+    well be the ROCm one, so nothing about `auto` is a reason to go quiet."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), torch_index = "https://download.pytorch.org/whl/cpu")
+    assert "cannot open its device nodes" in out
+
+
+def test_a_rocm_torch_index_ignores_the_nvidia_card_entirely(tmp_path):
+    """The third control: a run installing ROCm wheels opens AMD nodes whatever bundle is
+    chosen later, so the bundle question is never reached."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), nvidia = True)
+    assert "cannot open its device nodes" in out
+
+
+def test_the_installer_does_not_usermod_a_uid_with_no_passwd_entry(tmp_path):
+    """The shell half of the same item. `id -un` fails outright for a uid the passwd
+    database does not know, and the old fallback then named the inherited $USER -- which in
+    a container commonly still says root, so the command would succeed against an identity
+    nothing is running as and leave the node shut.
+
+    Fails before the fix, which fell back to ${USER}."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), id_user = None, env_user = "root")
+    assert "usermod -a -G" not in out and "root" not in out
+    assert "--group-add" in out
+
+
+def test_the_installer_still_names_an_account_the_system_knows(tmp_path):
+    """The control: with a passwd entry the command is the repair, exactly as before."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node))
+    assert "sudo usermod -a -G" in out
+    assert "--group-add" not in out
+
+
+def test_the_installers_unnamed_gid_repair_drops_its_groupadd_half_too(tmp_path):
+    """The unnamed-GID branch prints a groupadd AND a usermod, and the second needs the
+    same account. With no passwd entry the container flag is the whole repair."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), id_user = None, env_user = "root", repairs = "gid:993")
+    assert "usermod -a -G" not in out and "groupadd -g" not in out
+    assert "--group-add 993" in out

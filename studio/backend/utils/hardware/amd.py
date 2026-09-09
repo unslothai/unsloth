@@ -755,6 +755,69 @@ def an_amd_render_node_is_open() -> bool:
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
 
 
+def _vulkan_glob_matches(pattern: str, name: str) -> bool:
+    """The loader's four driver-filter globs, case-insensitively: "s", "s*", "*s", "*s*"."""
+    pattern, name = pattern.lower(), name.lower()
+    starts, ends = pattern.startswith("*"), pattern.endswith("*")
+    core = pattern[1 if starts else 0 : len(pattern) - 1 if ends else len(pattern)]
+    if starts and ends:
+        return core in name
+    if starts:
+        return name.endswith(core)
+    if ends:
+        return name.startswith(core)
+    return name == core
+
+
+def _vulkan_loader_allows(path: str) -> bool:
+    """Whether the loader's own driver filters leave this manifest loadable.
+
+    They apply to every driver the loader knows, a forced list included, and match the
+    manifest's basename, so a list naming AMD alone and then disabling it leaves the loader
+    with no driver at all. Disable is read before select precisely so "disable everything,
+    then name one back" works, hence select answering alone when it is set.
+
+    install_llama_prebuilt._vulkan_loader_allows is the same rule for the same reason; a
+    test below runs the two against one table so they cannot drift.
+    """
+
+    def _globs(env_name: str) -> "list[str]":
+        value = os.environ.get(env_name) or ""
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+
+    name = PurePath(path).name
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    if select:
+        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
+    disable = _globs("VK_LOADER_DRIVERS_DISABLE")
+    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+
+
+def _icd_manifest_is_usable(path: str) -> bool:
+    """Whether a manifest still points at a driver library that is there.
+
+    A leftover or malformed JSON is a registration with no device behind it. A bare name is
+    accepted, since the loader resolves it through a search path this cannot see.
+    """
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            library = (json.load(handle).get("ICD") or {}).get("library_path")
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(library, str) or not library.strip():
+        return False
+    library = library.strip()
+    if not (os.path.isabs(library) or "/" in library or "\\" in library):
+        return True
+    if not os.path.isabs(library):
+        # Relative to the manifest's directory, per the loader's interface document.
+        library = os.path.join(os.path.dirname(path), library)
+    try:
+        return os.path.isfile(library)
+    except OSError:
+        return False
+
+
 def an_amd_only_icd_list_is_in_force() -> bool:
     """Whether the Vulkan loader is pinned to a driver list that names AMD and nothing else.
 
@@ -777,8 +840,15 @@ def an_amd_only_icd_list_is_in_force() -> bool:
         if not entries:
             return False
         for entry in entries:
-            stem = PurePath(entry.strip()).stem.lower().replace("-", "_")
+            entry = entry.strip()
+            stem = PurePath(entry).stem.lower().replace("-", "_")
             if not any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES):
+                return False
+            # The NAME is not the driver. A manifest that is missing, malformed, points at a
+            # library that is gone, or is filtered out by VK_LOADER_DRIVERS_DISABLE leaves
+            # the loader with no usable driver at all -- and then the closed AMD node is not
+            # why the probe was empty either, so this must not answer yes for it.
+            if not (_vulkan_loader_allows(entry) and _icd_manifest_is_usable(entry)):
                 return False
         return True
     return False
@@ -1016,20 +1086,49 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     # of these -- which is the whole reason needs_kfd exists -- so a Vulkan probe is still
     # free to use the open sibling, and returning the permission hint as its sole cause
     # would send a Vulkan failure after a group change that cannot empty-probe it.
-    if needs_kfd and _a_per_gpu_mask_is_set():
+    if needs_kfd and _a_per_gpu_mask_narrows_the_runtime():
         return True
     return not an_amd_render_node_is_open()
 
 
-def _a_per_gpu_mask_is_set() -> bool:
-    """Whether a selector narrows the runtime to particular AMD GPUs.
+def _selector_exposes_every_gpu(value: str, count: "int | None") -> bool:
+    """Whether every measured GPU survives this selector, so it excludes nothing.
+
+    HIP_VISIBLE_DEVICES=0,1 on a two-GPU host is a selector that selects the whole host:
+    the open sibling is still reachable, and reading it as a narrowing hands that host the
+    group repair in place of the driver diagnosis it needs.
+
+    False for anything this cannot map -- an unreadable count, a UUID, an out-of-range or
+    non-canonical ordinal -- so an unrecognised selector goes on being treated as one that
+    narrows.
+    """
+    if not count:
+        return False
+    seen = set()
+    for token in value.split(","):
+        token = token.strip()
+        try:
+            index = int(token)
+        except ValueError:
+            return False
+        # clr's own rule: the token has to be the index written back out.
+        if str(index) != token or index < 0 or index >= count:
+            return False
+        seen.add(index)
+    return len(seen) == count
+
+
+def _a_per_gpu_mask_narrows_the_runtime() -> bool:
+    """Whether a selector narrows the runtime away from some of this host's AMD GPUs.
 
     Read for one purpose only: an OPEN render node is an alternative way in only when the
     runtime is free to use it. Nothing here maps a render node back to the index a mask
-    selected it by, so under a mask the open node may belong to a GPU the mask excludes.
+    selected it by, so under a NARROWING mask the open node may belong to a GPU the mask
+    excludes and stops being evidence.
     """
+    count = amd_kfd_gpu_node_count()
     return any(
-        os.environ.get(_name, "").strip()
+        not _selector_exposes_every_gpu(os.environ.get(_name, "").strip(), count)
         for _name in (
             "HIP_VISIBLE_DEVICES",
             "ROCR_VISIBLE_DEVICES",
@@ -1040,20 +1139,29 @@ def _a_per_gpu_mask_is_set() -> bool:
             # runtime had been narrowed away from.
             "GPU_DEVICE_ORDINAL",
         )
+        if os.environ.get(_name, "").strip()
     )
 
 
-def _repair_account() -> str:
-    """The account the usermod commands must name.
+def _repair_account() -> Optional[str]:
+    """The account the usermod commands must name, or None when there is no such account.
 
     os.getuid() is who os.access answered for above. USER and LOGNAME are inherited, so a
     container that changes its numeric user without resetting them names somebody else, and
     following the hint then modifies an account that is not the one holding the device shut.
+
+    None rather than a guess. A uid with no passwd entry is the ordinary shape of `docker
+    run --user 1234`, and there USER commonly still says root: usermod would then succeed,
+    change an identity nothing is running as, and leave the nodes exactly as shut. The
+    callers print the container-level repair instead, which is the one that works there.
     """
     try:
         import pwd
         return pwd.getpwuid(os.getuid()).pw_name
-    except (ImportError, KeyError, OSError, AttributeError):
+    except (KeyError, OSError):
+        return None
+    except (ImportError, AttributeError):
+        # No pwd module at all, which is Windows, where none of these nodes exist.
         return os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
 
 
@@ -1106,10 +1214,18 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             groups = joinable or ["render", "video"]
             joined = ",".join(groups)
             plural = "group" if len(groups) == 1 else "groups"
-            parts.append(
-                f"Add the account to the {joined} {plural} and then log out and back in: "
-                f"sudo usermod -a -G {joined} {user}"
-            )
+            if user is None:
+                _joins = " ".join(f"--group-add {_g}" for _g in groups)
+                parts.append(
+                    f"This uid has no entry in the passwd database, so usermod has no "
+                    f"account to name: recreate the container passing {_joins}, or run it "
+                    f"as an account this system knows."
+                )
+            else:
+                parts.append(
+                    f"Add the account to the {joined} {plural} and then log out and back "
+                    f"in: sudo usermod -a -G {joined} {user}"
+                )
         if unnamed:
             _gids = ", ".join(str(_g) for _g in unnamed)
             # One flag per GID: docker's --group-add takes a single value, so naming only
@@ -1133,13 +1249,22 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"sudo groupadd -g {_g} amdgpu{_g} && sudo usermod -a -G amdgpu{_g} {user}"
                 for _g in unnamed
             )
-            parts.append(
-                f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
-                f"this system, so usermod cannot name them: create a group for {_each}, "
-                f"add the account to it and then log out and back in ({_pairs}), or "
-                f"recreate the container passing "
-                f"{_adds}."
-            )
+            if user is None:
+                # The bare-host half needs an account to add and there is none, so the
+                # container half is the whole repair for this shape.
+                parts.append(
+                    f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry "
+                    f"on this system, and this uid has no passwd entry either, so neither "
+                    f"groupadd nor usermod has anything to name: recreate the container "
+                    f"passing {_adds}."
+                )
+            else:
+                parts.append(
+                    f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry "
+                    f"on this system, so usermod cannot name them: create a group for "
+                    f"{_each}, add the account to it and then log out and back in "
+                    f"({_pairs}), or recreate the container passing {_adds}."
+                )
         if no_group:
             parts.append(
                 f"{', '.join(no_group)} does not grant its own group read and write, so no "
