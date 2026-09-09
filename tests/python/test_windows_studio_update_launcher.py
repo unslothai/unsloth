@@ -346,13 +346,13 @@ def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
     """`stage` defaults to typer's OptionInfo, and that sentinel is truthy.
 
     Only the CLI resolves it to a bool, so a plain `if stage:` sends every
-    in-process call down the staging path and skips the update entirely.
+    in-process call into the refusal and skips the update entirely.
     """
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
     staged = []
-    monkeypatch.setattr(studio, "_stage_update", lambda **kwargs: staged.append(kwargs))
+    monkeypatch.setattr(studio, "_refuse_staged_update", lambda: staged.append("refused"))
     calls = []
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
     monkeypatch.setattr(

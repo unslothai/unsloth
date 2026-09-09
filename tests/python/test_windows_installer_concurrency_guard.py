@@ -24,6 +24,7 @@ PREFLIGHT_MANAGED_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight" 
 DESKTOP_AUTH_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
 UPDATE_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs"
 MAIN_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "main.rs"
+STAGED_UPDATE_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "staged_update.rs"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
@@ -948,35 +949,28 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
-    # run_child owns the whole child lifetime.
-    update_child_fn = update_source.index("let run_child = || {")
-    update_spawn = update_source.index("spawn_update(&bin, &state", update_child_fn)
+    # The guard covers the idle scan and the whole child lifetime, with nothing
+    # spawned before the scan has run under it.
+    update_call = update_source.index("crate::process::with_studio_runtime_launch_guard(")
+    update_scan = update_source.index("ensure_managed_environment_is_idle(&bin)", update_call)
+    update_spawn = update_source.index("spawn_update(&bin, &state)", update_scan)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
-    # a live update inherits the parent gate through its whole lifetime.
-    update_call = update_source.index(
-        "crate::process::with_studio_runtime_launch_guard(",
-        update_wait,
-    )
-    exemption = update_source.index("fn mutates_live_environment(&self) -> bool {")
-    assert (
-        "!matches!(self, UpdateKind::Staged { .. })" in update_source[exemption : exemption + 200]
-    )
-    update_scan_gate = update_source.index("if kind.mutates_live_environment() {", update_wait)
-    update_scan = update_source.index(
-        "ensure_managed_environment_is_idle(&bin)",
-        update_scan_gate,
-    )
-    update_gated_child = update_source.index("run_child()", update_scan)
-    update_guard_release = update_source.index("\n        })", update_gated_child)
-    assert update_child_fn < update_spawn < update_wait < update_scan_gate
-    assert update_scan_gate < update_call < update_scan
-    assert update_scan < update_gated_child < update_guard_release
+    update_guard_release = update_source.index("\n    });", update_wait)
+    assert update_call < update_scan < update_spawn < update_wait < update_guard_release
 
-    # a staged child acquires the gate itself so app death cannot release it early.
+    # The child inherits the gate on every platform, not just Windows: the POSIX
+    # shell holds its own flock around the child, so a CLI that tried to take the
+    # gate itself would refuse the update as busy.
+    spawn_fn = update_source.index("fn spawn_update(")
+    spawn_gate_env = update_source.index(
+        "configure_runtime_gate_environment(&mut cmd);", spawn_fn
+    )
+    assert spawn_fn < spawn_gate_env < update_call
     configure_gate = update_source.index("fn configure_runtime_gate_environment(")
-    staged_branch = update_source.index("cmd.env_remove(", configure_gate)
-    stage_run = update_source.index("} else {\n        run_child()", update_call)
-    assert configure_gate < staged_branch < update_child_fn < stage_run
+    handoff = update_source.index(
+        'cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");', configure_gate
+    )
+    assert "#[cfg" not in update_source[configure_gate:handoff]
 
 
 def test_runtime_gate_handoff_covers_managed_children():
@@ -1035,7 +1029,7 @@ def test_runtime_gate_handoff_covers_managed_children():
         studio_source.count(
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
         )
-        == 5
+        == 4
     )
     assert (
         studio_source.count(
@@ -1046,36 +1040,25 @@ def test_runtime_gate_handoff_covers_managed_children():
     assert studio_source.count("inherited = runtime_gate_handoff") >= 5
 
 
-def test_a_reopened_app_cannot_replace_or_discard_an_externally_owned_stage():
-    update_source = UPDATE_RS.read_text(encoding = "utf-8")
-    commands_source = COMMANDS_RS.read_text(encoding = "utf-8")
+def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
+    """The cleanup renames whole runtime trees, so it must not run beside an
+    installer or a backend launch that is already holding the gate."""
     main_source = MAIN_RS.read_text(encoding = "utf-8")
-
-    owner_check = update_source.index("pub(crate) fn staged_update_is_owned_elsewhere()")
-    gate_probe = update_source.index("with_studio_runtime_launch_guard", owner_check)
-    owner_helper = update_source.index("fn staged_update_is_owned_elsewhere_at(", gate_probe)
-    stage_probe = update_source.index("crate::staged_update::STAGE_DIR", owner_helper)
-    status = update_source.index("pub(crate) fn is_staged_update_running")
-    status_uses_owner = update_source.index("staged_update_is_owned_elsewhere()", status)
-    assert status < status_uses_owner < owner_check < gate_probe < owner_helper < stage_probe
-
-    start = commands_source.index("pub async fn start_staged_update(")
-    start_guard = commands_source.index("is_staged_update_running", start)
-    start_spawn = commands_source.index("update::run_staged_update", start_guard)
-    cancel = commands_source.index("pub fn cancel_staged_update(", start_spawn)
-    cancel_stop = commands_source.index("update::stop_update", cancel)
-    cancel_guard = commands_source.index("with_studio_runtime_launch_guard", cancel_stop)
-    cancel_remove = commands_source.index("staged_update::discard", cancel_guard)
-    discard = commands_source.index("pub fn discard_staged_update(")
-    discard_guard = commands_source.index("with_studio_runtime_launch_guard", discard)
-    discard_remove = commands_source.index("staged_update::discard", discard_guard)
-    assert start < start_guard < start_spawn < cancel < cancel_stop < cancel_guard < cancel_remove
-    assert cancel_remove < discard < discard_guard < discard_remove
+    staged_source = STAGED_UPDATE_RS.read_text(encoding = "utf-8")
 
     setup = main_source.index(".setup(|app| {")
     reconcile_gate = main_source.index("with_studio_runtime_launch_guard", setup)
-    reconcile = main_source.index("staged_update::reconcile_at_launch", reconcile_gate)
+    reconcile = main_source.index("staged_update::reconcile_legacy_at_launch", reconcile_gate)
     assert setup < reconcile_gate < reconcile
+
+    # Nothing activates a stage any more: the whole directory goes, and it goes
+    # before the rollback, which would otherwise treat it as a tree to keep.
+    entry = staged_source.index("pub(crate) fn reconcile_legacy_at_launch(")
+    trash = staged_source.index("remove_stale_trash(home);", entry)
+    failed = staged_source.index("fs::remove_file(home.join(FAILED_MARKER));", trash)
+    stage = staged_source.index("fs::remove_dir_all(home.join(STAGE_DIR));", failed)
+    rollback = staged_source.index("roll_back_unconfirmed(home)", stage)
+    assert entry < trash < failed < stage < rollback
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():

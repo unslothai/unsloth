@@ -3987,9 +3987,11 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         return
     stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
     if stage_root:
-        # STUDIO_HOME names the LIVE install here and the stage can still be rejected,
-        # so the choice is parked and _studio_stage.stage promotes it on acceptance.
-        # Dropping it instead left desktop-only installs on the content fallback.
+        # A 805-807 shell ran the OLD installed CLI with --stage and that CLI is
+        # running this setup inside its stage. STUDIO_HOME names the LIVE install
+        # here and the stage can still be rejected, so the choice is parked and the
+        # old CLI's stage() promotes it on acceptance. Dropping it instead left
+        # desktop-only installs on the content fallback.
         marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
     else:
         marker = STUDIO_HOME / "cache" / "uv-cache-dir"
@@ -4540,7 +4542,7 @@ def update(
         False,
         "--stage",
         hidden = True,
-        help = "Prepare the update in a copy of the environment without touching the live one.",
+        help = "Accepted for 805-807 desktop shells, which get a refusal. Background staging is gone.",
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
@@ -4551,7 +4553,7 @@ def update(
     # in-process caller that leaves it out gets typer's OptionInfo sentinel, which
     # is truthy, and every such call would stage instead of updating.
     if stage is True:
-        _stage_update(local = local, package = package, verbose = verbose, verify = verify)
+        _refuse_staged_update()
         return
     staging = _studio_stage.is_staging()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
@@ -4637,30 +4639,46 @@ def update(
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
-def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> None:
-    if local:
-        typer.echo("Error: --stage cannot be combined with --local.", err = True)
-        raise typer.Exit(2)
-    if _studio_stage.is_staging():
-        typer.echo("Error: --stage cannot run inside a staged update.", err = True)
-        raise typer.Exit(2)
-    args = ["--package", package]
-    if verbose:
-        args.append("--verbose")
-    if not verify:
-        args.append("--no-verify")
-    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
-        try:
-            result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
-        except _studio_stage.StageError as exc:
-            typer.echo(f"[TAURI:ERROR] {exc}")
-            raise typer.Exit(1)
-        except Exception as exc:
-            # convert staging exceptions to the structured error stream consumed by the desktop.
-            typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
-            raise typer.Exit(1)
-    typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
+def _refuse_staged_update() -> None:
+    """Fail fast for a 805-807 desktop shell asking this wheel to stage.
+
+    Those shells still spawn `studio update --stage`, and a shell that only got an
+    error would keep asking. The marker is what stops that: their reconciler reads
+    `.update-failed.json`, and a later recheck of the same version returns "skip"
+    instead of preparing again. Their `StagedVersions` types `backend_version` as a
+    plain String, so a version lookup that fails is spelled out rather than left
+    null, which would make the whole marker unparseable and undo the point of it.
+
+    No runtime gate, no idle scan, no launcher transaction: nothing here touches
+    the environment. The non-zero exit reaches the shell as a failed backend
+    preparation, which drops it onto the classic update.
+    """
+    from importlib.metadata import version as package_version
+
+    try:
+        backend_version = package_version("unsloth")
+    except Exception:
+        backend_version = "unknown"
+    if not isinstance(backend_version, str) or not backend_version:
+        backend_version = "unknown"
+    shell_version = (os.environ.get("UNSLOTH_TAURI_SHELL_VERSION") or "").strip() or None
+    marker = STUDIO_HOME / ".update-failed.json"
+    payload = json.dumps(
+        {"backend_version": backend_version, "shell_version": shell_version}, indent = 2
+    ) + "\n"
+    try:
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        temporary = marker.with_name(marker.name + f".{os.getpid()}.tmp")
+        temporary.write_text(payload, encoding = "utf-8")
+        os.replace(temporary, marker)
+    except OSError:
+        # A refusal the desktop can act on matters more than the marker; the worst
+        # case is the shell offering to prepare once more.
+        pass
+    # stdout, not stderr: update.rs promotes a [TAURI:ERROR] line off the child's
+    # stdout into the failure the desktop shows.
+    typer.echo("[TAURI:ERROR] background staging is no longer supported; run the standard update")
+    raise typer.Exit(1)
 
 
 class _WindowsLauncherUpdateTransaction:
