@@ -5380,27 +5380,17 @@ def test_the_legacy_vulkan_flag_still_names_a_backend():
 def test_a_recognised_backend_still_outranks_the_legacy_flag():
     """The precedence environment_backend_override documents: a recognised public value is
     authoritative, so the legacy boolean cannot pull a cuda install back to Vulkan."""
-    assert (
-        _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1")
-        == "cuda"
-    )
-    assert (
-        _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1") == "no"
-    )
+    assert _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1") == "cuda"
+    assert _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1") == "no"
 
 
 def test_auto_outranks_the_legacy_flag_too():
-    """"auto" is a recognised value and a request to DETECT, which is why
+    """ "auto" is a recognised value and a request to DETECT, which is why
     environment_backend_override returns it rather than falling through. Without this the
     fix could read as "the legacy flag always wins", which would take a host that asked for
     detection off the automatic route."""
-    assert (
-        _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1")
-        == "auto"
-    )
-    assert (
-        _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1") == "no"
-    )
+    assert _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1") == "auto"
+    assert _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1") == "no"
 
 
 def test_the_legacy_flag_set_to_zero_is_not_a_request():
