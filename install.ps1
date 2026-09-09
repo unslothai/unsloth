@@ -16,6 +16,15 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
+    # First: Exit-InstallFailure restores the marker long before the selection runs, and
+    # under `irm | iex` the script scope is the caller's session.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
+    # One flag for both rollbacks: clearing them separately leaves a window either way
+    # round, where an interruption restores one half of a committed install.
+    $script:StudioInstallCommitted = $false
+
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
@@ -317,6 +326,10 @@ function Install-UnslothStudio {
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
+        }
+        # Separate from the venv rollback: an install can fail before one is in flight.
+        if (Get-Command Restore-StudioUvCacheMarker -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
         # Most failures return before the lock try/finally, and under `irm | iex`
         # these variables are the caller's own. Defined later, so probed like above.
@@ -721,6 +734,87 @@ function Install-UnslothStudio {
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
     # able to complete, over a package it will not install.
     if ($SkipTorch) { $PythonSkip = @() }
+
+    # An elevated run writes the install root as Administrators and the same account cannot
+    # read it back afterwards. Twin in studio/setup.ps1.
+    function Get-ElevationState {
+        try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+            if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                return "true"
+            }
+            return "false"
+        } catch {
+            return "unknown"
+        }
+    }
+
+    # Recorded either way; install.rs record_diag_marker puts it in the support report.
+    function Write-ElevationNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$State,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
+            # UNSLOTH_TAURI_MODE is not assigned until the setup call far below; --tauri is.
+            [switch]$Tauri
+        )
+
+        if ($Tauri) {
+            [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
+            [Console]::Out.Flush()
+        }
+        if ($State -ne "true") { return }
+        Write-StudioLine "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-StudioLine "            Anything written to $Root will be owned by Administrators," -ForegroundColor Yellow
+        Write-StudioLine "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-StudioLine "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-StudioLine "            update run normally fails on it." -ForegroundColor Yellow
+        Write-StudioLine "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
+        try {
+            $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
+        } catch {
+            try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        }
+        return $_p.TrimEnd('\', '/')
+    }
+
+    # Warn before the resolver below creates and probes the root, so mirror its precedence
+    # rather than reuse the unassigned $StudioHome. USERPROFILE can be unset (service, CI).
+    $UnslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        '%USERPROFILE%\.unsloth'
+    } else {
+        Join-Path $env:USERPROFILE ".unsloth"
+    }
+    $ElevationRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+        $env:UNSLOTH_STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+        $env:STUDIO_HOME.Trim()
+    } else {
+        $UnslothRoot
+    }
+    # A legacy-equal override is not a custom root: llama.cpp and node stay siblings of
+    # studio under ~/.unsloth, so name that parent.
+    if ((Get-CanonicalRootPath $ElevationRoot) -ieq
+        (Get-CanonicalRootPath (Join-Path $UnslothRoot "studio"))) {
+        $ElevationRoot = $UnslothRoot
+    }
+    Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
 
     # Whitespace-only == unset (matches the Python resolvers' .strip()).
     $envOverrideVar = $null
@@ -1221,6 +1315,89 @@ public static class UnslothStudioFinalPathV2
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+    # Records which cache this install used, so an update reuses it rather than guessing:
+    # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
+    # mode, so one on-demand install makes an empty Studio cache look full. Never fatal.
+    # uv resolves a relative cache-dir against its working directory, which UV_WORKING_DIR
+    # moves and which may itself be relative to where the installer was run. $PWD.Path
+    # explicitly: GetFullPath resolves against the .NET process directory, which
+    # Set-Location does not move. Mirrors _absolutize_uv_cache_dir in install.sh.
+    function Resolve-StudioUvCachePath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Cache)
+        if ([string]::IsNullOrEmpty($Cache) -or [System.IO.Path]::IsPathRooted($Cache)) {
+            return $Cache
+        }
+        try {
+            $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                    $env:UV_WORKING_DIR
+                } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
+            } else { $PWD.Path }
+            return [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
+        } catch { return $Cache }
+    }
+
+    function Write-StudioUvCacheMarker {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [Parameter(Mandatory = $true)][string]$Cache
+        )
+        $markerDir = Join-Path $StudioRoot "cache"
+        $markerFile = Join-Path $markerDir "uv-cache-dir"
+        # Absolute: the update resolves this against ITS working directory.
+        $Cache = Resolve-StudioUvCachePath -Cache $Cache
+        # Remembered so a rollback can put it back.
+        if (-not $script:StudioUvMarkerSaved) {
+            # Under "Stop", Test-Path inside an ACL-denied directory throws.
+            $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
+            if ($existing) {
+                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
+                # with the active ANSI code page, and the update writes this one BOM-less
+                # UTF-8, so a non-ASCII path came back as mojibake and was restored that way.
+                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
+                    -ErrorAction SilentlyContinue
+                # One we cannot read is one we cannot put back, so leave it alone.
+                if ($null -eq $previous) { return }
+                $script:StudioUvMarkerPrevious = $previous
+                $script:StudioUvMarkerExisted = $true
+            } else {
+                $script:StudioUvMarkerPrevious = $null
+                $script:StudioUvMarkerExisted = $false
+            }
+            $script:StudioUvMarkerSaved = $true
+        }
+        # CreateDirectory, not New-Item -Path: -Path treats [] in the root as a wildcard.
+        if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
+            try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
+        }
+        # Removed first: Set-Content follows a symlink and would truncate its target.
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
+        # reports the link itself; Test-Path would follow it.
+        if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Set-Content -LiteralPath $markerFile -Value $Cache `
+            -Encoding utf8 -ErrorAction SilentlyContinue
+    }
+
+    function Restore-StudioUvCacheMarker {
+        # AllowEmptyString and the blank guard: a throw here would be reported as a
+        # failed environment restore.
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$StudioRoot)
+        if ($script:StudioInstallCommitted) { return }
+        if (-not $script:StudioUvMarkerSaved) { return }
+        if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
+        $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
+        if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
+            Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
+                -Encoding utf8 -ErrorAction SilentlyContinue
+        }
+        $script:StudioUvMarkerSaved = $false
+    }
+
     function Set-StudioUvCacheEnvironment {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1230,6 +1407,11 @@ public static class UnslothStudioFinalPathV2
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
+            # Absolute before anything uses it, so every phase of one install and the
+            # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
+            $env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
             return
         }
@@ -1299,6 +1481,7 @@ public static class UnslothStudioFinalPathV2
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+        Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
 
         switch ($script:StudioUvCacheMode) {
             "shared" {
@@ -4213,6 +4396,9 @@ exit 0
     }
 
     function Restore-StudioVenvRollback {
+        # The same flag the marker restore consults, so an interruption mid-commit cannot
+        # put one half of a committed install back and keep the other.
+        if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -4264,6 +4450,11 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
+        # First and alone: this one assignment is what both restores consult, so an
+        # interruption cannot find them disagreeing. A first install rolls nothing back
+        # and still commits.
+        $script:StudioInstallCommitted = $true
+        $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the
@@ -5744,7 +5935,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.2" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.3" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -5752,7 +5943,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5766,7 +5957,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5946,7 +6137,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5961,11 +6152,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -6002,7 +6193,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.1" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.2" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -6336,85 +6527,120 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine "        Re-run the installer to rebuild the environment." -ForegroundColor Yellow
         return (Exit-InstallFailure "managed Python is missing at $VenvPython")
     }
-    # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
-    $env:SKIP_STUDIO_BASE = "1"
-    $env:STUDIO_PACKAGE_NAME = $PackageName
-    $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
-    # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
-    # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
-    # installer put it there -- the migrated-venv arm above installs unsloth only and never
-    # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
-    # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
-    # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
-    $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
-        [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
-    }
-    # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
-    $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
-    # Always set explicitly: a stale value from a previous --local run would leak.
-    if ($StudioLocalInstall) {
-        $env:STUDIO_LOCAL_INSTALL = "1"
-        $env:STUDIO_LOCAL_REPO = $RepoRoot
-    } else {
-        $env:STUDIO_LOCAL_INSTALL = "0"
-        Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
-    }
-    # 'setup', not 'update': update pops SKIP_STUDIO_BASE and skips the #4667 fast path.
+    # `irm | iex` runs in the caller's shell, so every handoff variable is saved and restored.
+    # Captures sit above the try, or a finally reached first reads the unset $hadPrevious* as
+    # "there was nothing here" and clears a value it never set.
+    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE
+    $hadPreviousSkipStudioBase = ($null -ne $previousSkipStudioBase)
+    # Propagate UNSLOTH_STUDIO_HOME only for env-override installs; otherwise
+    # an inherited value would put llama.cpp in the wrong place.
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
     $previousTauriMode = $env:UNSLOTH_TAURI_MODE
     $hadPreviousTauriMode = ($null -ne $previousTauriMode)
-    $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
-    if ($StudioRedirectMode -eq 'env') {
-        $env:UNSLOTH_STUDIO_HOME = $StudioHome
-    } else {
-        Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
-    }
-    $studioArgs = @('studio', 'setup')
-    if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    if ($WithLlamaCppDir) {
-        if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
-            Write-StudioLine "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
-            return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
-        }
-        $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
-    }
-    $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
-    # Hand setup.ps1 the venv interpreter so it does not re-probe a PATH led by a stub.
-    $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
-    # Installer already owns the runtime mutex; the child inherits it rather
-    # than deadlocking trying to reacquire it.
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
-    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
-    # The proxy defaults kept out of the discarded profile table, for the duration of the child
-    # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
     $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
-    # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
-    # standalone update and goes looking through the user's profiles. An empty object says "the
-    # installer looked, and there is none".
-    $env:_UNSLOTH_PS_PROXY_DEFAULTS =
-        if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
-    # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
-    # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
-    # reports "needs repair", the installer rolls back, and the app retries that forever.
-    #
-    # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
-    # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
-    # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
-    # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
-    # come up empty, and nested installers never see it.
     $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
     $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
-    if ($ROCmGfxArch) {
-        $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
-    } else {
-        # Cleared, not left alone: an inherited value from an outer process is not this run's
-        # answer, and handing it down would forward an arch nothing here detected.
-        Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
-    }
+    # SKIP_STUDIO_FRONTEND is the one with teeth: a leaked "1" makes the next direct
+    # `unsloth studio setup` skip the frontend build, leaving a source install with no web UI.
+    $previousStudioPackageName = $env:STUDIO_PACKAGE_NAME
+    $hadPreviousStudioPackageName = ($null -ne $previousStudioPackageName)
+    $previousNoTorch = $env:UNSLOTH_NO_TORCH
+    $hadPreviousNoTorch = ($null -ne $previousNoTorch)
+    $previousInstallerTorchTag = $env:UNSLOTH_INSTALLER_TORCH_TAG
+    $hadPreviousInstallerTorchTag = ($null -ne $previousInstallerTorchTag)
+    $previousSkipStudioFrontend = $env:SKIP_STUDIO_FRONTEND
+    $hadPreviousSkipStudioFrontend = ($null -ne $previousSkipStudioFrontend)
+    $previousStudioLocalInstall = $env:STUDIO_LOCAL_INSTALL
+    $hadPreviousStudioLocalInstall = ($null -ne $previousStudioLocalInstall)
+    $previousStudioLocalRepo = $env:STUDIO_LOCAL_REPO
+    $hadPreviousStudioLocalRepo = ($null -ne $previousStudioLocalRepo)
+    # Cleared unconditionally before, which the --with-llama-cpp-dir bail reaches without
+    # having set them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input this script reads.
+    $previousLocalLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+    $hadPreviousLocalLlamaCppDir = ($null -ne $previousLocalLlamaCppDir)
+    $previousInstallRollbackManaged = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED
+    $hadPreviousInstallRollbackManaged = ($null -ne $previousInstallRollbackManaged)
+    $previousSetupPython = $env:UNSLOTH_SETUP_PYTHON
+    $hadPreviousSetupPython = ($null -ne $previousSetupPython)
     try {
+        $env:SKIP_STUDIO_BASE = "1"
+        $env:STUDIO_PACKAGE_NAME = $PackageName
+        $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+        # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
+        # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
+        # installer put it there -- the migrated-venv arm above installs unsloth only and never
+        # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
+        # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
+        # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
+        $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
+            [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
+        }
+        # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+        $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
+        # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
+        # a previous --local run in the same PowerShell session.
+        if ($StudioLocalInstall) {
+            $env:STUDIO_LOCAL_INSTALL = "1"
+            $env:STUDIO_LOCAL_REPO = $RepoRoot
+        } else {
+            $env:STUDIO_LOCAL_INSTALL = "0"
+            Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
+        }
+        # Use 'studio setup' (not 'studio update') because 'update' pops
+        # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
+        # and bypass the fast-path version check from PR #4667.
+        $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
+        if ($StudioRedirectMode -eq 'env') {
+            $env:UNSLOTH_STUDIO_HOME = $StudioHome
+        } else {
+            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+        }
+        $studioArgs = @('studio', 'setup')
+        if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+        if ($WithLlamaCppDir) {
+            if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
+                Write-StudioLine "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+                return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
+            }
+            $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
+        }
+        $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
+        # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
+        # resolved and built the venv with, instead of re-probing the system (which
+        # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
+        # though the venv is fine). setup.ps1 Test-Path-guards this before use.
+        $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
+        # Installer already owns the runtime mutex; the child inherits it rather
+        # than deadlocking trying to reacquire it.
+        $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+        # The proxy defaults kept out of the discarded profile table, for the duration of the child
+        # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
+        #
+        # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
+        # standalone update and goes looking through the user's profiles. An empty object says "the
+        # installer looked, and there is none".
+        $env:_UNSLOTH_PS_PROXY_DEFAULTS =
+            if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
+        # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
+        # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
+        # reports "needs repair", the installer rolls back, and the app retries that forever.
+        #
+        # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
+        # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
+        # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
+        # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
+        # come up empty, and nested installers never see it.
+        if ($ROCmGfxArch) {
+            $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
+        } else {
+            # Cleared, not left alone: an inherited value from an outer process is not this run's
+            # answer, and handing it down would forward an arch nothing here detected.
+            Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
+        }
         Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
@@ -6427,6 +6653,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
             Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSkipStudioBase) {
+            $env:SKIP_STUDIO_BASE = $previousSkipStudioBase
+        } else {
+            Remove-Item Env:SKIP_STUDIO_BASE -ErrorAction SilentlyContinue
         }
         if ($hadPreviousSetupRuntimeGateHandoff) {
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
@@ -6443,12 +6674,54 @@ sys.exit(2 if conflict else (0 if installed else 1))
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
         }
+        if ($hadPreviousStudioPackageName) {
+            $env:STUDIO_PACKAGE_NAME = $previousStudioPackageName
+        } else {
+            Remove-Item Env:STUDIO_PACKAGE_NAME -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousNoTorch) {
+            $env:UNSLOTH_NO_TORCH = $previousNoTorch
+        } else {
+            Remove-Item Env:UNSLOTH_NO_TORCH -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousInstallerTorchTag) {
+            $env:UNSLOTH_INSTALLER_TORCH_TAG = $previousInstallerTorchTag
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSkipStudioFrontend) {
+            $env:SKIP_STUDIO_FRONTEND = $previousSkipStudioFrontend
+        } else {
+            Remove-Item Env:SKIP_STUDIO_FRONTEND -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousStudioLocalInstall) {
+            $env:STUDIO_LOCAL_INSTALL = $previousStudioLocalInstall
+        } else {
+            Remove-Item Env:STUDIO_LOCAL_INSTALL -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousStudioLocalRepo) {
+            $env:STUDIO_LOCAL_REPO = $previousStudioLocalRepo
+        } else {
+            Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
+        }
         # ...and the copy this function holds goes with it, rather than sitting in the frame for
         # the rest of a long install.
         $UnslothProxyHandoffJson = $null
-        Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
-        Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
-        Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        if ($hadPreviousLocalLlamaCppDir) {
+            $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = $previousLocalLlamaCppDir
+        } else {
+            Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousInstallRollbackManaged) {
+            $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = $previousInstallRollbackManaged
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSetupPython) {
+            $env:UNSLOTH_SETUP_PYTHON = $previousSetupPython
+        } else {
+            Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        }
     }
     # $null, not a code: Application Control refused to create the process, so there is
     # no exit code to report. Checked first because in PowerShell $null -ne 0 is true,
@@ -6573,6 +6846,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
     }
 

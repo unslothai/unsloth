@@ -563,7 +563,7 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
+                fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab = resize_model_vocab,  # [TODO] No effect
@@ -990,7 +990,7 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,  # [TODO] No effect
-                fix_tokenizer = fix_tokenizer,  # [TODO] No effect
+                fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab = resize_model_vocab,  # [TODO] No effect
@@ -1281,7 +1281,7 @@ class FastModel(FastBaseModel):
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         rope_scaling = None,  # [TODO] No effect
-        fix_tokenizer = True,  # [TODO] No effect
+        fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab = None,  # [TODO] No effect
@@ -2126,6 +2126,7 @@ class FastModel(FastBaseModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
+                fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 revision = model_revision,
                 tokenizer_revision = _revision_for_tokenizer_repo(
@@ -2140,7 +2141,7 @@ class FastModel(FastBaseModel):
                 whisper_task = whisper_task,
                 auto_config = model_config,
                 auto_config_from_caller = user_config is not None,
-                # `resize_token_embeddings` below replaces the embedding module and hooks do
+                # resize_token_embeddings below replaces the embedding module and hooks do
                 # not travel to the replacement, so an offload installed during the load would
                 # leave a CPU embedding feeding a GPU decoder. An explicit request is left
                 # alone, since that combination was already this caller's to get wrong.
@@ -2151,7 +2152,7 @@ class FastModel(FastBaseModel):
                     else offload_embedding
                 ),
                 float32_mixed_precision = float32_mixed_precision,
-                # Pass vLLM/inference parameters
+                # Pass vLLM/inference parameters.
                 fast_inference = fast_inference,
                 gpu_memory_utilization = gpu_memory_utilization,
                 float8_kv_cache = float8_kv_cache,
