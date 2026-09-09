@@ -528,6 +528,26 @@ def test_python_exec_timeout_message_identical_with_streaming():
     assert streamed == baseline == "Execution timed out after 1 seconds."
 
 
+def test_python_exec_timeout_keeps_output_already_printed():
+    # The run printed a progress line before it overran the timeout. That text was
+    # captured; it must reach the model instead of only the status line.
+    code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
+    baseline = _python_exec(code, timeout = 1)
+    streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_bash_exec_timeout_keeps_output_already_printed():
+    command = "echo progress; sleep 30"
+    baseline = _bash_exec(command, timeout = 1)
+    streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
 def test_python_exec_callback_errors_do_not_break_execution():
     def bad_callback(_text: str) -> None:
         raise ValueError("observer bug")

@@ -16251,6 +16251,10 @@ def _python_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            partial = _defuse_sentinels(output or "")
+            if partial.strip():
+                head = _truncate(partial, workdir = spill_dir, scope = spill_scope)
+                ended = f"{head}\n{ended}"
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16404,6 +16408,10 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            partial = _defuse_sentinels(output or "")
+            if partial.strip():
+                head = _truncate(partial, workdir = spill_dir, scope = spill_scope)
+                ended = f"{head}\n{ended}"
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
