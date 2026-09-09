@@ -1,6 +1,7 @@
 import errno
 import importlib.util
 import io
+import dataclasses
 import json
 import os
 import shutil
@@ -5947,6 +5948,7 @@ def _current_install(
     monkeypatch,
     *,
     install_host: HostInfo | None = None,
+    published_repo: str = "unslothai/llama.cpp",
     **marker_overrides,
 ) -> Path:
     install_dir = tmp_path / "llama.cpp"
@@ -5955,8 +5957,10 @@ def _current_install(
     for name in ("llama-server", "llama-quantize"):
         for parent in (install_dir, install_dir / "build" / "bin"):
             (parent / name).chmod(0o755)
-    choice = asset_choice()
+    choice = asset_choice(repo = published_repo)
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
+    if published_repo != checksums.repo:
+        checksums = dataclasses.replace(checksums, repo = published_repo)
     host = install_host if install_host is not None else linux_host()
     write_prebuilt_metadata(
         install_dir,
@@ -6112,6 +6116,32 @@ def test_the_api_only_escape_hatch_uses_the_api_notion_of_latest(tmp_path, monke
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_releases", raises)
     assert _check(install_dir) is False
+
+
+def test_a_custom_repo_is_answered_the_way_the_selector_orders_it(tmp_path, monkeypatch):
+    """iter_resolved_published_releases takes the download-host fast path for the
+    default repo only; any other repo's releases are ordered by published_at through
+    the API. A pre-check that followed /releases/latest for such a repo could stay
+    current forever while the selector wanted the newer release GitHub never marked
+    latest."""
+    install_dir = _current_install(tmp_path, monkeypatch, published_repo = "someone/llama.cpp")
+
+    def boom(_repo):
+        raise AssertionError("a custom repo never resolves through the download host")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", boom)
+    listed = {"tags": ["release-1"]}
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "github_releases",
+        lambda _repo, **_k: [
+            _release(tag, f"2026-0{i + 1}-01T00:00:00Z", i + 1)
+            for i, tag in enumerate(listed["tags"])
+        ],
+    )
+    assert _check(install_dir, published_repo = "someone/llama.cpp") is True
+    listed["tags"] = ["release-1", "release-2"]
+    assert _check(install_dir, published_repo = "someone/llama.cpp") is False
 
 
 def test_a_release_payload_this_run_already_has_overrides_the_latest_pointer(tmp_path, monkeypatch):

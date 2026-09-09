@@ -7451,7 +7451,9 @@ def _expected_release_tag_without_plan(
     path. Three shapes:
       * a pinned UNSLOTH_LLAMA_RELEASE_TAG names the answer outright;
       * an upstream bNNNN pin is answered by the marker's recorded upstream tag, since
-        the fork publishes one release per upstream build;
+        the fork publishes one release per upstream build (bNNNN-mix-<sha>, never a
+        second packaging revision of the same build; whisper's fork does the opposite,
+        which is why its check treats an upstream pin differently);
       * "latest" costs ONE HEAD on github.com/<repo>/releases/latest -- no
         api.github.com call, so no rate limit, and no manifest or checksum download.
 
@@ -7488,10 +7490,14 @@ def _expected_release_tag_without_plan(
         recorded_release = marker.get("release_tag")
         return recorded_release if isinstance(recorded_release, str) else None
     repo = published_repo or DEFAULT_PUBLISHED_REPO
-    if not _download_host_resolve_enabled():
-        # The caller asked for the API path. Answering None here would make the escape
-        # hatch mean "never skip", which is not what it says; answer with the notion of
-        # latest the run it just asked for would use.
+    if not _download_host_resolve_enabled() or repo != DEFAULT_PUBLISHED_REPO:
+        # The caller asked for the API path, or named a repo the selector never resolves
+        # through the download host (iter_resolved_published_releases takes its fast
+        # path for DEFAULT_PUBLISHED_REPO only and orders any other repo's releases by
+        # published_at). Answering None would make the escape hatch mean "never skip",
+        # which is not what it says, and answering from /releases/latest for a custom
+        # repo could disagree with the selector forever: give the notion of latest the
+        # run being skipped would use.
         return _api_newest_release_tag(repo)
     try:
         resolved = _download_host_latest_release_tag(repo)

@@ -2326,7 +2326,7 @@ def test_whisper_newer_release_or_unreachable_lookup_is_not_current(tmp_path, mo
     assert _whisper_check(install_dir, host) is False
 
 
-def test_whisper_pinned_and_upstream_tags_answer_without_a_lookup(tmp_path, monkeypatch):
+def test_whisper_a_pinned_release_tag_answers_without_a_lookup(tmp_path, monkeypatch):
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
 
     def boom(_repo):
@@ -2335,8 +2335,19 @@ def test_whisper_pinned_and_upstream_tags_answer_without_a_lookup(tmp_path, monk
     monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", boom)
     assert _whisper_check(install_dir, host, published_release_tag = RELEASE_TAG) is True
     assert _whisper_check(install_dir, host, published_release_tag = "v9.9.9") is False
+
+
+def test_whisper_an_upstream_pin_still_takes_a_newer_packaging_revision(tmp_path, monkeypatch):
+    """The fork publishes several packaging revisions of one upstream tag and the full
+    path takes the newest that matches, so an upstream pin is current only when the
+    installed release is also the newest one; a wrong pin is refused outright."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
     assert _whisper_check(install_dir, host, whisper_tag = "v1.0.0") is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG + "-unsloth.99"
+    )
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is False
 
 
 def test_whisper_a_different_repo_or_backend_is_not_current(tmp_path, monkeypatch):

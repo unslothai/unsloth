@@ -1565,12 +1565,15 @@ def existing_install_current_without_plan(
     if pinned:
         if pinned != recorded_release:
             return False
-    elif requested not in ("", "latest"):
-        # An upstream version pin. The marker records which upstream tag it carries, so
-        # it can answer for itself without a manifest search.
-        if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
-            return False
     else:
+        if requested not in ("", "latest"):
+            # An upstream version pin. Unlike llama's fork, this one publishes several
+            # packaging revisions of one upstream tag (v1.9.2-unsloth.17, .18, ...) and
+            # _release_plan_for_host takes the newest that matches, so the marker's own
+            # upstream_tag rules out a wrong pin but cannot answer alone: the install is
+            # current only when it is also the release the HEAD below names.
+            if str(marker.get("upstream_tag") or "") != whisper_tag.strip():
+                return False
         if not llama._download_host_resolve_enabled():
             return False
         try:
