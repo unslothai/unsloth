@@ -1593,19 +1593,17 @@ $Rule = [string]::new([char]0x2500, 52)
 
 # Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
 # in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe to get a DLL back, and behavioural antivirus blocks the result, because a windowless
-# PowerShell launching a compiler and writing executable content to %TEMP% is a dropper's shape
-# whatever the code says. Reflection emit builds the same stub in memory: no compiler process, no
-# source on disk, no DLL, and an assembly whose Location is empty. install.ps1 carries the same
-# helper, and for the same reason.
+# csc.exe, and behavioural antivirus blocks the result, because a windowless PowerShell launching
+# a compiler and writing executable content to %TEMP% is a dropper's shape whatever the code says.
+# Reflection emit builds the same stub in memory: no compiler process, no source, no DLL, empty
+# assembly Location. install.ps1 carries the same helper for the same reason.
 # See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
-# assemblies built with System.Reflection.Emit, and Microsoft documents the parent process as
-# usually stopped or crashing rather than raising, so this has to be a gate and not a catch.
+# System.Reflection.Emit assemblies by usually stopping or crashing the parent rather than
+# raising, so this has to be a gate and not a catch.
 $script:StudioCanDefineNativeTypes = $null
 # Why the last probe answered as it did, so a caller can tell "the child ran and
-# said no" from "the child never got to answer". Those are the same boolean and
-# they are not the same fact: one is a policy, the other is a process that failed
-# to start, was killed at the deadline, or lost its output.
+# said no" (a policy) from "the child never answered" (failed to start, killed
+# at the deadline, or lost its output). Same boolean, different facts.
 $script:StudioEmitProbeOutcome = $null
 function Test-StudioCanDefineNativeTypes {
     if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
@@ -1616,18 +1614,15 @@ function Test-StudioCanDefineNativeTypes {
         return $false
     }
     # Read-and-zero is the only outcome that skips the probe. A query that threw, returned
-    # nothing, or returned an object without the property is UNKNOWN, and treating unknown as
-    # unrestricted lets option 19 through on a host whose CIM query failed. install.ps1
-    # carries the full note.
+    # nothing, or lacked the property is UNKNOWN, and treating unknown as unrestricted lets
+    # option 19 through on a host whose CIM query failed. install.ps1 carries the full note.
     $known = $false
     $active = $false
     try {
-        # Bounded, with what that bound actually covers stated rather than implied:
-        # -OperationTimeoutSec limits the CIM operation on a responsive target. It does
-        # not interrupt DCOM connection setup and it does not override a provider that
-        # has wedged, where the server's own timeout wins. It is worth having for the
-        # slow case and it is not a hang guard. The child probe below is the part that
-        # carries a real deadline.
+        # -OperationTimeoutSec bounds the CIM operation on a responsive target only:
+        # it does not interrupt DCOM connection setup, and a wedged provider's own
+        # timeout wins. Good for the slow case, not a hang guard. The child probe
+        # below carries the real deadline.
         $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
             -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
         # 0 off, 1 audit, 2 enforced. A null property is not a zero.
@@ -1647,12 +1642,12 @@ function Test-StudioCanDefineNativeTypes {
     # an audit policy before Windows 11 24H2, while an audit policy without it emits fine. So a
     # child process tries it. Same reasoning as install.ps1, which carries the full note.
     $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-    # One retry, and only when the first attempt never reached an answer. The compiled
-    # version this replaces also tried twice before caching a negative, and without
-    # that a single transient process failure is indistinguishable from a policy: it
-    # is cached for the whole run and sends the installer down the lexical path, where
-    # two unequal roots compare as unknown and a second lock gets taken. A child that
-    # RAN and said no is not retried, so a genuinely blocked machine still pays for
+    # One retry, only when the first attempt never reached an answer (the
+    # compiled version this replaces also tried twice before caching a
+    # negative). Otherwise one transient process failure is cached for the whole
+    # run as if it were a policy, sending the installer down the lexical path
+    # where two unequal roots compare as unknown and a second lock gets taken. A
+    # child that RAN and said no is not retried, so a blocked machine pays for
     # one probe.
     if (-not $script:StudioCanDefineNativeTypes -and
         $script:StudioEmitProbeOutcome -eq "indeterminate") {
@@ -1664,11 +1659,10 @@ function Test-StudioCanDefineNativeTypes {
 # The same emit, in a process that is allowed to die. A blocked dynamic load usually stops the
 # parent, so this is asked in a child; silence is refusal.
 function Test-StudioEmitInChildProcess {
-    # HostPath is for the tests, which have no policy to trigger the real path and cannot
-    # shadow $PSHOME, since it is read-only. Production never passes it.
+    # HostPath is for the tests, which have no policy to trigger the real path and
+    # cannot shadow the read-only $PSHOME. Production never passes it.
     param([string]$HostPath)
-    # Until something here establishes otherwise. Every exit below either leaves this
-    # alone or says what it learned.
+    # Until something below establishes otherwise.
     $script:StudioEmitProbeOutcome = "indeterminate"
     $probe = @'
 try {
@@ -1697,10 +1691,9 @@ try {
 if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
 exit 1
 '@
-    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other
-    # way, and the emit that matters is the one this interpreter will make. Both
-    # spellings of the leaf, so the function is the same one a non-Windows lane can
-    # execute end to end rather than a Windows-only path nothing tests.
+    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or back.
+    # Both spellings of the leaf, so a non-Windows lane can execute this function
+    # end to end rather than leaving a Windows-only path untested.
     $hostExe = $HostPath
     if (-not $hostExe) {
         try {
@@ -1713,17 +1706,15 @@ exit 1
         } catch {}
     }
     if (-not $hostExe) { return $false }
-    # Through a Process object rather than the call operator, for a deadline. The call
-    # operator waits for the child forever, and "forever" is reachable: a security
-    # product inspecting a freshly spawned interpreter, a wedged runtime start, a child
-    # that blocks on shutdown. A probe that exists to keep the installer alive must not
-    # be the thing that hangs it.
+    # A Process object rather than the call operator, for a deadline: the call
+    # operator waits forever, and forever is reachable (a security product
+    # inspecting a fresh interpreter, a wedged runtime start, a child blocking on
+    # shutdown). A probe meant to keep the installer alive must not hang it.
     #
-    # BOTH streams are redirected and drained asynchronously. Draining is what stops a
-    # chatty child filling a pipe and deadlocking against the wait. Redirecting stderr as
-    # well is the difference between a probe that is invisible and one that can write
-    # into the installer's own stderr, which the desktop app reads, and which anything
-    # the child spawns would inherit and hold open.
+    # BOTH streams are redirected and drained asynchronously. Draining stops a
+    # chatty child filling a pipe and deadlocking against the wait. Redirecting
+    # stderr keeps the probe out of the installer's own stderr, which the desktop
+    # app reads and anything the child spawns would inherit and hold open.
     #
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $hostExe
@@ -1741,11 +1732,11 @@ exit 1
             try { $child.Kill() } catch {}
             return $false
         }
-        # Exit code AND an exact record. A marker followed by a crash is a crash: the
-        # question is whether this machine can emit and live, and a child that printed
-        # and then died has answered no. FullLanguage because an approved script can run
-        # in FullLanguage while a fresh inline command does not, and a child restricted
-        # differently from its parent has measured a different machine.
+        # Exit code AND an exact record. A marker followed by a crash is a crash:
+        # the question is whether this machine can emit and live. FullLanguage
+        # because an approved script can run in FullLanguage while a fresh inline
+        # command does not, and a child restricted differently from its parent
+        # has measured a different machine.
         if ($child.ExitCode -ne 0) {
             $script:StudioEmitProbeOutcome = "blocked"
             return $false
@@ -1756,23 +1747,23 @@ exit 1
                 $script:StudioEmitProbeOutcome = "ok"
                 return $true
             }
-            # Emitted, but in a language mode this parent is not in. The child measured a
-            # different machine, which is an answer rather than a missed one.
+            # Emitted, but in a language mode this parent is not in: the child
+            # measured a different machine, which is an answer, not a miss.
             if ($line.Trim() -like "STUDIO_EMIT_OK *") {
                 $script:StudioEmitProbeOutcome = "blocked"
                 return $false
             }
         }
-        # Exit 0 with no marker at all: the child cannot have got past the emit and then
-        # reported nothing, so its output was lost rather than negative.
+        # Exit 0 with no marker: the child cannot have emitted and reported
+        # nothing, so its output was lost rather than negative.
         return $false
     } catch {
         return $false
     } finally {
         if ($child) {
-            # The read end goes first. A killed child can leave a grandchild holding the
-            # write end of that pipe, and the pending async read then keeps this process
-            # alive past the deadline it just enforced.
+            # The read end goes first: a killed child can leave a grandchild
+            # holding the write end, and the pending async read would then keep
+            # this process alive past the deadline it just enforced.
             try { $child.StandardOutput.Close() } catch {}
             try { $child.StandardError.Close() } catch {}
             try { $child.Dispose() } catch {}
@@ -1782,16 +1773,16 @@ exit 1
 
 function New-StudioDynamicAssembly {
     <#
-    Both spellings of "define a dynamic assembly", because the two PowerShell hosts that
-    run this file are on different runtimes. The static
-    AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
-    4.8.1 as well as .NET Core, so Windows PowerShell 5.1 should take the first branch. It
-    is tried rather than assumed because nothing here can test a .NET Framework host, and
-    getting it wrong is not a visible error: the catch would cache the thunk as unavailable
-    and every install would silently lose it.
+    Both spellings of "define a dynamic assembly", because the two PowerShell hosts
+    that run this file are on different runtimes. The static
+    AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5
+    through 4.8.1 as well as .NET Core, so 5.1 should take the first branch; it is
+    tried rather than assumed because nothing here can test a .NET Framework host
+    and getting it wrong is invisible: the catch would cache the thunk as
+    unavailable and every install would silently lose it.
 
-    AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework spelling and is
-    absent on .NET Core, so it is the fallback rather than the first try.
+    AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework spelling and
+    is absent on .NET Core, so it is the fallback.
     #>
     param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
     $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
@@ -1801,9 +1792,9 @@ function New-StudioDynamicAssembly {
     } catch [System.Management.Automation.MethodException] {
         return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
     } catch [System.Management.Automation.RuntimeException] {
-        # A missing static surfaces as a RuntimeException on some hosts rather than a
-        # MethodException. Both mean "no such method here", and a real emit failure throws
-        # from the AppDomain call too, so the caller still sees it.
+        # Some hosts surface a missing static as RuntimeException, not
+        # MethodException. Both mean "no such method here", and a real emit failure
+        # throws from the AppDomain call too, so the caller still sees it.
         return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
     }
 }
@@ -1820,9 +1811,10 @@ function New-StudioEmittedNativeType {
         $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
 
     $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-    # Per import, because CharSet selects name mangling as well as marshalling: Unicode probes
-    # <Name>W before <Name>, Ansi probes <Name> before <Name>A. Declaring the one the C# this
-    # replaces declared keeps the metadata honest and puts the export that does exist first.
+    # Per import, because CharSet selects name mangling as well as marshalling:
+    # Unicode probes <Name>W before <Name>, Ansi probes <Name> before <Name>A.
+    # Matching the C# these replace keeps the metadata honest and tries the existing
+    # export first.
     $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
     $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
     $standard = [System.Reflection.CallingConventions]::Standard
@@ -1836,13 +1828,15 @@ function New-StudioEmittedNativeType {
             $standard, $import.Return, $import.Args, $winapi, $charSet)
         $method.SetImplementationFlags(
             $method.GetMethodImplementationFlags() -bor $preserveSig)
-        # `out uint` in the C# this replaces, and DefinePInvokeMethod has no way to say
-        # so: a by-ref type alone emits `ref`, which is In and Out unset. The value is
-        # blittable and every caller initialises it first, so the marshaller pins and
-        # writes back either way, but the metadata is what a reader and any future
-        # marshalling change go by, so it says what the declaration said.
-        # ContainsKey, not a bare property read: most imports have no Out key and reading a
-        # missing one is fatal under a caller's Set-StrictMode. setup.ps1 sets none of its own.
+        # `out uint` in the C# this replaces; DefinePInvokeMethod cannot say so,
+        # since a by-ref type alone emits `ref` (In and Out unset). The value is
+        # blittable and every caller initialises it, so marshalling works either
+        # way, but the metadata is what a reader and any future marshalling
+        # change go by.
+        # ContainsKey, not a bare property read: most imports have no Out key and
+        # reading a missing one is fatal under Set-StrictMode. install.ps1 turns
+        # strict mode off for itself, studio/setup.ps1 inherits the caller's, so
+        # the guard is mirrored rather than left to one of them.
         if ($import.ContainsKey("Out")) {
             foreach ($position in @($import.Out)) {
                 if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
@@ -1859,10 +1853,9 @@ function Enable-StudioVirtualTerminal {
     # block below could only return $false anyway. The CLI and the desktop app both pipe us, so
     # that is the path they are on.
     if ($script:StudioStdoutRedirected) { return $false }
-    # The published type first, the gate only if there is nothing published. A type
-    # this session already emitted is proof that emit works here, and the compiled
-    # version checked for it in the same order; asking a child instead means one
-    # failed probe throws away a console helper that is already loaded and usable.
+    # The published type first, the gate only if there is nothing published: a
+    # type this session already emitted proves emit works here, and asking a
+    # child instead lets one failed probe throw away a usable console helper.
     if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
         return $false
     }

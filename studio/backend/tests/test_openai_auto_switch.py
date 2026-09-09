@@ -8542,7 +8542,12 @@ def test_unload_clears_the_user_load_flag():
     assert backend._loaded_by_user_action is False
     # Not cleared on a bare process kill: a respawn or MTP-free reload replays
     # the same load and must keep the provenance it had.
-    assert "_loaded_by_user_action" not in inspect.getsource(LlamaCppBackend._kill_process)
+    # Both halves, or this negative assertion passes vacuously: the body it is
+    # really about now lives in _kill_process_body.
+    assert "_loaded_by_user_action" not in (
+        inspect.getsource(LlamaCppBackend._kill_process)
+        + inspect.getsource(LlamaCppBackend._kill_process_body)
+    )
 
 
 def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
