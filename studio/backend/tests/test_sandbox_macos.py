@@ -518,9 +518,7 @@ def test_a_runtime_under_the_workdir_is_denied_write_after_the_allowance(tmp_pat
     monkeypatch.setattr(sys, "prefix", str(venv))
     monkeypatch.setattr(sys, "exec_prefix", str(venv))
 
-    profile = backend.build_profile(
-        workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ()
-    )
+    profile = backend.build_profile(workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ())
     lines = profile.splitlines()
     allow = next(i for i, line in enumerate(lines) if line.startswith("(allow file-write* "))
     deny = next(i for i, line in enumerate(lines) if line.startswith("(deny file-write* "))
@@ -537,9 +535,7 @@ def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_
     workdir.mkdir()
     monkeypatch.setattr(sys, "prefix", "/usr")
     monkeypatch.setattr(sys, "exec_prefix", "/usr")
-    profile = backend.build_profile(
-        workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ()
-    )
+    profile = backend.build_profile(workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ())
     assert not any(line.startswith("(deny file-write* ") for line in profile.splitlines())
 
 

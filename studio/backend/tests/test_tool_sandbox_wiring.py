@@ -187,8 +187,9 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
     assert "nonsense" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Asserted about the OUTER process: under bubblewrap the payload is not a
     session leader, so asking it about its own sid only passes on a fallback."""
@@ -256,8 +257,9 @@ def test_a_timeout_kills_the_tool_and_leaves_the_server_running():
     assert "9" in tools._python_exec("print(4 + 5)", None, 60, _SESSION)
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
     seen = []
     real = os_sandbox.prepare_tool_launch
@@ -377,8 +379,9 @@ def test_the_launch_is_released_when_required_refuses(monkeypatch):
     assert "install it" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     read_fd, write_fd = os.pipe()
     holder = os.fdopen(write_fd, "wb")
@@ -436,8 +439,9 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
     assert "command_and_code_analysis" not in record.retained_safeguards
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
     def forgetful(plan):
         return PreparedSandboxLaunch(
