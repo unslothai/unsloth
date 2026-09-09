@@ -104,6 +104,21 @@ DIST_LIST = (
     "print(json.dumps(sorted(((d.metadata['Name'] or '').lower(), d.version) "
     "for d in m.distributions())))"
 )
+# Names and versions cannot see a reinstall at the same version, and a warm uv cache
+# makes one download nothing; the dist-info RECORD is rewritten by every install, so
+# its mtime can. Per distribution, so a failure names the package that moved.
+DIST_RECORDS = (
+    "import importlib.metadata as m, json, os; "
+    "out = []\n"
+    "for d in m.distributions():\n"
+    "    p = getattr(d, '_path', None) and (d._path / 'RECORD')\n"
+    "    try:\n"
+    "        st = os.stat(p)\n"
+    "        out.append([(d.metadata['Name'] or '').lower(), d.version, st.st_mtime_ns, st.st_size])\n"
+    "    except (OSError, TypeError):\n"
+    "        out.append([(d.metadata['Name'] or '').lower(), d.version, None, None])\n"
+    "print(json.dumps(sorted(out)))"
+)
 
 
 # ── the install under test ──
@@ -116,6 +131,14 @@ def _home() -> pathlib.Path:
 def _studio_home() -> pathlib.Path:
     override = os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME")
     return pathlib.Path(override) if override else _home() / ".unsloth" / "studio"
+
+
+def _unsloth_home() -> pathlib.Path:
+    """Where the prebuilts (llama.cpp, whisper.cpp, node) live: setup.sh's UNSLOTH_HOME
+    rule, which nests them under a CUSTOM Studio home and keeps ~/.unsloth otherwise."""
+    if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
+        return _studio_home()
+    return _home() / ".unsloth"
 
 
 def _venv_python() -> pathlib.Path:
@@ -279,6 +302,17 @@ def _settle_journal(
     exists to make. Waits for quiescence rather than for a count, because how many
     connections a run makes is the thing being measured.
     """
+    active_path = log_path.with_name(log_path.name + ".active")
+
+    def _workers_active() -> bool:
+        # The proxy publishes how many workers sit between accept and their record. A
+        # worker blocked in an upstream connect has written nothing, so a quiet journal
+        # alone is not proof that nothing is left to journal.
+        try:
+            return int(active_path.read_text().strip() or "0") > 0
+        except (OSError, ValueError):
+            return False
+
     size = -1
     stable_since = time.monotonic()
     deadline = stable_since + timeout
@@ -289,7 +323,7 @@ def _settle_journal(
             current = 0
         if current != size:
             size, stable_since = current, time.monotonic()
-        elif time.monotonic() - stable_since >= quiet:
+        elif time.monotonic() - stable_since >= quiet and not _workers_active():
             return
         time.sleep(0.05)
 
@@ -427,7 +461,7 @@ def _tree_state(root: pathlib.Path) -> dict | None:
 def snapshot(venv_python: pathlib.Path) -> dict:
     studio_home = _studio_home()
     venv = venv_python.parent.parent
-    unsloth_home = _home() / ".unsloth"
+    unsloth_home = _unsloth_home()
     state: dict = {}
     distributions = subprocess.run(
         [str(venv_python), "-I", "-c", DIST_LIST],
@@ -436,6 +470,13 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         timeout = 300,
     )
     state["distributions"] = json.loads(distributions.stdout or "[]")
+    records = subprocess.run(
+        [str(venv_python), "-I", "-c", DIST_RECORDS],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    state["dist_records"] = json.loads(records.stdout or "[]")
 
     manifest_path = venv / "unsloth_install_manifest.json"
     manifest = None
@@ -530,6 +571,13 @@ def test_a_second_update_downloads_no_payload(install, settled):
     run = run_update(directory, "run3-network")
     assert run.rc == 0, run.log[-8000:]
     for host in PAYLOAD_HOSTS:
+        # Connections, not only bytes: an attempt that failed or timed out upstream is
+        # still a payload fetch the update decided to make, and the installer can keep
+        # the verified prebuilt and exit 0 after one.
+        assert run.connections_to(host) == 0, (
+            f"{host} was contacted {run.connections_to(host)} time(s) by an update with "
+            f"nothing to do: {run.report()}"
+        )
         assert run.bytes_from(host) == 0, (
             f"{host} served {run.bytes_from(host)} bytes to an update with nothing to "
             f"do: {run.report()}"
@@ -557,6 +605,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     )
     assert "falling back to source build" not in run.log
     for host in PAYLOAD_HOSTS:
+        assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
     # The release is never listed on this path either: the marker checks cost one HEAD
     # on github.com per prebuilt, and a --local pass has no other business with the API.
@@ -681,13 +730,19 @@ def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled)
     answer, and what happens next is what happened before.
     """
     directory, before = settled
-    candidates = sorted((_home() / ".unsloth").glob("llama.cpp/**/llama-server*"))
+    candidates = sorted(_unsloth_home().glob("llama.cpp/**/llama-server*"))
     victim = next((p for p in candidates if p.is_file() and p.stat().st_size > 1024), None)
     if victim is None:
         pytest.skip("no llama.cpp prebuilt in this install")
     saved = victim.read_bytes()
     mode = victim.stat().st_mode
-    victim.write_bytes(saved[: len(saved) // 4])
+    if IS_WINDOWS:
+        # The Linux and macOS validators read the executable image, so a truncated
+        # binary is caught; Windows has no such preflight and the marker match checks
+        # that the executables exist. Damage the Windows validator detects.
+        victim.unlink()
+    else:
+        victim.write_bytes(saved[: len(saved) // 4])
     try:
         run = run_update(directory, "fault-llama", local = True)
         assert run.rc == 0, run.log[-8000:]
@@ -831,6 +886,7 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
         else tuple(host for host in PAYLOAD_HOSTS if host != "files.pythonhosted.org")
     )
     for host in payload_hosts:
+        assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
     assert run.bytes_from("raw.githubusercontent.com") <= ICON_FETCH_CEILING, run.report()
     # "dependencies up to date" is setup.sh's fast-path line, and the fast path is

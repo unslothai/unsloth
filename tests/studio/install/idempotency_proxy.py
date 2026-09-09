@@ -59,6 +59,13 @@ class Proxy:
         self.refuse = refuse
         self.deny_hosts = tuple(h.strip().lower() for h in deny_hosts if h.strip())
         self.lock = threading.Lock()
+        # Workers between accept and their journal record. Published to a sibling file so
+        # the harness can tell "the journal is quiet" from "nothing is left to journal":
+        # a worker blocked in the upstream connect has written nothing yet, and a proxy
+        # terminated at that moment loses the very connection the harness exists to see.
+        self.active = 0
+        self.active_path = log_path + ".active"
+        self._publish_active()
         self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port))
@@ -91,6 +98,18 @@ class Proxy:
             with open(self.log_path, "a") as fh:
                 fh.write(line + "\n")
                 fh.flush()
+
+    def _publish_active(self) -> None:
+        # Whole file, then rename: the reader must never see a half-written count.
+        tmp = self.active_path + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write(str(self.active))
+        os.replace(tmp, self.active_path)
+
+    def _adjust_active(self, delta: int) -> None:
+        with self.lock:
+            self.active += delta
+            self._publish_active()
 
     def serve(self) -> None:
         while True:
@@ -126,6 +145,13 @@ class Proxy:
         }
 
     def handle(self, conn: socket.socket) -> None:
+        self._adjust_active(+1)
+        try:
+            self._handle(conn)
+        finally:
+            self._adjust_active(-1)
+
+    def _handle(self, conn: socket.socket) -> None:
         t0 = _now()
         host = port = None
         method = "?"
