@@ -3258,10 +3258,40 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
         marker, floor = floor, python = str(python), cache_dir = cache_dir
     ):
         return env
+    # And not behind what is installed: `unsloth studio setup` or a manual upgrade can
+    # move the core packages past a plan left behind, and the offline retry given the
+    # old exact pins would downgrade them and call the update done.
+    installed = {
+        name: _installed_version_in(python, name) for name in ("unsloth", "unsloth-zoo")
+    }
+    if not _studio_prefetch.plan_is_not_behind(marker, installed):
+        return env
     pins = _studio_prefetch.prefetched_core_pins(marker)
     if not pins:
         return env
     return {**(env or os.environ), _studio_prefetch.CORE_PINS_ENV: " ".join(pins)}
+
+
+def _installed_version_in(python: Path, name: str) -> Optional[str]:
+    """The version of *name* in the managed venv, read without importing it here."""
+    try:
+        result = subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import importlib.metadata as m, sys; print(m.version(sys.argv[1]))",
+                name,
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:

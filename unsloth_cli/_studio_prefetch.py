@@ -610,12 +610,39 @@ def marker_is_current(
         return False
     if floor:
         backend = marker.get("backend_version")
-        if marker.get("state") == "noop":
-            # Nothing was planned, so the floor has to be met by what is installed.
-            backend = marker.get("installed_backend_version") or backend
+        if not isinstance(backend, str) or not backend:
+            # No unsloth in the plan (nothing planned, or a zoo-only bump): the floor
+            # has to be met by the unsloth that is installed and stays.
+            backend = marker.get("installed_backend_version")
         if not isinstance(backend, str) or not version_meets_floor(backend, floor):
             return False
     return True
+
+
+def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str]]) -> bool:
+    """Whether every core pin a marker planned is at least what is installed now.
+
+    A marker outlives the install it was made for: `unsloth studio setup` or a manual
+    upgrade can move the core packages past the plan, and an offline retry given the
+    old exact pins would downgrade them and call the update done. Unknown installed
+    versions do not count against the plan.
+    """
+    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
+    if not isinstance(plan, dict):
+        return True
+    for name, version in plan.items():
+        if not isinstance(name, str) or not isinstance(version, str):
+            continue
+        current = installed.get(_canonical_name(name))
+        if not current:
+            continue
+        if _release_tuple(version.strip()) < _release_tuple(current.strip()):
+            return False
+    return True
+
+
+def _canonical_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
 
 
 # ── Discard ──
@@ -644,10 +671,17 @@ def discard_after_update(studio_home: Path) -> bool:
     """Called once an update has succeeded: the cache is warm, the copy is spent.
 
     Never raises. A prefetch left behind costs disk, not correctness, and the
-    next prefetch wipes it anyway.
+    next prefetch wipes it anyway. Taken under the prefetch lock, non-blocking: a
+    prefetch that is running right now (it does not hold the runtime gate the update
+    holds) would otherwise have its owned root removed under it and recreate the
+    directory without the owned marker, after which every later prefetch and discard
+    refuses it. A running prefetch keeps its directory; it is spent all the same.
     """
     try:
-        return discard(studio_home)
+        with prefetch_lock(studio_home):
+            return discard(studio_home)
+    except PrefetchBusy:
+        return False
     except Exception:
         return False
 

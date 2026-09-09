@@ -15,6 +15,8 @@ interface HarnessOptions {
   bundleReady?: boolean;
   /** Hold `start_backend_update` open until this resolves. */
   holdUpdate?: () => Promise<void>;
+  /** The first start_backend_update fails, as an update that broke midway does. */
+  failUpdateOnce?: boolean;
 }
 
 interface Controller {
@@ -94,11 +96,17 @@ function createHookReact() {
  */
 function harness(
   t: TestContext,
-  { outcome = "ready", bundleReady = false, holdUpdate }: HarnessOptions = {},
+  {
+    outcome = "ready",
+    bundleReady = false,
+    holdUpdate,
+    failUpdateOnce = false,
+  }: HarnessOptions = {},
 ) {
   const host = createHookReact();
   const calls: string[] = [];
   let downloaded = bundleReady;
+  let failedOnce = false;
   const listeners = new Map<string, (event: { payload: unknown }) => void>();
 
   const updater = {
@@ -181,6 +189,12 @@ function harness(
             // synchronously would emit into nothing and park the update forever.
             await settleUntil(() => listeners.has("update-complete"));
             if (holdUpdate) await holdUpdate();
+            if (failUpdateOnce && !failedOnce) {
+              failedOnce = true;
+              await settleUntil(() => listeners.has("update-failed"));
+              listeners.get("update-failed")?.({ payload: "the backend update broke" });
+              return undefined;
+            }
             listeners.get("update-complete")?.({ payload: undefined });
             return undefined;
           }
@@ -340,4 +354,35 @@ test("a check already in flight cannot reopen the offer mid-install", async (t) 
 
   release();
   await restart;
+});
+
+test("a retained failure's retry installs instead of preparing again", async (t) => {
+  // After a failed install the banner keeps offering "Retry update", and a scheduled
+  // check re-offering the same version puts the status back to "available". That
+  // click is a retry, not a first press: preparing on it would do nothing visible
+  // and demand a second click once the preparation finished.
+  const hook = harness(t, { failUpdateOnce: true });
+  await hook.controller.checkForUpdate();
+  await settle();
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "error");
+  const installs = () => hook.calls.filter((c) => c === "start_backend_update").length;
+  assert.equal(installs(), 1);
+
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+  const prefetches = hook.calls.filter((c) => c === "start_prefetch_update").length;
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(installs(), 2);
+  assert.equal(hook.calls.filter((c) => c === "start_prefetch_update").length, prefetches);
 });

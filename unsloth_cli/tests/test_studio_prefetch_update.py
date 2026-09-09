@@ -1155,3 +1155,41 @@ def test_every_uv_call_runs_from_the_directory_the_update_runs_from(tmp_path, mo
         _studio_prefetch._run(["uv", "--version"], None)
     _studio_prefetch._run(["uv", "--version"], None)
     assert seen == [str(tmp_path), None]
+
+
+def test_a_zoo_only_marker_meets_the_floor_through_the_installed_unsloth():
+    """A zoo-only bump records no backend_version; the unsloth that stays installed is
+    what the floor has to be met by, as for a noop, or the cached zoo pin is withheld and
+    an offline restart fails with the wheel in the cache."""
+    marker = {
+        "schema": _studio_prefetch.MARKER_SCHEMA,
+        "state": "ready",
+        "backend_version": None,
+        "installed_backend_version": "2026.9.1",
+        "core_plan": {"unsloth-zoo": "2026.9.5"},
+    }
+    assert _studio_prefetch.marker_is_current(marker, floor = "2026.9.1") is True
+    assert _studio_prefetch.marker_is_current(marker, floor = "2026.9.2") is False
+
+
+def test_a_plan_behind_the_installed_core_is_not_handed_to_the_offline_retry():
+    marker = {"core_plan": {"unsloth": "2026.9.3", "unsloth_zoo": "2026.9.5"}}
+    assert _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.5"})
+    assert _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.1", "unsloth-zoo": None})
+    # setup or a manual upgrade moved unsloth past the plan: the old pin would downgrade it.
+    assert not _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.4", "unsloth-zoo": "2026.9.5"})
+    assert not _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.6"})
+    assert _studio_prefetch.plan_is_not_behind({"state": "noop"}, {"unsloth": "2026.9.9"})
+
+
+def test_a_successful_update_leaves_a_running_prefetchs_directory_alone(managed):
+    """The update does not hold the prefetch lock; a prefetch running beside it would
+    have its owned root removed under it and recreate the directory unowned."""
+    root = _studio_prefetch.prefetch_root(managed)
+    root.mkdir(parents = True, exist_ok = True)
+    (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
+    with _studio_prefetch.prefetch_lock(managed):
+        assert _studio_prefetch.discard_after_update(managed) is False
+        assert root.is_dir()
+    assert _studio_prefetch.discard_after_update(managed) is True
+    assert not root.exists()

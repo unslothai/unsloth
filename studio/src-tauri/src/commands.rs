@@ -851,7 +851,11 @@ pub async fn start_prefetch_update(
     }
     // Claimed under the same start lock the update takes, so neither can slip between
     // the other's check and its reservation. Owned by the runner for the whole prefetch.
-    let reservation = update::begin_prefetch(prefetch_state.inner(), update_state.inner())?;
+    let reservation = update::begin_prefetch(
+        prefetch_state.inner(),
+        update_state.inner(),
+        shell_version.clone(),
+    )?;
 
     let state = prefetch_state.inner().clone();
     tokio::task::spawn_blocking(move || {
@@ -888,13 +892,10 @@ pub fn prefetch_status(
 pub fn discard_prefetch(
     prefetch_state: tauri::State<'_, update::PrefetchState>,
 ) -> Result<(), String> {
-    // Stop first: deleting the directory a running prefetch is writing into
-    // leaves it recreating what this call is removing.
-    if update::is_prefetch_running(&prefetch_state) {
-        update::stop_prefetch(&prefetch_state)?;
-    }
-    prefetch::discard(&diagnostics::studio_dir());
-    Ok(())
+    // Stop first, and under the start lock: deleting the directory a running prefetch
+    // is writing into leaves it recreating what this call is removing, and a prefetch
+    // reserving its slot between the check and the deletion would do the same.
+    update::discard_prefetch(&prefetch_state, &diagnostics::studio_dir())
 }
 
 /// Repair a stale managed Unsloth install.

@@ -74,8 +74,35 @@ pub fn begin_update(
         if let Err(error) = stop_prefetch(prefetch_state) {
             warn!("Could not stop the background prefetch: {error}");
         }
+        // A reservation whose runner has not spawned is cancelled by the flag and
+        // releases itself; a runner still inside its body after the stop (a kill that
+        // failed, a wedged join) is a prefetch that may still be writing the cache the
+        // update is about to read, so the update does not start beside it.
+        if prefetch_runner_active(prefetch_state) {
+            return Err(
+                "A background prefetch is still stopping; try the update again in a moment."
+                    .to_string(),
+            );
+        }
     }
     Ok(reservation)
+}
+
+/// Stop a running prefetch and remove its directory, atomically with respect to
+/// `begin_prefetch`: a prefetch cannot reserve its slot between the stop and the
+/// deletion, so it cannot be recreating the directory this is removing.
+pub fn discard_prefetch(
+    prefetch_state: &PrefetchState,
+    home: &std::path::Path,
+) -> Result<(), String> {
+    let _starts = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if is_prefetch_running(prefetch_state) {
+        stop_prefetch(prefetch_state)?;
+    }
+    crate::prefetch::discard(home);
+    Ok(())
 }
 
 /// Reserve the prefetch slot unless an update is running or starting, atomically with
@@ -84,7 +111,8 @@ pub fn begin_update(
 pub fn begin_prefetch(
     prefetch_state: &PrefetchState,
     update_state: &UpdateState,
-) -> Result<UpdateStartReservation, String> {
+    shell_version: Option<String>,
+) -> Result<PrefetchReservation, String> {
     let _starts = START_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -100,7 +128,31 @@ pub fn begin_prefetch(
         reserve_update_start(&prefetch_state.process).map_err(|_| PREFETCH_BUSY.to_string())?;
     // A fresh reservation starts clean; a cancel belongs to the run it interrupted.
     prefetch_state.cancelled.store(false, Ordering::SeqCst);
-    Ok(reservation)
+    // Published with the reservation and cleared when it is released, so there is no
+    // window where the status says a prefetch is running and cannot say what for. A
+    // reader that saw that window would take the run for an older offer's and cancel it.
+    if let Ok(mut running) = prefetch_state.running_version.lock() {
+        *running = shell_version;
+    }
+    Ok(PrefetchReservation {
+        _slot: reservation,
+        running_version: prefetch_state.running_version.clone(),
+    })
+}
+
+/// The prefetch slot plus the version it is preparing for, held by the runner for the
+/// whole prefetch; dropping it releases the slot and clears the version together.
+pub struct PrefetchReservation {
+    _slot: UpdateStartReservation,
+    running_version: Arc<Mutex<Option<String>>>,
+}
+
+impl Drop for PrefetchReservation {
+    fn drop(&mut self) {
+        if let Ok(mut running) = self.running_version.lock() {
+            *running = None;
+        }
+    }
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -821,21 +873,11 @@ pub(crate) fn run_prefetch_update(
         let Some(runner) = PrefetchRunnerGuard::acquire(&state.runner) else {
             return Err(PREFETCH_BUSY.to_string());
         };
-        // Recorded BEFORE the spawn, and cleared on every way out, so there is no window
-        // where the status says a prefetch is running and cannot say what for. A reader
-        // that saw that window would read the run it just started as one for an older
-        // offer, and cancel it.
-        if let Ok(mut running) = state.running_version.lock() {
-            *running = shell_version;
-        }
+        // The version this run prepares for is published by the reservation the caller
+        // holds (begin_prefetch), not here, so it is visible for the whole interval.
         match spawn_prefetch(&bin, &state.process, &kind) {
             Ok((stdout, stderr)) => (runner, stdout, stderr),
-            Err(msg) => {
-                if let Ok(mut running) = state.running_version.lock() {
-                    *running = None;
-                }
-                return Err(format!("spawn_prefetch: {msg}"));
-            }
+            Err(msg) => return Err(format!("spawn_prefetch: {msg}")),
         }
     };
     // A cancel that took the (still empty) child slot before the spawn above found
@@ -849,9 +891,6 @@ pub(crate) fn run_prefetch_update(
     let result = wait_for_exit(&state.process);
     for handle in threads {
         let _ = handle.join();
-    }
-    if let Ok(mut running) = state.running_version.lock() {
-        *running = None;
     }
     // Read only after both readers are joined, so the last line still counts.
     let outcome = outcome
@@ -1021,19 +1060,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_prefetch_version_is_visible_for_the_whole_reservation() {
+        let prefetch = new_prefetch_state();
+        let update = new_update_state();
+        let held = begin_prefetch(&prefetch, &update, Some("0.1.900".to_string()))
+            .expect("the slot was free");
+        assert!(is_prefetch_running(&prefetch));
+        assert_eq!(
+            running_prefetch_version(&prefetch).as_deref(),
+            Some("0.1.900")
+        );
+        drop(held);
+        assert!(!is_prefetch_running(&prefetch));
+        assert_eq!(running_prefetch_version(&prefetch), None);
+    }
+
+    #[test]
     fn an_update_arriving_while_a_prefetch_is_only_reserved_cancels_it() {
         // Between begin_prefetch and the runner's spawn there is no child and no runner:
         // the stop must still reach the runner, which checks the flag before it spawns.
         let prefetch = new_prefetch_state();
         let update = new_update_state();
-        let reservation = begin_prefetch(&prefetch, &update).expect("the slot was free");
+        let reservation = begin_prefetch(&prefetch, &update, None).expect("the slot was free");
         assert!(is_prefetch_running(&prefetch));
         let held = begin_update(&update, &prefetch).expect("the update starts");
         assert!(prefetch.cancelled.load(Ordering::SeqCst));
         drop(held);
         drop(reservation);
         // A fresh reservation starts clean.
-        let _again = begin_prefetch(&prefetch, &update).expect("free again");
+        let _again = begin_prefetch(&prefetch, &update, None).expect("free again");
         assert!(!prefetch.cancelled.load(Ordering::SeqCst));
     }
     use std::io::Cursor;
@@ -1059,13 +1114,13 @@ mod tests {
         let prefetch = new_prefetch_state();
         let held = begin_update(&update, &prefetch).expect("nothing running");
         assert_eq!(
-            begin_prefetch(&prefetch, &update).err().as_deref(),
+            begin_prefetch(&prefetch, &update, None).err().as_deref(),
             Some("Update is already running.")
         );
         drop(held);
-        let held = begin_prefetch(&prefetch, &update).expect("update released");
+        let held = begin_prefetch(&prefetch, &update, None).expect("update released");
         assert!(is_prefetch_running(&prefetch));
-        assert!(begin_prefetch(&prefetch, &update).is_err());
+        assert!(begin_prefetch(&prefetch, &update, None).is_err());
         // The update wins: it stops the prefetch (nothing to stop here) and reserves.
         let update_held = begin_update(&update, &prefetch).expect("update outranks a prefetch");
         assert!(is_update_running(&update));

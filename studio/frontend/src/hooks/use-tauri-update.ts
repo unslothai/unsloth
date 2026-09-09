@@ -146,7 +146,14 @@ export function useTauriUpdate(isExternalServer = false) {
   const phaseRef = useRef<UpdatePhase | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
+  const [lastFailure, setLastFailureState] = useState<RetainedUpdateFailure | null>(null);
+  // Mirrored in a ref: installUpdate reads it in the same tick as a click, and a
+  // retained failure decides whether that click prepares or installs.
+  const lastFailureRef = useRef<RetainedUpdateFailure | null>(null);
+  function setLastFailure(next: RetainedUpdateFailure | null) {
+    lastFailureRef.current = next;
+    setLastFailureState(next);
+  }
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
   const [preparation, setPreparation] = useState<UpdatePreparation>(INITIAL_PREPARATION);
   const preparationRef = useRef<UpdatePreparation>(INITIAL_PREPARATION);
@@ -658,9 +665,12 @@ export function useTauriUpdate(isExternalServer = false) {
 
       const update = updateRef.current;
       if (!update) return;
-      if (statusRef.current === "available") {
+      if (statusRef.current === "available" && !lastFailureRef.current) {
         // First press: fetch in the background and leave the app running. The
-        // offer becomes "Restart", which is the press that installs.
+        // offer becomes "Restart", which is the press that installs. A retained
+        // failure's "Retry update" is not a first press: the banner keeps showing
+        // the retry while a failure is retained, so preparing here would make that
+        // click do nothing visible and demand a second one after the preparation.
         void prepareUpdate(update.version);
         return;
       }
