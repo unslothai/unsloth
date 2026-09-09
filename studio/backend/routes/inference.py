@@ -12961,6 +12961,8 @@ def _resolve_gguf_load_intent(
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -12992,6 +12994,8 @@ def _resolve_gguf_load_intent(
                 )
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
@@ -13888,26 +13892,49 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
     """The previous same-model load's pass-through extras, which
     ``_resolve_inherited_extra_args`` carries into a request that omits the field. The
     Spark orchestrator reads them so a ``--spec-type`` the caller owns there is left
-    alone rather than shadowed by the first-class field it would otherwise set."""
+    alone rather than shadowed by the first-class field it would otherwise set.
+
+    This runs BEFORE anything is resolved, so it cannot compare against the resolved identifier
+    ``extra_args_source`` holds: that would put a repo id on one side and a resolved cache
+    filename on the other, and no string test is right across two namespaces. It used to try,
+    with a substring fallback, and the fallback is what made ``org/qwen-7b`` inherit the extras
+    of ``org/qwen-7b-instruct`` -- carrying that model's ``--lora``, ``--mmproj`` or
+    ``--model-draft`` onto a different model. Tightening the fallback was not possible either:
+    ``-`` is a separator inside model names, so nothing distinguishes that pair from the
+    hub-id-against-resolved-stem case the fallback existed to serve.
+
+    So the comparison is now same-namespace and exact, against the identity the CALLER asked
+    for, which ``extra_args_requested_source`` records in the same commit as the resolved one.
+    Requested against requested needs no heuristic. On a layer split this matters more than it
+    looks: ``_with_rpc_args`` materialises ``llama_extra_args``, and a non-None field makes
+    ``_resolve_inherited_extra_args`` skip inheritance, so this is the only path by which extras
+    reach a split launch and the strict resolver never gets a second opinion."""
     if getattr(request, "llama_extra_args", None) is not None:
         return None
     try:
         llama_backend = get_llama_cpp_backend()
         stored = getattr(llama_backend, "extra_args", None)
-        source = getattr(llama_backend, "extra_args_source", None)
+        source = getattr(llama_backend, "extra_args_requested_source", None)
     except Exception:
         return None
     if not stored:
         return None
+    if not source or not source[0]:
+        # Extras recorded before this identity was tracked, or by a path that does not set it.
+        # Nothing to compare against, and guessing is what this replaced.
+        return None
     requested = str(getattr(request, "model_path", "") or "").strip().lower()
-    stored_id = str(source[0] if source and source[0] else "").strip().lower()
-    if stored_id and requested and stored_id != requested:
-        # The stored identifier is the RESOLVED one, so a plain mismatch is not proof of
-        # another model but a shared stem is. Handing the extras over wrongly costs one
-        # load's draft depth; missing them could shadow a --spec-type the caller set.
-        a, b = Path(requested).stem, Path(stored_id).stem
-        if a != b and a not in stored_id and b not in requested:
-            return None
+    stored_id = str(source[0] or "").strip().lower()
+    if not requested or requested != stored_id:
+        return None
+    # The variant is part of the identity, not a detail: two quants of one repo are different
+    # files with different sidecars. ``_resolve_inherited_extra_args`` has always compared it;
+    # this function read only ``source[0]`` and dropped it, which is the same question answered
+    # two ways by two functions.
+    if str(getattr(request, "gguf_variant", "") or "").strip().lower() != str(
+        source[1] or ""
+    ).strip().lower():
+        return None
     return list(stored)
 
 

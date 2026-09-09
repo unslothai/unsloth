@@ -511,6 +511,12 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # What the CALLER asked for, kept beside the resolved identifier above rather than derived
+    # from it. The two live in different namespaces -- a repo id on one side, a resolved cache
+    # filename on the other -- and no string test is right across that gap, so the only way to
+    # compare safely is to compare requested against requested.
+    requested_identifier: Optional[str] = None
+    requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
@@ -6467,6 +6473,7 @@ class LlamaCppBackend:
         # compare requested-vs-requested like _requested_n_ctx does.
         self._requested_extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
+        self._extra_args_requested_source: Optional[tuple[Optional[str], Optional[str]]] = None
         self._requested_n_ctx: int = 0
         # Last healthy caller intent for crash recovery. Memory-only and never logged.
         self._last_load_intent: Optional[GgufLoadIntent] = None
@@ -6747,6 +6754,15 @@ class LlamaCppBackend:
         ``None`` if no extras have ever been recorded. Used by the route
         to refuse cross-model inheritance (#5401)."""
         return self._extra_args_source
+
+    @property
+    def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what
+        the caller typed rather than what it resolved to. Recorded in the same commit as
+        ``extra_args_source`` so the pair cannot disagree. The Spark path compares this against
+        the incoming request, which is the only same-namespace comparison available before the
+        load has resolved anything."""
+        return self._extra_args_requested_source
 
     @property
     def context_length(self) -> Optional[int]:
@@ -25680,6 +25696,10 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
+                    self._extra_args_requested_source = (
+                        intent.requested_identifier,
+                        intent.requested_variant,
+                    )
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
