@@ -82,6 +82,17 @@ _HEAD_LIMIT = 64 * 1024
 _BODY_LIMIT = 256 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
 
+def _is_event_stream(headers: Any) -> bool:
+    """Whether the upstream headers promised an SSE body.
+
+    Only a reader of ``text/event-stream`` can be told anything in-band once the headers are
+    out; everything else in the routed set is JSON, where an extra frame is corruption."""
+    for name, value in headers or ():
+        if str(name).lower() == "content-type":
+            return "text/event-stream" in str(value).lower()
+    return False
+
+
 _REASONS = {
     200: "OK",
     400: "Bad Request",
@@ -659,6 +670,13 @@ class SparkRouter:
         request = client.build_request(method, path, headers = upstream_headers, content = body)
         try:
             response = await client.send(request, stream = True)
+        except asyncio.CancelledError:
+            # The caller gave up while this was pending, which for a non-streaming call can be
+            # the whole generation. The slot is already taken and nothing downstream will
+            # return it, so give it back here.
+            if admitted:
+                await self._release(backend)
+            raise
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
             if admitted:
                 await self._release(backend)
@@ -788,19 +806,21 @@ class SparkRouter:
                 return False
             body = await reader.readexactly(length) if length else b""
         elif "chunked" in headers.get("transfer-encoding", "").lower():
-            body = await self._read_chunked(reader)
+            try:
+                body = await self._read_chunked(reader)
+            except asyncio.LimitOverrunError:
+                # The same body over the limit, said the other way. Uncaught, this reached
+                # _serve_connection's connection-level handler and the socket closed with no
+                # response at all, while the Content-Length form got a 413.
+                await self._write_error(writer, 413, "request body too large")
+                return False
 
-        try:
-            routed = await self.dispatch(method, path, headers, body)
-        except UpstreamUnreachable as exc:
-            logger.warning("spark router: %s", exc.message)
-            return False
-        except RouterError as exc:
-            await self._write_error(writer, exc.status, exc.message, retry_after = exc.retry_after)
-            return not client_wants_close
-
-        # A disconnect during a long prefill has to tear the upstream stream down, or
-        # llama-server keeps decoding for a request nobody is reading.
+        # A disconnect has to tear the upstream stream down, or llama-server keeps decoding
+        # for a request nobody is reading. The watcher starts BEFORE dispatch, not after it:
+        # dispatch can sit in the admission queue for the whole queue wait, and for a
+        # non-streaming call llama-server may send no headers at all until the generation is
+        # finished, so a caller can give up inside either wait. Watching only afterwards left
+        # the request queued, forwarded and prefilled for a client that was already gone.
         disconnected = asyncio.Event()
         pipelined = asyncio.Event()
 
@@ -816,14 +836,48 @@ class SparkRouter:
 
         watcher = asyncio.create_task(_watch())
         try:
-            await self._relay(routed, writer, method, disconnected)
+            dispatching = asyncio.ensure_future(self.dispatch(method, path, headers, body))
+            gone = asyncio.ensure_future(disconnected.wait())
+            try:
+                await asyncio.wait(
+                    {dispatching, gone}, return_when = asyncio.FIRST_COMPLETED
+                )
+            finally:
+                gone.cancel()
+                try:
+                    await gone
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if not dispatching.done():
+                dispatching.cancel()
+                try:
+                    abandoned = await dispatching
+                except (asyncio.CancelledError, Exception):
+                    abandoned = None
+                if abandoned is not None:
+                    # It got as far as upstream headers before the cancellation landed.
+                    await abandoned.close()
+                return False
+            try:
+                routed = dispatching.result()
+            except UpstreamUnreachable as exc:
+                logger.warning("spark router: %s", exc.message)
+                return False
+            except RouterError as exc:
+                await self._write_error(
+                    writer, exc.status, exc.message, retry_after = exc.retry_after
+                )
+                return not client_wants_close
+            try:
+                await self._relay(routed, writer, method, disconnected)
+            finally:
+                await routed.close()
         finally:
             watcher.cancel()
             try:
                 await watcher
             except (asyncio.CancelledError, Exception):
                 pass
-            await routed.close()
         if disconnected.is_set() or pipelined.is_set():
             # A byte mid-response belongs to a pipelined request whose first byte the watcher
             # consumed; close so the client resends it.
@@ -865,12 +919,23 @@ class SparkRouter:
                 except StopAsyncIteration:
                     break
                 except httpx.HTTPError as exc:
-                    # Upstream died after the headers went out: tell the client in-band in the
-                    # shape llama-server uses, then end the chunked body cleanly.
+                    # Upstream died after the headers went out, so the status is already sent
+                    # and cannot be taken back.
                     message = (
                         f"Lost connection to llama-server on {routed.backend.name} mid-response "
                         f"({type(exc).__name__}); the request cannot be resumed."
                     )
+                    if not _is_event_stream(routed.headers):
+                        # The headers promised JSON, and the routed set includes non-streaming
+                        # chat and completions, embeddings and reranking. An SSE frame in that
+                        # body is not a message the client can read, and ending the chunked
+                        # body cleanly afterwards would present truncated JSON as a complete
+                        # 200. Leaving the terminating chunk off is the only in-protocol way to
+                        # say the response is incomplete: the client sees the transfer fail.
+                        logger.warning("spark router: %s", message)
+                        raise
+                    # SSE: llama-server reports its own mid-stream errors as an error frame,
+                    # so a reader that already parses the stream reads this one too.
                     frame = (
                         "data: "
                         + json.dumps(

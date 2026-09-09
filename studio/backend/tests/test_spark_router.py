@@ -434,3 +434,116 @@ def test_prefix_key_does_not_join_the_whole_embedding_batch():
     # and the single-element and empty cases
     assert sr._join_to_limit(["a", "b"]) == "a b"
     assert sr._join_to_limit([]) == ""
+
+
+def test_a_json_response_that_dies_mid_body_fails_the_transfer_instead_of_looking_complete():
+    # /v1/embeddings, /completion and chat with stream false all answer in JSON. An SSE error
+    # frame appended to one of those is not a message the client can read, and ending the
+    # chunked body cleanly after it presents truncated JSON as a complete 200.
+    async def scenario():
+        b = await FakeLlama(
+            "b", chunks = 6, die_after = 2, content_type = "application/json"
+        ).start()
+        router = await _router(b)
+        try:
+            async with httpx.AsyncClient(timeout = 10) as client:
+                with pytest.raises(httpx.HTTPError):
+                    response = await client.post(
+                        f"{router.base_url}/v1/chat/completions", json = {"prompt": "x"}
+                    )
+                    response.read()
+        finally:
+            await router.stop()
+            await b.stop()
+
+    run(scenario())
+
+
+def test_an_sse_response_that_dies_mid_stream_still_gets_the_in_band_error():
+    # The other half of the same choice: a reader of text/event-stream can be told in-band,
+    # and llama-server reports its own mid-stream errors the same way.
+    async def scenario():
+        b = await FakeLlama("b", chunks = 6, die_after = 2).start()
+        router = await _router(b)
+        try:
+            async with httpx.AsyncClient(timeout = 10) as client:
+                frames = await _chat(client, router.base_url, {"prompt": "x"})
+                assert frames[:2] == ["b-0", "b-1"]
+                assert len(frames) == 3 and frames[2].startswith("error:")
+        finally:
+            await router.stop()
+            await b.stop()
+
+    run(scenario())
+
+
+def test_an_oversized_chunked_body_gets_the_same_413_as_content_length(monkeypatch):
+    # Uncaught, the limit reached _serve_connection's connection-level handler and the socket
+    # closed with no response at all, while the Content-Length form got a 413.
+    monkeypatch.setattr(sr, "_BODY_LIMIT", 1024)
+
+    async def scenario():
+        a = await FakeLlama("a").start()
+        router = await _router(a)
+        try:
+            payload = b"x" * 4096
+            async with httpx.AsyncClient(timeout = 10) as client:
+
+                async def _chunks():
+                    yield payload
+
+                chunked = await client.post(
+                    f"{router.base_url}/v1/chat/completions", content = _chunks()
+                )
+                assert chunked.status_code == 413
+                sized = await client.post(
+                    f"{router.base_url}/v1/chat/completions", content = payload
+                )
+                assert sized.status_code == 413
+                assert a.generation_count == 0
+        finally:
+            await router.stop()
+            await a.stop()
+
+    run(scenario())
+
+
+def test_a_client_that_leaves_while_queued_gives_its_slot_back():
+    # dispatch waits in the admission queue, and for a non-streaming call llama-server may
+    # send no headers until the generation is finished. Watching for the disconnect only
+    # after dispatch returned left the request queued, forwarded and prefilled for nobody.
+    async def scenario():
+        hold = asyncio.Event()
+        a = await FakeLlama("a", hold = hold).start()
+        router = await _router(a, slots = 1)
+        try:
+            async with httpx.AsyncClient(timeout = 10) as holder:
+                first = asyncio.ensure_future(
+                    _chat(holder, router.base_url, {"prompt": "x"})
+                )
+                await _until(lambda: router.get_backend("a").in_flight == 1)
+
+                # Second caller queues behind it, then goes away before it is admitted.
+                leaver = httpx.AsyncClient(timeout = 10)
+                queued = asyncio.ensure_future(
+                    _chat(leaver, router.base_url, {"prompt": "y"})
+                )
+                await _until(lambda: router.get_backend("a").queued == 1)
+                queued.cancel()
+                try:
+                    await queued
+                except (asyncio.CancelledError, Exception):
+                    pass
+                await leaver.aclose()
+
+                await _until(lambda: router.get_backend("a").queued == 0)
+                hold.set()
+                await first
+                await _until(lambda: router.get_backend("a").in_flight == 0)
+                # The abandoned request never reached llama-server.
+                assert a.generation_count == 1
+        finally:
+            await router.stop()
+            await a.stop()
+
+    run(scenario())

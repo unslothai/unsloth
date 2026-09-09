@@ -5,7 +5,8 @@
 
 Speaks just enough HTTP/1.1 for ``httpx``, and tags its SSE frames with the server's name
 so a test can tell which backend served a request and in what order the frames arrived.
-``die_after`` aborts the socket mid-stream, ``hold`` parks every generation on an event so
+``content_type`` switches the generation between SSE and JSON, ``die_after`` aborts the
+socket mid-stream, ``hold`` parks every generation on an event so
 admission and queueing can be observed, and ``health_ok`` flips ``/health``.
 """
 
@@ -26,6 +27,7 @@ class FakeLlama:
         die_after: Optional[int] = None,
         hold: Optional[asyncio.Event] = None,
         health_ok: bool = True,
+        content_type: str = "text/event-stream",
     ):
         self.name = name
         self.chunks = chunks
@@ -33,6 +35,10 @@ class FakeLlama:
         self.die_after = die_after
         self.hold = hold
         self.health_ok = health_ok
+        # A generation is not always SSE: chat with stream false, /completion, embeddings
+        # and reranking all answer in JSON, and the router has to treat those differently
+        # when the body stops half way.
+        self.content_type = content_type
         self.served: List[Tuple[str, Dict[str, Any], Dict[str, str]]] = []
         self.in_flight = 0
         self.port: Optional[int] = None
@@ -116,8 +122,10 @@ class FakeLlama:
             if self.hold is not None:
                 await self.hold.wait()
             writer.write(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-                b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                (
+                    f"HTTP/1.1 200 OK\r\nContent-Type: {self.content_type}\r\n"
+                    "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                ).encode("latin-1")
             )
             await writer.drain()
             for index in range(self.chunks):
