@@ -4,7 +4,7 @@
   "reviewed_packages": {
     "unsloth-zoo": {
       "version": "2026.9.3",
-      "note": "Re-reviewed compiler.py file_sha256 pin and mlx/loader.py obfuscation+exec evidence after #10521 bump (#10545). Matched compiler evidence unchanged; loader gained one mx.eval(baseline, perturbed) MLX materialize call."
+      "note": "Issue #10545 / #10521 bump. compiler.py: evidence_hash bdfae4c2 unchanged (82 spans identical); re-pinned file_sha256 5e14926a after whole-file review of distributed-cache/VL-compile/dtype-wrap edits outside matched lines. mlx/loader.py: unpinned; added one entry for new mx.eval(baseline, perturbed) span (MLX materialize, same class as other baselined mx.eval sites). No full --write-baseline."
     }
   },
   "entries": [

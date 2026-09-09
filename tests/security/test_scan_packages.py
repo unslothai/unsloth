@@ -445,11 +445,11 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
     turns it into a line-matched approval that a later payload in the same file
     would ride.
 
-    A (file, check) pair can hold several entries, one per revision of the matched
-    lines that a release has shipped. compiler.py already carries four. Three of them
-    are superseded and unpinned, and those are grandfathered by evidence hash below;
-    any variant added from here on has to be pinned, because an unpinned one
-    suppresses the finding whatever the file contains.
+    A (file, check) pair can hold several entries, one per reviewed release snapshot.
+    compiler.py currently carries five: three superseded unpinned variants grandfathered
+    by evidence hash below, plus two pinned digests that share evidence_hash
+    ``bdfae4c2…`` (2026.9.1 and 2026.9.2/9.3). Any variant added from here on has to
+    be pinned, because an unpinned one suppresses the finding whatever the file contains.
 
     It used to also duplicate each approved digest as a literal here, which pinned
     nothing extra (whoever edits the baseline can edit this file in the same commit)
@@ -2687,12 +2687,14 @@ def test_same_package_file_check_without_matching_evidence_stays_active(tmp_path
 
 
 def test_issue_10545_compiler_pin_reopens_on_file_change_and_suppresses_on_restore():
-    """The #10545 failure mode: same evidence, new file bytes, must reopen.
+    """#10545 compiler.py: evidence unchanged; only the file_sha256 pin reopens.
 
-    After the unsloth-zoo bump the matched compiler.py evidence stayed identical
-    (same evidence_hash) while surrounding distributed-cache / VL-compile code
-    moved the file digest. The pin is what forces re-review; this test locks that
-    the fix did not turn the baseline into a blanket package/file suppression.
+    Canonical matched evidence is byte-identical to the baselined ``bdfae4c2…``
+    entry (hash normalisation absorbs line shifts). The finding reopens because
+    this entry is digest-pinned for danger outside the matched lines, and
+    ``compiler.py`` changed elsewhere in 2026.9.2/9.3. Re-approval is a new pin
+    after a whole-file review, not a new evidence_hash. This test locks that the
+    fix did not turn the baseline into a blanket package/file suppression.
     """
     path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
     doc = json.loads(path.read_text(encoding = "utf-8"))
@@ -2755,7 +2757,12 @@ def test_issue_10545_compiler_pin_reopens_on_file_change_and_suppresses_on_resto
 
 
 def test_issue_10545_loader_evidence_change_reopens():
-    """mlx/loader.py must reopen when matched evidence gains a new span."""
+    """#10545 mlx/loader.py: unpinned; one new ``mx.eval(baseline, perturbed)`` span.
+
+    Unlike compiler.py, this file's reopen is genuine evidence drift. ``mx.eval``
+    is MLX lazy-array evaluation (same class as the other baselined ``mx.eval``
+    sites). A further unmatched span must still reopen.
+    """
     path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
     doc = json.loads(path.read_text(encoding = "utf-8"))
     current = next(
