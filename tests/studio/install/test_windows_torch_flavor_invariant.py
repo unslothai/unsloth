@@ -631,10 +631,20 @@ def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
     the index while the resident trio still satisfies its pins. The index a trio came
     from is recorded after each successful install and compared before the fast path."""
     text = _SETUP_PS1.read_text(encoding = "utf-8")
-    force = text.index("$_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd('/')")
+    force = text.index("$_recordedRocmIndex -ne $_rocmIndexIdentity")
     record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
     installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
     assert force < installed < record
+    # Recorded, compared and logged as a credential-free identity: a mirror URL can carry
+    # userinfo or a token, and the record and the reinstall message must carry neither.
+    record_line = text[record : text.index("\n", record)]
+    assert "Get-IndexIdentity $ROCmIndexUrl" in record_line
+    assert "$ROCmIndexUrl.TrimEnd" not in record_line
+    message = text.index("the ROCm trio was installed from $_recordedRocmIndex")
+    message_line = text[message : text.index("\n", message)]
+    assert "$ROCmIndexUrl" not in message_line
+    identity = text[text.index("function Get-IndexIdentity") : text.index("function Test-RocmGfx211Leaf")]
+    assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
     # The record follows the install, never precedes it: a failed trio must not be recorded.
     failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
     assert failed < record

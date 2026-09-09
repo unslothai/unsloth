@@ -911,6 +911,17 @@ function Redact-InstallOutput {
     return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
 }
 
+# A credential-free identity for an index URL: userinfo, query and fragment dropped, no
+# trailing slash. What is recorded beside the venv and compared across runs, so neither a
+# mirror credential nor a rotated token lands on disk or in the log.
+function Get-IndexIdentity {
+    param([string]$Url)
+    if (-not $Url) { return "" }
+    $Url = $Url -replace '(https?://)[^/@\s`]+@', '$1'
+    $Url = ($Url -split '[?#]', 2)[0]
+    return $Url.TrimEnd('/')
+}
+
 # _grouped_mm bug: these leaves need the torch 2.11 floor. Must match the other installers.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
@@ -5349,13 +5360,14 @@ if ($ROCmIndexUrl) {
     # that names another index, or no record at all (an install from before this was
     # kept), takes the reinstall the unconditional --force-reinstall used to give everyone.
     $script:RocmIndexRecord = Join-Path $VenvDir ".unsloth-rocm-index"
+    $_rocmIndexIdentity = Get-IndexIdentity $ROCmIndexUrl
     $_recordedRocmIndex = ""
     if (Test-Path -LiteralPath $script:RocmIndexRecord -PathType Leaf) {
-        try { $_recordedRocmIndex = (Get-Content -LiteralPath $script:RocmIndexRecord -Raw -ErrorAction Stop).Trim() } catch { $_recordedRocmIndex = "" }
+        try { $_recordedRocmIndex = Get-IndexIdentity ((Get-Content -LiteralPath $script:RocmIndexRecord -Raw -ErrorAction Stop).Trim()) } catch { $_recordedRocmIndex = "" }
     }
-    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd('/')) {
+    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $_recordedRocmIndex -ne $_rocmIndexIdentity) {
         if ($_recordedRocmIndex) {
-            substep "the ROCm trio was installed from $_recordedRocmIndex, this run selects $ROCmIndexUrl; reinstalling the trio" "Yellow"
+            substep "the ROCm trio was installed from $_recordedRocmIndex, this run selects $_rocmIndexIdentity; reinstalling the trio" "Yellow"
         } else {
             substep "no record of the index the ROCm trio came from; reinstalling the trio once to record it" "Yellow"
         }
@@ -5369,9 +5381,12 @@ if ($ROCmIndexUrl) {
         # three +rocm and the older community wheels carry a git hash, so both keep the
         # fast path. Bounded like the torch probe above, and find_spec does not import.
         # A companion whose dist-info remains while its package directory is gone reports
-        # as "payload missing": the pinned install would read the satisfying metadata and
-        # leave the payload unrestored. A probe that did not answer forces the trio too.
-        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import importlib.util as u, importlib.metadata as m; out = []`nfor n in ('torchvision', 'torchaudio'):`n    try:`n        v = m.version(n)`n    except m.PackageNotFoundError:`n        continue`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
+        # as "payload missing", and one whose RECORD names a file that is gone or has
+        # another size as "payload damaged": the pinned install would read the satisfying
+        # metadata and leave the payload unrestored, where the unconditional reinstall
+        # this replaced repaired it. Bytecode is left out (recompiled after install). A
+        # probe that did not answer forces the trio too.
+        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import importlib.util as u, importlib.metadata as m, os; out = []`nfor n in ('torchvision', 'torchaudio'):`n    try:`n        d = m.distribution(n)`n    except m.PackageNotFoundError:`n        continue`n    v = d.version`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    damaged = False`n    for f in (d.files or []):`n        if f.size is None or str(f).endswith('.pyc'):`n            continue`n        try:`n            damaged = os.stat(d.locate_file(f)).st_size != f.size`n        except OSError:`n            damaged = True`n        if damaged:`n            break`n    if damaged:`n        out.append(n + '==' + v + ' (payload damaged)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
         $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "probe did not answer" }
         if ($_companionMismatch) {
             substep "torchvision/torchaudio are not ROCm builds ($_companionMismatch); reinstalling the trio" "Yellow"
@@ -5407,7 +5422,7 @@ if ($ROCmIndexUrl) {
         # Recorded after the trio landed, so the next run can tell a changed architecture
         # family from an unchanged one (see $rocmForce above).
         try {
-            if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value $ROCmIndexUrl.TrimEnd('/') -Encoding ascii -NoNewline }
+            if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value (Get-IndexIdentity $ROCmIndexUrl) -Encoding ascii -NoNewline }
         } catch { }
         substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }

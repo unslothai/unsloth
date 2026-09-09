@@ -7904,6 +7904,24 @@ def _mlx_health_fingerprint() -> dict:
     }
 
 
+def _mlx_payload_present() -> bool:
+    """The MLX stack's top-level packages are on disk, found without importing them.
+
+    The recorded verdict below is keyed on pins and interpreter, which a payload deleted
+    or moved after the pass leaves unchanged; a package whose files are gone cannot be
+    the one the verdict describes.
+    """
+    try:
+        import importlib.util
+
+        return all(
+            importlib.util.find_spec(name) is not None
+            for name in ("mlx", "mlx_lm", "mlx_vlm", "transformers")
+        )
+    except Exception:  # noqa: BLE001 - not finding it is the probe's job to explain
+        return False
+
+
 def _report_mlx_stack_health(skipped: bool = False) -> None:
     """Name what would keep Train off on this Apple Silicon host, if anything.
 
@@ -7933,6 +7951,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         and recorded.get("pins") == fingerprint["pins"]
         and recorded.get("python") == fingerprint["python"]
         and recorded.get("mlx_vlm") == fingerprint["mlx_vlm"]
+        and _mlx_payload_present()
     ):
         _step("mlx", "training stack ready")
         # Written back so the record does not age out of the manifest this pass wrote.
@@ -8027,17 +8046,26 @@ def _closure_record() -> "dict[str, list[str]]":
         return record
     previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
     for key, req in _AUDITED_STEPS.items():
-        if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
-            record[key] = list(previous[key])
-            continue
         effective, temps = _effective_requirements(req)
         try:
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
         except Exception:  # noqa: BLE001 - nothing recorded means nothing ignored next time
-            unmet = []
+            unmet = ["<audit failed>"]
         finally:
             for temp in temps:
                 temp.unlink(missing_ok = True)
+        audited = not any(entry.startswith("<") for entry in unmet)
+        if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
+            # Narrowed to what is still unmet: an entry satisfied since it was recorded
+            # was not a conflict after all, and carrying it would let a later loss of
+            # that package hide behind the record. An audit that could not run keeps
+            # the record as it was.
+            carried = list(previous[key])
+            if audited:
+                carried = [entry for entry in carried if entry in unmet]
+            if carried:
+                record[key] = carried
+            continue
         unmet = [entry for entry in unmet if not entry.startswith("<")]
         if unmet:
             record[key] = unmet

@@ -1036,6 +1036,7 @@ def mlx(monkeypatch):
     )
     healthy = {**stack._mlx_health_fingerprint(), "ok": True}
     monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"mlx_health": healthy})
+    monkeypatch.setattr(stack, "_mlx_payload_present", lambda: True)
     return fake, steps, written, healthy
 
 
@@ -1046,6 +1047,16 @@ def test_a_recorded_healthy_stack_is_not_re_probed(mlx) -> None:
     assert steps == [("mlx", "training stack ready")]
     # Rewritten so the record does not age out of the manifest this pass just wrote.
     assert written and written[0]["ok"] is True
+
+
+def test_a_recorded_verdict_needs_the_payload_on_disk(mlx, monkeypatch) -> None:
+    """Pins and interpreter survive a payload deleted after the pass; the recorded verdict
+    does not describe a package whose files are gone, so the probe runs."""
+    fake, steps, _written, _ = mlx
+    monkeypatch.setattr(stack, "_mlx_payload_present", lambda: False)
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 1
+    assert steps != [("mlx", "training stack ready")]
 
 
 def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
@@ -1227,6 +1238,27 @@ def test_the_closure_record_never_carries_an_audit_failure(monkeypatch, gated) -
     monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
     stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.3.0"]}
     assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+
+def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:
+    """A skipped step carries its record, narrowed to what the closure still lacks: an
+    entry satisfied since it was recorded was no conflict, and keeping it would let a
+    later loss of that package pass as intentional."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.3.0", "mammoth"]}
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.3.0"]
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: [])
+    assert stack._closure_record() == {}
+    # A new unmet entry is not adopted by a skipped step: the step never ran for it.
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["numpy 1.0"]
+    )
+    assert stack._closure_record() == {}
 
 
 def test_the_closure_walk_follows_extras_and_survives_cycles(tmp_path) -> None:
