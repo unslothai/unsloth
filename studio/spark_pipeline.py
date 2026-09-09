@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import inspect
 import json
 import os
 import os.path as osp
@@ -44,11 +45,38 @@ _LAYER_CONTAINER_NAMES = ("layers", "h")
 
 
 def _first_attr(owner, names: Sequence[str]):
+    return _first_named(owner, names)[1]
+
+
+def _first_named(owner, names: Sequence[str]):
     for name in names:
         found = getattr(owner, name, None)
         if found is not None:
-            return found
-    return None
+            return name, found
+    return None, None
+
+
+def _forward_params(module) -> set:
+    """Parameter names of a module's `forward`, empty when it cannot be introspected."""
+    try:
+        return set(inspect.signature(type(module).forward).parameters)
+    except (TypeError, ValueError):
+        return set()
+
+
+def _unrun_parameters(owner, run_names: Sequence[str]) -> list[str]:
+    """Direct children of the decoder stack that carry weights and that a stage never runs.
+
+    A stage runs the token embedding, the decoder layers, the rotary helper, the final
+    normalisation and the head, and nothing else. Anything else with parameters is part of the
+    forward pass that would simply be skipped, which does not raise: it trains and saves a model
+    that is not the one on disk. Checking the children rather than a list of architecture names
+    keeps this honest for models nobody has tried yet."""
+    kept = set(run_names)
+    return [
+        name for name, child in owner.named_children()
+        if name not in kept and any(p.numel() for p in child.parameters(recurse = True))
+    ]
 
 
 def _resolve(root, path: Sequence[str]):
@@ -1012,7 +1040,7 @@ def stage_module_cls():
             super().__init__()
             self.is_first, self.is_last = bool(is_first), bool(is_last)
             self.grad_checkpoint = bool(grad_checkpoint)
-            container = _first_attr(owner, _LAYER_CONTAINER_NAMES)
+            container_name, container = _first_named(owner, _LAYER_CONTAINER_NAMES)
             if container is None:
                 raise RuntimeError(
                     f"no decoder layer container on {type(owner).__name__}; tried "
@@ -1020,6 +1048,32 @@ def stage_module_cls():
                 )
             self.layers = torch.nn.ModuleList([container[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
+            # How a block wants its rope tables is read off its own signature, because it is not
+            # one shape. Llama takes a single `position_embeddings`. Gemma 3 needs one table per
+            # attention type and expresses that two different ways across transformers releases:
+            # 5.x passes one table and a `layer_type` to select it, 4.57 passes
+            # `position_embeddings_global` and `position_embeddings_local` as separate arguments.
+            # A model with no such parameter, ALiBi being the usual one, gets none.
+            self.position_params = _forward_params(self.layers[0]) if len(self.layers) else set()
+            self.position_params = sorted(
+                p for p in self.position_params if p.startswith("position_embeddings")
+            )
+            self.rotary_for = {}
+            for name in self.position_params:
+                suffix = name[len("position_embeddings"):].lstrip("_")
+                found = self.rotary_emb if suffix in ("", "global") else getattr(
+                    owner, f"rotary_emb_{suffix}", None
+                )
+                self.rotary_for[name] = self.rotary_emb if found is None else found
+            self.rotary_wants_layer_type = self.rotary_emb is not None and (
+                "layer_type" in _forward_params(self.rotary_emb)
+            )
+            # Sliding-window attention is not reproduced here, and below the window it does not
+            # need to be: every query already reaches every earlier token, so the two masks are
+            # the same matrix. Above it they are not, hence the check in forward.
+            cfg = getattr(top, "config", None)
+            window = getattr(cfg, "sliding_window", None)
+            self.sliding_window = int(window) if isinstance(window, int) and window > 0 else None
             # sdpa and flash derive causality from is_causal when attention_mask is None, but
             # eager only masks what it is given: transformers' eager_attention_forward adds the
             # mask under `if attention_mask is not None`, so passing None there trains the model
@@ -1028,9 +1082,36 @@ def stage_module_cls():
             self.needs_causal_mask = impl not in (
                 "sdpa", "flash_attention_2", "flash_attention_3",
             )
-            self.embed_tokens = _first_attr(owner, _EMBED_NAMES) if is_first else None
-            self.norm = _first_attr(owner, _FINAL_NORM_NAMES) if is_last else None
+            embed_name, embed = _first_named(owner, _EMBED_NAMES)
+            norm_name, norm = _first_named(owner, _FINAL_NORM_NAMES)
+            # Every stage checks the whole stack, not just the part it runs: a dropped module is
+            # wrong for the model however the layers happen to be divided up.
+            skipped = _unrun_parameters(owner, (embed_name, norm_name, container_name, "rotary_emb"))
+            if skipped:
+                # GPT-2 keeps learned positions in `wpe` and OPT in `embed_positions`, neither of
+                # which lives inside a decoder layer, so running the layers alone gives the model
+                # no position information at all. Refusing is the honest answer: making them work
+                # means reproducing each architecture's embedding path, and guessing at it would
+                # train something that is not the checkpoint.
+                raise RuntimeError(
+                    f"{type(owner).__name__} carries {sorted(skipped)}, which the pipeline stage "
+                    f"does not run, so a split would train a different model than the checkpoint; "
+                    f"use --pp-backend legacy or a single node for this architecture"
+                )
+            self.embed_tokens = embed if is_first else None
+            self.norm = norm if is_last else None
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
+            # Llama and GPT-NeoX blocks take `position_embeddings`; an architecture that encodes
+            # position inside attention, ALiBi being the usual one, has no such parameter and
+            # passing it is a TypeError rather than a no-op.
+            self.pass_position_embeddings = True
+            if len(self.layers):
+                try:
+                    self.pass_position_embeddings = "position_embeddings" in inspect.signature(
+                        type(self.layers[0]).forward
+                    ).parameters
+                except (TypeError, ValueError):
+                    pass
             if self.is_first and not isinstance(self.embed_tokens, torch.nn.Module):
                 raise RuntimeError(
                     f"the first pipeline stage has no embedding to run; tried {_EMBED_NAMES} "
@@ -1047,16 +1128,44 @@ def stage_module_cls():
                 raise RuntimeError("the last pipeline stage has no lm_head to run")
 
         @staticmethod
-        def _call_layer(layer, h, pos, mask):
-            out = layer(h, position_embeddings = pos, attention_mask = mask)
+        def _layer_type(layer):
+            for holder in (layer, getattr(layer, "self_attn", None), getattr(layer, "attention", None)):
+                for name in ("layer_type", "attention_type"):
+                    found = getattr(holder, name, None) if holder is not None else None
+                    if isinstance(found, str):
+                        return found
+            return None
+
+        def _rotary(self, layer, h, ids):
+            """The rope tables this block asks for by name, empty when it asks for none."""
+            out = {}
+            for name, rotary in self.rotary_for.items():
+                if rotary is None:
+                    continue
+                out[name] = (
+                    rotary(h, ids, layer_type = self._layer_type(layer))
+                    if self.rotary_wants_layer_type else rotary(h, ids)
+                )
+            return out
+
+        def _call_layer(self, layer, h, pos, mask):
+            out = layer(h, attention_mask = mask, **pos)
             return out[0] if isinstance(out, tuple) else out
 
         def forward(self, x):
             h = self.embed_tokens(x) if self.is_first else x
-            pos = None
+            if self.sliding_window is not None and h.shape[1] > self.sliding_window:
+                raise RuntimeError(
+                    f"this model attends over a {self.sliding_window}-token sliding window and "
+                    f"the batch is {h.shape[1]} tokens, which a pipeline stage does not "
+                    f"reproduce; train at a sequence length of {self.sliding_window} or fewer"
+                )
+            ids = None
             if self.rotary_emb is not None:
                 ids = torch.arange(h.shape[1], device = h.device)
-                pos = self.rotary_emb(h, ids.unsqueeze(0).expand(h.shape[0], -1))
+                ids = ids.unsqueeze(0).expand(h.shape[0], -1)
+            # Only recomputed per layer when the tables actually differ per layer.
+            pos = {} if self.rotary_wants_layer_type else self._rotary(None, h, ids)
             mask = None
             if self.needs_causal_mask:
                 # Additive, upper triangle excluding the diagonal, broadcast over batch and heads.
@@ -1068,6 +1177,8 @@ def stage_module_cls():
                 ).triu(1)[None, None]
             ckpt = self.grad_checkpoint and self.training and torch.is_grad_enabled()
             for layer in self.layers:
+                if self.rotary_wants_layer_type:
+                    pos = self._rotary(layer, h, ids)
                 if ckpt:
                     # use_reentrant=False: the reentrant path drops the grad_fn the stage's
                     # activation-gradient handoff needs.

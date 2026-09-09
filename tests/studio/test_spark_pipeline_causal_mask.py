@@ -73,53 +73,101 @@ def test_a_stage_is_causal_on_every_attention_implementation(impl: str) -> None:
     assert moved == 0.0, f"{impl}: the last token moved earlier positions by {moved:.3e}"
 
 
-@pytest.mark.parametrize(
-    "builder,embed_attr,norm_attr",
-    [
-        ("llama", "embed_tokens", "norm"),
-        ("opt", "embed_tokens", "final_layer_norm"),
-        ("gpt2", "wte", "ln_f"),
-    ],
-)
-def test_a_stage_resolves_every_layout_find_layers_accepts(
-    builder: str, embed_attr: str, norm_attr: str
-) -> None:
-    """find_layers accepts OPT and GPT-2, so the stage wrapper must not assume Llama's names.
+def _tiny(transformers, builder: str):
+    if builder == "llama":
+        return transformers.LlamaForCausalLM(transformers.LlamaConfig(
+            vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
+            num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 32,
+        ))
+    if builder == "gpt_neox":
+        return transformers.GPTNeoXForCausalLM(transformers.GPTNeoXConfig(
+            vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
+            num_attention_heads = 4, max_position_embeddings = 32,
+        ))
+    if builder == "gemma3":
+        return transformers.Gemma3ForCausalLM(transformers.Gemma3TextConfig(
+            vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
+            num_attention_heads = 4, num_key_value_heads = 4, head_dim = 8, sliding_window = 8,
+        ))
+    if builder == "opt":
+        return transformers.OPTForCausalLM(transformers.OPTConfig(
+            vocab_size = 64, hidden_size = 32, ffn_dim = 64, num_hidden_layers = 2,
+            num_attention_heads = 4, max_position_embeddings = 32, word_embed_proj_dim = 32,
+        ))
+    return transformers.GPT2LMHeadModel(transformers.GPT2Config(
+        vocab_size = 64, n_embd = 32, n_layer = 2, n_head = 4, n_positions = 32,
+    ))
 
-    OPT is the dangerous one: its final normalisation is `final_layer_norm`, so looking only
-    for `norm` left it None and dropped it from the last stage without a word. GPT-2 keeps its
-    layers in `transformer.h`, so `owner.layers` raised AttributeError.
+
+def _build_stage(pipeline, model, **kwargs):
+    top, owner = pipeline.unwrap_stack(model)
+    _, layers = pipeline.find_layers(model)
+    return pipeline.stage_module_cls()(
+        top, owner, list(range(len(layers))),
+        is_first = True, is_last = True, grad_checkpoint = False, **kwargs
+    )
+
+
+@pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3"])
+def test_a_stage_computes_the_same_model_it_was_split_from(builder: str) -> None:
+    """The contract is not that the names resolve, it is that the arithmetic agrees.
+
+    Resolving `embed_tokens` and `final_layer_norm` is necessary and not sufficient: a stage
+    that finds every module it looks for can still drop one it never looks for, and nothing
+    raises. Comparing the stage against the model it was split from is the only check that
+    catches that. Gemma 3 is here because it keeps one rope table per attention type and
+    selects with a `layer_type` argument, which a single whole-stage rotary call cannot supply.
     """
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
 
-    if builder == "llama":
-        config = transformers.LlamaConfig(
-            vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
-            num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 32,
-        )
-        model = transformers.LlamaForCausalLM(config)
-    elif builder == "opt":
-        config = transformers.OPTConfig(
-            vocab_size = 64, hidden_size = 32, ffn_dim = 64, num_hidden_layers = 2,
-            num_attention_heads = 4, max_position_embeddings = 32, word_embed_proj_dim = 32,
-        )
-        model = transformers.OPTForCausalLM(config)
-    else:
-        config = transformers.GPT2Config(
-            vocab_size = 64, n_embd = 32, n_layer = 2, n_head = 4, n_positions = 32,
-        )
-        model = transformers.GPT2LMHeadModel(config)
+    model = _tiny(transformers, builder)
+    model.eval()
+    model.config._attn_implementation = "eager"
+    pipeline = _pipeline_module()
+    stage = _build_stage(pipeline, model)
+
+    ids = torch.randint(0, 64, (1, 6))
+    with torch.no_grad():
+        want = model(ids).logits
+        got = stage(ids)
+    moved = (got - want).abs().max().item()
+    assert moved < 1e-4, f"{builder}: the stage is a different model by {moved:.3e}"
+
+
+@pytest.mark.parametrize("builder,dropped", [("gpt2", "wpe"), ("opt", "embed_positions")])
+def test_a_stage_refuses_a_layout_whose_positions_it_would_drop(
+    builder: str, dropped: str
+) -> None:
+    """GPT-2 and OPT keep learned positions in a module outside every decoder layer.
+
+    Running the layers alone gives those models no position information at all, and it does not
+    raise: `GPT2Block.forward` absorbs the unexpected keyword, so the stage trained and saved a
+    model that was not the checkpoint. Refusing is the honest answer; making them work means
+    reproducing each architecture's embedding path.
+    """
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
 
     pipeline = _pipeline_module()
-    top, owner = pipeline.unwrap_stack(model)
-    _, layers = pipeline.find_layers(model)
-    stage = pipeline.stage_module_cls()(
-        top, owner, list(range(len(layers))),
-        is_first = True, is_last = True, grad_checkpoint = False,
-    )
+    with pytest.raises(RuntimeError, match = dropped):
+        _build_stage(pipeline, _tiny(transformers, builder))
 
-    assert len(stage.layers) == len(layers)
-    assert stage.embed_tokens is getattr(owner, embed_attr)
-    # The one that was silently skipped rather than raising.
-    assert stage.norm is getattr(owner, norm_attr)
+
+def test_a_stage_refuses_a_batch_longer_than_the_sliding_window() -> None:
+    """Below the window a sliding mask and a causal mask are the same matrix, because every
+    query already reaches every earlier token. Above it they are not, and the stage builds the
+    causal one, so it stops rather than training against attention the model does not have."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    model = _tiny(transformers, "gemma3")
+    model.eval()
+    pipeline = _pipeline_module()
+    stage = _build_stage(pipeline, model)
+    assert stage.sliding_window == 8
+
+    with torch.no_grad():
+        stage(torch.randint(0, 64, (1, 8)))  # at the window, still exact
+        with pytest.raises(RuntimeError, match = "sliding window"):
+            stage(torch.randint(0, 64, (1, 9)))
