@@ -455,6 +455,28 @@ def test_a_mutable_git_ref_is_never_installed_evidence(tmp_path, monkeypatch) ->
     assert stack._direct_reference_is_installed(req, "triton_kernels") is False
 
 
+@pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
+def test_a_caller_supplied_resolver_input_forces_a_full_pass(monkeypatch, manifest, name) -> None:
+    """Additive constraints change which versions a step installs, and PIP_NO_DEPS makes
+    a with-deps step leave dependencies out; no digest the gate keeps sees either."""
+    payload, _req_root = manifest
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    for other in stack._FOREIGN_RESOLVER_ENV:
+        monkeypatch.delenv(other, raising = False)
+    assert _plan() is not None
+    monkeypatch.setenv(name, "1" if "NO_DEPS" in name else "/tmp/constraints.txt")
+    assert _plan() is None
+    monkeypatch.setenv(name, "   ")
+    assert _plan() is not None
+
+
+def test_no_closure_record_is_kept_under_a_callers_no_deps(monkeypatch) -> None:
+    """A dependency PIP_NO_DEPS left out is not a known conflict; carrying it forward
+    would skip the step that installs it on the next run."""
+    monkeypatch.setenv("PIP_NO_DEPS", "1")
+    assert stack._closure_record() == {}
+
+
 def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
     """uv applies UV_OVERRIDE to every step and its versions replace requirements
     outright; the gate digests only the bundled macOS file, so a caller's own file is

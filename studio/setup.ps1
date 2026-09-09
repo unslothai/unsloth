@@ -5348,8 +5348,11 @@ if ($ROCmIndexUrl) {
         # with no local tag, or a +cpu / +cuNNN one, is that case. AMD's indexes tag all
         # three +rocm and the older community wheels carry a git hash, so both keep the
         # fast path. Bounded like the torch probe above, and find_spec does not import.
-        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import importlib.util as u, importlib.metadata as m; names = [n for n in ('torchvision', 'torchaudio') if u.find_spec(n)]; tags = [(n, (m.version(n).split('+', 1) + [''])[1].lower()) for n in names]; print(' '.join(n + '==' + m.version(n) for n, t in tags if not t or t.startswith('cpu') or t.startswith('cu')))"
-        $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "" }
+        # A companion whose dist-info remains while its package directory is gone reports
+        # as "payload missing": the pinned install would read the satisfying metadata and
+        # leave the payload unrestored. A probe that did not answer forces the trio too.
+        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import importlib.util as u, importlib.metadata as m; out = []`nfor n in ('torchvision', 'torchaudio'):`n    try:`n        v = m.version(n)`n    except m.PackageNotFoundError:`n        continue`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
+        $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "probe did not answer" }
         if ($_companionMismatch) {
             substep "torchvision/torchaudio are not ROCm builds ($_companionMismatch); reinstalling the trio" "Yellow"
             $rocmForce = @("--force-reinstall")

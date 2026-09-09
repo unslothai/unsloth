@@ -3306,7 +3306,11 @@ def _install_bnb_windows_rocm() -> bool:
                 _BNB_ROCM_PYPI_FALLBACK,
                 constrain = False,
             )
-        _record_bnb_rocm_provenance()
+        # Only after an install landed: a HEAD that reported a republished wheel followed
+        # by two failed installs would otherwise record the new asset identity against
+        # the old resident wheel, and the next update would read it as current.
+        if _ok:
+            _record_bnb_rocm_provenance()
     if not _ok:
         return False
     # BNB_ROCM_VERSION from the DLL suffix (the wheel may ship "72" while torch reports 7.13).
@@ -8017,6 +8021,10 @@ def _closure_record() -> "dict[str, list[str]]":
     otherwise let an unreadable environment skip the step next time.
     """
     record: dict[str, list[str]] = {}
+    # Under a caller's PIP_NO_DEPS a with-deps step leaves dependencies out on purpose;
+    # recording them as known would let the next run skip the step that installs them.
+    if _foreign_resolver_inputs():
+        return record
     previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
     for key, req in _AUDITED_STEPS.items():
         if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
@@ -8055,6 +8063,14 @@ def _may_skip_on_evidence() -> bool:
     path got here.
     """
     return _PASS_EVIDENCE is not None and not _full_deps_requested()
+
+
+_FOREIGN_RESOLVER_ENV = ("UV_CONSTRAINT", "UV_BUILD_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS")
+
+
+def _foreign_resolver_inputs() -> list:
+    """Environment inputs that change what a step installs and that no digest covers."""
+    return [name for name in _FOREIGN_RESOLVER_ENV if (os.environ.get(name) or "").strip()]
 
 
 def _foreign_uv_override_in_effect() -> bool:
@@ -8108,6 +8124,14 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     # under it.
     if _foreign_uv_override_in_effect():
         return _refuse_evidence("a caller-supplied UV_OVERRIDE is in effect")
+    # The other resolver inputs a caller can set from the environment: additive
+    # constraints (uv's UV_CONSTRAINT, pip's PIP_CONSTRAINT) change which versions a step
+    # installs without touching any file the gate digests, and PIP_NO_DEPS makes a
+    # with-deps step leave dependencies out, which the closure record would then carry
+    # forward as known and skip over on the next run.
+    foreign = _foreign_resolver_inputs()
+    if foreign:
+        return _refuse_evidence(f"caller-supplied resolver input in effect: {', '.join(foreign)}")
     try:
         manifest = install_manifest.read_manifest()
         # setup.ps1 drops the live manifest before pip, torch and triton are replaced,
