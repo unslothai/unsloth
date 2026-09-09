@@ -143,10 +143,10 @@ def _probe(cluster, monkeypatch, stdout: str):
 @pytest.mark.parametrize(
     "row",
     [
-        "4242, [N/A]",          # the documented one: nvidia-smi cannot report the memory
-        "4242, ",               # empty memory field
+        "4242, [N/A]",  # the documented one: nvidia-smi cannot report the memory
+        "4242, ",  # empty memory field
         "4242, not-a-number",
-        "[N/A], 900 MiB",       # unreadable pid
+        "[N/A], 900 MiB",  # unreadable pid
     ],
 )
 def test_an_unreadable_process_row_leaves_the_peer_busy(monkeypatch, row: str) -> None:

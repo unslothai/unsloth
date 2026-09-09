@@ -231,8 +231,13 @@ def test_the_legacy_backend_actually_checkpoints_when_asked() -> None:
 
     pipeline = _pipeline_module()
     config = transformers.LlamaConfig(
-        vocab_size = 64, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 6,
-        num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 64,
+        vocab_size = 64,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 6,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        max_position_embeddings = 64,
     )
     torch.manual_seed(0)
     model = transformers.LlamaForCausalLM(config)
@@ -268,9 +273,9 @@ def test_the_legacy_backend_actually_checkpoints_when_asked() -> None:
     on_calls, on_saved = measure(True)
 
     assert off_calls == 0, "checkpointing ran when it was not asked for"
-    assert on_calls == config.num_hidden_layers, (
-        f"expected one checkpoint per decoder layer, got {on_calls}"
-    )
+    assert (
+        on_calls == config.num_hidden_layers
+    ), f"expected one checkpoint per decoder layer, got {on_calls}"
     assert on_saved < off_saved / 2, (
         f"checkpointing saved {on_saved} tensors against {off_saved} without it, "
         f"which is not a reduction: the option is inert"

@@ -1735,7 +1735,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # activation-gradient handoff depends on.
         if hasattr(inner_model, "gradient_checkpointing_kwargs"):
             inner_model.gradient_checkpointing_kwargs = {"use_reentrant": False}
-        log("gradient checkpointing enabled per decoder layer and on the model (use_reentrant=False)")
+        log(
+            "gradient checkpointing enabled per decoder layer and on the model (use_reentrant=False)"
+        )
 
     model.to(device)  # shard-load already placed the base; this catches new adapters
     if not use_cpu:
