@@ -236,13 +236,21 @@ def apply_speed_optims(
     speed_mode: str = SPEED_OFF,
     cache_active: bool = False,
     offload_active: bool = False,
+    cuda_graph_default: bool = True,
+    cache_engaged: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
     offload. Returns which engaged; every step is best-effort (unsupported ones are skipped).
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
-    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1."""
+    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+
+    ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
+    True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
+
+    ``cache_active`` also covers a step cache that may still toggle on at generation time. The
+    CUDA-graph arm refuses only on ``cache_engaged``: the caller bypasses per chunk if it toggles."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -252,6 +260,7 @@ def apply_speed_optims(
         "compiled": False,
         "compiled_dequant": False,
         "compiled_vae_decode": False,
+        "cuda_graph": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark are process-global
@@ -312,6 +321,35 @@ def apply_speed_optims(
         if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
+
+    # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        cuda_graph = None
+        ok, reason = False, "cuda graph layer unavailable"
+        try:
+            from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
+            ok, reason = cuda_graph.graph_eligible(
+                target,
+                family = family,
+                pipe = pipe,
+                offload_active = offload_active,
+                cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
+                speed_mode = mode,
+                family_default = cuda_graph_default,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
+            _warn(logger, "cuda graph eligibility", exc)
+        # Stashed either way: status reports WHY graphs are off, not just that they are.
+        try:
+            pipe._unsloth_cuda_graph_reason = reason
+        except Exception:  # noqa: BLE001
+            pass
+        if ok and cuda_graph is not None:
+            try:
+                applied["cuda_graph"] = bool(cuda_graph.install_cuda_graphs(pipe, logger = logger))
+            except Exception as exc:  # noqa: BLE001 - the load proceeds eager
+                _warn(logger, "cuda graph capture", exc)
 
     return applied
 
@@ -383,8 +421,9 @@ def _compile_repeated_blocks(
     if not dits and unet is None:
         return False
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # dynamic=False, a few % more for a longer compile and a recompile per resolution (CUDA-graph modes crash on the
-    # regional block). fullgraph drops to False under a step cache or offload.
+    # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
+    # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
+    # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
         "dynamic": not max_autotune,
