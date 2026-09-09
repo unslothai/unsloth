@@ -6528,6 +6528,40 @@ def test_generate_oom_backoff_halves_the_batch(fake_runtime, tmp_path):
     assert out["seeds"] == [1, 2, 3, 4]
 
 
+def test_generate_oom_backoff_drops_the_batch_shaped_graphs(fake_runtime, tmp_path):
+    """The backoff is the last thing between this render and a failure, so it must get the memory
+    the eager path would have had. A captured entry is batch-shaped and empty_cache() cannot reclaim
+    it: the statics and outputs are live allocations and a graph's pool is segregated from the
+    ordinary allocator. Measured on one 6-block DiT at 4096 tokens: batch 4 peaks at 4.43 GB,
+    empty_cache() alone leaves 3.93 of it and the halved retry OOMs; dropping the graphs first
+    leaves 1.68 and it fits."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe(max_images = 2)
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.reset_after = []
+
+        def reset(self):
+            # WHEN the reset landed, in forwards attempted so far.
+            self.reset_after.append(len(pipe.batch_attempts))
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+
+    assert pipe.batch_attempts == [4, 2, 2]
+    assert len(out["images"]) == 4 and out["seeds"] == [1, 2, 3, 4]
+    # Exactly once, after the batch of 4 failed and before either half ran.
+    assert handle.reset_after == [1]
+
+
 class _BoomPipe(_CountingPipe):
     """Fails every forward with a NON-OOM error (must not trigger backoff)."""
 

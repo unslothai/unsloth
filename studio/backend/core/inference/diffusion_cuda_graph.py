@@ -498,12 +498,22 @@ def set_bypass(handles: Any, on: bool) -> None:
 
 
 def reset_all(handles: Any) -> None:
-    """Drop every captured graph, for every handle (the weights changed)."""
+    """Drop every captured graph, for every handle (the weights changed).
+
+    Ends with the same ``_drop_pool_if_unused`` as ``uninstall_all``: a reset can destroy the last
+    graph recorded into the shared pool, and a token whose pool the allocator has since erased is
+    only harmless while the erase SUCCEEDED. It erases the pool entry only once every segment came
+    back (``cudaMalloc_count == 0``); when one did not, the entry survives with ``use_count == 0``
+    and the next capture handed that token dies in ``create_or_incref_pool`` with
+    "use_count > 0 INTERNAL ASSERT FAILED" -- raised from ``capture_begin``, which
+    ``torch.cuda.graph.__enter__`` reaches AFTER entering its side stream, so the thread is also
+    left off the default stream for the rest of the render."""
     for handle in handles or ():
         try:
             handle.reset()
         except Exception:  # noqa: BLE001 - optimisation only
             pass
+    _drop_pool_if_unused()
 
 
 def uninstall_all(handles: Any, *, logger: Any = None) -> None:

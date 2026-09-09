@@ -6203,6 +6203,14 @@ class DiffusionBackend:
                         if len(chunk) < 2 or not is_oom_error(exc):
                             raise
                         # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry reproducible.
+                        # Drop the captured graphs FIRST. They are batch-shaped, and empty_cache() cannot reclaim them:
+                        # the statics and outputs are live allocations and a graph's pool is segregated from the
+                        # ordinary allocator. Measured on one 6-block DiT at 4096 tokens: the batch-of-4 chunk peaks at
+                        # 4.43 GB, empty_cache() alone gives back 0.50 of it and the halved retry OOMs; dropping the
+                        # graphs gives back 2.75 and it fits. The retry is the last thing between this render and a
+                        # failure, so it gets the memory the eager path would have had; the shape that finally renders
+                        # re-captures on its own first step.
+                        cuda_graph.reset_all(state.cuda_graphs)
                         empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
                         if callable(empty_cache):
                             empty_cache()

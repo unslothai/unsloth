@@ -553,6 +553,33 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
     assert cg._POOL_BOX[0] == pool
 
 
+def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
+    """A reset that destroys the last graph in the shared pool must forget its token.
+
+    Handing a token back after the allocator erased the pool is only safe while the erase happened:
+    it erases the entry only when every segment came back, and otherwise the entry survives with
+    use_count 0 and the next capture raises "use_count > 0 INTERNAL ASSERT FAILED" out of
+    capture_begin, after torch.cuda.graph.__enter__ has already entered its side stream.
+    """
+    first, second = _armed(), _armed()
+    first(_t(), timestep = _t((1,)), return_dict = False)
+    second(_t((2, 4)), timestep = _t((1,)), return_dict = False)
+    pool = cg._POOL_BOX[0]
+    assert pool is not None
+
+    # One wrapper still holds a graph: the pool is live and the token stays.
+    cg.reset_all([first])
+    assert cg._POOL_BOX[0] == pool
+
+    # Now nothing does.
+    cg.reset_all([second])
+    assert cg._POOL_BOX[0] is None
+
+    # And the next capture seeds a fresh pool instead of replaying the dead token.
+    first(_t(), timestep = _t((1,)), return_dict = False)
+    assert stub_torch._records["graphs"][-1][1] is None
+
+
 def test_signature_is_the_original_forwards(stub_torch):
     """H3 filters kwargs by ``inspect.signature``, so a ``(*args, **kwargs)`` wrapper drops them."""
     module = _FakeDiT()
