@@ -746,11 +746,17 @@ _configure_uv_cache() {
         # reads the mode not the filesystem; mktemp, since a fixed name can be a planted link.
         for _uv_probe_dir in "$_uv_default_cache" "$_uv_default_cache"/*; do
             if [ ! -d "$_uv_probe_dir" ]; then
-                # A file, or a symlink dangling or not, is still an existing path to mkdir(2),
-                # which answers EEXIST, so uv refuses it (see _dir_has_entries).
-                if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
-                    _uv_default_writable=false
-                fi
+                # Only where a BUCKET should be, which uv names <kind>-v<N>. There a file or a
+                # symlink, dangling or not, is still an existing path to mkdir(2), which
+                # answers EEXIST, so uv refuses it (see _dir_has_entries). The root's own
+                # files -- CACHEDIR.TAG, .gitignore -- are not directories uv creates.
+                case "${_uv_probe_dir##*/}" in
+                    *-v[0-9]*)
+                        if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
+                            _uv_default_writable=false
+                        fi
+                        ;;
+                esac
                 continue
             fi
             _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
@@ -2380,15 +2386,21 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
-    # An automatic path belongs to the origin distro; only an override is portable.
-    case "${UV_CACHE_DIR-}" in
-        *[![:space:]]*)
-            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
-            ;;
-        *)
-            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
-            ;;
-    esac
+    # An automatic path belongs to the origin distro; only an override is portable, and the
+    # variable alone cannot tell them apart -- forwarding our own default pins the child to
+    # `custom`, which skips its adaptive selection and outranks its --isolated-uv-cache.
+    _rr_uv_cache=""
+    if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
+        case "${UV_CACHE_DIR-}" in
+            *[![:space:]]*) _rr_uv_cache="$UV_CACHE_DIR" ;;
+        esac
+    fi
+    if [ -n "$_rr_uv_cache" ]; then
+        _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$_rr_uv_cache")"
+    else
+        _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+    fi
+    unset _rr_uv_cache
     [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"

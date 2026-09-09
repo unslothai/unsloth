@@ -92,10 +92,14 @@ _run() {
 _populated="$_TMP/uvdefault"
 mkdir -p "$_populated/archive-v0/torch"
 : > "$_populated/archive-v0/torch/libtorch.so"
+# Every fixture below carries the CACHEDIR.TAG uv writes at the root of a cache it has
+# initialized, so a rule that trips over a non-directory entry cannot pass here.
+: > "$_populated/CACHEDIR.TAG"
 # Metadata only, which must NOT read as warm; that is why the probe looks at file names.
 _metadata_only="$_TMP/uvmeta"
 mkdir -p "$_metadata_only/wheels-v1"
 : > "$_metadata_only/wheels-v1/index.msgpack"
+: > "$_metadata_only/CACHEDIR.TAG"
 _empty="$_TMP/uvempty"
 mkdir -p "$_empty"
 # Only the ROOT is closed, so this still reads as warm; uv cannot rewrite CACHEDIR.TAG in it.
@@ -135,9 +139,11 @@ mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
 : > "$_TMP/cwd/relcache/archive-v0/decoy/other.so"
 mkdir -p "$_TMP/work/relcache/archive-v0/torch"
 : > "$_TMP/work/relcache/archive-v0/torch/libtorch.so"
+: > "$_TMP/work/relcache/CACHEDIR.TAG"
 # Big enough that `head -n 1` closes the pipe before find is done, as every real cache is.
 _big="$_TMP/uvbig"
 mkdir -p "$_big/archive-v0/pkg"
+: > "$_big/CACHEDIR.TAG"
 _i=0
 while [ "$_i" -lt 3000 ]; do : > "$_big/archive-v0/pkg/file-$_i.bin"; _i=$((_i + 1)); done
 
