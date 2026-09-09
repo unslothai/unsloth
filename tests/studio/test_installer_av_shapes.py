@@ -111,9 +111,8 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 
 
 # Every native import left in the installers, however it is declared. Both scripts define theirs through reflection
-# emit now, which costs no compile at all: install.ps1 the path resolver, the console thunk, the icon refresh and the
-# process-image lookup, studio/setup.ps1 the console thunk. A new entry still needs a reason, and a PowerShell
-# equivalent usually exists.
+# emit now, which costs no compile: install.ps1 the path resolver, console thunk, icon refresh and process-image
+# lookup, studio/setup.ps1 the console thunk. A new entry needs a reason; a PowerShell equivalent usually exists.
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths.
     # No PS 5.1 equivalent: ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
@@ -132,9 +131,9 @@ ALLOWED_PINVOKES = {
     # ie4uinit.exe -show is the global broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
     # Naming the image behind a pid, so a venv Unsloth still has open is not overwritten.
-    # PROCESS_QUERY_LIMITED_INFORMATION only, and it is the rung the others cannot replace: Process.Path goes through
-    # MainModule, which needs PROCESS_VM_READ and is refused across users and across bitness, and Win32_Process needs a
-    # working WMI service. Without this the scan can find nothing and let the install proceed over an open venv.
+    # PROCESS_QUERY_LIMITED_INFORMATION only, and the others cannot replace it: Process.Path goes through MainModule,
+    # which needs PROCESS_VM_READ and is refused across users and bitness, and Win32_Process needs a working WMI
+    # service. Without it the scan can find nothing and proceed over an open venv.
     "OpenProcess",
     "QueryFullProcessImageNameW",
     # Closing the handles CreateFileW and OpenProcess opened.
@@ -142,9 +141,9 @@ ALLOWED_PINVOKES = {
 }
 
 
-# The two ways a native import can be declared. Add-Type takes C# and runs csc.exe; DefinePInvokeMethod builds the
-# same stub in memory. The second is invisible to a DllImport regex, so without this the inventory above would silently
-# stop covering install.ps1 the moment it stopped compiling.
+# Both ways a native import can be declared: Add-Type runs csc.exe over C#, DefinePInvokeMethod builds the same stub
+# in memory. The second is invisible to a DllImport regex, so without it the inventory above would stop covering
+# install.ps1 the moment it stopped compiling.
 def _native_imports(text: str) -> set:
     imported = set()
     for match in re.finditer(
@@ -174,15 +173,14 @@ def test_no_new_native_imports(name: str) -> None:
 def test_virtual_terminal_answers_a_redirected_stream_without_defining_a_type(name: str) -> None:
     """The answer we already know must come first, before any native work at all.
 
-    Only the redirected case is decided early, and it is decided FALSE. A redirected stdout is
-    not a console, GetConsoleMode fails on a non-console handle, and the native path could
-    only have returned false too. Anything that claimed VT here would put raw escape sequences
-    in the Unsloth log panel, which is a pipe.
+    Only the redirected case is decided early, and it is decided FALSE: a redirected stdout is
+    not a console, GetConsoleMode fails on a non-console handle, and the native path could only
+    have returned false too. Anything claiming VT here would put raw escape sequences in the
+    Unsloth log panel, which is a pipe.
 
-    This used to guard an Add-Type, back when the redirect check was the only thing keeping the
-    desktop app off csc.exe. Nothing here compiles now, so the ordering is no longer load-bearing
-    against a scanner; it is still the cheaper answer, and getting it wrong still corrupts the
-    log panel.
+    This used to guard an Add-Type, when the redirect check was all that kept the desktop app
+    off csc.exe. Nothing compiles now, so the ordering no longer matters to a scanner, but it is
+    still the cheaper answer and getting it wrong still corrupts the log panel.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
@@ -245,12 +243,10 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     no source on disk, no DLL, nothing in %TEMP%.
 
     Add-Type in full, not only -TypeDefinition: -MemberDefinition wraps its argument in a class
-    and compiles that, so it reaches csc.exe by the same road. -AssemblyName is the exception,
-    and the only one: it loads an assembly that already exists on disk and never reaches a
-    compiler. Both scripts, not only the bundled one: leaving a compile anywhere means the answer
-    to "does this run a compiler" depends on which entrypoint ran and whether an early return
-    happened to come first, and a guard that holds only conditionally is what let this reach the
-    field.
+    and compiles that too. -AssemblyName is the only exception, since it loads an assembly that
+    already exists on disk. Both scripts, because a compile left anywhere makes "does this run a
+    compiler" depend on which entrypoint ran and whether an early return came first, and a guard
+    that holds only conditionally is what let this reach the field.
     """
     text = _text(name)
     hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
@@ -262,10 +258,10 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     assert (
         "DefinePInvokeMethod" in text
     ), f"{name} no longer emits its native imports; update this guard"
-    # The private-%TEMP% retry is gone with it. Redirecting TEMP to compile again after a block
-    # cannot beat a filter driver, and "blocked writing an executable to TEMP, change TEMP, write
-    # it again" is itself an evasion heuristic. Scoped to the resolver: Initialize-StudioTempEnvironment
-    # legitimately redirects an unusable inherited TEMP, and that is a different thing.
+    # The private-%TEMP% retry is gone with it: redirecting TEMP to compile again cannot beat a
+    # filter driver, and "blocked writing an executable to TEMP, change TEMP, write it again" is
+    # itself an evasion heuristic. Scoped to the resolver, since Initialize-StudioTempEnvironment
+    # legitimately redirects an unusable inherited TEMP.
     # Only install.ps1 has the path resolver; setup.ps1 emits the console thunk and nothing else.
     if "function Initialize-StudioFinalPathNativeType" not in text:
         return
@@ -279,14 +275,13 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
 def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
     """The behavioural half of the guard above.
 
-    Reading the scripts cannot see a compile reached through a module, a dot-sourced
-    file or a generated here-string, and it cannot see one a dependency performs while
-    our process tree is what a scanner scores. Bitdefender scored the chain, not the
-    bytes, so there has to be a lane that runs the installer and fails on the process.
+    Reading the scripts cannot see a compile reached through a module, a dot-sourced file
+    or a generated here-string, nor one a dependency performs while our process tree is
+    what a scanner scores. Bitdefender scored the chain, not the bytes, so a lane has to
+    run the installer and fail on the process.
 
-    The positive control is the part worth asserting from here: a detector that sees
-    nothing reads exactly like a clean run, and auditing can silently fail to apply. If
-    the lane ever loses the control, every later green result stops meaning anything.
+    The positive control is what is worth asserting from here: a detector that sees
+    nothing reads exactly like a clean run, and auditing can silently fail to apply.
     """
     workflow = REPO / ".github" / "workflows" / "windows-no-compiler-ci.yml"
     assert workflow.is_file(), "the runtime guard lane is gone; the text check is alone again"
@@ -340,12 +335,10 @@ function New-FakeEvent {
 def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
     tmp_path, image: str, command_line: str, expected: int
 ) -> None:
-    """4688 renders the command line into the message, so a message search is not a detector.
-
-    It scored `cmd.exe /c echo csc.exe` as a compile, and this job's whole output is a
-    yes or no about whether a compiler ran under the installer. The record names the
-    image it created in its own field; that is what gets read, and matched whole against
-    the leaf name rather than as a substring.
+    """4688 renders the command line into the message, so a message search is not a detector:
+    it scored `cmd.exe /c echo csc.exe` as a compile. The record names the image it created
+    in its own field; that is what gets read, matched whole against the leaf name rather
+    than as a substring.
     """
     script = tmp_path / "probe.ps1"
     script.write_text(
@@ -375,8 +368,8 @@ def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
     """Get-WinEvent throws both for "nothing matched" and for "could not read".
 
     Swallowing both made a job that could not open the Security log print "no compiler"
-    and pass. The positive control does not cover it: it runs in an earlier step, and
-    says nothing about whether the log was still readable during the measurement.
+    and pass. The positive control runs in an earlier step and says nothing about whether
+    the log was still readable during the measurement.
     """
     body = _WATCHER.read_text(encoding = "utf-8")
     assert (
@@ -386,9 +379,8 @@ def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
 
 
 def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
-    """The point of the change is the acquisition, not the ladder. A host where emit fails has to
-    degrade exactly as a host that could not compile already did, which is a path the installer
-    has always taken and still completes on.
+    """The point of the change is the acquisition, not the ladder: a host where emit fails must
+    degrade exactly as one that could not compile already did.
     """
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
