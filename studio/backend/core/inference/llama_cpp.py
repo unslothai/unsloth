@@ -31940,7 +31940,9 @@ class LlamaCppBackend:
                                     # THIS request, and the client's next one carries its
                                     # own, so its continuation is servable.
                                     if _cap_left_c != 0 and not _continuation_refusal_announced:
-                                        _refusal_c = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                        _refusal_c = _continuation_refusal_event(
+                                            _iteration_fit_max_tokens
+                                        )
                                         if _refusal_c is not None:
                                             _continuation_refusal_announced = True
                                             yield _refusal_c
@@ -32054,7 +32056,9 @@ class LlamaCppBackend:
                                 # a client resuming this walks into the refusal the
                                 # preflight has already promised.
                                 if not _reasoning_cap_spent and not _continuation_refusal_announced:
-                                    _refusal_l = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                    _refusal_l = _continuation_refusal_event(
+                                        _iteration_fit_max_tokens
+                                    )
                                     if _refusal_l is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_l
