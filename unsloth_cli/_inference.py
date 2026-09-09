@@ -28,6 +28,9 @@ _STREAMED_ERROR_PREFIX = "Error: "
 # Cloudflare (in front of remote Unsloth proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
+# The in-process backends have no "until EOS": generate_chat_response defaults to 256. An
+# unset cap takes what the /v1/chat/completions route hands them for an absent max_tokens.
+_LOCAL_MAX_NEW_TOKENS = 2048
 _MPI_ENV_PAIRS = (
     ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
     ("PMI_RANK", "PMI_SIZE"),
@@ -363,7 +366,7 @@ class ChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
@@ -388,7 +391,9 @@ class ChatBackend:
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
-            max_new_tokens = max_new_tokens,
+            max_new_tokens = (
+                _LOCAL_MAX_NEW_TOKENS if max_new_tokens is None else max_new_tokens
+            ),
             repetition_penalty = repetition_penalty,
             enable_thinking = enable_thinking,
         )
@@ -794,7 +799,7 @@ class HttpChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
@@ -804,21 +809,19 @@ class HttpChatBackend:
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
-        resp = self._request(
-            "POST",
-            "/v1/chat/completions",
-            {
-                "model": "default",
-                "messages": msgs,
-                "stream": True,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "max_tokens": max_new_tokens,
-                "repetition_penalty": repetition_penalty,
-                "enable_thinking": enable_thinking,
-            },
-        )
+        body = {
+            "model": "default",
+            "messages": msgs,
+            "stream": True,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "enable_thinking": enable_thinking,
+        }
+        if max_new_tokens is not None:
+            body["max_tokens"] = max_new_tokens
+        resp = self._request("POST", "/v1/chat/completions", body)
 
         def cumulative():
             # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.

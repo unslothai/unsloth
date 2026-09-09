@@ -264,6 +264,59 @@ def test_chatbackend_normal_path_skips_adapter_control():
     assert fake.calls[0][0] == "plain"
 
 
+class _FakeGgufBackend:
+    def __init__(self):
+        self.calls = []
+
+    def generate_chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter(["hi"])
+
+
+def test_chat_max_new_tokens_is_unset_by_default():
+    opt = _option(chatmod.chat, "max_new_tokens")
+    assert getattr(opt, "default", "missing") is None
+    assert "--max-new-tokens" in (getattr(opt, "param_decls", None) or [])
+
+
+def test_chatbackend_unset_max_new_tokens_does_not_fall_to_the_backend_256():
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+
+    assert fake.calls[0][2]["max_new_tokens"] == 2048
+
+
+def test_chatbackend_honours_an_explicit_max_new_tokens():
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert fake.calls[0][2]["max_new_tokens"] == 8
+
+
+def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
+    fake = _FakeGgufBackend()
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert [call["max_tokens"] for call in fake.calls] == [None, 8]
+
+
 def test_collect_stream_returns_last_cumulative_think_stripped():
     stream = iter(["<think>r</think>hel", "<think>r</think>hello"])
     assert collect_stream(stream, show_thinking = False) == "hello"
@@ -920,6 +973,34 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
 
     out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
     assert out == ["He", "Hello"]
+
+
+def _http_stream_body(monkeypatch, max_new_tokens):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(method, path, payload = None, timeout = None):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    list(
+        backend.stream(
+            [{"role": "user", "content": "hi"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": max_new_tokens},
+        )
+    )
+    return bodies[0]
+
+
+def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
+    # The server documents max_tokens=None as "generate until EOS"; sending a cap
+    # the user never asked for truncates every reply.
+    assert "max_tokens" not in _http_stream_body(monkeypatch, None)
+
+
+def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
+    assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
 
 
 class _FakeLoadResponse:

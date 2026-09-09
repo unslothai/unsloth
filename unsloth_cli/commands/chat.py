@@ -167,7 +167,11 @@ def chat(
     temperature: float = typer.Option(0.7, "--temperature"),
     top_p: float = typer.Option(0.9, "--top-p"),
     top_k: int = typer.Option(40, "--top-k"),
-    max_new_tokens: int = typer.Option(512, "--max-new-tokens"),
+    max_new_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-new-tokens",
+        help = "Cap on generated tokens. Unset generates until the model stops.",
+    ),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help = "Optional system prompt for the conversation."
