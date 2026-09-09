@@ -3162,6 +3162,23 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_train_if_needed(model):
+    """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped
+    9B model that is a recursive walk over ~2k modules with a `__setattr__` each, ~13 ms of
+    pure Python per micro-step while the GPU waits. The mode only has to be asserted once:
+    skip the walk when the root already reports training mode and we set it before. A root
+    `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
+    """
+    if model.training and getattr(model, "_unsloth_train_mode_asserted", False):
+        return model
+    model.train()
+    try:
+        model._unsloth_train_mode_asserted = True
+    except Exception:
+        pass
+    return model
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3250,6 +3267,9 @@ def patch_gradient_accumulation_fix(Trainer):
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
         function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+        # Skip the per-micro-step recursive `model.train()` walk once train mode is set.
+        function = function.replace("model.train()", "_unsloth_train_if_needed(model)", 1)
 
         # Fix 4.47.0 removing num_items_in_batch (huggingface/transformers#35121) and the case where it
         # is nothing (huggingface/transformers#35207).
