@@ -551,16 +551,16 @@ def test_both_shells_gate_their_reuse_shortcut_on_the_same_check():
 
     ps1 = (root / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     assert "function Test-LlamaTreeStillHealthy" in ps1, "setup.ps1 lost its reuse gate"
-    assert "--check-existing-install" in ps1, (
-        "the PowerShell gate must ask install_llama_prebuilt, not reimplement healthy"
-    )
+    assert (
+        "--check-existing-install" in ps1
+    ), "the PowerShell gate must ask install_llama_prebuilt, not reimplement healthy"
     # On the shortcut itself, not somewhere else in the file: an elseif that reaches
     # "already built" without it is the exact defect.
-    shortcut = ps1[ps1.index("$RequestedLlamaTag -ne \"master\""):]
+    shortcut = ps1[ps1.index('$RequestedLlamaTag -ne "master"') :]
     shortcut = shortcut[: shortcut.index("already built")]
-    assert "Test-LlamaTreeStillHealthy" in shortcut, (
-        "the reuse shortcut skips the health gate again"
-    )
+    assert (
+        "Test-LlamaTreeStillHealthy" in shortcut
+    ), "the reuse shortcut skips the health gate again"
 
 
 def test_the_offline_repair_terminates_with_the_shell_rebuild_skip_in_place(tmp_path, offline):
