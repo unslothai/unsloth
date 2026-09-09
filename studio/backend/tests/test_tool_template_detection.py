@@ -735,3 +735,22 @@ def test_mutation_through_an_alias_is_a_known_under_approximation(template):
     tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
     assert "get_weather" in render.render(tools = tools)
     assert template_supports_tools(template) is False
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # The else arm of a negated guard is reached exactly when the catalog is
+        # present, so it has to read the same as the positive spelling.
+        ("{% if not tools %}plain{% else %}You may call tools.{% endif %}", True),
+        ("{% if tools is not defined %}plain{% else %}You may call tools.{% endif %}", True),
+        ("{% if tools is none %}plain{% else %}You may call tools.{% endif %}", True),
+        # An elif makes the else reachable for more than one reason, so the guard
+        # does not carry across it.
+        ("{% if not tools %}plain{% elif other %}x{% else %}You may call tools.{% endif %}", False),
+        # A negated guard on something else is not a tool guard.
+        ("{% if not messages %}plain{% else %}nothing here{% endif %}", False),
+    ],
+)
+def test_negated_tool_guard_matches_its_positive_spelling(template, expected):
+    assert template_supports_tools(template) is expected

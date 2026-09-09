@@ -185,6 +185,20 @@ def _tool_reference(node, state):
     return _field(node) == "tool_calls" and not _template_built(node, state)
 
 
+def _negated_guard(node, state):
+    """True when the branch that is NOT taken is the one with a tool catalog.
+
+    `{% if not tools %}plain{% else %}You may call tools.{% endif %}` advertises
+    tools in its else arm exactly as `{% if tools %}...{% endif %}` does in its
+    body, so the two spellings have to agree.
+    """
+    if isinstance(node, nodes.Not):
+        return _positive_test(node.node, state)
+    if isinstance(node, nodes.Test) and node.name in ("none", "undefined"):
+        return _tool_reference(node.node, state)
+    return False
+
+
 def _positive_test(node, state):
     if _constant_truth(node) is not None:
         return False
@@ -523,7 +537,12 @@ def _scan_if(node, state, active, guarded):
             next_remaining.extend(_assume(branch.test, False, current))
         remaining = next_remaining
     for current in remaining:
-        emits, states = _scan(node.else_, current, active, guarded)
+        # With an elif in the chain the else arm is reached for more than one
+        # reason, so only a plain if/else carries the negated guard across.
+        else_guarded = guarded or (
+            not node.elif_ and _negated_guard(node.test, current)
+        )
+        emits, states = _scan(node.else_, current, active, else_guarded)
         if emits:
             return True, []
         results.extend(states)
