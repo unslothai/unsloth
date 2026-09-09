@@ -224,10 +224,9 @@ class TestOldCallers:
         parameter = signature.parameters["on_conversation_grew"]
         assert parameter.default is None, "the hook must be optional for existing callers"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -250,6 +249,10 @@ class TestOldCallers:
                 .default
                 is None
             ), f"{later} was appended without an optional default"
+        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
+        assert (
+            plain[-1] == "admission_output_allowance"
+        ), f"a parameter was inserted rather than appended; signature ends {plain[-3:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0

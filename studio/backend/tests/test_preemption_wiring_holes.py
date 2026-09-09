@@ -141,7 +141,7 @@ class TestTheRoundBoundaryPublishesTheNewCharge:
 
     def test_the_recost_runs_before_note_tokens(self):
         source = _routes_source()
-        body = source[source.index("def _gguf_recost(conversation) -> None:") :]
+        body = source[source.index("def _gguf_recost(conversation, round_tools = None)") :]
         body = body[: body.index("# Active tool names gating the bare-rehearsal strip")]
         recost = body.index("_openai_llama_admission_recost(")
         publish = body.index(".note_tokens(")

@@ -28931,7 +28931,6 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
-        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -28967,6 +28966,9 @@ class LlamaCppBackend:
         # Running token count for THIS attempt, so the sweep can see it grow and evict
         # before the cache fills. Batched by _TOKEN_REPORT_EVERY; cheap, and must not raise.
         on_tokens: Optional[Callable[[int], None]] = None,
+        # Appended, never inserted: no bare `*`, so a mid-signature parameter would
+        # silently rebind positional callers.
+        admission_output_allowance: Optional[int] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -29633,7 +29635,6 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
-        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -29668,14 +29669,15 @@ class LlamaCppBackend:
         # Appended, never inserted: no bare `*` here, so every parameter is
         # positional-or-keyword and inserting one rebinds later positional arguments.
         #
-        # Called at the top of every round with the conversation as it now stands, so KV
-        # admission can charge what this run occupies rather than its opening estimate.
-        # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
-        # where the previous round's request has completed.
-        on_conversation_grew: Optional[Callable[[list], None]] = None,
+        # Per request, with the conversation as it stands and the catalogue it sends
+        # (None = no `tools` array). MAY BLOCK waiting for cache room; safe between rounds.
+        # An int back replaces `admission_output_allowance`, None leaves it alone.
+        on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
         # Called during generation with the running token count for THIS attempt, so the
         # preemptor can evict before the cache fills. Cheap, and must not raise.
         on_tokens: Optional[Callable[[int], None]] = None,
+        # Bounds the wire cap of every request the loop sends. Appended, like the hook.
+        admission_output_allowance: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -30210,13 +30212,6 @@ class LlamaCppBackend:
         iteration = -1
         while True:
             iteration += 1
-            # Here rather than at each append: six sites grow the conversation and all of
-            # them pass through this one point before the cache must hold the result.
-            if on_conversation_grew is not None:
-                try:
-                    on_conversation_grew(conversation)
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits + _preempt_resumes:
                 break
             if cancel_event is not None and cancel_event.is_set():
@@ -30257,6 +30252,14 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
+            # All six growth sites pass here, below the narrowing that sets what is SENT.
+            if on_conversation_grew is not None:
+                try:
+                    _recosted_allowance = on_conversation_grew(conversation, safe_tools)
+                    if _recosted_allowance is not None:
+                        admission_output_allowance = _recosted_allowance
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -30484,6 +30487,11 @@ class LlamaCppBackend:
                     return
                 if max_tokens is None:
                     payload["max_tokens"] = self._effective_context_length
+                    # A new window is not a new reservation.
+                    if admission_output_allowance is not None:
+                        payload["max_tokens"] = min(
+                            payload["max_tokens"], admission_output_allowance
+                        )
                 try:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
@@ -33237,11 +33245,12 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        # The same clamp the per-round payload applies, on the pass that produces most of
-        # what a tool run says: without it that pass sent the whole window as its output cap
-        # while admission had reserved a share.
-        if admission_output_allowance is not None:
-            _final_max_tokens = min(_final_max_tokens, admission_output_allowance)
+        # Unclamped: the re-cost below can RAISE the bound. Only the fit gets the clamp.
+        _final_fit_max_tokens = (
+            min(_final_max_tokens, admission_output_allowance)
+            if admission_output_allowance is not None
+            else _final_max_tokens
+        )
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -33270,7 +33279,7 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    max_tokens = _final_max_tokens,
+                    max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
                             messages_without_unpriced_media(fitted), None, self.markup_profile
@@ -33353,13 +33362,7 @@ class LlamaCppBackend:
         # tool-iteration cap, a controller turning tools off) leave the assistant turn,
         # its tool results and any nudge appended after the last re-cost -- making this
         # final pass the largest request of the run and the one the pool never heard
-        # about. Here rather than at the breaks: the recall above can rebind
-        # `conversation`, and every path reaches this point with the list about to be sent.
-        if on_conversation_grew is not None:
-            try:
-                on_conversation_grew(conversation)
-            except Exception:  # accounting must never break a run in progress
-                logger.debug("tool loop final recost failed", exc_info = True)
+        # about. It sends no `tools` array, hence the None below.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -33379,6 +33382,9 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         stream_payload["max_tokens"] = _final_max_tokens
+        # What this attempt may write before the admission bound: kept apart from the
+        # payload so a re-cost that raises the allowance is not held under the last cap.
+        _final_attempt_cap = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
         _apply_seeded_llama_request(stream_payload, seed)
@@ -33413,7 +33419,7 @@ class LlamaCppBackend:
                 _refit_tail_merged = True
 
         def _refit_final_after_respawn() -> None:
-            nonlocal conversation
+            nonlocal conversation, _final_attempt_cap
             _before_respawn_fit = conversation
             if (
                 _final_preflight_context_length is None
@@ -33425,7 +33431,14 @@ class LlamaCppBackend:
             ):
                 return
             if max_tokens is None:
-                stream_payload["max_tokens"] = self._effective_context_length
+                # The replacement window is the new base: a later re-cost must not
+                # restore a cap the dead server's window allowed.
+                _final_attempt_cap = self._effective_context_length
+                stream_payload["max_tokens"] = _final_attempt_cap
+                if admission_output_allowance is not None:
+                    stream_payload["max_tokens"] = min(
+                        stream_payload["max_tokens"], admission_output_allowance
+                    )
             try:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
@@ -33635,6 +33648,22 @@ class LlamaCppBackend:
         # left on instead of taking the reasoning-only recovery.
         _attempt_started_at = ""
         while True:
+            # Per attempt: a continuation appends the partial, so a cap priced on the
+            # first attempt over-permits. Read from the payload, where that tail lives.
+            if on_conversation_grew is not None:
+                try:
+                    _final_recosted_allowance = on_conversation_grew(
+                        stream_payload["messages"], None
+                    )
+                    if _final_recosted_allowance is not None:
+                        admission_output_allowance = _final_recosted_allowance
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop final recost failed", exc_info = True)
+            # After it, so a continuation that rewrote the cap is bounded too. Rebuilt from
+            # the attempt cap, not narrowed from the last payload: a continuation whose
+            # prompt reached its share earns the flat allowance the re-cost above paid for.
+            if admission_output_allowance is not None:
+                stream_payload["max_tokens"] = min(_final_attempt_cap, admission_output_allowance)
             try:
                 with self._open_chat_stream_with_respawn_retry(
                     stream_payload,
@@ -33866,6 +33895,7 @@ class LlamaCppBackend:
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:
+                                _final_attempt_cap = _next_cap
                                 stream_payload["max_tokens"] = _next_cap
                             # Folded in only now, else the reported usage counts the last
                             # fragment alone.
@@ -33996,6 +34026,7 @@ class LlamaCppBackend:
                                 stream_payload.pop("continue_final_message", None)
                                 stream_payload.pop("add_generation_prompt", None)
                                 if _next_cap_r is not None:
+                                    _final_attempt_cap = _next_cap_r
                                     stream_payload["max_tokens"] = _next_cap_r
                                 if _off_kw is not None:
                                     stream_payload["chat_template_kwargs"] = _off_kw
