@@ -2115,8 +2115,12 @@ _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
+    # The payload, not the dist-info alone, as Repair-SidecarTiktoken checks: an
+    # interrupted install can leave the dist-info with no package beside it, the sidecar
+    # predicate accepts the sidecar (tiktoken is unpinned and optional), and a
+    # dist-info-only check would skip this top-up forever while Qwen tokenizers fail.
     for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
-        if [ -f "$_stt_meta" ]; then
+        if [ -f "$_stt_meta" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
             unset _stt_meta
             return 0
         fi
