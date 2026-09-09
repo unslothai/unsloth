@@ -476,7 +476,10 @@ def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
         lambda **_kw: False,  # Ctrl+C / EOF
     )
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (
+        False,
+        False,
+    )
 
 
 def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
