@@ -600,9 +600,7 @@ def test_the_developer_dir_variable_never_reaches_xcode_select(monkeypatch, tmp_
 def _profile_for(workdir, monkeypatch, prefix):
     monkeypatch.setattr(sys, "prefix", str(prefix))
     monkeypatch.setattr(sys, "exec_prefix", str(prefix))
-    return backend.build_profile(
-        workdir = str(workdir), private_tmp = _PRIVATE_TMP, runtime_paths = ()
-    )
+    return backend.build_profile(workdir = str(workdir), private_tmp = _PRIVATE_TMP, runtime_paths = ())
 
 
 def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
@@ -672,9 +670,7 @@ def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monk
     real_isdir, real_exists = os.path.isdir, os.path.exists
     monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
     monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
-    profile = backend.build_profile(
-        workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ()
-    )
+    profile = backend.build_profile(workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ())
     assert f'(subpath "{home}")' not in profile
 
 

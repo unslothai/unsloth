@@ -366,9 +366,13 @@ def _importable_entries(project_root: str) -> tuple[str, ...]:
     which is the honest failure rather than a quiet grant of the whole tree.
     """
     import_roots = [
-        entry for entry in sys.path
-        if entry and (os.path.abspath(entry) == project_root
-                      or os.path.abspath(entry).startswith(project_root + os.sep))
+        entry
+        for entry in sys.path
+        if entry
+        and (
+            os.path.abspath(entry) == project_root
+            or os.path.abspath(entry).startswith(project_root + os.sep)
+        )
     ]
     # A PEP 660 finder puts nothing on sys.path, so fall back to the two layouts
     # that cover almost everything published.
@@ -385,9 +389,7 @@ def _importable_entries(project_root: str) -> tuple[str, ...]:
             if name.startswith(".") or name.endswith((".egg-info", ".dist-info")):
                 continue
             entry = os.path.join(import_root, name)
-            package = os.path.isdir(entry) and os.path.exists(
-                os.path.join(entry, "__init__.py")
-            )
+            package = os.path.isdir(entry) and os.path.exists(os.path.join(entry, "__init__.py"))
             if (package or name.endswith(".py")) and entry not in found:
                 found.append(entry)
     return tuple(found)

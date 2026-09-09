@@ -531,7 +531,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for path in workdir_runtime_paths:
             argv += ["--ro-bind", path, path]
             if inner != workdir:
-                argv += ["--ro-bind", path, inner + path[len(workdir):]]
+                argv += ["--ro-bind", path, inner + path[len(workdir) :]]
         argv += ["--chdir", inner]
         if model_cache:
             inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)

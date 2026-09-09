@@ -1218,7 +1218,8 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
         for leg in ("lib", "bin"):
             for spelling in (real / "venv" / leg, alias / "venv" / leg):
                 landed = [
-                    i for i in range(len(argv))
+                    i
+                    for i in range(len(argv))
                     if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
                 ]
                 assert landed, f"{spelling} is not re-bound read-only"
