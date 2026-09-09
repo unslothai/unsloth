@@ -146,7 +146,7 @@ def test_managed_project_init_and_guidance_use_persisted_workspace(tmp_path, mon
     _write_skill(root, "review", "review", "Review code", "Check boundary conditions.")
     resolved = guidance.resolve_project_guidance("project-managed-context", query = "$review")
     assert resolved.project_id == project["id"]
-    assert "Use the project test suite." in resolved.addition
+    assert "Use the project test suite." not in resolved.addition
     assert "Keep user data intact." in resolved.addition
     assert "Check boundary conditions." in resolved.addition
     assert resolved.selected_skills == ("review",)
@@ -839,7 +839,7 @@ def test_resolved_guidance_escapes_repository_data_and_selects_named_skill(tmp_p
 
     assert resolved is not None
     assert resolved.selected_skills == ("review",)
-    assert "Keep &lt;user&gt; data intact." in resolved.addition
+    assert "Keep &lt;user&gt; data intact." not in resolved.addition
     assert "&lt;/agents_instructions&gt;" in resolved.addition
     assert "&lt;/skill&gt;" in resolved.addition
     assert "Keep <user>" not in resolved.addition
@@ -911,7 +911,6 @@ def test_rendered_project_guidance_is_bounded_closed_and_drops_oversize_skill_bo
     document = ET.fromstring(resolved.addition)
     assert document.tag == "unsloth_project_context"
     assert [child.tag for child in document] == [
-        "unsloth_project_guidance",
         "unsloth_repository_instructions",
         "unsloth_project_skills",
     ]
@@ -991,7 +990,7 @@ def test_windows_guidance_falls_back_to_database_instructions_without_workspace_
         resolved = guidance.resolve_project_guidance(f"project-{record['id']}")
 
     assert resolved is not None
-    assert "Keep &lt;user&gt; data intact." in resolved.addition
+    assert "Keep &lt;user&gt; data intact." not in resolved.addition
     assert resolved.instructions["issues"] == [
         {"path": "AGENTS.md", "reason": "unsupported_platform"}
     ]
@@ -1065,3 +1064,13 @@ def test_project_guidance_routes_strip_skill_content_and_map_workspace_errors(
     with pytest.raises(HTTPException) as missing:
         project_guidance.project_init(record["id"], _current_subject = "tester")
     assert missing.value.status_code == 404
+
+
+def test_workspace_resolution_honors_deleted_project_recheck(tmp_path, monkeypatch):
+    from core.agent_workspace import common
+
+    record = {"id": "deleted", "sandboxPath": str(tmp_path), "workspaceKind": "managed"}
+    monkeypatch.setattr(common, "get_chat_project", lambda _project_id: record)
+    monkeypatch.setattr(common, "ensure_chat_project_workspace", lambda _project_id: None)
+    with pytest.raises(common.AgentWorkspaceError, match = "Project not found"):
+        common.project_workspace("deleted")

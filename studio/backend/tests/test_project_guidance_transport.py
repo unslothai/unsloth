@@ -433,3 +433,80 @@ def test_unavailable_project_guidance_maps_to_transport_specific_409(monkeypatch
         assert caught.value.detail["type"] == "error"
     else:
         assert caught.value.detail["error"]["code"] == "project_workspace_unavailable"
+
+
+def test_workspace_lease_fences_session_before_project_validation(monkeypatch):
+    session = "project-fenced-before-read"
+
+    def validate(value):
+        assert value == session
+        assert not tools.wait_for_sessions_idle([session], timeout = 0)
+        return "fenced-before-read"
+
+    monkeypatch.setattr(workspace_lease, "project_id_from_session", validate)
+
+    async def scenario():
+        lease = await workspace_lease.ProjectWorkspaceRequestLease.acquire(session)
+        assert lease is not None
+        await lease.release()
+        assert tools.wait_for_sessions_idle([session], timeout = 0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError("lookup failed")])
+def test_workspace_lease_releases_when_project_validation_fails(monkeypatch, failure):
+    session = "project-disappeared"
+
+    def validate(_session):
+        assert not tools.wait_for_sessions_idle([session], timeout = 0)
+        if failure:
+            raise failure
+        return None
+
+    monkeypatch.setattr(workspace_lease, "project_id_from_session", validate)
+
+    async def scenario():
+        if failure:
+            with pytest.raises(RuntimeError, match = "lookup failed"):
+                await workspace_lease.ProjectWorkspaceRequestLease.acquire(session)
+        else:
+            assert await workspace_lease.ProjectWorkspaceRequestLease.acquire(session) is None
+        assert tools.wait_for_sessions_idle([session], timeout = 0)
+
+    asyncio.run(scenario())
+
+
+def test_project_without_agents_or_skills_preserves_model_messages_and_system_bytes(
+    monkeypatch, tmp_path
+):
+    from storage import studio_db
+    from core.agent_workspace.guidance import resolve_project_guidance
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    studio_db.upsert_chat_project(
+        {
+            "id": "empty-guidance",
+            "name": "Empty guidance",
+            "createdAt": 1,
+            "updatedAt": 1,
+            "instructions": "Stored <user> instructions remain in the caller's existing prompt.",
+        }
+    )
+    session = "project-empty-guidance"
+    assert resolve_project_guidance(session).addition == ""
+    messages = [
+        {
+            "role": "system",
+            "content": "  Original system\r\n<project_instructions>\nStored rules\n</project_instructions>  ",
+        },
+        {"role": "user", "content": "hello"},
+    ]
+    assert inference._with_project_guidance_messages(messages, session) is messages
+    for system in (
+        messages[0]["content"],
+        [{"type": "text", "text": " original ", "cache_control": {"type": "ephemeral"}}],
+    ):
+        assert (
+            inference._with_anthropic_project_guidance(system, session, messages = messages) is system
+        )

@@ -18,9 +18,7 @@ from .skills import discover_project_skills, render_project_skills
 
 
 PROJECT_SESSION_PREFIX = "project-"
-MAX_PROJECT_INSTRUCTIONS_CHARACTERS = 24_000
 MAX_RENDERED_PROJECT_GUIDANCE_CHARACTERS = 128 * 1024
-MAX_RENDERED_PROJECT_BLOCK_CHARACTERS = 32 * 1024
 MAX_RENDERED_INSTRUCTIONS_BLOCK_CHARACTERS = 40 * 1024
 MAX_RENDERED_SKILLS_BLOCK_CHARACTERS = 48 * 1024
 _SERVER_GUIDANCE_BLOCK = re.compile(
@@ -126,32 +124,6 @@ def _bounded_escape(value: str, limit: int, marker: str) -> tuple[str, bool]:
         else:
             high = middle - 1
     return escape_guidance(value[:low]) + marker_escaped, True
-
-
-def _project_block(project: dict) -> str:
-    value = str(project.get("instructions") or "").strip()
-    if not value:
-        return ""
-    bounded = value[:MAX_PROJECT_INSTRUCTIONS_CHARACTERS]
-    if len(value) > MAX_PROJECT_INSTRUCTIONS_CHARACTERS:
-        bounded += (
-            f"\n[Project instructions truncated at "
-            f"{MAX_PROJECT_INSTRUCTIONS_CHARACTERS} characters.]"
-        )
-    prefix = '<unsloth_project_guidance version="1">\n<project_instructions>\n'
-    suffix = "\n</project_instructions>\n</unsloth_project_guidance>"
-    content, _ = _bounded_escape(
-        bounded,
-        MAX_RENDERED_PROJECT_BLOCK_CHARACTERS - len(prefix) - len(suffix),
-        "\n[Project instructions truncated at the rendered character limit.]",
-    )
-    return "".join(
-        (
-            prefix,
-            content,
-            suffix,
-        )
-    )
 
 
 def _instructions_block(instructions: dict) -> str:
@@ -275,7 +247,6 @@ def resolve_project_guidance(
     rendered = "\n\n".join(
         block
         for block in (
-            _project_block(project),
             _instructions_block(instructions),
             skills_block,
         )
@@ -305,10 +276,8 @@ def resolve_project_guidance(
 
 
 __all__ = [
-    "MAX_PROJECT_INSTRUCTIONS_CHARACTERS",
     "MAX_RENDERED_INSTRUCTIONS_BLOCK_CHARACTERS",
     "MAX_RENDERED_PROJECT_GUIDANCE_CHARACTERS",
-    "MAX_RENDERED_PROJECT_BLOCK_CHARACTERS",
     "MAX_RENDERED_SKILLS_BLOCK_CHARACTERS",
     "PROJECT_SESSION_PREFIX",
     "ProjectGuidanceUnavailable",

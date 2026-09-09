@@ -31,8 +31,8 @@ class ProjectWorkspaceRequestLease:
     async def acquire(cls, session_id: Optional[str]):
         if not isinstance(session_id, str) or not session_id.startswith("project-"):
             return None
-        project_id = await asyncio.to_thread(project_id_from_session, session_id)
-        if project_id is None:
+        project_id = session_id[len("project-") :]
+        if not project_id:
             return None
         from core.inference.tools import project_workspace_in_flight
 
@@ -40,6 +40,9 @@ class ProjectWorkspaceRequestLease:
         lease = cls(context)
         try:
             await asyncio.to_thread(lease._enter)
+            if await asyncio.to_thread(project_id_from_session, session_id) != project_id:
+                await lease.release()
+                return None
         except BaseException:
             await lease.release()
             raise

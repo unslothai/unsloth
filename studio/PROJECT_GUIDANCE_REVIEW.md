@@ -1,7 +1,7 @@
 # Project guidance: first context layer from #9673
 
-This change is independently based on upstream `main` at
-`d530284a0a2c95492d263014dafd01e9ed6c6ea6`. It uses Studio's existing managed
+This change is independently refreshed against upstream `main` at
+`95feb6979`. It uses Studio's existing managed
 project sandbox. The choice between existing-folder PRs #9859 and #9670 remains
 with the maintainer; neither implementation is part of this patch.
 
@@ -12,8 +12,10 @@ with the maintainer; neither implementation is part of this patch.
   and shows the same result in both panes.
 - The project landing page has an **Instructions & skills** tab. It shows the
   resolved root instructions, discovered skill metadata, and excluded paths.
-- The backend resolves stored project instructions, root agent instructions,
-  and project skills for each request. Caller-supplied server envelopes are
+- Existing stored project instructions retain the frontend's exact
+  `<project_instructions>` serialization for sends and token counting. With no
+  AGENTS file or skills, the backend preserves model messages and system bytes.
+  The backend resolves root agent instructions and project skills for each request. Caller-supplied server envelopes are
   replaced with current server-resolved guidance. Ordinary chat IDs that happen
   to match `project-<id>` are not treated as project authority.
 - Automatic prompt injection reads root instructions. The authenticated
@@ -45,6 +47,11 @@ project instructions; new repository-guidance parity for that subsystem belongs
 to the continuity follow-up.
 
 ## Local validation
+
+The review follow-up adds tests for prompt byte preservation, external project
+session metadata, acquiring the deletion fence before validation, and deletion
+during workspace revalidation. The focused guidance backend suite passes 57 tests.
+The counts below are historical validation of the prior head, not new-head CI.
 
 - Project guidance, cancellation, durable chat, OpenAI passthrough, and Responses:
   **772 passed**, one warning.

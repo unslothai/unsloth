@@ -30271,7 +30271,7 @@ def _with_project_guidance_messages(messages: list[Any], session_id: Optional[st
         )
     except ProjectGuidanceUnavailable as exc:
         raise _project_guidance_http_exception(exc) from exc
-    if resolved is None:
+    if resolved is None or not resolved.addition:
         return messages
 
     copied = [
@@ -30355,7 +30355,7 @@ def _with_anthropic_project_guidance(
         )
     except ProjectGuidanceUnavailable as exc:
         raise _project_guidance_http_exception(exc, anthropic = True) from exc
-    if resolved is None:
+    if resolved is None or not resolved.addition:
         return system
     if system is None:
         return resolved.addition or None
