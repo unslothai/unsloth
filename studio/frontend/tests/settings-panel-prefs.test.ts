@@ -43,6 +43,7 @@ test("a version 0 record hydrates every field", () => {
   const s = useSettingsPanelPrefsStore.getState();
   assert.equal(s.agentsAgent, "codex");
   assert.equal(s.agentsModel, "unsloth/Foo-GGUF");
+  assert.equal(s.agentsOs, null);
   assert.equal(s.agentsVariant, "UD-Q4_K_XL");
   assert.equal(s.apiExampleOs, "windows");
   assert.equal(s.resourcesLiveUpdates, false);
@@ -78,16 +79,20 @@ test("a setter write round-trips through localStorage", () => {
   assert.equal(JSON.parse(raw as string).state.fineTuneAction, "export");
 });
 
-test("the retired Agents shell preference is ignored when restoring settings", () => {
+test("the Agents command shell override persists and rejects unknown values", () => {
+  useSettingsPanelPrefsStore.getState().setAgentsOs("unix");
+  assert.equal(useSettingsPanelPrefsStore.getState().agentsOs, "unix");
+  const raw = store.get(KEY);
+  assert.ok(raw);
+  assert.equal(JSON.parse(raw as string).state.agentsOs, "unix");
+
   const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
   assert.ok(merged);
   const out = merged(
-    { agentsOs: "windows", agentsAgent: "codex", apiExampleOs: "unix" },
+    { agentsOs: "fish" },
     useSettingsPanelPrefsStore.getState(),
-  );
-  assert.equal(Object.hasOwn(out, "agentsOs"), false);
-  assert.equal(out.agentsAgent, "codex");
-  assert.equal(out.apiExampleOs, "unix");
+  ) as { agentsOs: unknown };
+  assert.equal(out.agentsOs, null);
 });
 
 // The reason the sanitiser exists: agentsModel reaches `.toLowerCase()` and the
