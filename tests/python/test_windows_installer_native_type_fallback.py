@@ -1885,7 +1885,7 @@ def test_each_import_carries_the_charset_its_declaration_had(method: str, charse
                     "Write-StudioLine",
                     "Write-StudioFinalPathDegraded",
                     "Test-StudioCanDefineNativeTypes",
-    "Test-StudioEmitInChildProcess",
+                    "Test-StudioEmitInChildProcess",
                     "New-StudioDynamicAssembly",
                     "New-StudioEmittedNativeType",
                     "Initialize-StudioFinalPathNativeType",
@@ -1926,10 +1926,10 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
                 _one_function(source, "New-StudioEmittedNativeType"),
                 '$null = New-StudioEmittedNativeType -TypeName "UnslothOutParamProbe" -Imports @(',
                 '    @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]',
-                '       Args = @([IntPtr], [uint32].MakeByRefType())',
-                '       Ansi = $true',
-                '       Out = @(2) }',
-                ')',
+                "       Args = @([IntPtr], [uint32].MakeByRefType())",
+                "       Ansi = $true",
+                "       Out = @(2) }",
+                ")",
                 '$p = ([type]"UnslothOutParamProbe").GetMethod("GetConsoleMode").GetParameters()[1]',
                 'Write-Output "OUT:$($p.IsOut)"',
                 'Write-Output "BYREF:$($p.ParameterType.IsByRef)"',
@@ -1941,12 +1941,10 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
     assert _lines(result, "BYREF:") == ["BYREF:True"]
     # And the real declaration in the script carries the key, not just the emitter's ability
     # to honour it.
-    block = re.search(
-        r'Name = "GetConsoleMode".*?\}', source, flags = re.DOTALL
-    )
-    assert block is not None and "Out = @(2)" in block.group(0), (
-        "GetConsoleMode lost its Out position"
-    )
+    block = re.search(r'Name = "GetConsoleMode".*?\}', source, flags = re.DOTALL)
+    assert block is not None and "Out = @(2)" in block.group(
+        0
+    ), "GetConsoleMode lost its Out position"
 
 
 @requires_pwsh
@@ -1965,7 +1963,7 @@ def test_a_published_type_counts_even_when_creation_threw():
                     "Write-StudioLine",
                     "Write-StudioFinalPathDegraded",
                     "Test-StudioCanDefineNativeTypes",
-    "Test-StudioEmitInChildProcess",
+                    "Test-StudioEmitInChildProcess",
                     "New-StudioDynamicAssembly",
                     "New-StudioEmittedNativeType",
                     "Initialize-StudioFinalPathNativeType",
