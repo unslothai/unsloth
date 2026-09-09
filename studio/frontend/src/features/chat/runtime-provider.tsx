@@ -112,6 +112,7 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
+  restoreCarriedParts,
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
@@ -865,7 +866,11 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    // `carried` is taken once, here: the follow only ever appends to `raw`, so the offsets
+    // these parts were stored at stay valid for the rest of the run.
+    const stored = generationRawContent(storedMessage.content);
+    const carried = stored.carried;
+    let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -905,8 +910,11 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      const content = parseAssistantContent(
-        reasoningOpen ? `${raw}</think>` : raw,
+      // The rebuild knows only text and reasoning, so the tool calls go back on before this
+      // is written: the write is authoritative and would otherwise persist their loss.
+      const content = restoreCarriedParts(
+        parseAssistantContent(reasoningOpen ? `${raw}</think>` : raw),
+        carried,
       ) as MessageRecord["content"];
       await saveStoredChatMessage({
         id: storedMessage.id,

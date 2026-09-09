@@ -215,34 +215,114 @@ export function recoveredGenerationFinalMetadata(options: {
   return next;
 }
 
+// The tags the projection below writes reasoning back into. Mirrors parse-assistant-content,
+// which reads them; restoreCarriedParts charges their length to stay on the same offsets.
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+/** A part the raw projection cannot express, kept with the offset it sat at. */
+export type CarriedPart = { at: number; part: unknown };
+
 /** The reply as one string, with reasoning back inside `<think>` tags. The recovery replays a
  *  run's chunk events, so it keeps the reply as the text those chunks carried rather than as
- *  parts. Inverse of `parseAssistantContent`, so a parts body can be compared to a delta one. */
+ *  parts. Inverse of `parseAssistantContent`, so a parts body can be compared to a delta one.
+ *
+ *  Only text and reasoning have a spelling here. Everything else (tool calls above all) comes
+ *  back as `carried`, since the caller rebuilds the body from `raw` and would otherwise drop
+ *  those parts and then persist the loss. */
 export function generationRawContent(content: unknown): {
   raw: string;
   reasoningOpen: boolean;
+  carried: CarriedPart[];
 } {
   if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false };
+    return { raw: content, reasoningOpen: false, carried: [] };
   }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  if (!Array.isArray(content)) {
+    return { raw: "", reasoningOpen: false, carried: [] };
+  }
   let raw = "";
   let reasoningOpen = false;
+  const carried: CarriedPart[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
     const text = typeof record.text === "string" ? record.text : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
-      else raw += `<think>${text}`;
+      else raw += `${THINK_OPEN}${text}`;
       reasoningOpen = true;
     } else if (record.type === "text") {
-      if (reasoningOpen) raw += "</think>";
+      if (reasoningOpen) raw += THINK_CLOSE;
       raw += text;
       reasoningOpen = false;
+    } else {
+      carried.push({ at: raw.length, part });
     }
   }
-  return { raw, reasoningOpen };
+  return { raw, reasoningOpen, carried };
+}
+
+/** Put `carried` back into a body rebuilt from `raw`, at the offsets they were taken from.
+ *
+ *  Same idea as the stream adapter's `textCursor`: a tool call belongs at a position in the
+ *  text, not at an index in the parts array, because the rebuild coalesces text the stored
+ *  body had split around the call. A carried part landing inside a text part splits it. */
+export function restoreCarriedParts<TPart>(
+  parts: readonly TPart[],
+  carried: readonly CarriedPart[],
+): TPart[] {
+  if (carried.length === 0) return [...parts];
+  const pending = [...carried].sort((a, b) => a.at - b.at);
+  const out: TPart[] = [];
+  let next = 0;
+  let offset = 0;
+  let reasoningOpen = false;
+  const flushUpTo = (limit: number) => {
+    while (next < pending.length && pending[next].at <= limit) {
+      out.push(pending[next].part as TPart);
+      next += 1;
+    }
+  };
+  for (const part of parts) {
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    flushUpTo(offset);
+    if (record.type === "reasoning") {
+      if (!reasoningOpen) offset += THINK_OPEN.length;
+      reasoningOpen = true;
+      out.push(part);
+      offset += text.length;
+      continue;
+    }
+    if (record.type !== "text") {
+      out.push(part);
+      continue;
+    }
+    // The close tag is charged before the text, exactly as the projection writes it, so a part
+    // carried while reasoning was open still lands ahead of this run of text.
+    if (reasoningOpen) offset += THINK_CLOSE.length;
+    reasoningOpen = false;
+    flushUpTo(offset);
+    let cut = 0;
+    while (next < pending.length && pending[next].at < offset + text.length) {
+      const at = pending[next].at - offset;
+      if (at > cut) out.push({ ...record, text: text.slice(cut, at) } as TPart);
+      out.push(pending[next].part as TPart);
+      cut = at;
+      next += 1;
+    }
+    if (cut === 0) out.push(part);
+    else if (cut < text.length) {
+      out.push({ ...record, text: text.slice(cut) } as TPart);
+    }
+    offset += text.length;
+  }
+  while (next < pending.length) {
+    out.push(pending[next].part as TPart);
+    next += 1;
+  }
+  return out;
 }
 
 /** Which body a recovery publish should show. A recovery replays the run's events from the
@@ -250,15 +330,31 @@ export function generationRawContent(content: unknown): {
  *  run is also the one this tab is streaming, that walk is far behind the live stream and
  *  its body is a PREFIX of what the reader sees, so importing it rewinds the reply twice a
  *  second. Prefix, not length: a body that genuinely disagrees is the server's and wins,
- *  since storage is authoritative. Only a body carrying nothing new is refused. */
+ *  since storage is authoritative. Only a body carrying nothing new is refused.
+ *
+ *  Both sides are read through the raw projection, which cannot see a tool call, so a
+ *  recovered body that dropped one still counted as newer and replaced the view. The text
+ *  stays the server's; the view's carried parts go back on top. */
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,
 ): TContent {
-  const view = generationRawContent(viewContent).raw;
-  const recovered = generationRawContent(recoveredContent).raw;
-  if (recovered.length < view.length && view.startsWith(recovered)) {
+  const view = generationRawContent(viewContent);
+  const recovered = generationRawContent(recoveredContent);
+  if (recovered.raw.length < view.raw.length && view.raw.startsWith(recovered.raw)) {
     return viewContent;
+  }
+  if (
+    view.carried.length > recovered.carried.length &&
+    Array.isArray(recoveredContent)
+  ) {
+    // Rebuilt from the recovered text alone, so re-adding every carried part cannot double one.
+    const spoken = recoveredContent.filter(
+      (part) =>
+        (part as { type?: string })?.type === "text" ||
+        (part as { type?: string })?.type === "reasoning",
+    );
+    return restoreCarriedParts(spoken, view.carried) as TContent;
   }
   return recoveredContent;
 }
