@@ -651,14 +651,19 @@ _BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
 _BARE_JSON_ARGS_KEYS = ("arguments", "parameters", "args")
 
 
-def _top_level_args_value(text: str, start: int, end: int) -> "tuple | None":
-    """``(begin, stop, is_string)`` for the TOP-LEVEL argument value of the JSON call at
-    ``start``, else None. ``begin``/``stop`` bound the value's INTERIOR.
+def _top_level_args_values(text: str, start: int, end: int) -> list:
+    """``(begin, stop, is_string)`` for EVERY top-level argument value of the JSON call at
+    ``start``. ``begin``/``stop`` bound each value's INTERIOR.
 
     Structural, not the first textual match: an earlier nested or decoy ``arguments`` mapping
     matched instead, so only the decoy was masked. The value is accepted as an object or as a
     JSON string (both shapes the parser reads), and the string form carried an executable
-    payload while going unmasked."""
+    payload while going unmasked.
+
+    Every occurrence, not the first: ``json.loads`` accepts a repeated key and keeps the LAST,
+    so stopping at the first left the effective value unmasked and a blocked ``terminal``
+    envelope handed the passthrough healer a nested ``<function=python>`` to promote."""
+    values: list = []
     depth = 0
     i = start
     while i < end:
@@ -677,13 +682,21 @@ def _top_level_args_value(text: str, start: int, end: int) -> "tuple | None":
                         k += 1
                     if k < end and text[k] == "{":
                         stop = _balanced_brace_end(text, k)
-                        return None if stop is None else (k + 1, stop, False)
+                        if stop is None:
+                            return values
+                        values.append((k + 1, stop, False))
+                        i = stop + 1
+                        continue
                     if k < end and text[k] == '"':
                         stop = k + 1
                         while stop < end and text[stop] != '"':
                             stop += 2 if text[stop] == "\\" else 1
-                        return None if stop >= end else (k + 1, stop, True)
-                    return None
+                        if stop >= end:
+                            return values
+                        values.append((k + 1, stop, True))
+                        i = stop + 1
+                        continue
+                    return values
             i = j + 1
             continue
         if ch in "{[":
@@ -691,9 +704,9 @@ def _top_level_args_value(text: str, start: int, end: int) -> "tuple | None":
         elif ch in "}]":
             depth -= 1
             if depth == 0:
-                return None
+                return values
         i += 1
-    return None
+    return values
 
 
 def _string_content_spans(text: str, start: int, end: int) -> list:
@@ -815,6 +828,34 @@ _CONTAINING_WRAPPERS = (
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
+def _balanced_paren_end(text: str, paren_start: int) -> "int | None":
+    """Index of the ``)`` matching the ``(`` at ``paren_start``, or None. Quotes are honoured
+    so a paren inside a kwarg string does not close the call."""
+    if paren_start >= len(text) or text[paren_start] != "(":
+        return None
+    depth = 0
+    quote = ""
+    i = paren_start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
 def _inference_wrapper_spans(text: str) -> list:
     """Spans covering the argument object of each inference-only wrapped call."""
     spans: list = []
@@ -828,6 +869,14 @@ def _inference_wrapper_spans(text: str) -> list:
                 if end is not None:
                     spans.append((pos, end + 1))
             pos = text.find(opener, pos + 1)
+    # Llama-3's other shape is callable, not a JSON body, so the brace scan above never
+    # covered it and blocked syntax quoted in a kwarg was masked inside the call's own input.
+    # The kwargs INTERIOR only: a span reaching the closing paren is adjacent to whatever
+    # follows, ``_merge_spans`` fuses the two, and a rehearsal starting right after the call
+    # then reads as strictly inside a trusted span and stops being masked.
+    for m in _LLAMA3_PY_CALL_RE.finditer(text):
+        end = _balanced_paren_end(text, m.end() - 1)
+        spans.append((m.end(), len(text) if end is None else end))
     return spans
 
 
@@ -861,6 +910,39 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     it as; leaving that tail visible let a wrapped call inside a truncated blocked call
     execute. Both are why this walks candidates in order instead of per pattern."""
     spans: list = []
+    # The parser accepts Llama sentinels ahead of the object and a ``;`` chain behind it, so
+    # walk the chain as it does; ``shift`` keeps offsets in the caller's coordinates. First,
+    # because a PROMOTABLE call's arguments are that call's own input: masking a blocked
+    # candidate quoted inside them rewrote what the tool actually received.
+    protected: list = []
+    cursor = 0
+    while cursor < len(text):
+        rest = text[cursor:]
+        probe = strip_llama3_leading_sentinels(rest.lstrip(" \t\r\n;"))
+        shift = cursor + len(rest) - len(probe)
+        lead = _leading_json_value_end(probe)
+        if not lead:
+            break
+        # A leading ARRAY is a valid JSON value with no object in it, so ``index`` raised.
+        obj = probe.find("{", 0, lead)
+        if obj < 0:
+            cursor = shift + lead
+            continue
+        name = _top_level_bare_json_name(probe[:lead])
+        values = _top_level_args_values(probe, obj, lead)
+        if _markerless_blocked_execution(name, enabled_tool_names):
+            # Only the ARGUMENTS: the scans that decide the call is blocked read the NAME out
+            # of this same body. ``arguments`` is accepted as an object or as a JSON string.
+            for begin, stop, is_string in values:
+                inner = (
+                    _escaped_string_content_spans(probe, begin, stop)
+                    if is_string
+                    else _string_content_spans(probe, begin, stop)
+                )
+                spans.extend((a + shift, b + shift) for a, b in inner)
+        elif _markerless_promotable(name, enabled_tool_names):
+            protected.extend((begin + shift, stop + shift) for begin, stop, _ in values)
+        cursor = shift + lead
     candidates: list = []
     if _has_gemma_bare_trigger(text):
         candidates += [("gemma", m) for m in _GEMMA_BARE_TC_RE.finditer(text)]
@@ -873,12 +955,13 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
         # Both scans sweep the whole buffer and the incremental strip calls this per snapshot,
         # so they run only for a wrapper that could CONTAIN a candidate. The bare rehearsal
         # literal is excluded: a candidate is never excluded by its own span.
-        trusted = (
-            _merge_spans(
+        trusted = _merge_spans(
+            (
                 _tool_healing._tool_call_markup_spans(text) + _inference_wrapper_spans(text)
+                if any(opener in text for opener in _CONTAINING_WRAPPERS)
+                else []
             )
-            if any(opener in text for opener in _CONTAINING_WRAPPERS)
-            else []
+            + protected
         )
         covered = 0
         for kind, m in candidates:
@@ -908,31 +991,6 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
                 break
             spans.append((body_start, end))
             covered = end
-    # The parser accepts Llama sentinels ahead of the object and a ``;`` chain behind it, so
-    # walk the chain as it does; ``shift`` keeps offsets in the caller's coordinates.
-    cursor = 0
-    while cursor < len(text):
-        rest = text[cursor:]
-        probe = strip_llama3_leading_sentinels(rest.lstrip(" \t\r\n;"))
-        shift = cursor + len(rest) - len(probe)
-        lead = _leading_json_value_end(probe)
-        if not lead:
-            break
-        if _markerless_blocked_execution(
-            _top_level_bare_json_name(probe[:lead]), enabled_tool_names
-        ):
-            # Only the ARGUMENTS: the scans that decide the call is blocked read the NAME out
-            # of this same body. ``arguments`` is accepted as an object or as a JSON string.
-            value = _top_level_args_value(probe, probe.index("{"), lead)
-            if value is not None:
-                begin, stop, is_string = value
-                inner = (
-                    _escaped_string_content_spans(probe, begin, stop)
-                    if is_string
-                    else _string_content_spans(probe, begin, stop)
-                )
-                spans.extend((a + shift, b + shift) for a, b in inner)
-        cursor = shift + lead
     spans = [(start, end) for start, end in spans if end > start]
     spans.sort()
     # Nested blocked calls are already covered by the outer body; keep spans disjoint so the

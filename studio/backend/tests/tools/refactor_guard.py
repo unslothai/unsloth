@@ -286,6 +286,7 @@ def build_corpus(seed: int = 20260811, count: int = 600) -> list:
 _ARG_FIXTURES = {
     "brace_start": lambda text: max(text.find("{"), 0),
     "brace_pos": lambda text: max(text.find("{"), 0),
+    "paren_start": lambda text: max(text.find("("), 0),
     "start": lambda text: max(text.find("["), 0),
     "pos": lambda text: len(text),
     "body_start": lambda text: max(text.find("[") + 1, 0),

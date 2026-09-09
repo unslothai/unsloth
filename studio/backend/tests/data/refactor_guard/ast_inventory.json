@@ -1542,6 +1542,11 @@
         "kind": "def",
         "signature": "src: str, start: int"
       },
+      "_balanced_paren_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, paren_start: int"
+      },
       "_bare_json_call_shaped": {
         "decorators": [],
         "kind": "def",
@@ -1823,7 +1828,7 @@
         "kind": "def",
         "signature": "content: str"
       },
-      "_top_level_args_value": {
+      "_top_level_args_values": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str, start: int, end: int"

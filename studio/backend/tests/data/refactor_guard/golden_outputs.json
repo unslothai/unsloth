@@ -1,6 +1,7 @@
 {
   "core.inference.tool_call_parser": {
     "_balanced_bracket_end": "19de8fb63babb0861475879bfbc13edd8efde741a2354b8bee9028d598a0c92d",
+    "_balanced_paren_end": "f45332aefa427ff956758a2eaac5cb851ba2e86f53a930fe2b99920118f3c7c4",
     "_blocked_markerless_body_spans": "be264b16a072e0b58ce1c38e5de8c0b6c77ff944aa4b69d0bac4d9b2c28c323d",
     "_consume_mistral_call": "813544e2d389e368c2d6c77f333ae1d07409d9cf0d3bdad8735c116577bcd380",
     "_disabled_gemma_call_end_containing_signal": "c08417f20bd3f6c67d09c63f750894aa02104faef091f31dba29c57e585ac69a",
@@ -18,7 +19,7 @@
     "_gemma_parse_value": "480b71f46fd177c2fe4edeb8442ddc90c23cdf5188931e00cedbe81f63be2420",
     "_glm_value_close": "1946084f6d174988db2ca06611bb07943d9c32cfa9c7323fbefcb1b02aa9a101",
     "_has_gemma_bare_trigger": "6c073a56a486f2df2b88d4c9f28aebd5739d47842f3ad5822f07c721e483d8dc",
-    "_inference_wrapper_spans": "b6714b0b52db239aba36fcb72d3c8a2c34af5d031ea4a571236ce950e3da34b3",
+    "_inference_wrapper_spans": "9d1b1db956a12b8cb1c161a6b953ca78e818314a97a52cc16d3fd3f861ba7423",
     "_inside_open_parameter": "a0b25a3185a60cefe98162b3ccfd0872f53481beacc4c99571c2c04a3d3c09d4",
     "_is_provisional_call": "b56e53c8d51ea6dce204465f6b53d7d0a6b8e9b6d4d859888b3da9795892e6fa",
     "_last_bare_call_word": "6fd7aa3d3e8802e1f11296d2687af0c981eb2237c832f2f3afd6a1dff3909624",
@@ -52,7 +53,7 @@
     "_strip_glm_calls": "5d2c536c4a3fbbc2e25525b266b06da99e469c10cd0551020f341c9c6f6d01a6",
     "_strip_mistral_closed_calls": "874d69e07bf2c7007ed945493c4e065bbdea740d4d9e1f64cbeda382cc8c90c8",
     "_strip_mistral_reasoning": "3a97a231706b3ab23b3c7f28e69170eca6f749ed0388dd93bccc25150e97faf6",
-    "_top_level_args_value": "9c9df0968a14eb3596278ef9151cab3f3deb2fad2251f47696090649d84006b4",
+    "_top_level_args_values": "679cfd21c69c837248698e427bd41c0f483480678c45effddf9ed61d3098aeb8",
     "_top_level_bare_json_name": "317d91e7280b935658db9845a9a29af864a30bfd7093cf2cba83d2b8306c8049",
     "_unmask_blocked_bodies": "3a97a231706b3ab23b3c7f28e69170eca6f749ed0388dd93bccc25150e97faf6",
     "_unmatched_think_closer": "db7d6576fadb4fe097826883e15393030e13285d2fe78259e8d4d3149e484d30",

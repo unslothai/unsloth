@@ -1852,3 +1852,39 @@ def test_a_rehearsed_gemma_call_does_not_hide_the_real_one(text, expected):
     tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
     signals = ["<tool_call>", "[TOOL_CALLS]", "[ARGS]"]
     assert _earliest_tool_signal(text, signals, tools, start = 0) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A promotable outer call: its argument is the tool's own input, not markup to mask.
+        '{"name":"web_search","parameters":{"q":"call:terminal{command:id}"}}',
+        # Llama-3's callable shape. The wrapper scan only knew the JSON-body form, so the
+        # kwarg was masked inside the call that was about to receive it.
+        '<|python_tag|>web_search.call(q="call:terminal{command:id}")',
+    ],
+)
+def test_blocked_syntax_quoted_by_a_promotable_call_reaches_the_tool_intact(text):
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"web_search", "terminal"}
+    )
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    args = calls[0]["function"]["arguments"]
+    assert "call:terminal{command:id}" in args
+    assert _BLOCKED_BODY_MASK not in args
+
+
+def test_a_repeated_arguments_key_masks_the_value_json_actually_uses():
+    """``json.loads`` keeps the LAST duplicate, so masking only the first left the effective
+    value exposed and the passthrough healer promoted the nested call out of it."""
+    import json as _json
+
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    text = ('{"name":"terminal","arguments":{},"arguments":{"x":'
+            '"<function=python><parameter=code>print(1)</parameter></function>"}}')
+    # The premise: the second value is the one a JSON reader sees.
+    assert "function=python" in _json.dumps(_json.loads(text)["arguments"])
+    gate = {"terminal", "python"}
+    assert light(text, enabled_tool_names = gate) == []
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
