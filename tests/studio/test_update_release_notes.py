@@ -899,6 +899,58 @@ def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
     assert seen == ["Bearer ghp_test_token", None]
 
 
+def test_a_mirror_rate_limit_does_not_lock_out_the_github_api(notes_module, monkeypatch):
+    """UNSLOTH_RELEASES_URL can point anywhere. A 429 from a mirror says nothing
+    about api.github.com's quota, and recording one would send the llama.cpp and
+    whisper.cpp freshness checks to the lagging redirect for up to an hour."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 429, "slow down", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        result = notes_module.get_latest_release()
+        assert "rate limit" in (result.error or "").lower()
+        assert freshness_flow.github_rate_limit_remaining() == 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_a_github_api_rate_limit_is_shared_with_the_freshness_checks(notes_module, monkeypatch):
+    """The same 60/hour per-IP quota, so the notes fetch that spent it tells the
+    freshness checks rather than letting each one rediscover the lockout."""
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, 403, "rate limited", headers, None)
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        notes_module.get_latest_release()
+        assert freshness_flow.github_rate_limit_remaining() > 0
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
     wins over the back-off. Only the first wait used to be bounded, so the fetch

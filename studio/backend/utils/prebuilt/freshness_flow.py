@@ -60,12 +60,28 @@ def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Opt
     return None
 
 
+def _quota_left(headers: Any) -> bool:
+    if headers is None:
+        return False
+    try:
+        return float(str(headers.get("X-RateLimit-Remaining") or "").strip()) > 0
+    except ValueError:
+        return False
+
+
 def note_github_rate_limited(headers: Any = None, *, wait: Optional[float] = None) -> float:
-    # Never shortens a lockout already in place.
+    """Record the lockout and return its length; 0 when the headers say this was not one.
+
+    Never shortens a lockout already in place. A 403 whose headers report quota to spare
+    is a permission refusal, not a rate limit -- a fine-grained token without access to
+    the repo answers that way -- and locking every api.github.com call out of the process
+    for it would push the freshness checks onto the lagging redirect for nothing."""
     global _api_rate_limited_until
     if wait is None:
         wait = rate_limit_wait_seconds(headers)
     if wait is None:
+        if _quota_left(headers):
+            return 0.0
         wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     wait = min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
     _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
@@ -375,6 +391,14 @@ def latest_published_release(
         return None
     if failed_at is not None:
         failed_at.pop(repo, None)
+    lockout = github_rate_limit_remaining()
+    if lockout > 0:
+        # Fetched under the api.github.com lockout, so this is the release-page
+        # redirect's answer: it sorts by commit date and can name an older release
+        # than the newest publish. Hold it only until the lockout ends, and never on
+        # disk, or one rate limit pins a lagging tag for the whole 24h TTL.
+        memo[repo] = (wall_now - (RELEASE_CACHE_TTL_SECONDS - lockout), latest)
+        return latest
     memo[repo] = (wall_now, latest)
     save(repo, latest)
     return latest

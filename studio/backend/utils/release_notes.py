@@ -743,7 +743,7 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
             )
         payload = json.loads(body.decode("utf-8", errors = "replace"))
     except urllib.error.HTTPError as error:
-        return _http_error_source(error)
+        return _http_error_source(error, url = url)
     except TimeoutError:
         return (
             ReleaseSource(
@@ -780,8 +780,10 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
     return source, RELEASES_SUCCESS_TTL_SECONDS
 
 
-def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, float]:
-    """The answer and TTL for an HTTP status GitHub refused the request with."""
+def _http_error_source(
+    error: urllib.error.HTTPError, *, url: str = RELEASES_API_URL
+) -> tuple[ReleaseSource, float]:
+    """The answer and TTL for an HTTP status the release host refused the request with."""
     global _rate_limited_until
 
     if error.code == 304 and _remote_last_good is not None:
@@ -811,9 +813,12 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
         _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
         ttl = max(_rate_limited_until - now, 0.0)
         # The quota is shared with the freshness and changelog fetches; tell them too.
-        from utils.prebuilt.freshness_flow import note_github_rate_limited
-
-        note_github_rate_limited(wait = ttl)
+        # Only for GitHub's own API host: an UNSLOTH_RELEASES_URL mirror refusing us
+        # says nothing about api.github.com, and a lockout recorded from one would send
+        # those checks to the lagging redirect for up to an hour.
+        if urllib.parse.urlparse(url).hostname == "api.github.com":
+            from utils.prebuilt.freshness_flow import note_github_rate_limited
+            note_github_rate_limited(wait = ttl)
         return (
             ReleaseSource(
                 release = None,
