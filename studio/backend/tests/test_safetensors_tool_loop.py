@@ -5526,3 +5526,67 @@ class TestPromotableGemmaBoundary:
         assert [name for name, _args in exec_fn.calls] == ["web_search"]
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert not any("web_search" in t for t in contents), contents
+
+
+def test_tool_protocol_active_is_true_when_unrestricted_with_empty_tools():
+    # Unrestricted mode accepts any tool name with an EMPTY tools list, so a
+    # bool(tools) flag would strip the native tool tokens it is about to parse.
+    captured: list = []
+
+    def fake_single_turn(_messages, *, active_tools = None, tool_protocol_active = None):
+        captured.append(tool_protocol_active)
+        yield "Done."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            execute_tool = FakeExecuteTool([]),
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert captured == [True]
+
+
+def test_tool_protocol_active_is_false_once_the_last_tool_is_spent():
+    captured: list = []
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+
+    def fake_single_turn(_messages, *, active_tools = None, tool_protocol_active = None):
+        captured.append(tool_protocol_active)
+        if len(captured) == 1:
+            yield '<tool_call>{"name":"render_html","arguments":{"code":"<html>x</html>"}}</tool_call>'
+        else:
+            yield "Done."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert captured == [True, False]
+
+
+def test_call_single_turn_falls_back_to_legacy_signatures():
+    from core.inference.safetensors_agentic import _call_single_turn
+
+    seen: list = []
+
+    def no_flag(_messages, *, active_tools = None):
+        seen.append(("no_flag", active_tools))
+        yield "a"
+
+    def bare(_messages):
+        seen.append(("bare", None))
+        yield "b"
+
+    assert list(_call_single_turn(no_flag, [], [{"x": 1}], False)) == ["a"]
+    assert list(_call_single_turn(bare, [], [{"x": 1}], False)) == ["b"]
+    assert seen == [("no_flag", [{"x": 1}]), ("bare", None)]

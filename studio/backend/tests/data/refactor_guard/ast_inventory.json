@@ -1562,6 +1562,11 @@
         "kind": "def",
         "signature": "obj_text: str, out: list[dict], id_offset: int"
       },
+      "_decoded_key": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "literal: str"
+      },
       "_disabled_gemma_call_end_containing_signal": {
         "decorators": [],
         "kind": "def",

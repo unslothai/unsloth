@@ -652,6 +652,19 @@ _BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
 _BARE_JSON_ARGS_KEYS = ("arguments", "parameters", "args")
 
 
+def _decoded_key(literal: str) -> "str | None":
+    """The VALUE of a JSON string literal, or None. ``"argu\\u006dents"`` is ``arguments`` to
+    ``json.loads``; comparing the source spelling left such a body unmasked and the healer
+    promoted the wrapper quoted inside it."""
+    if "\\" not in literal:
+        return literal[1:-1] if len(literal) >= 2 else None
+    try:
+        value = json.loads(literal)
+    except ValueError:
+        return None
+    return value if isinstance(value, str) else None
+
+
 def _top_level_args_values(text: str, start: int, end: int) -> list:
     """``(begin, stop, is_string)`` for EVERY top-level argument value of the JSON call at
     ``start``. ``begin``/``stop`` bound each value's INTERIOR.
@@ -673,7 +686,7 @@ def _top_level_args_values(text: str, start: int, end: int) -> list:
             j = i + 1
             while j < end and text[j] != '"':
                 j += 2 if text[j] == "\\" else 1
-            if depth == 1 and text[i + 1 : j] in _BARE_JSON_ARGS_KEYS:
+            if depth == 1 and _decoded_key(text[i : j + 1]) in _BARE_JSON_ARGS_KEYS:
                 k = j + 1
                 while k < end and text[k].isspace():
                     k += 1
@@ -790,10 +803,15 @@ _MARKERLESS_TRUSTED_PREFIXES = (
 
 
 def _merge_spans(spans: list) -> list:
-    """``spans`` sorted and merged into a disjoint, ordered list."""
+    """``spans`` sorted and merged into a disjoint, ordered list.
+
+    OVERLAPPING only. Coalescing merely ADJACENT spans loses the boundary that
+    ``_strictly_inside`` reads: two back-to-back ``NAME[ARGS]{...}`` envelopes become one
+    region, the second call then starts inside it rather than opening it, and its body
+    stops being masked."""
     merged: list = []
     for start, end in sorted(spans):
-        if merged and start <= merged[-1][1]:
+        if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
             continue
         merged.append((start, end))
@@ -3089,33 +3107,35 @@ _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 def _top_level_bare_json_name(probe: str) -> Optional[str]:
     """TOP-LEVEL ``"name"`` (or ``"function"`` alias, name wins) of a bare-JSON object, else None.
 
-    Skips nested objects/arrays so a nested ``"name"`` isn't mistaken for the call name; a
-    truncated tail returns None so the caller keeps the text."""
+    Skips nested objects/arrays so a nested ``"name"`` isn't mistaken for the call name. A
+    truncated tail yields the name found SO FAR (None if none), so the caller keeps text that
+    never named a call while a held fragment is still recognised as one."""
     if not probe.startswith("{"):
         return None
     decoder = json.JSONDecoder()
     function_value = None  # the ``"function"`` alias, used only if no ``"name"`` key
+    name_value = None      # last top-level ``"name"``, which is the one json.loads keeps
     i = 1
     n = len(probe)
     while i < n:
         while i < n and probe[i] in " \t\r\n,":
             i += 1
         if i >= n or probe[i] == "}":
-            # End of the object with no top-level ``"name"``: fall back to a recorded ``"function"`` alias
-            return function_value
+            # End of the object: the last ``"name"`` wins, else a recorded ``"function"`` alias
+            return name_value or function_value
         if probe[i] != '"':
-            return None
+            return name_value or function_value
         try:
             key, consumed = decoder.raw_decode(probe[i:])
         except (json.JSONDecodeError, ValueError):
-            return None
+            return name_value or function_value
         if not isinstance(key, str):
-            return None
+            return name_value or function_value
         i += consumed
         while i < n and probe[i] in " \t\r\n":
             i += 1
         if i >= n or probe[i] != ":":
-            return None
+            return name_value or function_value
         i += 1
         while i < n and probe[i] in " \t\r\n":
             i += 1
@@ -3123,14 +3143,14 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return None
+                return name_value or function_value
+            # Recorded, not returned: ``json.loads`` keeps the LAST duplicate, so taking the
+            # first classified ``{"name":"terminal","name":"web_search",...}`` as blocked and
+            # masked the arguments that the parser then promoted web_search with.
+            # A falsey or non-string name stays absent so the ``function`` alias can win,
+            # matching ``obj.get("name") or obj.get("function")``.
             if isinstance(value, str) and value:
-                return value
-            # Falsey ``name``, and a non-string one falls through to the skip below for the
-            # same reason: the authoritative parser reads ``obj.get("name") or
-            # obj.get("function")``, so ``{"name": null, "function": "terminal"}`` is a
-            # terminal call. Returning None here left its body unmasked and the passthrough
-            # healer promoted the wrapper quoted inside it.
+                name_value = value
             i += consumed
             continue
         if key == "function" and function_value is None and i < n and probe[i] == '"':
@@ -3138,30 +3158,30 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return None
+                return name_value or function_value
             if isinstance(value, str):
                 function_value = value
             i += consumed
             continue
-        # Skip a non-name top-level value; a truncated one can't prove a top-level name exists, so return None (keep the
-        # text).
+        # Skip a non-name top-level value; a truncated one can't prove a FURTHER name exists,
+        # so stop and report the name found so far.
         if i < n and probe[i] == "{":
             end = _balanced_brace_end(probe, i)
             if end is None:
-                return None
+                return name_value or function_value
             i = end + 1
         elif i < n and probe[i] == "[":
             end = _balanced_bracket_end(probe, i)
             if end is None:
-                return None
+                return name_value or function_value
             i = end + 1
         else:
             try:
                 _value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return None
+                return name_value or function_value
             i += consumed
-    return function_value
+    return name_value or function_value
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:

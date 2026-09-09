@@ -982,7 +982,12 @@ class InferenceBackend:
         # turn that failed or reported nothing leaves it empty rather than stale.
         _turn_stats: dict = {}
 
-        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+        def _single_turn(
+            conv: list,
+            *,
+            active_tools: Optional[list[dict]] = None,
+            tool_protocol_active: Optional[bool] = None,
+        ):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
@@ -1007,6 +1012,7 @@ class InferenceBackend:
                     # result, so later turns render as ordinary new turns.
                     continue_final_message = continue_final_message,
                     presence_penalty = presence_penalty,
+                    tool_protocol_active = tool_protocol_active,
                 )
             finally:
                 _turn_stats["stats"] = self.last_generation_stats
@@ -1122,9 +1128,15 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        tool_protocol_active: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic, called by generate_chat_response and
         generate_with_adapter_control.
+
+        tool_protocol_active overrides the bool(tools) default for native tool
+        token preservation: the loop's unrestricted mode accepts any tool name
+        with an EMPTY tools list, so bool(tools) would strip the very tokens it
+        is about to parse.
 
         _adapter_state is passed to generate_stream/vision so the background
         thread can toggle adapters under the generation lock.
@@ -1163,6 +1175,7 @@ class InferenceBackend:
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
+                    tool_protocol_active = tool_protocol_active,
                 )
                 return
             else:
@@ -1294,7 +1307,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
-            preserve_tool_tokens = bool(tools),
+            preserve_tool_tokens = bool(tools) if tool_protocol_active is None else tool_protocol_active,
             add_special_tokens = add_special_tokens,
         )
 
@@ -1313,6 +1326,7 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
+        tool_protocol_active: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1507,7 +1521,9 @@ class InferenceBackend:
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
             # An image request carries client tools too, so the wrapper survives here as well.
-            _preserve_tool_tokens = bool(tools)
+            _preserve_tool_tokens = (
+                bool(tools) if tool_protocol_active is None else tool_protocol_active
+            )
             think_prefix = detect_think_prefill(
                 prompt_text,
                 getattr(raw_tokenizer, "all_special_tokens", None),

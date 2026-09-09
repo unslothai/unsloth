@@ -517,8 +517,21 @@ def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str,
     return search_images_kwargs(func, tool_name)
 
 
-def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
-    """Call a single-turn generator with active tool schemas when supported."""
+def _call_single_turn(
+    single_turn,
+    conversation: list,
+    active_tools: list[dict],
+    tool_protocol_active: bool = True,
+):
+    """Call a single-turn generator with the tool schemas and protocol flag it supports."""
+    try:
+        return single_turn(
+            conversation, active_tools = active_tools, tool_protocol_active = tool_protocol_active
+        )
+    except TypeError as exc:
+        # A bare signature reports the FIRST unexpected kwarg, so accept either name.
+        if "tool_protocol_active" not in str(exc) and "active_tools" not in str(exc):
+            raise
     try:
         return single_turn(conversation, active_tools = active_tools)
     except TypeError as exc:
@@ -821,7 +834,7 @@ def run_safetensors_tool_loop(
         # The conversation as this turn's prompt renders it, so what the loop appends
         # afterwards can be charged on its own against the count the turn reports.
         prompt_dense_tokens = _dense_message_tokens(conversation)
-        gen = _call_single_turn(single_turn, conversation, active_tools)
+        gen = _call_single_turn(single_turn, conversation, active_tools, tool_protocol_active)
         prev_cumulative = ""
 
         _gen_iter = iter(gen)
