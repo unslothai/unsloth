@@ -363,6 +363,46 @@ def _is_companion_gguf(path: str) -> bool:
     return any(part in _COMPANION_GGUF_PARTS for part in parts)
 
 
+def _pick_variant(variants: Any, wanted: str) -> Any:
+    """The variant a load naming ``wanted`` resolves to, or the main weight when it names
+    nothing. Both listers sort largest first, so the first entry is the weights."""
+    if not wanted:
+        return variants[0] if variants else None
+    for info in variants:
+        if wanted in (str(info.quant).casefold(), str(info.filename).casefold()):
+            return info
+    return None
+
+
+def remote_gguf_size_bytes(model_path: str, variant: Optional[str]) -> Optional[int]:
+    """What a not-yet-downloaded GGUF will weigh, from the hub's own file metadata.
+
+    Without a size the planner answers ``single``, which is correct for a guess but is also
+    the one topology that cannot hold a model larger than one Spark, so a first load of an
+    uncached repo could never start the split it needs: nothing re-plans after the download,
+    and the single-node launch it would have to survive first is exactly what does not fit.
+    The download happens either way, and this asks for the sizes before it starts, so the
+    split is planned in the same request.
+
+    Network, and optional in every sense: offline, gated, rate-limited or simply unavailable
+    all fall back to the sizeless answer that was there before."""
+    if not model_path or "/" not in model_path or osp.isabs(model_path):
+        return None
+    try:
+        from utils.models.model_config import list_gguf_variants
+    except Exception:
+        return None
+    try:
+        variants, _has_vision = list_gguf_variants(model_path)
+        chosen = _pick_variant(variants, str(variant).strip().casefold() if variant else "")
+        if chosen is None:
+            return None
+        size = int(getattr(chosen, "size_bytes", 0) or 0)
+        return size or None
+    except Exception:
+        return None
+
+
 def _cached_repo_file_via_loader(model_path: str, variant: Optional[str]) -> Optional[str]:
     """The GGUF the backend's own resolver would pick, or None when it cannot be asked.
 
@@ -383,17 +423,9 @@ def _cached_repo_file_via_loader(model_path: str, variant: Optional[str]) -> Opt
             variants, _has_vision = list_local_gguf_variants(str(snapshot))
             if not variants:
                 continue
-            chosen = None
-            if wanted:
-                for info in variants:
-                    if wanted in (str(info.quant).casefold(), str(info.filename).casefold()):
-                        chosen = info
-                        break
-                if chosen is None:
-                    continue
-            else:
-                # Sorted largest first by list_local_gguf_variants, which is the main weight.
-                chosen = variants[0]
+            chosen = _pick_variant(variants, wanted)
+            if chosen is None:
+                continue
             path = osp.join(str(snapshot), chosen.filename)
             if osp.isfile(path):
                 return path
@@ -1680,6 +1712,11 @@ class SparkServing:
             variant = getattr(request, "gguf_variant", None)
             local_file = cached_repo_file(model_path, variant)
             size = gguf_size_bytes(local_file)
+            if size is None:
+                # Not cached yet. The hub knows what it weighs, and knowing that here is what
+                # lets a model larger than one Spark be split on its FIRST load rather than
+                # after a single-node launch that cannot fit.
+                size = await asyncio.to_thread(remote_gguf_size_bytes, model_path, variant)
             # max_seq_length 0 means "let the backend size it", so after_load re-plans with
             # the context actually allocated.
             requested_ctx = int(getattr(request, "max_seq_length", None) or 0)

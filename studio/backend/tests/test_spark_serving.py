@@ -2360,3 +2360,55 @@ def test_a_companion_gguf_is_never_sized_in_place_of_the_weights(monkeypatch, tm
     assert chosen is not None, "the weights are cached"
     assert "MTP" not in chosen and "mmproj" not in os.path.basename(chosen)
     assert ss.gguf_size_bytes(chosen) == 32768
+
+
+def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatch, tmp_path):
+    # Nothing re-plans after the download, and the single-node launch the model would have to
+    # survive first is exactly what does not fit, so a first load had to know the size before
+    # the download started or the split could never happen at all.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+
+    asked = []
+    monkeypatch.setattr(
+        ss,
+        "remote_gguf_size_bytes",
+        lambda path, variant: asked.append(path) or 200 * 1024**3,
+    )
+
+    cluster.topology = "layer_split"
+    out = run(ss.before_load(_FakeRequest("unsloth/Huge-GGUF"), 4))
+    assert asked == ["unsloth/Huge-GGUF"], "the hub is asked only when nothing is cached"
+    # The planner is given the real size instead of nothing, which is what decides this.
+    assert cluster.planner_calls[-1]["model_bytes"] == 200 * 1024**3
+    assert ss.state().topology == "layer_split"
+    assert "--rpc" in (out.llama_extra_args or [])
+
+
+def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, monkeypatch, tmp_path):
+    # Offline, gated, rate-limited: all of them fall back to planning single, which is what
+    # happened before and is the right answer to an unknown size.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant: None)
+
+    cluster.topology = "layer_split"  # the planner would split, if it were ever asked
+    request = _FakeRequest("unsloth/Huge-GGUF")
+    assert run(ss.before_load(request, 4)) is request
+    assert cluster.planner_calls == [], "an unknown size does not reach the planner at all"
+    assert ss.state().topology == "single"
+    assert "unknown" in (ss.state().plan or {}).get("reason", "")
+
+
+def test_remote_sizing_never_raises_out_of_the_load(monkeypatch):
+    # It is a network call in a load path, so every failure has to stay inside it.
+    def _boom(*_a, **_k):
+        raise RuntimeError("hub is down")
+
+    monkeypatch.setattr(ss, "_pick_variant", _boom)
+    assert ss.remote_gguf_size_bytes("unsloth/Huge-GGUF", None) is None
+    # A local path or a bare name is not a repo and is not asked about at all.
+    assert ss.remote_gguf_size_bytes("/models/x.gguf", None) is None
+    assert ss.remote_gguf_size_bytes("mymodel", None) is None
