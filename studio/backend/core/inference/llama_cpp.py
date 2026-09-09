@@ -33453,9 +33453,7 @@ class LlamaCppBackend:
                                     chat_template_kwargs = _reasoning_kw,
                                 )
                             except Exception:
-                                logger.debug(
-                                    "round budget: prompt count failed", exc_info = True
-                                )
+                                logger.debug("round budget: prompt count failed", exc_info = True)
                                 return estimate_messages_tokens_dense(
                                     messages_without_unpriced_media(_probe)
                                 )
