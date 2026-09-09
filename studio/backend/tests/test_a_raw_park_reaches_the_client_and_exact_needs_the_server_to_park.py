@@ -327,10 +327,23 @@ class TestTheNamedBudgetIsJudged:
         assert "if _exact_setting == _exact.EXACT_AUTO: _exact_wanted = False" in window
         assert "parking_holds = _exact_short is None and _exact_host_short is None" in source
         assert "self._exact_host_short = None" in source
-        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: None)
-        assert llama_mod._available_host_memory_mib() is None
-        real = llama_mod.__dict__["_available_host_memory_mib"]
-        assert real() is None
+
+    def test_the_host_is_read_again_once_the_weights_are_resident(self):
+        # The reading before launch predates the model: a load that keeps the weights in
+        # anonymous host memory takes what the parks were told they could have.
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        launch = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
+        assert "self._exact_parking_writes = _exact_writes" in source[launch : launch + 1800]
+        after = source.index("_server_props = self._query_server_props() or {}")
+        again = source.index("_exact_host_shortfall_after_load(")
+        assert again < after, "judged after the props read, which is after the launch"
+        assert "if _exact_host_short is None: " in source[again - 400 : again]
+        assert "parking_holds = _exact_short is None and _exact_host_short is None" in source[again:]
+        assert llama_mod._exact_host_shortfall_after_load(4096, 8192) is None
+        assert llama_mod._exact_host_shortfall_after_load(4096, 4096) is None
+        assert llama_mod._exact_host_shortfall_after_load(4096, 1000) == (4096, 1000)
+        assert llama_mod._exact_host_shortfall_after_load(None, 1000) is None
+        assert llama_mod._exact_host_shortfall_after_load(4096, None) is None
 
     def test_a_single_slot_still_budgets_the_one_snapshot_it_writes(self):
         pool = 1024 * 1024 * 1024

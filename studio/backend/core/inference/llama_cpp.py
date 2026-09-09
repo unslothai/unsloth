@@ -2172,6 +2172,15 @@ def _exact_parking_shortfall_mib(
     return (named, saved, need) if named < need else None
 
 
+def _exact_host_shortfall_after_load(
+    writes: Optional[int], free_mib: Optional[int]
+) -> Optional[tuple[int, int]]:
+    """``(writes, free)`` when the parks' host RAM is short now that the model is resident."""
+    if writes is None or free_mib is None or int(writes) <= int(free_mib):
+        return None
+    return (int(writes), int(free_mib))
+
+
 def _exact_preflight_env(environ: Mapping[str, str], gpu_memory_mode: Optional[str]) -> dict:
     """The inherited variables as the child will see them: Manual mode drops the placement
     twins before launch, so judging the parent's environment blocked `auto` on a value the
@@ -24029,6 +24038,7 @@ class LlamaCppBackend:
                         )
                 self._exact_parking_short = None
                 self._exact_host_short = None
+                self._exact_parking_writes = None
                 self._server_park_notices = False
                 self._exact_pool_unknown = False
                 if _exact_wanted:
@@ -24091,6 +24101,8 @@ class LlamaCppBackend:
                             )
                             if _exact_cap >= 0:
                                 _exact_writes = min(_exact_cap, _exact_writes)
+                            # Judged again once the weights are resident: see after launch.
+                            self._exact_parking_writes = _exact_writes
                             _host_free_mib = _available_host_memory_mib()
                             if _host_free_mib is not None and _exact_writes > _host_free_mib:
                                 self._exact_host_short = (_exact_writes, _host_free_mib)
@@ -26432,6 +26444,21 @@ class LlamaCppBackend:
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
                 _exact_host_short = getattr(self, "_exact_host_short", None)
+                if _exact_host_short is None:
+                    # The reading before launch predates the weights: a load that keeps them
+                    # in anonymous host memory (no mmap, host tensors) takes gigabytes the
+                    # parks were told they could have. Judged again now that they are resident.
+                    _exact_host_short = _exact_host_shortfall_after_load(
+                        getattr(self, "_exact_parking_writes", None), _available_host_memory_mib()
+                    )
+                    if _exact_host_short is not None:
+                        self._exact_host_short = _exact_host_short
+                        self._record_load_warning(
+                            "Exact concurrency may park up to %d MiB of KV state in host RAM, "
+                            "and this host has %d MiB free now that the model is loaded. A park "
+                            "the host cannot hold is re-prefilled, which is not byte-identical."
+                            % _exact_host_short
+                        )
                 if (
                     _exact_short is not None
                     and _mtp_will_engage
