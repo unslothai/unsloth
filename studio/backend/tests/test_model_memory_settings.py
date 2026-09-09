@@ -2828,7 +2828,6 @@ class TestThePlacementProbes:
         assert "_mem_probe_for_dio=_mem_dio_possibleand_mem_no_reserve" not in flat
 
 
-
 class TestEveryDeviceSetChangeReAsks:
     """A rung that changes the effective device set changes the placement, and the
     pair is a question about placement. Each rung used to ask a SUBSET of what the
@@ -2910,7 +2909,8 @@ class TestTheVulkanProbeRunsOncePerLoad:
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
         monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
         monkeypatch.setattr(
-            m.subprocess, "run",
+            m.subprocess,
+            "run",
             lambda *a, **k: calls.append(1)
             or type("R", (), {"returncode": 0, "stdout": "0 1 2 0 dGPU", "stderr": ""})(),
         )
@@ -2948,9 +2948,9 @@ class TestTheBackendCheckReusesTheRepoRecognition:
 
     def test_an_external_backend_path_counts_as_gpu_capable(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: False),
         )
         assert LlamaCppBackend._build_offers_gpu_backend(
@@ -2959,9 +2959,9 @@ class TestTheBackendCheckReusesTheRepoRecognition:
 
     def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: True),
         )
         assert not LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
@@ -2972,10 +2972,13 @@ class TestTheBackendCheckReusesTheRepoRecognition:
         import core.inference.llama_cpp as m
 
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            m.LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: False),
         )
+
         def boom(_b):
             raise OSError("unreadable")
+
         monkeypatch.setattr(m, "_llama_lib_dir", boom)
         assert not m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})

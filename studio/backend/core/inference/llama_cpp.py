@@ -8479,9 +8479,7 @@ class LlamaCppBackend:
         if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
             return True
         try:
-            files = tuple(
-                path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file()
-            )
+            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
         except OSError:
             return False
         return any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
