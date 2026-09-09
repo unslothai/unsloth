@@ -5536,7 +5536,7 @@ def test_the_installer_kfd_arm_consults_the_same_fallback():
     rather than passing quietly."""
     lines = _install_sh_lines()
     body = _shell_fn(lines, "_amd_nodes_closed_to_this_user")
-    _kfd = body.index('= /dev/kfd ]')
+    _kfd = body.index("= /dev/kfd ]")
     _elif = body.index("elif _node_vendor=")
     _arm = body[_kfd:_elif]
     assert "_kfd_topology_amd_state" in _arm
