@@ -87,6 +87,69 @@ class TestTheAssembler:
         assert "reasoning_content" not in convo[-1], "a non-reasoning model gains nothing"
 
 
+class TestTheMergeItself:
+    """`append_assistant_turn` owns the concatenation, so the assembler hands it one half."""
+
+    def test_a_resumed_thought_followed_by_a_tool_call_keeps_both_halves(self):
+        from core.inference.chat_template_helpers import append_assistant_turn
+
+        conversation = [
+            {"role": "user", "content": "Use the recorded result."},
+            {"role": "assistant", "content": "", "reasoning_content": "first thought; "},
+        ]
+        append_assistant_turn(
+            conversation,
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "second thought; ",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"kernel"}'},
+                    }
+                ],
+            },
+            continue_final_message = True,
+        )
+
+        assert len(conversation) == 2
+        assert (
+            conversation[-1]["reasoning_content"] == "first thought; second thought; "
+        ), "the thought a pause left behind is the same turn's work and left the context"
+        assert conversation[-1]["tool_calls"][0]["id"] == "c1"
+
+    def test_a_continuation_that_repeats_no_thought_keeps_the_one_it_had(self):
+        from core.inference.chat_template_helpers import append_assistant_turn
+
+        conversation = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "So: ", "reasoning_content": "first thought; "},
+        ]
+        append_assistant_turn(
+            conversation,
+            {"role": "assistant", "content": "the answer."},
+            continue_final_message = True,
+        )
+
+        assert conversation[-1]["reasoning_content"] == "first thought; "
+        assert conversation[-1]["content"] == "So: the answer."
+
+    def test_the_assembler_hands_over_this_attempt_s_thought_alone(self):
+        """Pre-merging it here and concatenating there would replay the first half twice."""
+        from pathlib import Path
+
+        import core.inference.llama_cpp as llama_cpp
+
+        source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
+        body = source[source.index("def _assemble_preempt_resume") :]
+        body = body[: body.index("def generate_chat_completion_with_tools")]
+        head = body[: body.index("if checkpoint.has_reasoning_resume_point()")]
+        assert 'partial["reasoning_content"] = reasoning_accum' in head
+        assert "prior + reasoning_accum" not in head
+
+
 class TestAPausedReasoningChat:
     def test_the_replacement_request_carries_the_thought_and_the_prose(self, monkeypatch):
         signal = preemption.PreemptSignal()

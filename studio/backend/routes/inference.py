@@ -81,6 +81,7 @@ from core.inference.audio_errors import (
 )
 from core.inference import context_refusal
 from core.inference.context_window import (
+    _UNPRICED_MEDIA_TYPES,
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
     estimate_messages_tokens_dense,
@@ -120,6 +121,7 @@ from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionLease,
     LlamaAdmissionQueueFull,
+    LlamaAdmissionRecostRefused,
     LlamaAdmissionReservation,
     LlamaAdmissionTimeout,
     get_llama_admission_queue,
@@ -2090,11 +2092,17 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
+    return extra + _openai_llama_admission_transport_tokens(payload)
+
+
+def _openai_llama_admission_transport_tokens(payload) -> int:
+    """Audio and video, by encoded length: a high LEDGER figure, never a prompt count."""
+    total = 0
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
-            extra += max(1, len(value) // 4)
-    return extra
+            total += max(1, len(value) // 4)
+    return total
 
 
 def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
@@ -2159,6 +2167,7 @@ def _openai_llama_admission_tokens(
     injected_tools = None,
     context_window: Optional[int] = None,
     preemption_active: bool = False,
+    conversation = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2172,8 +2181,13 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    prompt_tokens = _openai_llama_admission_prompt_tokens(
-        payload, image_tokens = image_tokens, injected_tools = injected_tools
+    # What is actually sent when a conversation is given: the GGUF builders splice a date
+    # prompt, a nudge and media in later. Transport still counts, since the ledger wants it.
+    prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
+        payload,
+        conversation = conversation,
+        image_tokens = image_tokens,
+        injected_tools = injected_tools,
     )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
@@ -2230,8 +2244,158 @@ def _openai_llama_admission_tokens(
     return max(1, min(budget, prompt_tokens + output_tokens))
 
 
-# Platform default when a drafter is active but no --spec-draft-n-max was given: the backend's
-# accessor returns None for "default", so reading it raw multiplied the reserve to nothing.
+def _openai_llama_admission_share(
+    request: Optional[Request],
+    llama_backend,
+    *,
+    capacity: Optional[int] = None,
+) -> Optional[int]:
+    """KV one request may occupy. None when the reservation is off, the cache size is
+    unknown, or the share is the whole window (one slot, or ``--no-kv-unified``)."""
+    config = llama_admission_config_from_env()
+    if not config.enabled or not config.kv_budget:
+        # KV_BUDGET off is the escape hatch for a wrong cache size, so it cannot clamp.
+        return None
+    budget = _openai_llama_admission_budget(llama_backend)
+    if not budget:
+        return None
+    window = _openai_llama_admission_context_window(llama_backend) or budget
+    if capacity is None:
+        capacity = _openai_llama_admission_capacity(request, llama_backend)
+    share = max(1, budget // max(1, capacity))
+    return None if share >= window else share
+
+
+# Media whose bytes ride in the message list; `image_url` is priced per image instead.
+_TRANSPORT_MEDIA_TYPES = _UNPRICED_MEDIA_TYPES - {"image_url"}
+
+
+def _openai_llama_admission_messages_without_transport(conversation):
+    """``conversation`` without the media parts the text estimator cannot price."""
+    stripped = []
+    for message in conversation or []:
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
+        content = message_dict.get("content")
+        if not isinstance(content, list):
+            stripped.append(message_dict)
+            continue
+        kept = [
+            part
+            for part in content
+            if not (isinstance(part, dict) and part.get("type") in _TRANSPORT_MEDIA_TYPES)
+        ]
+        stripped.append(
+            {**message_dict, "content": kept} if len(kept) != len(content) else message_dict
+        )
+    return stripped
+
+
+def _openai_llama_admission_unpriceable_media(payload, conversation = None) -> bool:
+    """Audio or video, whose prompt KV nobody can size yet. Transport length as a prompt
+    count would leave the one-token floor, so these are left unenforced."""
+    for attribute in ("audio_base64", "video_base64"):
+        value = getattr(payload, attribute, None)
+        if isinstance(value, str) and value:
+            return True
+    for message in conversation or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _TRANSPORT_MEDIA_TYPES:
+                return True
+    return False
+
+
+def _openai_llama_admission_wire_prompt_tokens(
+    conversation,
+    *,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
+) -> int:
+    """What the NEXT request carries, which is not what the ledger charges.
+
+    A charge may count more than is sent; a bound may not. So it drops payload
+    ``system``/``tools`` a translating route already folded in, the catalogue on a pass that
+    sends none, and audio/video transport, and prices media from the conversation, where a
+    legacy image has already been spliced in.
+    """
+    conversation = _openai_llama_admission_messages_without_transport(conversation)
+    estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+        conversation
+    )
+    return (
+        estimate_messages_tokens_dense(estimate_messages)
+        + _openai_llama_admission_injected_tool_tokens(injected_tools)
+        + max(0, message_image_parts) * image_tokens
+    )
+
+
+def _openai_llama_admission_charged_prompt_tokens(
+    payload,
+    *,
+    conversation = None,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
+) -> Optional[int]:
+    """The prompt term of the admission charge: the part of it that becomes resident.
+
+    The preemptor needs it apart from the output allowance, or a chat that spends its
+    allowance is charged for the same cells twice.
+    """
+    if conversation is not None:
+        return _openai_llama_admission_wire_prompt_tokens(
+            conversation, image_tokens = image_tokens, injected_tools = injected_tools
+        ) + _openai_llama_admission_transport_tokens(payload)
+    return _openai_llama_admission_prompt_tokens(
+        payload, image_tokens = image_tokens, injected_tools = injected_tools
+    )
+
+
+def _openai_llama_admission_wire_output_bound(
+    *,
+    share: int,
+    prompt_tokens: int,
+    window: int,
+    budget: Optional[int] = None,
+    preemption_active: bool = False,
+) -> int:
+    """Output tokens the wire may write.
+
+    While preemption can reclaim, the ceiling is THE WINDOW, not a share of it: the cache
+    is deliberately overcommitted and the controller reclaims when the live total
+    approaches it, which is what vLLM does. Dividing was the right STOPGAP while nothing
+    could pause, and it held a chat to about 4049 tokens an attempt.
+
+    With no reclaimer the ceiling is the share, so ``capacity`` of them fit at once. AT or
+    ABOVE its share the fair-share floor is negative, and flooring the wire at one token
+    truncated an answer the ledger had already paid for, so such a prompt keeps the flat
+    unstated allowance the reservation charged it: sending 1 there made every default
+    vision chat a one-token answer, since one image's 4224-token allowance is already past
+    a 4096 share on a 16K cache with four slots.
+
+    Clamped to the WINDOW and to the BUDGET, so the wire can never write past what the
+    cache can physically hold for it.
+    """
+    ceiling = window or budget or share
+    if preemption_active:
+        allowance = max(0, ceiling - prompt_tokens)
+    elif prompt_tokens >= share:
+        allowance = _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+    else:
+        allowance = share - prompt_tokens
+    allowance = min(allowance, max(0, ceiling - prompt_tokens))
+    if budget:
+        allowance = min(allowance, max(0, budget - prompt_tokens))
+    # Never zero, which llama-server refuses.
+    return max(1, allowance)
+
+
+# Platform default when a drafter is active but no --spec-draft-n-max was given: the
+# accessor returns None for "default", which multiplied the reserve to nothing. Six is the
+# conservative pick, since under-reserving costs the crash.
 _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX = 6
 # llama.cpp's own --batch-size default, used when a load did not state one.
 _OPENAI_LLAMA_DEFAULT_N_BATCH = 2048
@@ -2428,7 +2592,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         admission overcommitting on purpose."""
         try:
             controller = get_preemption_controller(_preempt_key(llama_backend))
-            _gguf_refresh_residency(controller)
+            # A solo chat has nobody to preempt and nobody waiting for its cells, so the
+            # synchronous `/slots` round trip this makes every 32 chunks can decide nothing.
+            # The ledger below is still updated, or the first chat to join it would be
+            # planned against a figure that stopped moving. Admission and the resume wait
+            # pass `force`, so both fresh-read barriers still read.
+            if controller.contended():
+                _gguf_refresh_residency(controller)
             victims = controller.observe(completion_id, generated)
             if victims:
                 # Dead residue first: an idle slot's cache belongs to a finished request, so
@@ -2511,6 +2681,9 @@ def _openai_llama_preemption_arm(
     gen_id: str,
     signal,
     loop = None,
+    payload = None,
+    conversation = None,
+    injected_tools = None,
 ):
     """Enrol a generation with the preemptor, and pause whoever must make room. Returns the policy
     the stream calls back on, or None when preemption cannot apply, as before preemption existed."""
@@ -2565,9 +2738,28 @@ def _openai_llama_preemption_arm(
         )
         return None
     charged = int(getattr(lease, "tokens", 0) or 0)
-    controller.register(gen_id, lease = lease, tokens = charged, signal = signal)
-    # Whoever has to stop so this one fits. `needed = 0`, not `needed = charged`: register() has
-    # just put this generation in the ledger carrying exactly `charged`.
+    # The charge is prompt plus an output reservation; the ledger needs the two apart, or
+    # a chat that spends the reservation is counted for it twice over.
+    try:
+        prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
+            payload,
+            conversation = conversation,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+    except Exception:
+        prompt_tokens = None
+    controller.register(
+        gen_id,
+        lease = lease,
+        tokens = charged,
+        signal = signal,
+        prompt_tokens = prompt_tokens,
+    )
+    # Whoever has to stop so this one fits; the victims notice at their own next safe
+    # point. `needed = 0`, not `needed = charged`: register() has just put this generation
+    # in the ledger carrying exactly `charged`, so asking for that much more room again
+    # charges it twice and preempts somebody for space already booked.
     victims = controller.plan_preemptions(needed = 0)
     snapshot = controller.snapshot()
     _llama_preemption_log(
@@ -2698,56 +2890,130 @@ def _openai_llama_admission_enforced_max_tokens(
     request: Optional[Request],
     llama_backend,
     injected_tools = None,
+    conversation = None,
+    prompt_tokens: Optional[int] = None,
+    capacity: Optional[int] = None,
     pausable: bool = True,
 ) -> Optional[int]:
     """The cap to SEND, so the reservation is enforced instead of merely recorded.
 
-    Admission charges an unstated "Max Tokens: Max" a bounded allowance, but the wire request still
-    said the whole window, so four chats admitted at a share each could generate into one
-    ``--kv-unified`` pool until llama-server errored EVERY processing slot. Bounded by the SHARE,
-    which only has to be physically safe, rather than by the optimistic charge.
+    Admission charges an unstated "Max Tokens: Max" a bounded allowance while the wire
+    request still said the whole window, so four chats admitted at a share each generated
+    into one pool until llama-server errored EVERY slot. Sending a bound turns an overrun
+    into a plain ``length`` finish the continuation path already resumes.
 
-    None means "send what the caller asked for", including both opt-outs: this clamp exists to
-    ENFORCE a reservation, so with admission control or the KV budget off there is none, and no
-    business narrowing an output cap.
+    Bounded by the SHARE, not by the smaller figure admission charges: the charge is
+    deliberately optimistic so more chats fit, while the bound only has to be physically
+    safe, and clamping to the estimate would cut a lone chat to a thousand tokens. Where
+    preemption can reclaim, the whole window is offered instead and the controller is the
+    enforcement. ``pausable`` is about THIS request: a raw relay has no generator to resume
+    from, so it keeps the share unless the server parks raw streams itself.
+
+    ``conversation`` prices it from the messages actually sent, which a translating route
+    must pass, else ``system`` is charged twice. None leaves a disabled reservation and
+    unpriceable media alone, and leaves a STATED cap alone only where it is positive and
+    strictly below the window: a cap at or above the window buys nothing the window did
+    not already bound, so it is treated as unstated and enforced like one, which is what
+    ``_openai_llama_admission_tokens`` charges such a request for.
     """
-    config = llama_admission_config_from_env()
-    if not (config.enabled and config.kv_budget):
-        return None
-    cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
-    budget = _openai_llama_admission_budget(llama_backend)
-    if not budget:
-        return None
-    pausable = pausable or _server_parks_raw_streams(llama_backend)
-    window = _openai_llama_admission_context_window(llama_backend)
-    if cap is not None and cap < (window or budget):
-        return None
-    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    if capacity is None:
+        capacity = _openai_llama_admission_capacity(request, llama_backend)
     if capacity <= 1:
         # One slot owns the whole cache; there is nothing to divide.
         return None
-    # Against the RAW cache, not the reduced budget. Under --no-kv-unified a share IS a window,
-    # and the reduced figure would clamp a private cache for no reason.
+    share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
+    if share is None:
+        return None
+    if _openai_llama_admission_unpriceable_media(payload, conversation):
+        return None
+    budget = _openai_llama_admission_budget(llama_backend)
+    pausable = pausable or _server_parks_raw_streams(llama_backend)
+    window = _openai_llama_admission_context_window(llama_backend)
+    cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
+    if cap is not None and cap < (window or budget):
+        return None
+    # Against the RAW cache, not the reduced budget: under --no-kv-unified a share IS a
+    # window, and the reduced figure would clamp a private cache for no reason.
     raw_total = _openai_llama_admission_raw_total(llama_backend) or budget
     if window and raw_total >= window * capacity:
         return None
-    prompt_tokens = _openai_llama_admission_prompt_tokens(
-        payload,
+    if prompt_tokens is None and conversation is not None:
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+    if prompt_tokens is None:
+        prompt_tokens = _openai_llama_admission_prompt_tokens(
+            payload,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+    if prompt_tokens is None:
+        return None
+    return _openai_llama_admission_wire_output_bound(
+        share = share,
+        prompt_tokens = prompt_tokens,
+        window = window or budget,
+        budget = budget,
+        preemption_active = pausable
+        and _openai_llama_preemption_will_apply(llama_backend, budget),
+    )
+
+
+def _openai_llama_admission_retry_max_tokens(
+    retry_body,
+    *,
+    admission_output_allowance: Optional[int],
+    request: Optional[Request],
+    llama_backend,
+    injected_tools = None,
+    payload = None,
+    first_messages = None,
+    pausable: bool = True,
+) -> Optional[int]:
+    """The cap for a passthrough retry whose prompt grew. Gated on the first attempt's
+    bound, so a client with its own cap does not start being bounded here. ``pausable``
+    as in ``_openai_llama_admission_enforced_max_tokens``: a raw relay keeps the share.
+
+    One lease covers both attempts and no re-cost sits between them, so the retry is not
+    priced as a fresh request: a grown prompt would be handed a second allowance on top of
+    the charge. With ``first_messages`` the growth is measured by the same estimator and
+    the retry writes at most ``allowance - growth``, floored at one.
+    """
+    if admission_output_allowance is None:
+        return None
+    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    if capacity <= 1:
+        return None
+    share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
+    if share is None:
+        return None
+    prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+        retry_body.get("messages") or [],
         image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         injected_tools = injected_tools,
     )
-    if prompt_tokens is None:
-        return None
-    # THE WINDOW, not a share of it: the cache is deliberately overcommitted and preemption reclaims
-    # as the live total approaches it, which is what vLLM does. Dividing was the stopgap while
-    # nothing could pause. ONLY while something reclaims, which `pausable=False` cannot have.
-    if not pausable or not _openai_llama_preemption_will_apply(llama_backend, budget):
-        share = max(1, budget // max(1, capacity))
-        if share >= (window or budget):
-            return None
-        return max(1, share - prompt_tokens)
-    ceiling = window or budget
-    return max(1, ceiling - prompt_tokens)
+    budget = _openai_llama_admission_budget(llama_backend)
+    pausable = pausable or _server_parks_raw_streams(llama_backend)
+    bound = _openai_llama_admission_wire_output_bound(
+        share = share,
+        prompt_tokens = prompt_tokens,
+        window = _openai_llama_admission_context_window(llama_backend) or budget or share,
+        budget = budget,
+        preemption_active = pausable
+        and _openai_llama_preemption_will_apply(llama_backend, budget),
+    )
+    if first_messages is not None:
+        first_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            first_messages,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+        growth = max(0, prompt_tokens - first_prompt_tokens)
+        bound = max(1, min(bound, admission_output_allowance - growth))
+    current = _positive_int_or_none(retry_body.get("max_tokens"))
+    return bound if current is None else min(current, bound)
 
 
 def _openai_llama_admission_reserve(
@@ -2758,6 +3024,7 @@ def _openai_llama_admission_reserve(
     tool_loop: bool = False,
     injected_tools = None,
     pausable: bool = True,
+    conversation = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     """Take a slot for this request, charged at what it will occupy.
 
@@ -2784,6 +3051,7 @@ def _openai_llama_admission_reserve(
             context_window = _openai_llama_admission_context_window(llama_backend),
             preemption_active = pausable
             and _openai_llama_preemption_will_apply(llama_backend, budget),
+            conversation = conversation,
         )
         if payload is not None
         else None,
@@ -2801,7 +3069,8 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
-) -> None:
+    wire_tools = None,
+) -> Optional[int]:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
     #9392 avoided this by reserving the whole cache for any tool run, serialising every
@@ -2817,37 +3086,41 @@ def _openai_llama_admission_recost(
     Safe to wait here because it is between rounds and the slot is idle at llama-server.
     Idle is not reclaimed, though, so the yield is gated on
     ``_openai_llama_admission_can_yield``; where it is False this declines instead.
+
+    Returns the wire cap this round earned, or None to leave the one in force alone.
+    ``wire_tools`` is the catalogue this request sends, None on the final answer.
+
+    Raises ``LlamaAdmissionRecostRefused`` when the growth is declined: the lease then
+    still holds the previous round's figure, so there is no cap this round could be
+    handed that the ledger has actually paid for, and the caller must end the turn
+    rather than send. Raises ``LlamaAdmissionCancelled`` when the wait ended on a Stop
+    or the lease's release, which the caller finishes as a cancel.
     """
     if reservation is None:
-        return
+        return None
     try:
         lease = reservation.lease_nowait()
         if lease is None:
-            return
+            return None
         budget = _openai_llama_admission_budget(llama_backend)
         if not budget:
-            return
+            return None
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. Counting fewer
-        # things than the reservation it replaces would SHRINK a correctly sized lease --
-        # and since the callback fires at the top of round zero, before any growth, it
-        # would hand back room llama-server is already using.
-        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation
-        )
-        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
-        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-        # that route this is most of the prompt.
-        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        # mtmd embeddings, KV the message text cannot show: image parts compact to
-        # "[image]" for the text estimate, so their real cost comes from the compaction
-        # count. A screenshot tool adds more of them, so this grows with the rounds.
-        prompt_tokens += _openai_llama_admission_media_tokens(
-            payload,
-            message_image_parts = message_image_parts,
+        # Priced as the opening reservation prices a conversation it was handed: the
+        # messages and catalogue actually sent (media from the compaction count, since
+        # image parts compact to "[image]" for the text estimate) plus transport. Not the
+        # payload's own `system` and `tools` on top: a translating route has folded them
+        # into the conversation, and charging them again refused rounds that fit.
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        ) + _openai_llama_admission_transport_tokens(payload)
+        # Not the parts above: the charge counts three things this request does not send.
+        wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = wire_tools,
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -2868,16 +3141,42 @@ def _openai_llama_admission_recost(
             _progress = get_preemption_controller(_preempt_key(llama_backend)).progress_signature
         except Exception:
             _progress = None
-        lease.recost_waiting(
+        if not lease.recost_waiting(
             want,
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
             progress = _progress,
             gen_id = getattr(reservation, "completion_id", None)
             or getattr(reservation, "gen_id", None),
+        ):
+            # False is also what a Stop or a teardown during the wait returns: the run
+            # is over, not refused, and the caller ends it the way a cancel always did.
+            if (cancel_event is not None and cancel_event.is_set()) or getattr(
+                lease, "released", False
+            ):
+                raise LlamaAdmissionCancelled("stopped while waiting for cache room")
+            # The lease still holds the PREVIOUS round's figure, so pricing a bound off
+            # this bigger prompt would authorise exactly the overcommit the re-cost
+            # exists to prevent. Raised rather than returned, since every "no bound"
+            # answer this helper can give leaves a stale allowance in force.
+            raise LlamaAdmissionRecostRefused(
+                f"the admission ledger refused {want} tokens for this round"
+            )
+        # After the wait, so the bound matches the conversation the round waited on.
+        return _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            # Already priced; this is only what the media gate reads.
+            conversation = conversation,
+            prompt_tokens = wire_prompt_tokens,
+            capacity = capacity,
         )
+    except (LlamaAdmissionRecostRefused, LlamaAdmissionCancelled):
+        raise
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
+    return None
 
 
 def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
@@ -22945,11 +23244,6 @@ async def produce_openai_chat_completions(
     # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
-    # Carried BESIDE the caller's cap, never folded into it: `_loop_budget_left` reads
-    # `max_tokens` as "what the caller allowed" and stops continuing once it is spent.
-    _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
-        payload, request = request, llama_backend = llama_backend
-    )
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -23341,10 +23635,12 @@ async def produce_openai_chat_completions(
             except RuntimeError:
                 _preempt_loop = None
 
-            def _gguf_recost(conversation) -> None:
-                # RE-COST FIRST: the publish below reads `lease.tokens` and the recost grows it
-                # for the round that just began, at exactly the boundary where the prompt grows.
-                _openai_llama_admission_recost(
+            def _gguf_recost(conversation, round_tools = None) -> Optional[int]:
+                # RE-COST FIRST: the publish below reads `lease.tokens`, and the recost is
+                # what grows it for the round that just began, so reading it first swept on
+                # the PREVIOUS round's figure -- at exactly the boundary where the prompt
+                # grows and the prefill it was meant to make room for is about to go out.
+                _recosted_allowance = _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
                     request = request,
@@ -23357,6 +23653,7 @@ async def produce_openai_chat_completions(
                     # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
                     injected_tools = tools_to_use,
+                    wire_tools = round_tools,
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
@@ -23368,13 +23665,23 @@ async def produce_openai_chat_completions(
                     _lease = _res.lease_nowait() if _res is not None else None
                     if _lease is not None:
                         get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
-                            completion_id, int(_lease.tokens or 0)
+                            completion_id,
+                            int(_lease.tokens or 0),
+                            # The round's own prompt, apart from the output the re-cost
+                            # reserved on top of it.
+                            _openai_llama_admission_charged_prompt_tokens(
+                                payload,
+                                conversation = conversation,
+                                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                                injected_tools = tools_to_use,
+                            ),
                         )
                         # And SWEEP on the new figure: note_tokens only records it, so a round that
                         # grew the prompt evicted nothing for 32 more tokens. Zero generated is right.
                         _gguf_observe_tokens(0)
                 except Exception:
                     pass
+                return _recosted_allowance
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
@@ -23399,6 +23706,15 @@ async def produce_openai_chat_completions(
                         _stripped if _msg is _gguf_continue_target else _stripped.strip()
                     )
 
+            # The finalized messages and the charged catalogue, so the two agree.
+            _tool_admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = gguf_messages,
+                injected_tools = tools_to_use,
+            )
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
@@ -23408,7 +23724,7 @@ async def produce_openai_chat_completions(
                     top_k = payload.top_k,
                     min_p = payload.min_p,
                     max_tokens = effective_max_tokens,
-                    admission_output_allowance = _admission_output_allowance,
+                    admission_output_allowance = _tool_admission_output_allowance,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
                     frequency_penalty = payload.frequency_penalty,
@@ -23454,6 +23770,7 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    conversation = gguf_messages,
                     # The catalogue Unsloth resolves server-side: payload.tools does not
                     # carry it and it is roughly 1250 prompt tokens.
                     injected_tools = tools_to_use,
@@ -23485,6 +23802,10 @@ async def produce_openai_chat_completions(
                         gen_id = completion_id,
                         signal = _gguf_preempt_signal,
                         loop = _preempt_loop,
+                        # What the ledger must keep apart from the output it reserved.
+                        payload = payload,
+                        conversation = gguf_messages,
+                        injected_tools = tools_to_use,
                     )
                 )
             except LlamaAdmissionQueueFull as exc:
@@ -23907,6 +24228,10 @@ async def produce_openai_chat_completions(
                                     gen_id = completion_id,
                                     signal = _gguf_preempt_signal,
                                     loop = _preempt_loop,
+                                    # What the ledger must keep apart from the output it reserved.
+                                    payload = payload,
+                                    conversation = gguf_messages,
+                                    injected_tools = tools_to_use,
                                 )
                             )
                         iterator = gguf_tool_stream()
@@ -24113,6 +24438,10 @@ async def produce_openai_chat_completions(
                             gen_id = completion_id,
                             signal = _gguf_preempt_signal,
                             loop = _preempt_loop,
+                            # What the ledger must keep apart from the output it reserved.
+                            payload = payload,
+                            conversation = gguf_messages,
+                            injected_tools = tools_to_use,
                         )
                     )
                 # In the request's own context: the task and thread below each get a
@@ -24272,6 +24601,16 @@ async def produce_openai_chat_completions(
         except RuntimeError:
             _plain_preempt_loop = None
 
+        # Beside the caller's cap, never folded in: `_loop_budget_left` would then truncate
+        # at one share. Priced from the finalized messages, so the charge and the bound
+        # agree on what is sent.
+        _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            conversation = gguf_messages,
+        )
+
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
@@ -24325,6 +24664,7 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
@@ -24601,6 +24941,9 @@ async def produce_openai_chat_completions(
                             signal = _plain_preempt_signal,
                             # Guarded exactly like the tool path's `_preempt_loop`.
                             loop = _plain_preempt_loop,
+                            # What the ledger must keep apart from the output it reserved.
+                            payload = payload,
+                            conversation = gguf_messages,
                         )
                     )
                     iterator = gguf_stream_chunks()
@@ -24712,6 +25055,7 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
@@ -24826,6 +25170,9 @@ async def produce_openai_chat_completions(
                         gen_id = completion_id,
                         signal = _plain_preempt_signal,
                         loop = _plain_preempt_loop,
+                        # What the ledger must keep apart from the output it reserved.
+                        payload = payload,
+                        conversation = gguf_messages,
                     )
                 )
                 # ``n`` requests several independent completions; the single
@@ -29467,7 +29814,10 @@ async def _responses_stream(
     # openai_chat_completions), so apply recommended sampling here too.
     _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
     body = await _build_openai_passthrough_body_async(
-        chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        chat_req,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+        request = request,
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -31942,6 +32292,9 @@ async def anthropic_messages(
                 gen_id = message_id,
                 signal = _anthropic_preempt_signal,
                 loop = _anthropic_preempt_loop,
+                # What the ledger must keep apart from the output it reserved.
+                payload = payload,
+                conversation = openai_messages,
             )
         )
 
@@ -32054,8 +32407,8 @@ async def anthropic_messages(
     # estimate for the whole run.
     _anthropic_admission_hold: dict = {"reservation": None}
 
-    def _anthropic_recost(conversation) -> None:
-        _openai_llama_admission_recost(
+    def _anthropic_recost(conversation, round_tools = None) -> Optional[int]:
+        return _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
             conversation,
             request = request,
@@ -32065,6 +32418,7 @@ async def anthropic_messages(
             payload = payload,
             output_tokens = payload.max_tokens,
             injected_tools = openai_tools,
+            wire_tools = round_tools,
             cancel_event = cancel_event,
         )
 
@@ -32073,6 +32427,7 @@ async def anthropic_messages(
         *,
         tool_loop: bool = False,
         raw: bool = False,
+        wire_tools = None,
     ):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
@@ -32080,8 +32435,11 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
-                # Only the tool branch resolves a catalogue; the plain branch sends none.
-                injected_tools = openai_tools if tool_loop else None,
+                # The messages and catalogue actually sent, as the GGUF paths reserve from:
+                # the date prompt spliced in here can carry a prompt to its share, where the
+                # wire bound becomes the flat allowance, and the raw payload charged a share.
+                conversation = openai_messages,
+                injected_tools = wire_tools,
                 # `raw` is the client-tool passthrough, counted but never chosen, so the
                 # reduced allowance would price a reclaim that cannot happen.
                 pausable = not raw,
@@ -32188,14 +32546,21 @@ async def anthropic_messages(
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
-
-        # Held to its share like the OpenAI passthrough: registered raw and never chosen, so the cap
+        # Takes a lease too, and both builders send `max_tokens` straight through. Held to
+        # its share like the OpenAI passthrough: registered raw and never chosen, so the cap
         # it is SENT is the only thing that keeps its reservation true.
+        _anthropic_passthrough_allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            conversation = openai_messages,
+            injected_tools = openai_tools,
+            pausable = False,
+        )
         _raw_max_tokens = (
-            _openai_llama_admission_enforced_max_tokens(
-                payload, request = request, llama_backend = llama_backend, pausable = False
-            )
-            or payload.max_tokens
+            _anthropic_passthrough_allowance
+            if _anthropic_passthrough_allowance is not None
+            else payload.max_tokens
         )
         if payload.stream:
             return await _admitted_anthropic(
@@ -32226,6 +32591,8 @@ async def anthropic_messages(
                 ),
                 # Raw upstream bytes, so counted and never chosen. See `_arm_anthropic`.
                 raw = True,
+                # Forwarded verbatim, so the reservation must carry them too.
+                wire_tools = openai_tools,
             )
         return await _admitted_anthropic(
             _anthropic_passthrough_non_streaming(
@@ -32250,9 +32617,12 @@ async def anthropic_messages(
                 request = request,
                 cancel_event = cancel_event,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                # Not `max_tokens` above: the retry needs to know whether a bound applies.
+                admission_output_allowance = _anthropic_passthrough_allowance,
                 **_anthropic_reasoning_args(payload),
             ),
             raw = True,
+            wire_tools = openai_tools,
         )
 
     # Shared provenance: the generator counts the leading <think> wraps it
@@ -32348,6 +32718,16 @@ async def anthropic_messages(
                     enabled_tool_names = _anthropic_history_gate,
                 ).strip()
 
+        # Same queue, same bound: `max_tokens` is optional here and a window-sized value
+        # reads as unstated. TRANSLATED messages: the raw payload double-charges.
+        _anthropic_output_allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            conversation = openai_messages,
+            injected_tools = openai_tools,
+        )
+
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
                 # The same three the plain generator gets, or a chosen victim never sees its
@@ -32365,6 +32745,7 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 max_tokens = payload.max_tokens,
+                admission_output_allowance = _anthropic_output_allowance,
                 stop = stop,
                 seed = payload.seed,
                 cancel_event = cancel_event,
@@ -32407,6 +32788,7 @@ async def anthropic_messages(
                 ),
                 # Same server-side loop the chat route runs, up to 25 rounds on one lease.
                 tool_loop = True,
+                wire_tools = openai_tools,
             )
         return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
@@ -32421,9 +32803,18 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
             ),
             tool_loop = True,
+            wire_tools = openai_tools,
         )
 
     # ── No-tool path ──────────────────────────────────────────
+    # No catalogue on this branch, matching the reservation `_admitted_anthropic` takes.
+    _anthropic_plain_output_allowance = _openai_llama_admission_enforced_max_tokens(
+        payload,
+        request = request,
+        llama_backend = llama_backend,
+        conversation = openai_messages,
+    )
+
     def _run_plain_gen():
         return llama_backend.generate_chat_completion(
             preempt_event = _anthropic_preempt_signal,
@@ -32440,6 +32831,7 @@ async def anthropic_messages(
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
             max_tokens = payload.max_tokens,
+            admission_output_allowance = _anthropic_plain_output_allowance,
             stop = stop,
             seed = payload.seed,
             cancel_event = cancel_event,
@@ -33814,6 +34206,7 @@ async def _anthropic_passthrough_non_streaming(
     reasoning_effort = None,
     preserve_thinking = None,
     parse_think = True,
+    admission_output_allowance: Optional[int] = None,
 ):
     """Non-streaming client-side pass-through.
 
@@ -33921,6 +34314,19 @@ async def _anthropic_passthrough_non_streaming(
                     body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
                 ),
             }
+            _retry_bound = _openai_llama_admission_retry_max_tokens(
+                retry_body,
+                admission_output_allowance = admission_output_allowance,
+                request = request,
+                llama_backend = llama_backend,
+                injected_tools = _healing_tools,
+                pausable = False,
+                # One lease covers both attempts, so the retry writes what is left of the
+                # first attempt's allowance, not a fresh one.
+                first_messages = body.get("messages") or [],
+            )
+            if _retry_bound is not None:
+                retry_body["max_tokens"] = _retry_bound
             try:
                 retry_resp = await _post(retry_body)
                 if retry_resp.status_code == 200:
@@ -34483,6 +34889,7 @@ def _build_openai_passthrough_body(
     payload,
     backend_ctx = None,
     llama_backend = None,
+    request: Optional[Request] = None,
 ) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
@@ -34515,11 +34922,13 @@ def _build_openai_passthrough_body(
         payload.temperature,
         payload.top_p,
         payload.top_k,
-        # Honor max_completion_tokens on the tools/response_format passthrough too, clamped here as
-        # well: this body is assembled independently of the caller's effective_max_tokens.
+        # Honor max_completion_tokens on the tools/response_format passthrough too. This
+        # body is assembled independently of the caller's effective_max_tokens, so without
+        # the clamp the surface is admitted on one figure and permitted the whole window.
+        # `request` too: without it capacity reads 1 and this declines.
         (
             _openai_llama_admission_enforced_max_tokens(
-                payload, request = None, llama_backend = llama_backend, pausable = False
+                payload, request = request, llama_backend = llama_backend, pausable = False
             )
             or _effective_openai_max_tokens(payload)
         ),
@@ -34549,6 +34958,7 @@ async def _build_openai_passthrough_body_async(
     payload,
     backend_ctx = None,
     llama_backend = None,
+    request: Optional[Request] = None,
 ) -> dict:
     if _request_has_image(payload):
         return await asyncio.to_thread(
@@ -34556,11 +34966,13 @@ async def _build_openai_passthrough_body_async(
             payload,
             backend_ctx = backend_ctx,
             llama_backend = llama_backend,
+            request = request,
         )
     return _build_openai_passthrough_body(
         payload,
         backend_ctx = backend_ctx,
         llama_backend = llama_backend,
+        request = request,
     )
 
 
@@ -34829,7 +35241,10 @@ async def _openai_passthrough_stream_admitted(
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         body = await _build_openai_passthrough_body_async(
-            payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+            payload,
+            backend_ctx = llama_backend.context_length,
+            llama_backend = llama_backend,
+            request = request,
         )
         client_wants_usage = _wants_stream_usage(payload)
         upstream_stream_options = dict(body.get("stream_options") or {})
@@ -35806,7 +36221,10 @@ async def _openai_passthrough_non_streaming_upstream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     body = await _build_openai_passthrough_body_async(
-        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        payload,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+        request = request,
     )
     body["stream"] = False
     body.pop("stream_options", None)
@@ -35961,6 +36379,22 @@ async def _openai_passthrough_non_streaming_upstream(
                 body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
             ),
         }
+        _retry_bound = _openai_llama_admission_retry_max_tokens(
+            retry_body,
+            admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+                payload, request = request, llama_backend = llama_backend, pausable = False
+            ),
+            request = request,
+            llama_backend = llama_backend,
+            injected_tools = body.get("tools"),
+            payload = payload,
+            pausable = False,
+            # One lease covers both attempts, so the retry writes what is left of the
+            # first attempt's allowance, not a fresh one.
+            first_messages = body.get("messages") or [],
+        )
+        if _retry_bound is not None:
+            retry_body["max_tokens"] = _retry_bound
         try:
             retry_resp = await _post(retry_body)
             if retry_resp.status_code == 200:

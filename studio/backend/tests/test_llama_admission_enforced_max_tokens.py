@@ -99,7 +99,62 @@ class TestEveryChatIsPermittedItsWholeWindow:
     ):
         assert _enforced(payload, backend) is None
 
-    def test_the_bound_exceeds_the_charge_and_the_charge_never_exceeds_the_bound(self):
+class TestWhatIsLeftAlone:
+    def test_a_stated_cap_is_never_clamped(self):
+        """It is already honest: charged and sent as the same number."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 512), backend) is None
+        assert _enforced(_chat(max_completion_tokens = 2048), backend) is None
+
+    def test_a_single_slot_is_unrestricted(self):
+        """One slot owns the whole cache, so there is nothing to divide."""
+        backend = _backend(window = 16384, total = 16384, slots = 1)
+        assert _enforced(_chat(max_tokens = 16384), backend) is None
+
+    def test_an_unknown_budget_changes_nothing(self):
+        backend = SimpleNamespace(context_length = None, effective_parallel_slots = 4)
+        assert _enforced(_chat(max_tokens = 4096), backend) is None
+
+    def test_a_shape_with_no_messages_is_left_alone(self):
+        """`/completions` takes a prompt string; there is nothing to measure."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_Payload(max_tokens = 16384), backend) is None
+
+    def test_a_private_cache_per_slot_is_unrestricted(self):
+        """Under --no-kv-unified the aggregate is N times the window, so a share IS the window and
+        no request can overrun anyone else.
+        """
+        backend = _backend(window = 4096, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 4096), backend) is None
+
+
+class TestWhereAStatedCapStopsBeingStated:
+    """The line the docstring draws, pinned: only a cap STRICTLY BELOW the window is a
+    promise to write less than the window. At or above it the caller has promised
+    nothing the window did not already say, and ``_openai_llama_admission_tokens``
+    charges such a request the unstated allowance, so the wire has to be bounded to
+    match or the charge is fiction again."""
+
+    def test_one_token_below_the_window_is_left_alone(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        assert _enforced(_chat(max_tokens = 16383), backend) is None
+
+    def test_at_or_above_the_window_is_enforced_like_an_unstated_cap(self):
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        unstated = _enforced(_chat(), backend)
+        assert _enforced(_chat(max_tokens = 16384), backend) == unstated
+        assert _enforced(_chat(max_tokens = 999999), backend) == unstated
+
+
+class TestTheEdges:
+    def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
+        """Zero would be refused upstream, so the floor is one."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        enforced = _enforced(_chat("word " * 20000, max_tokens = 16384), backend)
+        assert enforced == 1
+
+    def test_the_bound_deliberately_exceeds_the_charge(self):
+        """They diverge ON PURPOSE now, and that is the whole design."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
