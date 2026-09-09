@@ -6615,7 +6615,9 @@ def _detected_cuda_runtime_lines(host: HostInfo) -> "list[str] | None":
     if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
         return None
     try:
-        detected = detected_linux_runtime_lines() if host.is_linux else detected_windows_runtime_lines()
+        detected = (
+            detected_linux_runtime_lines() if host.is_linux else detected_windows_runtime_lines()
+        )
     except Exception:  # noqa: BLE001 - an unreadable scan is "cannot tell", which takes the full path
         return None
     lines = detected[0] if isinstance(detected, tuple) else detected
