@@ -24,7 +24,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 21;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -238,6 +238,48 @@ function migrateThroughVersion21(
   }
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function inferLegacyContextLengthWasManuallySet(
+  state: PersistedTrainingConfig,
+): boolean {
+  const contextLength = finiteNumber(state.contextLength);
+  if (contextLength === undefined) return false;
+  const selectedModel = state.selectedModel;
+  const appliedFor = state.modelDefaultsAppliedFor;
+  const hasMatchingBaseline =
+    typeof selectedModel === "string" &&
+    selectedModel.length > 0 &&
+    appliedFor === selectedModel;
+  const baseline =
+    hasMatchingBaseline &&
+    state.advancedSettingsBaseline !== null &&
+    typeof state.advancedSettingsBaseline === "object"
+      ? (state.advancedSettingsBaseline as Record<string, unknown>)
+      : undefined;
+  const baselineContextLength = finiteNumber(baseline?.contextLength);
+  if (baselineContextLength !== undefined) {
+    return contextLength !== baselineContextLength;
+  }
+  return contextLength !== DEFAULT_HYPERPARAMS.contextLength;
+}
+
+function migrateThroughVersion22(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 22) {
+    if (typeof state.contextLengthManuallySet !== "boolean") {
+      state.contextLengthManuallySet =
+        inferLegacyContextLengthWasManuallySet(state);
+    }
+  }
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -297,6 +339,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion18(state, version);
   migrateThroughVersion19(state, version);
   migrateThroughVersion21(state, version);
+  migrateThroughVersion22(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -333,6 +376,10 @@ export function mergeTrainingConfig(
     baselineTrainOnCompletions === undefined
       ? modelDefaultsAppliedFor
       : null;
+  const contextLengthManuallySet =
+    typeof persistedState.contextLengthManuallySet === "boolean"
+      ? persistedState.contextLengthManuallySet
+      : inferLegacyContextLengthWasManuallySet(persistedRecord);
   const merged: TrainingConfigStore = {
     ...current,
     ...persistedState,
@@ -341,6 +388,7 @@ export function mergeTrainingConfig(
     modelDefaultsAppliedFor,
     advancedSettingsBaseline,
     trainOnCompletionsDefaultPendingFor,
+    contextLengthManuallySet,
     trainingMethodProvenance: normalizeTrainingMethodProvenance(
       persistedState.trainingMethodProvenance,
       persistedRecord,
