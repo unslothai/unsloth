@@ -479,7 +479,8 @@ def test_a_projector_beside_indexed_weights_is_counted(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1300
 
 
-def test_two_indexes_naming_subfolders_are_still_one_copy_of_the_weights(tmp_path):
+def test_a_subfolder_only_a_losing_index_names_is_charged_anyway(tmp_path):
+    # Nothing tells this folder from a component that is loaded, and hiding a real one is worse.
     _write(tmp_path / "sf" / "model-00001-of-00001.safetensors", 1000)
     _write(tmp_path / "pk" / "pytorch_model-00001-of-00001.bin", 1500)
     (tmp_path / "model.safetensors.index.json").write_text(
@@ -488,7 +489,7 @@ def test_two_indexes_naming_subfolders_are_still_one_copy_of_the_weights(tmp_pat
     (tmp_path / "pytorch_model.bin.index.json").write_text(
         '{"weight_map": {"a": "pk/pytorch_model-00001-of-00001.bin"}}'
     )
-    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 2500
 
 
 def test_an_index_names_a_shard_that_carries_no_weight_extension(tmp_path):
@@ -657,6 +658,44 @@ def test_a_shard_named_into_a_subfolder_outranks_its_twin_there(tmp_path):
     _write(tmp_path / "weights" / "shard.safetensors", 1000)
     (tmp_path / "pytorch_model.bin.index.json").write_text(
         '{"weight_map": {"a": "weights/shard.bin"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1500
+
+
+def test_a_deeper_index_cannot_recharge_a_shard_already_claimed_above_it(tmp_path):
+    _write(tmp_path / "weights" / "pytorch_model-00001-of-00001.bin", 1500)
+    (tmp_path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "weights/pytorch_model-00001-of-00001.bin"}}'
+    )
+    (tmp_path / "weights" / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1500
+
+
+def test_a_passed_over_index_does_not_swallow_a_component_it_names(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "vision_tower" / "model.safetensors", 700)
+    (tmp_path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "vision_tower/model.safetensors"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1700
+
+
+def test_an_index_reaching_into_the_vendor_copy_is_still_one_archive(tmp_path):
+    _write(tmp_path / "shard-a.safetensors", 600)
+    _write(tmp_path / "original" / "shard-b.safetensors", 400)
+    (tmp_path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "shard-a.safetensors", "b": "original/shard-b.safetensors"}}'
+    )
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_an_index_target_that_walks_back_up_lands_where_the_loader_lands(tmp_path):
+    _write(tmp_path / "weights" / "shard.bin", 1500)
+    _write(tmp_path / "weights" / "shard.safetensors", 1000)
+    (tmp_path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "weights/../weights/shard.bin"}}'
     )
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1500
 

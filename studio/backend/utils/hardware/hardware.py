@@ -5717,7 +5717,7 @@ def _indexed_archive(directories: list, base: str, ext: str, files: dict) -> tup
             continue
         try:
             weight_map = json.loads(index.read_text(encoding = "utf-8")).get("weight_map") or {}
-            named = {directory / name for name in weight_map.values()}
+            named = {Path(os.path.normpath(directory / name)) for name in weight_map.values()}
         except (OSError, ValueError, AttributeError, TypeError):
             continue
         # from_pretrained joins the raw value onto the folder: any name, any subdirectory.
@@ -5747,18 +5747,19 @@ def _archive_candidates(directories: list, pool: dict, files: dict) -> list:
     return candidates
 
 
-def _directory_weight_bytes(directories: list, sizes: dict, files: dict, vendor: set) -> tuple:
+def _directory_weight_bytes(homes: list, sizes: dict, files: dict, vendor: set) -> tuple:
     """What one directory costs, and every file its spellings account for.
 
-    ``directories`` are the folders answering to it, the vendor's copy last, decided together
-    because splitting them lets a single archive lose in halves. ``files`` is the whole tree,
-    since an index may name a shard below itself; the second return is what it accounted for.
+    ``homes`` are the ``(folder, is_vendor)`` pairs answering to it, decided together because
+    splitting them lets a single archive lose in halves. ``files`` is the whole tree, since an
+    index may name a shard below itself; the second return is what it accounted for.
     """
+    directories = [folder for folder, _ in homes]
     candidates = _archive_candidates(directories, sizes, files)
-    # A vendor copy stands in only where the directory has none of its own, never outranking.
+    # A vendor copy never outranks weights a directory has of its own, and its folder drops out
+    # whole: an index is one archive, so half of one must not outrank a complete candidate.
     native_pool = {path: size for path, size in sizes.items() if path not in vendor}
-    native_files = {path: size for path, size in files.items() if path not in vendor}
-    native = _archive_candidates(directories, native_pool, native_files)
+    native = _archive_candidates([f for f, is_vendor in homes if not is_vendor], native_pool, files)
 
     archive: dict = {}
     for choices in (native, candidates):
@@ -5770,13 +5771,15 @@ def _directory_weight_bytes(directories: list, sizes: dict, files: dict, vendor:
     alternatives = {path for *_, held in candidates for path in held}
     rest = {path: size for path, size in sizes.items() if path not in alternatives}
     if archive:
-        # Trainer state is bookkeeping only beside an archive; alone it is the weights.
         rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
     components: dict = {}
     ordered = sorted(rest.items(), key = lambda i: (i[0].suffix != ".safetensors", i[0].name))
     for path, size in ordered:
         components.setdefault(path.stem, size)
-    return sum(archive.values()) + sum(components.values()), alternatives | set(archive)
+    here = set(directories)
+    return sum(archive.values()) + sum(components.values()), {
+        path for path in alternatives if path.parent in here
+    } | set(archive)
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
@@ -5799,8 +5802,7 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        # A top-level original/ answers to the directory above it, files and index alike.
-        # Its real location is recorded, since a nested component's vendor copy keeps shape.
+        # A top-level original/ answers to the directory above; its real location is recorded.
         is_vendor = rel.parts[:1] == ("original",)
         home = Path(*rel.parent.parts[1:]) if is_vendor else rel.parent
         if is_vendor:
@@ -5831,21 +5833,16 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     settled: set = set()
     total = 0
     for directory in sorted(sizes_by_directory, key = lambda d: (len(d.parts), d.as_posix())):
+        available = {
+            path: size for path, size in files.items() if (path.parent, path.stem) not in settled
+        }
         unclaimed = {
-            path: size
-            for path, size in sizes_by_directory[directory].items()
-            if (path.parent, path.stem) not in settled
+            path: size for path, size in sizes_by_directory[directory].items() if path in available
         }
         charged, accounted = _directory_weight_bytes(
-            [
-                folder
-                for folder, is_vendor in sorted(
-                    homes_by_directory.get(directory, {model_path / directory: False}).items(),
-                    key = lambda item: item[1],
-                )
-            ],
+            sorted(homes_by_directory.get(directory, {model_path / directory: False}).items()),
             unclaimed,
-            files,
+            available,
             vendor,
         )
         settled |= {(path.parent, path.stem) for path in accounted}
