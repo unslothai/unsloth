@@ -358,6 +358,5 @@ class TestASpentCapIsNotReopened:
         dicts = [e for e in events if isinstance(e, dict)]
         finishes = [e["finish_reason"] for e in dicts if e.get("type") == "metadata"]
         assert finishes[-1] == "length"
-        assert any(
-            e.get("type") == "context_truncated" for e in dicts
-        ), "the turn stopped in silence"
+        # The caller's own cap ended it, which is not a give-up.
+        assert not any(e.get("type") == "context_truncated" for e in dicts)

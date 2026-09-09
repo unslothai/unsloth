@@ -29359,18 +29359,20 @@ class LlamaCppBackend:
             # cannot arrive before the lease it describes has gone back.
             yield {"type": "preempt", "state": "paused"}
 
-            def _finish_after_giving_up():
+            def _finish_after_giving_up(notice: bool = True):
                 """End the turn the way a client can read, not by falling silent.
 
                 The notice saying WHY the turn stopped, then a terminal metadata carrying
                 `length`, which is the shape the continuation path resumes from. Without
                 the second the route emits no finish reason at all and the caller sees a
-                completed request with no error, no usage and no text.
+                completed request with no error, no usage and no text. ``notice`` False is
+                a turn the caller's own cap ended, which is not a give-up.
 
                 The usage is assembled as the successful exit assembles it, so a turn that
                 gave up still reports what its earlier attempts decoded.
                 """
-                yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
+                if notice:
+                    yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
                 _gave_up_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
                 # The aborted attempt never receives a final usage chunk, so without this a
                 # first-attempt give-up reported zero tokens for a turn that returned text.
@@ -29399,10 +29401,15 @@ class LlamaCppBackend:
                 yield from _finish_after_giving_up()
                 return
             if isinstance(max_tokens, int) and max_tokens > 0:
-                if max_tokens - checkpoint.charged_tokens <= 0:
-                    # The caller's cap is spent: the partial is the answer, and a resume
-                    # would write past the cap by the floor below, once per pause.
-                    yield from _finish_after_giving_up()
+                _window_p = self._effective_context_length or 0
+                if max_tokens - checkpoint.charged_tokens <= 0 and not (
+                    _window_p and max_tokens >= _window_p
+                ):
+                    # Spent: reopening the stream for one floored token went past the cap by
+                    # that token, once per pause. The partial is on screen and the turn is
+                    # continuable, and it does not queue for room it cannot use.
+                    logger.info("Paused with the caller's output cap spent; ending the turn")
+                    yield from _finish_after_giving_up(notice = False)
                     return
             resumed_p = yield from _await_resume(preempt_policy, cancel_event)
             if not resumed_p:
