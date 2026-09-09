@@ -501,15 +501,20 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
                 "steps_sampled": [0, 12, 25, 37],
                 "base_damp": 0.01,
                 "grid": "832x480x49f_50s",
-                "layers": {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}},
+                "layers": {
+                    "blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}
+                },
             }
         )
     )
     (gptq / "gptq_check.json").write_text(
-        _json.dumps({"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}})
+        _json.dumps(
+            {"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}}
+        )
     )
     # One admitted linear with a correction on disk, one without a file at all.
     (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
+
     # The runtime filter is the admitted set, so the stub has to look like what it inspects:
     # nn.Linear, 16-aligned, at or above the min_features floor.
     class _Linear:
@@ -609,3 +614,246 @@ def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path)
     # Refused from the arguments alone: the correction was solved against unrotated activations.
     assert code == 2
     assert not out.exists()
+
+
+# ── per-layer NVFP4 policies ─────────────────────────────────────────────────────
+def test_the_policy_a_build_applies_is_the_one_that_resolves_for_its_base():
+    build = _script()
+    # auto is the default and must leave every existing invocation building what it builds today:
+    # no policy describes an fp8 or int8 artifact, and none resolves for the video families.
+    assert build.resolve_build_policy("auto", "fp8", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
+        None,
+        None,
+    )
+    assert build.resolve_build_policy(
+        "auto", "nvfp4", "wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    ) == (None, None)
+    policy, refusal = build.resolve_build_policy(
+        "auto", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is None and policy.policy_id == "zimg_f8mod_toq34_v1"
+    # off forces the whole-model build even where one would resolve.
+    assert build.resolve_build_policy("off", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
+        None,
+        None,
+    )
+    # A named policy is a pin: the operator says which layer set they measured, and a table that
+    # has moved under them is a refusal rather than a different artifact.
+    policy, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "nvfp4", "z-image", "unsloth/Z-Image-Turbo"
+    )
+    assert refusal is None and policy.policy_id == "zimg_f8mod_toq34_v1"
+    _, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "nvfp4", "flux.1", "black-forest-labs/FLUX.1-schnell"
+    )
+    assert refusal is not None and "flux_mod_single_v1" in refusal
+    _, refusal = build.resolve_build_policy(
+        "flux_mod_single_v1", "nvfp4", "flux.1", "black-forest-labs/FLUX.1-dev"
+    )
+    assert refusal is not None and "none" in refusal
+    _, refusal = build.resolve_build_policy(
+        "nope_v1", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is not None and "unknown --policy" in refusal
+    _, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "fp8", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is not None and "nvfp4 build" in refusal
+
+
+class _PolicyLinear:
+    """A Linear as the shared filter and the two quantise passes read one."""
+
+    def __init__(
+        self,
+        in_features = 1024,
+        out_features = 1024,
+    ):
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = _StubParameter()
+
+
+class _StubParameter:
+    dtype = "bfloat16"
+    shape = (1024, 1024)
+    device = "cuda"
+    data = None
+
+
+class _Quantized:
+    """A torchao weight subclass as far as the post-pass walk is concerned: the class NAME."""
+
+    def __init__(self, name):
+        self.__class__ = type(name, (_Quantized,), {})
+
+
+def _stub_policy_build(monkeypatch, tmp_path):
+    """A two-linear DiT, a tiny policy over it, and a quantize_ that records each pass."""
+    import types as _types
+
+    from core.inference import diffusion_nvfp4_policy as policies
+
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+    torch = sys.modules["torch"]
+    nn = _types.ModuleType("torch.nn")
+    nn.Linear = _PolicyLinear
+    nn.Parameter = _StubParameter
+    torch.nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+
+    modules = {"blocks.0.attn1.to_q": _PolicyLinear(), "blocks.0.ffn.net.0": _PolicyLinear()}
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    transformer.named_modules = lambda: list(modules.items())
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+
+    tiny = policies.NVFP4Policy(
+        policy_id = "tiny_v1",
+        version = 3,
+        family = "wan2.2-ti2v-5b",
+        base_repos = ("wan-ai/wan2.2-ti2v-5b-diffusers",),
+        rules = (policies.Rule(suffix = "attn1.to_q", precision = policies.PRECISION_NVFP4, expect = 1),),
+        expected_counts = {
+            policies.PRECISION_NVFP4: 1,
+            policies.PRECISION_FP8: 1,
+            policies.PRECISION_BF16: 0,
+        },
+    )
+    monkeypatch.setattr(policies, "NVFP4_POLICIES", (tiny,))
+
+    passes: list = []
+    produced = {"nvfp4": "NVFP4Tensor", "fp8": "Float8Tensor"}
+
+    def _quantize_(
+        module,
+        config,
+        filter_fn = None,
+    ):
+        selected = [fqn for fqn, sub in module.named_modules() if filter_fn(sub, fqn)]
+        passes.append({"config": config, "selected": selected})
+        for fqn in selected:
+            modules[fqn].weight = _Quantized(produced[config.scheme])
+        # A pass that ran is not the whole-model call, which records its filter and nothing else.
+        saved["filter_fn"] = filter_fn
+
+    sys.modules["torchao.quantization"].quantize_ = _quantize_
+    dtq = sys.modules["core.inference.diffusion_transformer_quant"]
+    monkeypatch.setattr(
+        dtq,
+        "_make_quant_config",
+        lambda scheme, fast_accum = None: _types.SimpleNamespace(
+            scheme = scheme, fast_accum = fast_accum
+        ),
+    )
+    return saved, passes, modules
+
+
+def _policy_argv(out, *extra):
+    return [
+        "--base",
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "--family",
+        "wan2.2-ti2v-5b",
+        "--scheme",
+        "nvfp4",
+        "--out",
+        str(out),
+        *extra,
+    ]
+
+
+def test_a_policy_build_runs_two_passes_and_stamps_what_it_assigned(monkeypatch, tmp_path):
+    build = _script()
+    saved, passes, modules = _stub_policy_build(monkeypatch, tmp_path)
+    out = tmp_path / "policy.pt"
+    assert build.main(_policy_argv(out)) == 0
+    # NVFP4 first, then fp8, over disjoint sets: the order is what lets the fp8 filter also
+    # require a plain Parameter, so no layer can be quantised twice.
+    assert [p["config"].scheme for p in passes] == ["nvfp4", "fp8"]
+    assert passes[0]["selected"] == ["blocks.0.attn1.to_q"]
+    assert passes[1]["selected"] == ["blocks.0.ffn.net.0"]
+    assert type(modules["blocks.0.attn1.to_q"].weight).__name__ == "NVFP4Tensor"
+    assert type(modules["blocks.0.ffn.net.0"].weight).__name__ == "Float8Tensor"
+    ckpt = saved["ckpt"]
+    # The tag an older build refuses, rather than loading the mixture as a whole-model artifact.
+    assert ckpt["format"] == "unsloth_prequant_transformer_state_dict_v3"
+    block = ckpt["metadata"]["nvfp4_policy"]
+    assert block["policy_id"] == "tiny_v1" and block["policy_version"] == 3
+    assert block["counts"] == {"fp8": 1, "nvfp4": 1}
+    assert block["nvfp4_fqns"] == ["blocks.0.attn1.to_q"]
+    assert block["activation_scales_baked"] is False and block["gptq"] is False
+    # The scheme token does not change: the policy is metadata about an nvfp4 artifact.
+    assert ckpt["metadata"]["scheme"] == "nvfp4"
+    # The fp8 half bakes an accumulate mode and a granularity in, so both are recorded.
+    assert ckpt["metadata"]["fp8_granularity"] == "per_row"
+    assert ckpt["metadata"]["fast_accum"] is not None
+    assert passes[1]["config"].fast_accum == ckpt["metadata"]["fast_accum"]
+
+
+def test_a_policy_build_may_not_also_rotate_and_a_family_without_one_may_not_ask(
+    monkeypatch, tmp_path
+):
+    build = _script()
+    saved, passes, _ = _stub_policy_build(monkeypatch, tmp_path)
+    out = tmp_path / "policy.pt"
+    # Both rewrite the weights before quantize_ and both claim the one format tag slot.
+    assert build.main(_policy_argv(out, "--convrot-groupsize", "128")) == 2
+    assert not out.exists()
+    # A policy id that does not resolve for this family and base is refused from the arguments
+    # alone, before the hours: the layer set was solved on another checkpoint's weights.
+    assert build.main(_policy_argv(out, "--policy", "zimg_f8mod_toq34_v1")) == 2
+    assert build.main(_policy_argv(out, "--policy", "no_such_policy_v1")) == 2
+    assert not out.exists()
+    # off builds the whole-model artifact, which is also what every base without a policy gets:
+    # one pass over the filter's set, the v1 tag, and no policy block.
+    assert build.main(_policy_argv(out, "--policy", "off")) == 0
+    assert [p["config"].scheme for p in passes] == ["nvfp4"]
+    assert saved["ckpt"]["format"] == "unsloth_prequant_transformer_state_dict_v1"
+    assert "nvfp4_policy" not in saved["ckpt"]["metadata"]
+
+
+def test_a_calibrated_policy_build_corrects_the_4_bit_layers_only(monkeypatch, tmp_path):
+    build = _script()
+    saved, passes, modules = _stub_policy_build(monkeypatch, tmp_path)
+    import json as _json
+
+    gptq = tmp_path / "gptq"
+    (gptq / "weights").mkdir(parents = True)
+    layers = {
+        "blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12},
+        "blocks.0.ffn.net.0": {"err_rtn": 0.08, "err_gptq": 0.11},
+    }
+    (gptq / "gptq_meta.json").write_text(_json.dumps({"prompts": 32, "layers": layers}))
+    (gptq / "gptq_check.json").write_text(
+        _json.dumps(
+            {"layers": {fqn: {"out_err_rtn": 0.03, "out_err_gptq": 0.01} for fqn in layers}}
+        )
+    )
+    for fqn in layers:
+        (gptq / "weights" / build.gptq_weight_filename(fqn)).write_bytes(b"w")
+    sys.modules["torch"].load = lambda path, weights_only = True: types.SimpleNamespace(
+        shape = (1024, 1024), to = lambda *a: "corrected"
+    )
+    monkeypatch.setattr(
+        build,
+        "verify_gptq_idempotency",
+        lambda modules, load_weight: {
+            "checked": len(modules),
+            "max_abs": 0.0,
+            "max_abs_fqn": None,
+            "frac_diff": 0.0,
+        },
+    )
+    out = tmp_path / "policy_gptq.pt"
+    assert build.main(_policy_argv(out, "--gptq-dir", str(gptq))) == 0
+    block = saved["ckpt"]["metadata"]["gptq"]
+    # Both layers have a correction on disk that scores better, but only the NVFP4 one is in
+    # scope: correcting a weight that then becomes the source of an fp8 replica raised the error
+    # 46 percent in the campaign, and a static policy avoids that by construction.
+    assert set(block["layers"]) == {"blocks.0.attn1.to_q"}
+    assert block["applied"] == 1
+    assert saved["ckpt"]["metadata"]["nvfp4_policy"]["gptq"] is True

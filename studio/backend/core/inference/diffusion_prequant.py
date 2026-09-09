@@ -1297,6 +1297,7 @@ def _validate_policy(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> b
     from .diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
         declares_policy,
+        policy_expected_counts,
         policy_metadata_error,
         resolve_policy,
     )
@@ -1358,7 +1359,7 @@ def _validate_policy(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> b
         )
         return False
     declared_counts = {str(key): int(value) for key, value in (block.get("counts") or {}).items()}
-    expected_counts = {str(key): int(value) for key, value in dict(policy.expected_counts).items()}
+    expected_counts = policy_expected_counts(policy)
     if declared_counts != expected_counts:
         _warn(
             logger,

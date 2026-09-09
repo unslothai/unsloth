@@ -21,9 +21,17 @@ Image and video families are both served: the image registry is asked first and 
 is the fallback (--modality forces either). A family with more than one denoiser builds one
 artifact per --component (Wan2.2 A14B's two experts).
 
+An image family with a gated per-layer NVFP4 policy builds the MIXED artifact instead of a
+whole-model one: --policy auto (the default) applies the policy core.inference.diffusion_nvfp4_policy
+resolves for (family, base) when the scheme is nvfp4, --policy off forces the whole-model build, and
+--policy <policy_id> pins one and refuses if that is not what resolves. A policy build runs two
+quantize_ passes, stamps the layer assignment into the metadata and writes the v3 format tag.
+
 A calibrated build takes --gptq-dir: every admitted linear whose GPTQ correction is MEASURED to
 lower that layer's output error on held-out activations gets the corrected bf16 weight before
-quantize_, the rest stay round-to-nearest, and the metadata records which was which.
+quantize_, the rest stay round-to-nearest, and the metadata records which was which. Under a policy
+the corrections apply to the NVFP4 layers alone, which is the rule the campaign measured: a
+correction that also becomes the source of an fp8 replica raised the error 46 percent.
 
 Publishing is gated on a SECOND build: every checkpoint records an md5 fingerprint of each
 quantized weight's packed payload, --verify-against diffs this build against another one, and
@@ -42,6 +50,7 @@ import argparse
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -94,6 +103,53 @@ def resolve_build_family(
         if fam is not None or modality == "image":
             return fam
     return detect_video_family(base, override = override)
+
+
+# --policy modes that are not a policy id.
+POLICY_AUTO = "auto"
+POLICY_OFF = "off"
+
+
+def resolve_build_policy(
+    mode: Optional[str], scheme: str, family: Optional[str], base_id: Optional[str]
+) -> tuple:
+    """``(policy, refusal)`` for this build: which per-layer NVFP4 policy applies, or why none can.
+
+    ``auto`` applies whatever the in-tree table resolves for (family, base) and builds the
+    whole-model artifact when nothing does, so the existing invocations keep building exactly what
+    they build today -- including every fp8 and int8 one, which no policy describes.
+
+    A NAMED policy is a pin rather than a lookup: it must be the one this build resolves for the
+    same family and base, so an operator who asks for the set they measured gets a refusal when the
+    table has moved under them instead of a differently-quantised artifact."""
+    from core.inference.diffusion_nvfp4_policy import policy_by_id, resolve_policy
+    from core.inference.diffusion_transformer_quant import TQ_NVFP4
+
+    mode = (mode or POLICY_AUTO).strip()
+    if mode == POLICY_OFF:
+        return None, None
+    if scheme != TQ_NVFP4:
+        # A policy's rules name nvfp4 and its default precision is fp8, so there is no other scheme
+        # it could describe. Under auto that is simply "no policy applies".
+        if mode == POLICY_AUTO:
+            return None, None
+        return None, (f"--policy {mode!r} describes an nvfp4 build, but --scheme is {scheme!r}")
+    resolved = resolve_policy(family, base_id)
+    if mode == POLICY_AUTO:
+        return resolved, None
+    if policy_by_id(mode) is None:
+        return None, (
+            f"unknown --policy {mode!r}; pass a policy id from "
+            "core/inference/diffusion_nvfp4_policy.py, or 'auto' / 'off'"
+        )
+    if resolved is None or resolved.policy_id != mode:
+        return None, (
+            f"--policy {mode!r} is not the policy this build resolves for family {family!r} on "
+            f"base {base_id!r} ({resolved.policy_id if resolved else 'none'}). The layer sets were "
+            "solved on one checkpoint's weights, so a policy is never applied to a base it was not "
+            "gated on."
+        )
+    return resolved, None
 
 
 def upload_destination(
@@ -245,7 +301,12 @@ def plan_gptq(
     return {"apply": apply, "layers": layers, "counts": counts, "mode": mode}
 
 
-def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> dict:
+def verify_gptq_idempotency(
+    modules: dict,
+    load_weight,
+    *,
+    sample: int = 0,
+) -> dict:
     """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
 
     The correction is only worth the GPU-hours if the packed 4-bit weight in the artifact IS the
@@ -263,7 +324,11 @@ def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> d
         layers = layers[:: max(1, len(layers) // sample)]
     for fqn, module in layers:
         weight = module.weight
-        packed = weight.dequantize(torch.float32) if hasattr(weight, "dequantize") else weight.detach().float()
+        packed = (
+            weight.dequantize(torch.float32)
+            if hasattr(weight, "dequantize")
+            else weight.detach().float()
+        )
         want = load_weight(fqn).to(packed.device, torch.float32)
         delta = (packed - want).abs()
         max_abs = float(delta.max())
@@ -433,6 +498,14 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--policy",
+        default = POLICY_AUTO,
+        help = "per-layer NVFP4 policy: 'auto' applies the one diffusion_nvfp4_policy resolves for "
+        "(--family, --base-id or --base) when --scheme is nvfp4 and builds the whole-model "
+        "artifact otherwise, 'off' forces the whole-model build, and a policy id pins one and "
+        "refuses if that is not what resolves",
+    )
+    p.add_argument(
         "--gptq-dir",
         default = None,
         help = "directory of GPTQ-corrected bf16 weights (as written by the calibration pass: "
@@ -526,7 +599,9 @@ def main(argv = None) -> int:
         if refusal:
             print(f"error: {refusal}", flush = True)
             return 2
-    fam = resolve_build_family(args.base_id or args.base, override = args.family, modality = args.modality)
+    fam = resolve_build_family(
+        args.base_id or args.base, override = args.family, modality = args.modality
+    )
     if fam is None:
         print(
             f"error: unknown family '{args.family}' (modality {args.modality})",
@@ -534,6 +609,19 @@ def main(argv = None) -> int:
         )
         return 2
     component = (args.component or DEFAULT_COMPONENT).strip() or DEFAULT_COMPONENT
+    policy, policy_refusal = resolve_build_policy(
+        args.policy, scheme, fam.name, args.base_id or args.base
+    )
+    if policy_refusal is None and policy is not None and args.convrot_groupsize:
+        # Both rewrite the weights before quantize_ and both claim the one format tag slot. The
+        # rotation is also solved for ONE quantiser over the whole model, which a policy is not.
+        policy_refusal = (
+            f"--policy {policy.policy_id!r} and --convrot-groupsize cannot be combined: a policy "
+            "build quantises its layers at two precisions, and the rotation was solved for one"
+        )
+    if policy_refusal:
+        print(f"error: {policy_refusal}", flush = True)
+        return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
     # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
     # after the quantise and the multi-gigabyte save.
@@ -552,7 +640,11 @@ def main(argv = None) -> int:
             print(f"error: {exc}", flush = True)
             return 2
 
-    print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
+    policy_note = f", policy={policy.policy_id} v{policy.version}" if policy else ""
+    print(
+        f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}{policy_note}) ==",
+        flush = True,
+    )
     print(f"  loading dense transformer from {args.base} (subfolder={component}) ...", flush = True)
     t0 = time.time()
     transformer = transformer_cls.from_pretrained(
@@ -565,7 +657,8 @@ def main(argv = None) -> int:
     # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
-    fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
+    # A policy build has an fp8 half too, so it resolves and records one as well.
+    fast_accum = _resolve_fast_accum(None) if (scheme == TQ_FP8 or policy is not None) else None
     # The same GEMM tiling floor the runtime filter applies. Without it an offline fp8 / nvfp4
     # build bakes the ragged linears the runtime leaves dense, and the mismatch does not surface
     # until the first real matmul of the first render.
@@ -576,6 +669,26 @@ def main(argv = None) -> int:
         require_bf16 = require_bf16,
         require_divisible = require_divisible,
     )
+
+    # The per-layer assignment, resolved BEFORE anything touches the weights: the GPTQ corrections
+    # are scoped to it and the metadata records it, and its own count assertions are what turn a
+    # diffusers rename into a refused build rather than a differently-quantised artifact.
+    assignment: dict = {}
+    if policy is not None:
+        from core.inference.diffusion_nvfp4_policy import (
+            PRECISION_NVFP4,
+            assign_precisions,
+            policy_metadata,
+            quantize_with_policy,
+        )
+
+        assignment = assign_precisions(transformer, policy, min_features = args.min_features)
+        counts = Counter(assignment.values())
+        print(
+            f"  policy {policy.policy_id} v{policy.version}: "
+            + ", ".join(f"{name} {counts[name]}" for name in sorted(counts)),
+            flush = True,
+        )
 
     # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the
     # NVFP4 grid, so it goes into module.weight and the quantiser then packs it exactly as it packs
@@ -606,7 +719,9 @@ def main(argv = None) -> int:
                 with open(gptq_where["score"]) as handle:
                     score_layers = (json.load(handle) or {}).get("layers") or {}
             except Exception as exc:  # noqa: BLE001
-                print(f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True)
+                print(
+                    f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True
+                )
                 return 2
         elif args.gptq_score_mode == "check":
             print(
@@ -615,9 +730,22 @@ def main(argv = None) -> int:
                 flush = True,
             )
             return 2
-        admitted = [
-            (fqn, module) for fqn, module in transformer.named_modules() if filter_fn(module, fqn)
-        ]
+        # Under a policy the corrections go to the NVFP4 layers and nowhere else. The campaign
+        # measured the correction on the 4-bit operand ALONE (+46% error once the corrected weight
+        # also became the source of an fp8 replica), and a static policy gives that by
+        # construction -- but only if the set it is applied to is the policy's, not the filter's.
+        if policy is not None:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if assignment.get(fqn) == PRECISION_NVFP4
+            ]
+        else:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if filter_fn(module, fqn)
+            ]
         weights_dir = gptq_where["weights"]
         gptq_plan = plan_gptq(
             [fqn for fqn, _ in admitted],
@@ -679,7 +807,18 @@ def main(argv = None) -> int:
             flush = True,
         )
 
-    quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
+    if policy is not None:
+        # Two passes over disjoint fqn sets, NVFP4 first. The filter above still defines the
+        # ADMITTED set the policy assigns over; what changes is that one config no longer applies
+        # to all of it.
+        quantize_with_policy(
+            transformer,
+            policy,
+            min_features = args.min_features,
+            fast_accum = fast_accum,
+        )
+    else:
+        quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     gptq_idempotency: dict = {}
     if gptq_applied_modules:
@@ -727,6 +866,12 @@ def main(argv = None) -> int:
     }
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
+        metadata["fp8_granularity"] = FP8_GRANULARITY
+    if policy is not None:
+        # Which layers are at which precision, and the counts the loader re-resolves against the
+        # in-tree table. Writes the v3 format tag through prequant_format_for below.
+        metadata.update(policy_metadata(policy, assignment, gptq = bool(gptq_applied_modules)))
+        # The fp8 half is per-row like every other fp8 build, recorded for the same reason.
         metadata["fp8_granularity"] = FP8_GRANULARITY
     if gptq_plan is not None:
         # Provenance of every corrected weight in this artifact, and of every one that was left

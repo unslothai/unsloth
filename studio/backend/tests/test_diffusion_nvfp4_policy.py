@@ -331,6 +331,27 @@ def test_a_policy_whose_totals_do_not_add_up_cannot_be_applied_at_all():
         assign_precisions(_zimage(), bogus)
 
 
+def test_a_table_that_spells_out_a_zero_total_still_applies():
+    # A Counter never records a precision no layer took, so a policy whose model has nothing left
+    # dense may write bf16: 0 or leave it out and mean the same thing.
+    spelled = NVFP4Policy(
+        policy_id = "spelled_v1",
+        version = 1,
+        family = "flux.1",
+        base_repos = ("black-forest-labs/flux.1-schnell",),
+        rules = (
+            Rule(
+                suffix = "norm.linear",
+                precision = NVFP4,
+                expect = 38,
+                prefix = "single_transformer_blocks.",
+            ),
+        ),
+        expected_counts = {NVFP4: 38, FP8: 461, BF16: 3, "int8": 0},
+    )
+    assert assign_precisions(_flux(), spelled)
+
+
 # ── T-4 suffix, never substring ──────────────────────────────────────────────────
 
 

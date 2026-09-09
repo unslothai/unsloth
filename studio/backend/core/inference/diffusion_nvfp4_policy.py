@@ -192,6 +192,16 @@ def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
     return None
 
 
+def policy_expected_counts(policy: NVFP4Policy) -> dict:
+    """``policy.expected_counts`` as a ``Counter`` comparison sees it: zero entries dropped.
+
+    A Counter never records a precision no layer took, so a table that spells out ``bf16: 0``
+    would otherwise fail against an assignment that is exactly right."""
+    return {
+        str(key): int(value) for key, value in dict(policy.expected_counts).items() if int(value)
+    }
+
+
 def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
     """The policy for ``(family, base_repo)``, or None when there is none.
 
@@ -297,7 +307,7 @@ def assign_precisions(
     for fqn, _ in linears:
         assignment.setdefault(fqn, PRECISION_BF16)
     counts = dict(Counter(assignment.values()))
-    expected = {str(k): int(v) for k, v in dict(policy.expected_counts).items()}
+    expected = policy_expected_counts(policy)
     if counts != expected:
         raise PolicyMismatch(
             f"policy {policy.policy_id!r} assigned {counts} over {len(linears)} linears, expected "
