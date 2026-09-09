@@ -33,6 +33,8 @@ sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import GgufLoadIntent
+import subprocess
 
 # Sibling tests install lightweight httpx stubs, so when collected together our `httpx`
 # may be a stub lacking `get`. Fill in the gaps so collection order does not matter.
@@ -479,8 +481,6 @@ class TestCancelledWaitEndsTheLoad:
     raises a 500 at the caller before it can run its own cancellation handling."""
 
     def test_a_cancelled_health_wait_returns_false_instead_of_raising(self, tmp_path):
-        from core.inference.llama_cpp import GgufLoadIntent
-
         gguf = tmp_path / "model.gguf"
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
@@ -528,10 +528,6 @@ class TestCancelledWaitEndsTheLoad:
     def test_a_teardown_mid_load_ends_the_load_instead_of_raising(self, tmp_path, monkeypatch):
         """The whole race through the real caller (#10353): the waiter tests above
         never reach _spawn_and_wait, which is where the traceback resurfaced."""
-        import subprocess
-
-        from core.inference.llama_cpp import GgufLoadIntent
-
         gguf = tmp_path / "model.gguf"
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
@@ -586,8 +582,6 @@ class TestCancelledWaitEndsTheLoad:
 def test_a_cancelled_diffusion_start_reaps_the_runner():
     """An automatic switch cancels without unloading, so nothing else reaps the shim
     and the visual server; they would keep loading and holding memory."""
-    import subprocess
-
     b = LlamaCppBackend()
     kills = []
     b._kill_process = lambda *a, **kw: kills.append(1)
@@ -625,8 +619,6 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
 
 
 def test_a_diffusion_cancel_after_health_reaps_the_runner():
-    import subprocess
-
     b = LlamaCppBackend()
     kills = []
     b._kill_process = lambda *a, **kw: kills.append(1)
@@ -701,8 +693,6 @@ def test_combined_download_cancel_wait_observes_the_scoped_event():
 
 @pytest.mark.parametrize("cancel_source", ["shared", "scoped"])
 def test_remote_download_observes_both_load_cancel_sources(tmp_path, cancel_source):
-    from core.inference.llama_cpp import GgufLoadIntent
-
     kills = []
     b, gguf = _cancel_scaffold(tmp_path, kills)
     b._remote_non_chat_gguf_refusal = lambda **_kw: None
@@ -736,8 +726,6 @@ def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
     """The marker belongs to one attempt. Left set, a guard that runs before this
     load's first health wait reads the previous request's cancellation and swallows
     a genuine start failure."""
-    from core.inference.llama_cpp import GgufLoadIntent
-
     kills = []
     b, gguf = _cancel_scaffold(tmp_path, kills)
     b._health_wait_cancelled = True  # left over from an earlier cancelled load
@@ -755,8 +743,6 @@ def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
 
 
 def test_cancelled_health_wait_removes_the_staged_cpu_runtime(tmp_path):
-    from core.inference.llama_cpp import GgufLoadIntent
-
     kills = []
     cleaned = []
     waits = []
@@ -798,8 +784,6 @@ def test_cancelled_health_wait_removes_the_staged_cpu_runtime(tmp_path):
 def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
     """Cancelling during the post-health setup used to leave the child resident while
     the cancel route saw is_loaded and skipped teardown."""
-    from core.inference.llama_cpp import GgufLoadIntent
-
     kills = []
     cleaned = []
     b, gguf = _cancel_scaffold(tmp_path, kills)
@@ -832,8 +816,6 @@ def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
 
 
 def test_a_cancel_after_audio_setup_unloads_the_codec(tmp_path, monkeypatch):
-    from core.inference.llama_cpp import GgufLoadIntent
-
     kills = []
     emptied = []
     b, gguf = _cancel_scaffold(tmp_path, kills)

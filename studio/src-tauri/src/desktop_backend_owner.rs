@@ -79,7 +79,6 @@ pub(crate) struct VerifiedOwnedBackend {
     pub backend_pid: u32,
     pub generation: u64,
     pub readiness: OwnedBackendReadiness,
-    pub backend_version: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -127,7 +126,6 @@ struct HealthDesktopOwner {
 struct HealthResponse {
     version: Option<String>,
     native_path_leases_supported: Option<bool>,
-    torch_warm_in_progress: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -827,6 +825,37 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
     }
 }
 
+async fn health_ready_status(
+    port: u16,
+    access_token: Option<&str>,
+) -> Result<OwnedBackendReadiness, String> {
+    match fetch_health(port, access_token).await {
+        Ok(health) => {
+            let authenticated_version = health
+                .as_ref()
+                .and_then(|health| health.version.as_deref())
+                .filter(|version| !version.is_empty());
+            if access_token.is_some() {
+                let Some(version) = authenticated_version else {
+                    return Err("desktop_auth_health_unverified".to_string());
+                };
+                if let Some(reason) = crate::preflight::backend_version_stale_reason(Some(version))
+                {
+                    return if reason == "desktop_backend_version_too_old" {
+                        Ok(OwnedBackendReadiness::Stale { reason })
+                    } else {
+                        Err(reason)
+                    };
+                }
+                return Ok(ready_for_use_status(health.as_ref()));
+            }
+            Ok(ready_for_use_status(health.as_ref()))
+        }
+        Err(reason) if access_token.is_some() => Err(reason),
+        Err(reason) => Ok(OwnedBackendReadiness::Stale { reason }),
+    }
+}
+
 async fn fetch_liveness(
     port: u16,
     timeout: Duration,
@@ -937,34 +966,8 @@ async fn authenticated_health_ready_status(
     port: u16,
     secret: &str,
 ) -> Result<OwnedBackendReadiness, String> {
-    authenticated_health_ready(port, secret)
-        .await
-        .map(|(readiness, _, _)| readiness)
-}
-
-async fn authenticated_health_ready(
-    port: u16,
-    secret: &str,
-) -> Result<(OwnedBackendReadiness, String, bool), String> {
     let access_token = desktop_secret_login(port, secret).await?;
-    let health = fetch_health(port, Some(&access_token))
-        .await?
-        .ok_or_else(|| "desktop_auth_health_unverified".to_string())?;
-    let version = health
-        .version
-        .as_deref()
-        .filter(|version| !version.is_empty())
-        .ok_or_else(|| "desktop_auth_health_unverified".to_string())?;
-    if let Some(reason) = crate::preflight::backend_version_stale_reason(Some(version)) {
-        if reason != "desktop_backend_version_too_old" {
-            return Err(reason);
-        }
-    }
-    Ok((
-        ready_for_use_status(Some(&health)),
-        version.to_string(),
-        health.torch_warm_in_progress.unwrap_or(false),
-    ))
+    health_ready_status(port, Some(&access_token)).await
 }
 
 pub(crate) async fn probe_owned_backend_state(
@@ -988,24 +991,6 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
     require_desktop_secret: bool,
     timeout: Duration,
 ) -> OwnedBackendProbe {
-    probe_owned_backend_state_with_warmup(owner, port, require_desktop_secret, timeout)
-        .await
-        .0
-}
-
-pub(crate) async fn probe_owned_backend_state_for_staged_activation(
-    owner: BackendOwnerState,
-    port: Option<u16>,
-) -> (OwnedBackendProbe, bool) {
-    probe_owned_backend_state_with_warmup(owner, port, true, LOCAL_HTTP_TIMEOUT).await
-}
-
-async fn probe_owned_backend_state_with_warmup(
-    owner: BackendOwnerState,
-    port: Option<u16>,
-    require_desktop_secret: bool,
-    timeout: Duration,
-) -> (OwnedBackendProbe, bool) {
     let ports: Vec<u16> = match port {
         Some(port) => vec![port],
         None => desktop_candidate_ports().collect(),
@@ -1031,73 +1016,58 @@ async fn probe_owned_backend_state_with_warmup(
             continue;
         }
         if let Some(reason) = lifecycle_control_block_reason(&liveness) {
-            return (OwnedBackendProbe::Unmanageable { port, reason }, false);
+            return OwnedBackendProbe::Unmanageable { port, reason };
         }
         if !desktop_login_route_compatible(port, timeout).await {
-            return (
-                OwnedBackendProbe::Unmanageable {
-                    port,
-                    reason: "desktop_login_probe_failed".to_string(),
-                },
-                false,
-            );
+            return OwnedBackendProbe::Unmanageable {
+                port,
+                reason: "desktop_login_probe_failed".to_string(),
+            };
         }
-        let (readiness, backend_version, torch_warm_in_progress) = if require_desktop_secret {
+        let readiness = if require_desktop_secret {
             let secret = match read_desktop_secret() {
                 Ok(Some(secret)) => secret,
                 Ok(None) => {
-                    return (
-                        OwnedBackendProbe::Unmanageable {
-                            port,
-                            reason: "desktop_auth_secret_missing".to_string(),
-                        },
-                        false,
-                    )
+                    return OwnedBackendProbe::Unmanageable {
+                        port,
+                        reason: "desktop_auth_secret_missing".to_string(),
+                    }
                 }
-                Err(reason) => return (OwnedBackendProbe::Unmanageable { port, reason }, false),
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
             };
-            match authenticated_health_ready(port, &secret).await {
-                Ok((readiness, version, torch_warm_in_progress)) => {
-                    (readiness, Some(version), torch_warm_in_progress)
-                }
-                Err(reason) => return (OwnedBackendProbe::Unmanageable { port, reason }, false),
+            match authenticated_health_ready_status(port, &secret).await {
+                Ok(readiness) => readiness,
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
             }
         } else {
             // Spawned backends were launched from the already-probed managed
             // install. Adopted backends pass `true` on their initial probe;
             // later watchdog checks only need ownership and liveness.
-            (OwnedBackendReadiness::Ready, None, false)
+            OwnedBackendReadiness::Ready
         };
-        verified.push((port, readiness, backend_version, torch_warm_in_progress));
+        verified.push((port, readiness));
     }
 
     if verified.len() != 1 {
-        return (
-            OwnedBackendProbe::NotVerified {
-                reason: if !verified.is_empty() {
-                    "owned_backend_ambiguous".to_string()
-                } else if answered_with_a_different_owner {
-                    OWNED_BACKEND_OWNER_MISMATCH.to_string()
-                } else {
-                    "owned_backend_not_found".to_string()
-                },
+        return OwnedBackendProbe::NotVerified {
+            reason: if !verified.is_empty() {
+                "owned_backend_ambiguous".to_string()
+            } else if answered_with_a_different_owner {
+                OWNED_BACKEND_OWNER_MISMATCH.to_string()
+            } else {
+                "owned_backend_not_found".to_string()
             },
-            false,
-        );
+        };
     }
 
-    let (port, readiness, backend_version, torch_warm_in_progress) = verified.remove(0);
-    (
-        OwnedBackendProbe::Verified(VerifiedOwnedBackend {
-            backend_pid: owner.backend_pid(),
-            generation: owner.generation(),
-            owner,
-            port,
-            readiness,
-            backend_version,
-        }),
-        torch_warm_in_progress,
-    )
+    let (port, readiness) = verified.remove(0);
+    OwnedBackendProbe::Verified(VerifiedOwnedBackend {
+        backend_pid: owner.backend_pid(),
+        generation: owner.generation(),
+        owner,
+        port,
+        readiness,
+    })
 }
 
 #[allow(dead_code)]
@@ -1444,42 +1414,17 @@ mod tests {
         ])
         .await;
 
-        let (readiness, version, torch_warm_in_progress) =
-            authenticated_health_ready(port, "desktop-test-secret")
-                .await
-                .unwrap();
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
         server.await.unwrap();
 
         assert!(matches!(readiness, OwnedBackendReadiness::Ready));
-        assert_eq!(version, "2026.8.4");
-        assert!(!torch_warm_in_progress);
         let seen = seen.lock().unwrap();
         assert!(seen[0].contains(r#""secret":"desktop-test-secret""#));
         assert!(seen[1]
             .to_ascii_lowercase()
             .contains("authorization: bearer test-access-token"));
-    }
-
-    #[tokio::test]
-    async fn authenticated_health_reports_torch_warm_in_progress() {
-        let (port, _, server) = http_sequence_server(vec![
-            ("200 OK", r#"{"access_token":"test-access-token"}"#),
-            (
-                "200 OK",
-                r#"{"version":"2026.8.4","native_path_leases_supported":true,"torch_warm_in_progress":true}"#,
-            ),
-        ])
-        .await;
-
-        let (readiness, version, torch_warm_in_progress) =
-            authenticated_health_ready(port, "desktop-test-secret")
-                .await
-                .unwrap();
-        server.await.unwrap();
-
-        assert!(matches!(readiness, OwnedBackendReadiness::Ready));
-        assert_eq!(version, "2026.8.4");
-        assert!(torch_warm_in_progress);
     }
 
     #[tokio::test]
