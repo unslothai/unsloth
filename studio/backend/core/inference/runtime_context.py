@@ -81,20 +81,16 @@ def generation_budget_within_context(
     """Fit a generation budget into the context the prompt leaves free.
 
     Unsloth's generate refuses ``prompt_length + max_new_tokens`` past the model's
-    ``max_position_embeddings``, so a budget sized to the whole window -- what an unset
-    client limit resolves to -- fails on every nonempty prompt. A prompt that already
-    fills the window keeps the caller's budget, so a genuine overflow still surfaces
+    window, so a budget sized to the whole window -- what an unset client limit
+    resolves to -- fails on every nonempty prompt. The window is the one the load
+    selected, which a checkpoint wider than it is not served past. A prompt that
+    already fills it keeps the caller's budget, so a genuine overflow still surfaces
     rather than being shrunk into silence.
     """
     if not max_new_tokens:
         return max_new_tokens
-    window = _field(_field(model, "config"), "max_position_embeddings")
-    if isinstance(window, bool):
-        return max_new_tokens
-    try:
-        window = int(window)
-    # OverflowError: a bare JSON Infinity arrives as float("inf"), which int() rejects.
-    except (TypeError, ValueError, OverflowError):
+    window = runtime_context_length(model)
+    if window is None:
         return max_new_tokens
     free = window - int(prompt_length)
     return free if 0 < free < int(max_new_tokens) else max_new_tokens

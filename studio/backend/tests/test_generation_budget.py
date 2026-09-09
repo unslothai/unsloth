@@ -45,6 +45,17 @@ def test_a_prompt_that_fills_the_window_keeps_the_real_overflow():
     assert generation_budget_within_context(_model(window = 32), 64, 256) == 256
 
 
+def test_the_selected_window_wins_over_a_wider_checkpoint():
+    # from_pretrained keeps config.max_position_embeddings at max(requested, native)
+    # and attaches the requested limit, so reading the config alone would serve a
+    # --max-seq-length 1024 load 2048 new tokens.
+    model = SimpleNamespace(
+        max_seq_length = 1024,
+        config = SimpleNamespace(max_position_embeddings = 32768),
+    )
+    assert generation_budget_within_context(model, _PROMPT_LEN, _WINDOW) == 1024 - _PROMPT_LEN
+
+
 def test_a_model_declaring_no_window_is_passed_through():
     assert generation_budget_within_context(SimpleNamespace(), _PROMPT_LEN, _WINDOW) == _WINDOW
     assert generation_budget_within_context(_model(window = None), 1, 256) == 256
@@ -91,6 +102,7 @@ class _FakeModel:
     """Carries the one guard unsloth_fast_generate applies before generating."""
 
     def __init__(self, window):
+        self.max_seq_length = window
         self.config = SimpleNamespace(max_position_embeddings = window)
         self.device = "cpu"
         self.calls = []
