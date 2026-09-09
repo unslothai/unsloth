@@ -80,6 +80,7 @@ LOCK_CHAIN = (
     "Restore-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
     "Test-StudioCanDefineNativeTypes",
+    "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType",
     "Get-StudioNativeFinalPath",

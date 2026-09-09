@@ -1623,14 +1623,41 @@ function Test-StudioCanDefineNativeTypes {
     return $script:StudioCanDefineNativeTypes
 }
 
+function New-StudioDynamicAssembly {
+    <#
+    Both spellings of "define a dynamic assembly", because the two PowerShell hosts that
+    run this file are on different runtimes. The static
+    AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
+    4.8.1 as well as .NET Core, so Windows PowerShell 5.1 should take the first branch. It
+    is tried rather than assumed because nothing here can test a .NET Framework host, and
+    getting it wrong is not a visible error: the catch would cache the thunk as unavailable
+    and every install would silently lose it.
+
+    AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework spelling and is
+    absent on .NET Core, so it is the fallback rather than the first try.
+    #>
+    param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
+    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+    try {
+        return [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+            $AssemblyName, $access)
+    } catch [System.Management.Automation.MethodException] {
+        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
+    } catch [System.Management.Automation.RuntimeException] {
+        # A missing static surfaces as a RuntimeException on some hosts rather than a
+        # MethodException. Both mean "no such method here", and a real emit failure throws
+        # from the AppDomain call too, so the caller still sees it.
+        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
+    }
+}
+
 function New-StudioEmittedNativeType {
     param(
         [Parameter(Mandatory = $true)][string]$TypeName,
         [Parameter(Mandatory = $true)][object[]]$Imports
     )
     $assemblyName = New-Object System.Reflection.AssemblyName $TypeName
-    $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
-        $assemblyName, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $assembly = New-StudioDynamicAssembly -AssemblyName $assemblyName
     $module = $assembly.DefineDynamicModule($TypeName)
     $builder = $module.DefineType(
         $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")

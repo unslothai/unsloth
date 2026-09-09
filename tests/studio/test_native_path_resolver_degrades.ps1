@@ -59,6 +59,15 @@ foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setup
     $compiles = [regex]::Matches($body, "(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName)")
     Check "$($pair[0]) compiles no C# at all" ($compiles.Count -eq 0)
     Check "$($pair[0]) emits its native imports instead" ($body -match "DefinePInvokeMethod")
+    # Both spellings of "define a dynamic assembly". Windows PowerShell 5.1 on .NET
+    # Framework and pwsh on .NET Core do not agree about which one exists, and only
+    # one of them can be exercised from here: losing either branch would degrade
+    # every install on the other host with no error to see, since the caller caches
+    # the failure and falls through to the lexical path.
+    Check "$($pair[0]) tries the static DefineDynamicAssembly" (
+        $body -match "\[System\.Reflection\.Emit\.AssemblyBuilder\]::DefineDynamicAssembly")
+    Check "$($pair[0]) falls back to the AppDomain spelling" (
+        $body -match "\[AppDomain\]::CurrentDomain\.DefineDynamicAssembly")
 }
 
 # ── The resolver, run for real ──
@@ -66,7 +75,8 @@ foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setup
 # without the native side still gets an answer, and gets told it is inexact.
 $fns = @(
     "Write-StudioLine", "Write-StudioFinalPathDegraded",
-    "Test-StudioCanDefineNativeTypes", "New-StudioEmittedNativeType",
+    "Test-StudioCanDefineNativeTypes", "New-StudioDynamicAssembly",
+    "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType", "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
