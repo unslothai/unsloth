@@ -249,7 +249,6 @@ def _write(path: Path, size: int) -> None:
 
 def _write_index(path: Path, shards: dict) -> None:
     import json
-
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_text(
         json.dumps(
@@ -401,9 +400,15 @@ def test_diffusers_sharded_component_is_charged_by_its_index_once(tmp_path):
     }
     for name, size in shards.items():
         _write(tmp_path / "transformer" / name, size)
-    _write_index(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json", shards)
-    _write(tmp_path / "transformer" / "diffusion_pytorch_model-00001-of-00002.bf16.safetensors", 1500)
-    _write(tmp_path / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors", 1000)
+    _write_index(
+        tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json", shards
+    )
+    _write(
+        tmp_path / "transformer" / "diffusion_pytorch_model-00001-of-00002.bf16.safetensors", 1500
+    )
+    _write(
+        tmp_path / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors", 1000
+    )
     _write(tmp_path / "vae" / "diffusion_pytorch_model.safetensors", 320)
     _write(tmp_path / "vae" / "diffusion_pytorch_model.fp16.safetensors", 160)
     _write(tmp_path / "vae" / "diffusion_pytorch_model.bin", 320)
@@ -417,6 +422,7 @@ def test_an_unrelated_index_json_is_never_opened(tmp_path, monkeypatch):
     (tmp_path / "search.index.json").write_text('{"weight_map": {"x": "model.safetensors"}}')
     opened = []
     real = hardware._index_targets
+
     def spy(index, directory):
         opened.append(index.name)
         return real(index, directory)
