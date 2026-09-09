@@ -1627,6 +1627,34 @@ async def wait_for_port(host: str, port: int, timeout: float) -> bool:
     return False
 
 
+# How long a freshly launched peer process has to fall over on a bind error before its port
+# answering is believed. A port that was ALREADY occupied answers on the first probe, well
+# inside the ssh round trip the child needs to reach its own bind() and exit.
+PEER_OWNERSHIP_SETTLE_S = 1.5
+
+
+async def wait_for_own_port(
+    process: "PeerProcess", host: str, port: int, timeout: float
+) -> bool:
+    """Wait until ``process`` is answering on ``port``, not merely until something is.
+
+    An occupied port answers on the first probe while the child that could not bind it exits,
+    and adopting that listener attaches the load to a server nothing here manages. For an
+    rpc-server that means the supervisor relaunching a dead child until it gives up, and an
+    unrecoverable split if the stranger later leaves; for a replica it is worse, because the
+    stranger is admitted as a backend and generation traffic goes to whatever model it holds.
+
+    Requiring the child to still be running is what tells the two apart, after a settle so a
+    bind error has time to become an exit."""
+    if not process.alive:
+        return False
+    if not await wait_for_port(host, port, timeout):
+        return False
+    if PEER_OWNERSHIP_SETTLE_S > 0:
+        await asyncio.sleep(PEER_OWNERSHIP_SETTLE_S)
+    return process.alive
+
+
 def _log_dir() -> Optional[Path]:
     try:
         from utils.paths.storage_roots import studio_root
@@ -1919,7 +1947,10 @@ class SparkServing:
         )
         await process.start()
         try:
-            ready = await wait_for_port(peer, port, PEER_START_TIMEOUT_S)
+            # Not wait_for_port: an occupied port answers on the first probe while the child
+            # that could not bind it exits, and adopting that listener leaves the split
+            # attached to a server nothing here manages.
+            ready = await wait_for_own_port(process, peer, port, PEER_START_TIMEOUT_S)
         except BaseException:
             # Readiness is the long wait here, so it is where a cancelled load lands. Without
             # this the rpc-server survives the cancellation holding the port, and the next
@@ -1928,10 +1959,13 @@ class SparkServing:
             raise
         if not ready:
             tail = list(process.tail)[-3:]
+            died = not process.alive
             await process.stop()
             return _fall_back(
                 f"peer rpc-server did not accept on {peer}:{port} within "
-                f"{PEER_START_TIMEOUT_S:.0f}s (last output: {tail})"
+                f"{PEER_START_TIMEOUT_S:.0f}s"
+                + (" (it exited; the port may already be in use)" if died else "")
+                + f" (last output: {tail})"
             )
         self.peer = peer
         self.peer_process = process
@@ -2118,10 +2152,43 @@ class SparkServing:
             "llama-server", peer, peer_argv, log_dir / "peer-llama-server.log" if log_dir else None
         )
         await self.peer_process.start()
-        router = SparkRouter(on_backend_down = self._on_backend_down)
-        router.add_backend("main", "127.0.0.1", int(port), slots, primary = True)
-        router.add_backend("peer", peer, peer_port, slots)
-        await router.start()
+        router: Optional[SparkRouter] = None
+        try:
+            # The port has to belong to THIS launch before it is routed to. A stranger already
+            # listening there is admitted as a healthy backend otherwise, and generation
+            # traffic goes to whatever model it is holding.
+            if not await wait_for_own_port(
+                self.peer_process, peer, peer_port, PEER_START_TIMEOUT_S
+            ):
+                tail = list(self.peer_process.tail)[-3:]
+                await self.peer_process.stop()
+                self.peer_process = None
+                self.topology, self.reason = (
+                    "single",
+                    f"peer llama-server did not take {peer}:{peer_port} (last output: {tail})",
+                )
+                logger.warning("spark serving: %s", self.reason)
+                return
+            router = SparkRouter(on_backend_down = self._on_backend_down)
+            router.add_backend("main", "127.0.0.1", int(port), slots, primary = True)
+            router.add_backend("peer", peer, peer_port, slots)
+            await router.start()
+        except BaseException:
+            # Cancellation lands here, and it does NOT reach after_load's except Exception.
+            # Without this the peer llama-server keeps running, holding its memory and its
+            # port, with nothing left that knows about it.
+            if router is not None:
+                try:
+                    await router.stop()
+                except Exception:
+                    pass
+            process, self.peer_process = self.peer_process, None
+            if process is not None:
+                try:
+                    await process.stop()
+                except Exception:
+                    logger.warning("spark serving: peer teardown failed", exc_info = True)
+            raise
         self.router = router
         self.attached_backend = llama_backend
         self.attached_port = int(port)

@@ -538,6 +538,9 @@ def _patch_remote(
     monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
     monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
     monkeypatch.setattr(ss, "wait_for_port", fake_wait)
+    # The settle exists so a real remote bind error has time to become an exit. The double
+    # execs nothing, so there is no race to wait out; test_a_stranger_on_the_port covers it.
+    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.0)
     return calls, started
 
 
@@ -2412,3 +2415,109 @@ def test_remote_sizing_never_raises_out_of_the_load(monkeypatch):
     # A local path or a bare name is not a repo and is not asked about at all.
     assert ss.remote_gguf_size_bytes("/models/x.gguf", None) is None
     assert ss.remote_gguf_size_bytes("mymodel", None) is None
+
+
+def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
+    # A port that is already occupied answers on the first probe while the child that could
+    # not bind it exits. Adopting it leaves the split attached to a server nothing here
+    # manages: the supervisor relaunches a dead child, and if the stranger leaves the split
+    # cannot be recovered.
+    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.01)
+
+    async def always_open(host, port, timeout):
+        return True
+
+    monkeypatch.setattr(ss, "wait_for_port", always_open)
+
+    class _Child:
+        def __init__(self, dies):
+            self._dies = dies
+            self.alive = True
+
+        async def die_after_the_probe(self):
+            self.alive = not self._dies
+
+    ours = _Child(dies = False)
+    assert run(ss.wait_for_own_port(ours, "1.2.3.4", 50052, 5.0)) is True
+
+    # The same successful probe, but our child exited on its bind error.
+    class _Doomed:
+        alive = True
+
+    doomed = _Doomed()
+
+    async def open_then_kill(host, port, timeout):
+        doomed.alive = False
+        return True
+
+    monkeypatch.setattr(ss, "wait_for_port", open_then_kill)
+    assert run(ss.wait_for_own_port(doomed, "1.2.3.4", 50052, 5.0)) is False
+
+    # Already gone before the first probe: not asked about at all.
+    probed = []
+    monkeypatch.setattr(
+        ss, "wait_for_port", lambda h, p, t: probed.append(1) or always_open(h, p, t)
+    )
+    dead = _Doomed()
+    dead.alive = False
+    assert run(ss.wait_for_own_port(dead, "1.2.3.4", 50052, 5.0)) is False
+    assert probed == []
+
+
+def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(
+    cluster, monkeypatch, tmp_path
+):
+    # Cancellation does not reach after_load's except Exception, so without cleanup here the
+    # peer llama-server keeps its memory and its port with nothing left that knows about it.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    stopped = []
+    real_stop = ss.PeerProcess.stop
+
+    async def counting_stop(self, timeout = 10.0):
+        stopped.append(self.name)
+        return await real_stop(self, timeout = timeout)
+
+    async def cancel_while_waiting(process, host, port, timeout):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", cancel_while_waiting)
+
+    with pytest.raises(asyncio.CancelledError):
+        run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert started, "the peer llama-server was launched"
+    assert stopped == ["llama-server"]
+    assert ss.state().peer_process is None
+    assert ss.state().router is None
+
+
+def test_a_replica_port_taken_by_a_stranger_is_not_routed_to(cluster, monkeypatch, tmp_path):
+    # A healthy llama-server already on that port would be admitted as the peer backend and
+    # served generation traffic for whatever model it is holding.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    async def not_ours(process, host, port, timeout):
+        return False
+
+    monkeypatch.setattr(ss, "wait_for_own_port", not_ours)
+
+    backend = _FakeBackend(12345, str(model))
+    run(ss.after_load(backend, 16))
+    assert started, "the peer llama-server was launched"
+    assert ss.state().topology == "single"
+    assert "did not take" in ss.state().reason
+    assert ss.state().peer_process is None
+    assert ss.route_base_url(backend) is None
