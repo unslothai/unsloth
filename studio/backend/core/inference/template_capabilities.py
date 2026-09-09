@@ -6,7 +6,7 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from jinja2 import Environment, TemplateSyntaxError, nodes
+from jinja2 import Environment, nodes
 from jinja2.ext import Extension
 
 
@@ -483,14 +483,38 @@ def _scan(
     return False, states
 
 
-@lru_cache(maxsize = 128)
-def template_supports_tools(template: str) -> bool:
+def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
+    # Outside the cache: lru_cache hashes its argument before the body runs, so a
+    # dict- or list-valued chat template (a Hugging Face named-template map, or the
+    # Hermes-3 [{"name", "template"}] list) would raise "unhashable type" past every
+    # fail-closed branch below. routes.inference passes the raw value through when
+    # template selection yields nothing, so this is reachable, not theoretical.
+    if not isinstance(template, str):
+        return False
+    return _analyse_template(template)
+
+
+@lru_cache(maxsize = 128)
+def _analyse_template(template: str) -> bool:
     if "tool" not in template:
         return False
     try:
         tree = _ENVIRONMENT.parse(template)
         emits, _ = _scan(tree.body, _State({("tools",), ("tool_calls",)}), set())
         return emits
-    except (TemplateSyntaxError, _AnalysisLimit):
+    except Exception:
+        # Fail closed. Besides the expected TemplateSyntaxError and _AnalysisLimit, a
+        # deeply nested template exhausts the interpreter stack -- in Jinja's own
+        # recursive-descent parser (`{% if %}` nesting, parenthesised guards), in
+        # _value_aliases (a long attribute chain), or in the node repr used as a fact
+        # key (a wide boolean guard). detect_reasoning_flags runs on the GGUF metadata
+        # read and the llama-server launch, so a capability hint must leave tools
+        # disabled rather than stop the model from loading, which the substring scan
+        # this replaced could never do.
         return False
+
+
+# Callers that measure or reset the analysis cache reach it through the public name.
+template_supports_tools.cache_clear = _analyse_template.cache_clear
+template_supports_tools.cache_info = _analyse_template.cache_info

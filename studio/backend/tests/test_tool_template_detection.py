@@ -456,3 +456,64 @@ def test_reviewed_paths_match_rendered_catalog(template, schema_flags):
     expected = bool(schema_flags)
     assert template_supports_tools(template) is expected
     assert detect_reasoning_flags(template)["supports_tools"] is expected
+
+
+@pytest.mark.parametrize(
+    "label, template",
+    [
+        # Jinja parses expressions by recursive descent, so nesting alone exhausts the
+        # stack before this module ever sees a tree.
+        ("nested_if", "{% if tools %}" * 5000 + "{{ tools|tojson }}" + "{% endif %}" * 5000),
+        (
+            "parenthesised_guard",
+            "{% if " + "(" * 200 + "tools" + ")" * 200 + " %}{{ tools|tojson }}{% endif %}",
+        ),
+        # A wide boolean guard recurses in the node repr used as a condition-fact key.
+        (
+            "wide_or",
+            "{% if " + " or ".join(f"v{i}" for i in range(2000)) + " %}"
+            "{{ tools|tojson }}{% endif %}",
+        ),
+        # A long attribute chain recurses in _value_aliases.
+        ("deep_attribute", "{{ tools" + ".a" * 3000 + " }}"),
+    ],
+)
+def test_pathological_templates_disable_tools_instead_of_raising(label, template):
+    """detect_reasoning_flags runs on the GGUF metadata read and the llama-server launch,
+    so a template too deep to analyse must leave tools off rather than break the load.
+    The substring scan this replaced could not raise at all."""
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    assert template_supports_tools(template) is False
+    assert detect_reasoning_flags(template, f"vendor/{label}")["supports_tools"] is False
+
+
+_TOOL_BODY = "{% if tools %}{{ tools|tojson }}{% endif %}"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        # A Hugging Face named-template map and the Hermes-3 list form: both are
+        # unhashable, so lru_cache would raise on them before any fail-closed branch.
+        {"default": _TOOL_BODY, "tool_use": "x"},
+        [{"name": "default", "template": _TOOL_BODY}],
+        # Hashable but not a template: `"tool" not in template` would raise instead.
+        _TOOL_BODY.encode(),
+        None,
+        object(),
+    ],
+)
+def test_non_string_templates_are_turned_away_before_the_cache(template):
+    assert template_supports_tools(template) is False
+
+
+@pytest.mark.parametrize(
+    "template",
+    [{"default": _TOOL_BODY, "tool_use": "x"}, [{"name": "default", "template": _TOOL_BODY}]],
+)
+def test_named_template_containers_reach_the_classifier_without_raising(template):
+    """routes.inference passes the raw chat_template through when template selection
+    yields nothing, so a named-template map or list reaches detect_reasoning_flags."""
+    from core.inference.llama_cpp import detect_reasoning_flags
+    assert detect_reasoning_flags(template, "vendor/named")["supports_tools"] is False
