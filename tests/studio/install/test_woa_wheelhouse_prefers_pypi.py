@@ -3,21 +3,18 @@
 
 """The wheelhouse is for wheels PyPI does not build, and only for those.
 
-The Windows on ARM wheelhouse exists because PyPI publishes no win_arm64 build of
-pyarrow, tiktoken, grpcio, brotli, hf_transfer or sqlite-vec. regex is a different
-case: PyPI has shipped win_arm64 regex since 2025.7.29, so a copy in the wheelhouse
-is a second source for an artifact upstream already ships. It would win, too, because
-the staging directory is first in UV_FIND_LINKS, so a user asking for regex would get
-our binary rather than the one the project released.
+The Windows on ARM wheelhouse exists because PyPI publishes no win_arm64 build of pyarrow,
+tiktoken, grpcio, brotli, hf_transfer or sqlite-vec. regex is different: PyPI has shipped
+win_arm64 regex since 2025.7.29, and the staging directory is first in UV_FIND_LINKS, so a
+user asking for regex got our binary rather than the one the project released.
 
-That is the shape these tests pin. Staging a wheel from the wheelhouse asks PyPI
-first, and skips the copy when PyPI publishes the same project at or above the
-version that would have been staged. The version half matters as much as the check:
-an upstream that is BEHIND the wheelhouse has to leave ours in place, or the guard
-turns into a downgrade.
+So staging asks PyPI first and skips the copy when PyPI publishes the same project at or
+above the version that would have been staged. The version half matters as much as the
+check: an upstream BEHIND the wheelhouse has to leave ours in place, or the guard turns
+into a downgrade.
 
-Text-level tests, like the rest of the installer suite: install.ps1 is PowerShell,
-so the shape is asserted against its source rather than by running it.
+Text-level tests, like the rest of the installer suite: install.ps1 is PowerShell, so the
+shape is asserted against its source rather than by running it.
 """
 
 from __future__ import annotations
@@ -55,9 +52,8 @@ def _staging_loop(source: str) -> str:
 
 
 def test_the_pypi_probe_is_pypi_only(source):
-    """Test-WoaWheelAvailable falls back to the wheelhouse, so staging cannot use it: a
-    wheel is always in the wheelhouse it is being staged from, and the guard would never
-    fire. The probe staging uses has to reach PyPI and nothing else."""
+    """Test-WoaWheelAvailable falls back to the wheelhouse, where the wheel being staged
+    always is, so the guard would never fire. This probe has to ask PyPI and nothing else."""
     body = _function_body(source, "Test-WoaPyPIWheel")
     assert "pypi.org/simple" in body
     for other in ("WoaWheelhouse", "index.txt", "Get-ChildItem"):
@@ -65,8 +61,8 @@ def test_the_pypi_probe_is_pypi_only(source):
 
 
 def test_both_staging_branches_skip_what_pypi_publishes(source):
-    """The local-directory branch and the URL branch both mirror the wheelhouse, so a
-    guard on one of them leaves the other shipping our copy."""
+    """Both the local-directory branch and the URL branch mirror the wheelhouse, so a guard
+    on one of them leaves the other shipping our copy."""
     loop = _staging_loop(source)
     calls = re.findall(r"Test-WoaWheelhouseWheelIsRedundant", loop)
     assert (
@@ -75,7 +71,7 @@ def test_both_staging_branches_skip_what_pypi_publishes(source):
 
 
 def test_the_guard_is_version_aware(source):
-    """Published is not enough. If upstream is behind the wheelhouse, dropping ours
+    """Published is not enough: upstream behind the wheelhouse means dropping ours
     downgrades the install, so the floor is the staged wheel's own version."""
     body = _function_body(source, "Test-WoaWheelhouseWheelIsRedundant")
     assert "-Floor $fields[1]" in body, "the guard must floor PyPI at the staged version"
@@ -90,9 +86,8 @@ def test_the_guard_only_judges_wheels_this_venv_could_use(source):
 
 
 def test_interpreter_agnostic_wheels_still_count(source):
-    """hf_transfer ships cp38-abi3 and sqlite_vec ships py3-none, both usable on cp313.
-    An exact-tag test would call them foreign and never consider them redundant, so the
-    day upstream publishes one we would go on shipping ours."""
+    """hf_transfer ships cp38-abi3 and sqlite_vec py3-none, both usable on cp313: an
+    exact-tag test would call them foreign and go on shipping ours forever."""
     body = _function_body(source, "Test-WoaWheelTagsUsable")
     assert '"abi3"' in body and '"none"' in body
     # Free-threaded venvs are the exception the exact-tag helper exists for.
@@ -100,9 +95,8 @@ def test_interpreter_agnostic_wheels_still_count(source):
 
 
 def test_pyarrow_keeps_its_own_pypi_first_path(source):
-    """Get-WoaPyarrowSource already asks PyPI before the wheelhouse and returns which one
-    it used; the generic loop skips pyarrow for exactly that reason. Both halves have to
-    stay, or pyarrow is either staged twice or not probed upstream at all."""
+    """Get-WoaPyarrowSource already asks PyPI first and the generic loop skips pyarrow for
+    that reason. Both halves have to stay, or pyarrow is staged twice or never probed."""
     body = _function_body(source, "Get-WoaPyarrowSource")
     assert 'return "pypi"' in body
     loop = _staging_loop(source)
@@ -112,9 +106,9 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
 
 
 # The default wheelhouse URL had no test at all: changing it to a working but wrong host left
-# the whole suite green. It is load bearing twice over. It is the only source for the pyarrow
-# that gates the native path, so a typo silently sends every Windows on ARM host back to the
-# emulated x64 stack, and it is fetched over the network, so a wrong host is a wrong download.
+# the whole suite green. It is the only source for the pyarrow that gates the native path, so a
+# typo sends every Windows on ARM host back to the emulated x64 stack, and it is fetched over
+# the network, so a wrong host is a wrong download.
 DEFAULT_WHEELHOUSE = "https://huggingface.co/danielhanchen/unsloth-blackwell-docker/resolve/main/windows-arm64-wheels"
 
 PWSH = shutil.which("pwsh")
@@ -134,9 +128,8 @@ def test_the_default_wheelhouse_url_is_exactly_this(source):
 
 def test_the_default_is_an_https_resolve_url_on_hugging_face(source):
     """`resolve/main` serves the file; a plain repo URL serves an HTML page, which the
-    staging code would happily save as a .whl."""
-    # Hosted on Hugging Face, as `resolve/main` URLs so a wheel is a plain download; the
-    # wheelhouse is a folder of a repo we own, so the path may continue past `resolve/main`.
+    staging code would happily save as a .whl. The path may continue past `resolve/main`:
+    the wheelhouse is a folder of a repo we own."""
     assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/danielhanchen/")
     assert "/resolve/main" in DEFAULT_WHEELHOUSE
     assert not DEFAULT_WHEELHOUSE.endswith("/"), "Join-UrlPath adds the slash"
@@ -165,13 +158,14 @@ def test_the_default_is_an_https_resolve_url_on_hugging_face(source):
     ],
 )
 def test_the_wheelhouse_override_is_normalised(source, configured, expected, why):
+    setup = (
+        "Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
+        if configured is None
+        else f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; "
+    )
     script = (
         "$ErrorActionPreference = 'Stop'; "
-        + (
-            "Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
-            if configured is None
-            else f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; "
-        )
+        + setup
         + _wheelhouse_assignment(source).strip()
         + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
     )

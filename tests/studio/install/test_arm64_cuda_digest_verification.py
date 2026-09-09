@@ -3,18 +3,16 @@
 
 """The Windows ARM64 CUDA bundle was the one archive this installer would install unchecked.
 
-Every other prebuilt goes through apply_approved_hashes, which drops an attempt our own
-checksum manifest does not cover. The ARM64 CUDA branch could not: we publish no
-windows-arm64-cuda artifact yet, so nothing covers upstream's zip, and refusing outright
-would mean no CUDA llama.cpp on this hardware at all. It logged that it was installing
-without a hash and did so.
+Every other prebuilt goes through apply_approved_hashes, which drops an attempt our checksum
+manifest does not cover. The ARM64 CUDA branch could not: we publish no windows-arm64-cuda
+artifact, so nothing covers upstream's zip, and refusing outright would mean no CUDA
+llama.cpp on this hardware at all. It logged that it had no hash and installed anyway.
 
-GitHub's release API now reports a `digest` for every asset (checked against
-ggml-org/llama.cpp b10853: 27 of 27, including llama-*-bin-win-cuda-13.4-arm64.zip and its
-paired cudart archive). That is weaker than our manifest, which we compute ourselves rather
-than read from the same host that serves the bytes, but it pins the download to what the API
-listed, and it is enough to stop being the exception. An asset GitHub states no digest for is
-now refused, so no path installs an unverified archive.
+GitHub's release API now reports a `digest` for every asset (ggml-org/llama.cpp b10853: 27 of
+27, including llama-*-bin-win-cuda-13.4-arm64.zip and its paired cudart archive). That is
+weaker than a manifest we compute ourselves rather than read from the host serving the bytes,
+but it pins the download to what the API listed. An asset GitHub states no digest for is now
+refused, so no path installs an unverified archive.
 """
 
 from __future__ import annotations

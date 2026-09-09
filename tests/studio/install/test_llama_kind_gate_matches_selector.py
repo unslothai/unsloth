@@ -3,25 +3,20 @@
 
 """The llama.cpp mismatch gate and the llama.cpp selector have to agree, or updates churn.
 
-Before reinstalling, setup.ps1 reads the recorded `install_kind` of the existing llama.cpp
-tree, computes the set of kinds it considers correct for this host, and deletes the tree when
-the recorded kind is not in that set. install_llama_prebuilt.py then picks a bundle. Nothing
-makes those two agree, and when they do not the disagreement is permanent: every update
-deletes the tree and refetches the identical bundle, forever, on a host that is working.
+Before reinstalling, setup.ps1 deletes the existing llama.cpp tree when its recorded
+`install_kind` is not in the set the gate considers correct for this host; then
+install_llama_prebuilt.py picks a bundle. Nothing makes those two agree, and a disagreement
+is permanent: every update deletes the tree and refetches the identical bundle, forever, on
+a working host. The only relationship that matters is "the kind the selector installs is one
+the gate accepts", so that is asserted directly, over the product of what either side
+branches on, rather than the text of either.
 
-Two sets computed in two languages, and the only relationship that matters between them is
-"the kind the selector installs is one the gate accepts". So this asserts exactly that, over
-the product of the things either side branches on, rather than asserting the text of either.
+Both churning combinations this found are on Windows ARM64 and invisible from an x64 box:
 
-Both churning combinations this found are on Windows ARM64 and neither is visible from an x64
-box, which is why they lasted:
-
-  * NVIDIA. The gate expected windows-cuda, and on an ARM64 venv the selector installs
-    windows-arm64. That is every Windows ARM64 machine with an NVIDIA GPU, which is the
-    hardware this branch is about, and widening the gate to the ARM64 kinds fixes it.
-  * ROCm. No ROCm bundle exists for Windows ARM64 at all: upstream ships hip-radeon-x64 and
-    we publish none, so the selector falls through to the ARM64 CPU bundle while the gate
-    still expected windows-rocm or windows-hip.
+  * NVIDIA. The gate expected windows-cuda; on an ARM64 venv the selector installs
+    windows-arm64. That is every Windows ARM64 machine with an NVIDIA GPU.
+  * ROCm. No ROCm bundle exists for Windows ARM64 at all, so the selector falls through to
+    the ARM64 CPU bundle while the gate still expected windows-rocm or windows-hip.
 
 Offline. direct_upstream_release_plan takes a release dict, and the gate's own block is lifted
 out of setup.ps1 and run with only its inputs replaced.
@@ -72,11 +67,8 @@ RELEASE = {
 
 
 def _host(*, arm64: bool, nvidia: bool, rocm: bool) -> ip.HostInfo:
-    """The interpreter's own view of the machine, which is what the selector reads.
-
-    An emulated x64 Python on an ARM64 box reports AMD64, so the x64 fallback venv is an x64
-    host here even though the metal is not. That is the case the ARM64 rows are NOT.
-    """
+    """The interpreter's own view of the machine, which is what the selector reads: an
+    emulated x64 Python on an ARM64 box reports AMD64, and is an x64 host here."""
     return ip.HostInfo(
         system = "Windows",
         machine = "ARM64" if arm64 else "AMD64",
@@ -157,11 +149,10 @@ COMBINATIONS = [
     ("arm64_venv", "nvidia", "rocm", "opt_out"),
     COMBINATIONS,
     ids = [
-        "{}-{}{}{}".format(
+        "{}-{}{}".format(
             "arm64" if a else "x64",
             "nvidia" if n else ("rocm" if r else "cpu"),
             "-optout" if o else "",
-            "",
         )
         for a, n, r, o in COMBINATIONS
     ],
@@ -178,12 +169,9 @@ def test_the_gate_accepts_what_the_selector_installs(arm64_venv, nvidia, rocm, o
 
 @requires_pwsh
 def test_no_arm64_row_expects_a_kind_only_published_for_x64():
-    """The shape behind both bugs. On an ARM64 venv the selector can only ever produce
-    windows-arm64-cuda, windows-arm64 or windows-vulkan, so a gate that expects an x64-only
-    kind there and nothing else is a delete on every update whatever the selector does.
-
-    windows-vulkan counts as x64-only: upstream's bundle is vulkan-x64, so a gate that offers
-    it as an ARM64 venv's only escape hatch is offering one the selector cannot take."""
+    """The shape behind both bugs: on an ARM64 venv a gate that expects an x64-only kind and
+    nothing else is a delete on every update whatever the selector does. windows-vulkan counts
+    as x64-only, since upstream's bundle is vulkan-x64."""
     x64_only = {"windows-cuda", "windows-rocm", "windows-hip", "windows-cpu", "windows-vulkan"}
     for nvidia, rocm, opt_out in itertools.product([True, False], repeat = 3):
         if nvidia and rocm:

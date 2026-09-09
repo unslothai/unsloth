@@ -4,20 +4,17 @@
 """The PyPI-first wheelhouse guard, executed rather than read.
 
 test_woa_wheelhouse_prefers_pypi.py pins the SHAPE of the guard against install.ps1's
-source. That is worth having, but it cannot catch a helper that is wired correctly and
-answers wrongly, and two of the three bugs covered here were exactly that.
-
-The bugs, all found by reviewing the first version of the guard:
+source, which cannot catch a helper that is wired correctly and answers wrongly. The three
+bugs covered here, all found reviewing the guard's first version:
 
 1. A wheel the guard skipped stopped counting as available. $WoaWheelNames is rebuilt by
-   scanning the staging directory, and a $WoaDropCandidates name missing from it is
-   emitted as `name ; platform_machine == "AMD64"`, which EXCLUDES the package on ARM64.
-   So the day PyPI published a win_arm64 hf_transfer or brotli, the guard would have
-   turned "installed from our wheelhouse" into "not installed at all" -- the opposite of
-   preferring upstream, and firing on precisely the event the guard exists for.
+   scanning the staging directory, and a $WoaDropCandidates name missing from it is emitted
+   as `name ; platform_machine == "AMD64"`, which EXCLUDES the package on ARM64. So the day
+   PyPI published a win_arm64 hf_transfer or brotli, the guard turned "installed from our
+   wheelhouse" into "not installed at all", firing on the event it exists for.
 
-2. abi3 was treated as universally compatible. It is forward compatible from the version
-   it was built against, so a cp314-abi3 wheel does not import on cp313, and calling ours
+2. abi3 was treated as universally compatible. It is forward compatible from the version it
+   was built against, so a cp314-abi3 wheel does not import on cp313, and calling ours
    redundant against one would leave the package uninstallable.
 
 3. PyPI publishing a wheel is only availability if the resolve will look at PyPI. Offline,
@@ -38,6 +35,10 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+
+#: A corporate index that is not PyPI, and PyPI itself: the only distinction these make.
+CORP = "https://corp.example/simple"
+PYPI = "https://pypi.org/simple"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
@@ -145,20 +146,14 @@ def test_a_wheel_is_usable_only_where_it_actually_imports(wheel, py_tag, abi_tag
     [
         ({}, True),
         # Bug 3: these REPLACE the default index, so PyPI is not consulted at all.
-        ({"UV_DEFAULT_INDEX": "https://corp.example.com/simple"}, False),
-        ({"UV_INDEX_URL": "https://corp.example.com/simple"}, False),
+        ({"UV_DEFAULT_INDEX": CORP}, False),
+        ({"UV_INDEX_URL": CORP}, False),
         # install.ps1 resolves with uv, which never reads pip's variables.
-        ({"PIP_INDEX_URL": "https://corp.example.com/simple"}, True),
+        ({"PIP_INDEX_URL": CORP}, True),
         ({"PIP_NO_INDEX": "1"}, True),
-        (
-            {
-                "UV_INDEX_URL": "https://corp.example.com/simple",
-                "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
-            },
-            False,
-        ),
+        ({"UV_INDEX_URL": CORP, "PIP_EXTRA_INDEX_URL": PYPI}, False),
         # Pointed at PyPI explicitly is still PyPI.
-        ({"UV_DEFAULT_INDEX": "https://pypi.org/simple"}, True),
+        ({"UV_DEFAULT_INDEX": PYPI}, True),
         ({"UV_OFFLINE": "1"}, False),
         ({"UV_NO_INDEX": "1"}, False),
         # An unset-looking value must not read as "offline".
@@ -206,53 +201,38 @@ def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
 UV_CONFIG_CASES = [
     # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
     ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),
-    ("value_hash_nospace", "uv.toml", 'index-url = "https://corp.example/simple"#corp\n', False),
+    ("value_hash_nospace", "uv.toml", f'index-url = "{CORP}"#corp\n', False),
     # A quoted key is the same key as the bare spelling.
-    ("quoted_key", "uv.toml", '"index-url" = "https://corp.example/simple"\n', False),
+    ("quoted_key", "uv.toml", f'"index-url" = "{CORP}"\n', False),
     # A dotted key is the same statement as writing the leaf under [pip].
     ("dotted_no_index", "uv.toml", "pip.no-index = true\n", False),
-    ("dotted_index_url", "uv.toml", 'pip.index-url = "https://corp.example/simple"\n', False),
+    ("dotted_index_url", "uv.toml", f'pip.index-url = "{CORP}"\n', False),
     ("pyproject_dotted", "pyproject.toml", "[tool.uv]\npip.no-index = true\n", False),
     # The other side of the same scan: a `#` INSIDE a string is not a comment.
-    ("fragment_kept", "uv.toml", 'index-url = "https://corp.example/simple#frag"\n', False),
-    ("url_only_in_comment", "uv.toml", '# index-url = "https://corp.example/simple"\n', True),
+    ("fragment_kept", "uv.toml", f'index-url = "{CORP}#frag"\n', False),
+    ("url_only_in_comment", "uv.toml", f'# index-url = "{CORP}"\n', True),
     # Cases that must keep answering True, so the fix cannot be a blanket "not reachable".
-    ("extra_index_only", "uv.toml", 'extra-index-url = "https://corp.example/simple"\n', True),
-    (
-        "index_default_false",
-        "uv.toml",
-        '[[index]]\nurl = "https://corp.example/simple"\ndefault = false\n',
-        True,
-    ),
-    ("explicit_pypi", "uv.toml", 'index-url = "https://pypi.org/simple"\n', True),
-    (
-        "no_index_false",
-        "uv.toml",
-        'no-index = false\nindex-url = "https://pypi.org/simple"\n',
-        True,
-    ),
+    ("extra_index_only", "uv.toml", f'extra-index-url = "{CORP}"\n', True),
+    ("index_default_false", "uv.toml", f'[[index]]\nurl = "{CORP}"\ndefault = false\n', True),
+    ("explicit_pypi", "uv.toml", f'index-url = "{PYPI}"\n', True),
+    ("no_index_false", "uv.toml", f'no-index = false\nindex-url = "{PYPI}"\n', True),
     # [pip] outranks the top level, in both directions.
     (
         "pip_pypi_beats_top_corp",
         "uv.toml",
-        'index-url = "https://corp.example/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n',
+        f'index-url = "{CORP}"\n[pip]\nindex-url = "{PYPI}"\n',
         True,
     ),
     (
         "pip_corp_beats_top_pypi",
         "uv.toml",
-        'index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://corp.example/simple"\n',
+        f'index-url = "{PYPI}"\n[pip]\nindex-url = "{CORP}"\n',
         False,
     ),
     # A host that merely contains the name is not PyPI.
     ("lookalike_host", "uv.toml", 'index-url = "https://pypi.org.evil.com/simple"\n', False),
     # An inline `index = [...]` is not modelled, and unreadable resolves to "not PyPI".
-    (
-        "inline_index_array",
-        "uv.toml",
-        'index = [{ url = "https://corp.example/simple", default = true }]\n',
-        False,
-    ),
+    ("inline_index_array", "uv.toml", f'index = [{{ url = "{CORP}", default = true }}]\n', False),
 ]
 
 
