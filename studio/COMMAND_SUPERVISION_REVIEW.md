@@ -1,70 +1,42 @@
-# Secure project edits and command execution
+# Managed-project command supervision
 
-This is the second source split from #9673, independently based on upstream
-`main@0dcea7574cdd3ff86b626ec1c6b9d314639e1134`. It uses Studio's existing
-managed workspaces. The small project authority module is shared with #10576;
-repository instructions, folder selection, verification, Git operations,
-delegation, scheduling, and chat continuity are outside this patch.
+This source split contains the command supervisor, its execution and process-fence
+support, Python/terminal routing, and focused native tests. Confined file edits are
+owned by #10577, which this PR requires. Shutdown retry integration and approval UI
+are separate follow-ups; neither is included in this source diff.
 
-## Behavior
+## User-visible behavior
 
-- Sandboxed `edit_file` uses descriptor-relative POSIX operations or verified
-  Windows handles, rejects links and nonregular targets, checks expected content
-  and file identity, preserves POSIX mode bits, and publishes replacements
-  atomically. Creates do not overwrite a nonempty existing file. Windows edits
-  preserve the DACL, attributes, and creation time; read-only targets,
-  unsupported streams, and replacement metadata are rejected.
-- Linux managed-project Python and terminal calls run through bubblewrap with a
-  restricted filesystem, no network, scrubbed environment, bounded output, and
-  an identity-verified PID namespace. The project lease and mutation lock remain
-  held until descendant cleanup is proven. Failed cleanup stays quarantined and
-  is retried during shutdown.
-- macOS and Windows managed-project commands fail before launching user code
-  because the supervisor cannot provide equivalent containment there. Ordinary
-  conversation commands and explicit Full access retain their existing paths.
-  Windows file editing is a separate capability from Windows command execution.
-- Cancellation interrupts edits waiting for a workspace mutation lock. Command
-  preflight rejects oversized workspaces instead of scanning indefinitely.
-- A failed project lookup cannot fall back to ordinary command execution. A
-  stored chat whose id begins with `project-` retains its own conversation root.
-- The edit card shows the requested file, replacement count, arguments awaiting
-  approval, and operation errors. Remembered per-tool approval does not approve
-  later local edit, Python, or terminal calls in modes that request confirmation.
+Sandboxed Python and terminal tools in a managed project now require Linux
+bubblewrap plus an identity-verified PID namespace and pidfd lifecycle support.
+The namespace restricts filesystem access and networking. Workspace admission and
+mutation locks remain held until descendant cleanup is proven. Cleanup failures
+retain their locks in quarantine.
 
-Content checks detect changes observed before publication; this is not an
-atomic compare-and-swap against arbitrary external filesystem writers. The
-mutation lock coordinates Studio's guarded operations. Full access and unrelated
-host processes are outside that coordination.
+On native macOS, a sandboxed project Python or terminal call returns:
 
-## Validation scope
+```
+Execution error: Secure supervised project commands require Linux bubblewrap process isolation. macOS sandbox-exec cannot prove detached descendants are gone.
+```
 
-Local validation uses the current source, rather than historical aggregate
-receipts. The focused native macOS run covers edits, supervisor behavior, and
-shutdown. The full frontend suite has 7,120 passing tests. The adjacent backend
-selection has 1,407 passes and four platform skips. Frontend typecheck, build,
-and bundle budget pass; changed frontend files add no ESLint findings relative
-to the base. The workflow guard selection has 530 passes. Storage deletion fixtures
-must use a disposable directory outside macOS system temp paths because Studio
-intentionally refuses deletion under `/private/var` and `/private/tmp`.
+This is a behavior change for macOS users whose project commands previously ran.
+No user process is launched. Windows also refuses project commands before launch,
+with its platform-unavailable explanation. Ordinary conversation commands and
+explicit Full access continue through their existing execution paths. The existing
+macOS filesystem sandbox alone does not establish the descendant-lifetime guarantee
+used by this supervisor; passing macOS refusal tests is not macOS execution support.
 
-The Linux/macOS/Windows workflow executes model-free native filesystem tests.
-Linux must exercise the real bubblewrap boundary; Windows exercises native file
-mutation and junction rejection plus command refusal. Portable mocks alone do
-not certify native Windows behavior. Hosted results must be read from the exact
-published head before making a platform claim.
+A missing #10577 edit boundary makes command execution unavailable before probing or
+spawning. CI composes its pinned source and separately exercises Linux execution,
+macOS refusal and Windows refusal. Linux hosts that disallow the required namespace
+also refuse safely.
 
-Packaged desktop applications, physical UI acceptance, real models/providers,
-and release certification remain separate gates.
+## Validation
 
-## Native API references
+The native matrix runs the project-command, edit-prerequisite and supervisor tests.
+Local macOS tests exercise the actual Python and terminal entrypoints and install a
+Popen sentinel: the unsupported path must return before it can spawn. The full-access
+and ordinary-conversation tests cover their separate existing paths.
 
-- [Microsoft NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
-  and [FILE_RENAME_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information):
-  native handle-relative publication, traversal access on the parent, and
-  filename lengths measured in UTF-16 bytes.
-- [bubblewrap source](https://github.com/containers/bubblewrap/blob/main/bubblewrap.c):
-  namespace status, blocked startup, and PID-namespace lifecycle.
-
-The next split is verification workflows and hooks.
-
-This follow-up is dependent on #10577, which owns the native edit boundary. This diff adds command supervision, process fences, shutdown recovery, and approval UI.
+Native receipts are reported for the published head in the PR description. Model
+integration, packaged desktop behavior and release qualification are separate gates.
