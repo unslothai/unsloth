@@ -1086,7 +1086,16 @@ def list_projects(
 
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+    from core.project_retirement import begin_project_retirement, finish_project_retirement
+
+    fence = None
+    begun = False
     try:
+        # POST also updates existing rows. Fence every archived payload before
+        # the upsert, including ids created concurrently with this request.
+        if payload.archived:
+            fence = begin_project_retirement(payload.id)
+            begun = True
         return ChatProject(**upsert_chat_project(payload.model_dump()))
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
@@ -1100,6 +1109,11 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    finally:
+        if begun:
+            finish_project_retirement(payload.id, fence)
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)

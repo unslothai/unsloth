@@ -41,7 +41,7 @@ def test_no_feature_archive_and_delete_keep_existing_behavior():
         assert client.delete("/history/projects/lifecycle").status_code == 404
 
 
-@pytest.mark.parametrize("operation", ["archive", "delete"])
+@pytest.mark.parametrize("operation", ["archive", "delete", "upsert_archive"])
 def test_failed_retirement_preserves_project_and_its_workspace(monkeypatch, operation):
     project = _project()
 
@@ -53,13 +53,83 @@ def test_failed_retirement_preserves_project_and_its_workspace(monkeypatch, oper
     )
     with _client() as client:
         response = (
-            client.patch("/history/projects/lifecycle", json = {"archived": True})
-            if operation == "archive"
-            else client.delete("/history/projects/lifecycle?delete_files=true")
+            client.post("/history/projects", json = {**project, "archived": True})
+            if operation == "upsert_archive"
+            else (
+                client.patch("/history/projects/lifecycle", json = {"archived": True})
+                if operation == "archive"
+                else client.delete("/history/projects/lifecycle?delete_files=true")
+            )
         )
         assert response.status_code == 409
     assert studio_db.get_chat_project("lifecycle")["archived"] is False
     assert studio_db.get_chat_project("lifecycle")["sandboxPath"] == project["sandboxPath"]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_post_archive_holds_retirement_until_upsert_finishes(monkeypatch, existing, fail_write):
+    if existing:
+        _project()
+    events = []
+    write = chat_history.upsert_chat_project
+
+    def begin(project_id, *, deleting):
+        assert project_id == "lifecycle" and not deleting
+        events.append("begin")
+        return "token"
+
+    def finish(project_id, token):
+        assert token == "token"
+        events.append("finish")
+
+    def upsert(payload):
+        assert events == ["begin"]
+        events.append("write")
+        if fail_write:
+            raise RuntimeError("write failed")
+        return write(payload)
+
+    monkeypatch.setattr(
+        lifecycle,
+        "_feature",
+        lambda _name: SimpleNamespace(begin_git_retirement = begin, finish_git_retirement = finish),
+    )
+    monkeypatch.setattr(chat_history, "upsert_chat_project", upsert)
+    with _client() as client:
+        response = client.post(
+            "/history/projects",
+            json = {
+                "id": "lifecycle",
+                "name": "Lifecycle",
+                "createdAt": 1,
+                "updatedAt": 1,
+                "archived": True,
+            },
+        )
+    assert response.status_code == (409 if fail_write else 200)
+    assert events == ["begin", "write", "finish"]
+    if not fail_write:
+        assert studio_db.get_chat_project("lifecycle")["archived"] is True
+
+
+def test_post_active_project_does_not_retire(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("An active project must not enter retirement")
+
+    monkeypatch.setattr(lifecycle, "begin_project_retirement", unexpected)
+    with _client() as client:
+        response = client.post(
+            "/history/projects",
+            json = {
+                "id": "active",
+                "name": "Active",
+                "createdAt": 1,
+                "updatedAt": 1,
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
 
 
 def test_combined_features_use_only_git_retirement_owner(monkeypatch):
