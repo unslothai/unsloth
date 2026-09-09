@@ -1106,6 +1106,7 @@ def test_a_second_account_cannot_start_the_same_dataset_download(monkeypatch):
         downloads.download_registry, "download_transport_unavailable_reason", lambda _t: None
     )
     monkeypatch.setattr(downloads.download_manifest, "clear_cancel_marker", lambda *a, **k: None)
+    monkeypatch.setattr(downloads.account_access, "authorize_download", lambda *a, **k: None)
     launched = []
     monkeypatch.setattr(
         downloads.download_lifecycle,
@@ -1121,6 +1122,62 @@ def test_a_second_account_cannot_start_the_same_dataset_download(monkeypatch):
     bob = start(BOB)
     assert not bob["accepted"] and not bob["attached"]
     assert launched == ["org/data"]
+
+
+def test_dataset_download_request_authorizes_before_reporting_a_foreign_job(monkeypatch):
+    from hub.services.datasets import downloads
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(downloads, "_account_registries", {})
+    monkeypatch.setattr(downloads, "_deleting", set(), raising = False)
+    monkeypatch.setattr(downloads, "resolve_cached_repo_id_case", lambda repo_id, **_k: repo_id)
+    monkeypatch.setattr(
+        downloads.download_registry, "download_transport_unavailable_reason", lambda _t: None
+    )
+    monkeypatch.setattr(downloads.download_manifest, "clear_cancel_marker", lambda *a, **k: None)
+    monkeypatch.setattr(
+        downloads.download_lifecycle, "launch_worker", lambda registry, key, **kwargs: "running"
+    )
+
+    def authorize(repo_id, repo_type, hf_token):
+        if current_account() == BOB:
+            raise HTTPException(status_code = 404, detail = "Repository not found")
+
+    monkeypatch.setattr(account_access, "authorize_download", authorize)
+
+    def start(account):
+        request = SimpleNamespace(repo_id = "org/private", use_xet = False, transport_mode = "http")
+        return asyncio.run(arun_as(account, downloads.download_dataset_response(request)))
+
+    assert start(ALICE)["accepted"]
+    with pytest.raises(HTTPException) as exc:
+        start(BOB)
+    assert exc.value.status_code == 404
+
+
+def test_dataset_transport_status_refuses_another_accounts_private_repo(monkeypatch):
+    from hub.services.datasets import downloads
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(downloads, "_account_registries", {})
+    monkeypatch.setattr(account_access, "repo_is_public", lambda *a, **k: False)
+    monkeypatch.setattr(
+        account_access,
+        "model_grants",
+        lambda: {"dataset:org/private-set"} if current_account() == ALICE else set(),
+    )
+    monkeypatch.setattr(downloads, "has_active_incomplete_blobs", lambda *a: True)
+    monkeypatch.setattr(
+        downloads.download_registry, "read_active_transport_marker", lambda *a: "http"
+    )
+    monkeypatch.setattr(downloads.download_registry, "is_resumable_partial", lambda *a: True)
+    read = downloads.get_dataset_transport_status_response("org/private-set")
+    assert asyncio.run(arun_as(ALICE, read))["has_partial"]
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            arun_as(BOB, downloads.get_dataset_transport_status_response("org/private-set"))
+        )
+    assert exc.value.status_code == 404
 
 
 def test_startup_reconciliation_settles_a_deactivated_accounts_interrupted_runs(

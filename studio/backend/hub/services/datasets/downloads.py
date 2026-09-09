@@ -228,6 +228,9 @@ async def download_dataset_response(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    if managed_account():
+        # Before the claim: a conflict reply would otherwise reveal another account's job.
+        await asyncio.to_thread(account_access.authorize_download, repo_id, "dataset", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
@@ -371,6 +374,13 @@ async def get_dataset_transport_status_response(repo_id: str) -> dict:
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
+    if managed_account():
+        await asyncio.to_thread(
+            account_access.require_download_progress_access,
+            _account_registry(),
+            repo_id,
+            "dataset",
+        )
     return {
         "has_partial": has_active_incomplete_blobs("dataset", repo_id),
         "last_transport": download_registry.read_active_transport_marker("dataset", repo_id),
