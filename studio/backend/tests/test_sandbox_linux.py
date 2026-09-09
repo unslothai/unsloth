@@ -240,15 +240,7 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         (cache / name).mkdir(parents = True)
     (cache / "token").write_text("hf_A_REAL_LOOKING_TOKEN")
     (cache / "stored_tokens").write_text("{}")
-    monkeypatch.setattr(
-        sandbox_linux,
-        "_model_cache_binds",
-        lambda workdir: {
-            name: str(cache / name)
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
-            if (cache / name).is_dir()
-        },
-    )
+    _share_cache(monkeypatch, cache)
 
     launch = sandbox_linux.prepare(_plan(tmp_path))
     try:
@@ -275,18 +267,7 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         launch.cleanup()
 
 
-def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
-    cache = tmp_path / "hostcache"
-    (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(
-        sandbox_linux,
-        "_model_cache_binds",
-        lambda workdir: {
-            name: str(cache / name)
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
-            if (cache / name).is_dir()
-        },
-    )
+def test_the_cache_mount_points_are_made_here_and_left(tmp_path, cache):
     workdir = tmp_path / "session"
     workdir.mkdir()
 
@@ -298,18 +279,7 @@ def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
     assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
 
 
-def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypatch):
-    cache = tmp_path / "hostcache"
-    (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(
-        sandbox_linux,
-        "_model_cache_binds",
-        lambda workdir: {
-            name: str(cache / name)
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
-            if (cache / name).is_dir()
-        },
-    )
+def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, cache):
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "notes.txt").write_text("the user's")
@@ -610,6 +580,32 @@ def _evaluate(
     raise AssertionError("the program ran off the end without returning")
 
 
+def _share_cache(monkeypatch, cache):
+    """Share every subdirectory of *cache* that exists, as the real resolver would.
+
+    The real _model_cache_binds asks the cache-settings layer, which is a
+    different unit and not what these tests are about.
+    """
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_model_cache_binds",
+        lambda workdir: {
+            name: str(cache / name)
+            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            if (cache / name).is_dir()
+        },
+    )
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch):
+    """A host cache with one populated subdirectory, shared into the jail."""
+    directory = tmp_path / "hostcache"
+    (directory / "hub").mkdir(parents = True)
+    _share_cache(monkeypatch, directory)
+    return directory
+
+
 @pytest.fixture(params = [False, True], ids = ["userns_by_bwrap", "userns_by_seccomp"])
 def program(request):
     return sandbox_seccomp.program(platform.machine(), block_userns = request.param)
@@ -794,20 +790,9 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monk
     assert not any(sandbox_linux._within(str(secret), path) for path in paths)
 
 
-def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
+def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, cache):
     """Refused rather than unlinked: symlinking a cache leaf at another volume is a
     legitimate layout."""
-    cache = tmp_path / "hostcache"
-    (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(
-        sandbox_linux,
-        "_model_cache_binds",
-        lambda workdir: {
-            name: str(cache / name)
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
-            if (cache / name).is_dir()
-        },
-    )
     workdir = tmp_path / "session"
     workdir.mkdir()
     outside = tmp_path / "outside"
@@ -945,18 +930,7 @@ def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller
         launch.cleanup()
 
 
-def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, monkeypatch):
-    cache = tmp_path / "hostcache"
-    (cache / "hub").mkdir(parents = True)
-    monkeypatch.setattr(
-        sandbox_linux,
-        "_model_cache_binds",
-        lambda workdir: {
-            name: str(cache / name)
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
-            if (cache / name).is_dir()
-        },
-    )
+def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, cache):
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "huggingface" / "hub").write_text("not a directory")
