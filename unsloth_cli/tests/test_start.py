@@ -4235,6 +4235,26 @@ def test_model_download_progress_counts_a_hub_download_the_load_attached_to(monk
     assert progress.downloaded_bytes == 1024 + 3 * 1024**3
 
 
+def test_model_download_progress_polls_a_namespace_less_base_the_load_reports(monkeypatch):
+    reads = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/active-downloads"):
+            return _load_listing("gpt2")
+        reads.append(url)
+        if url.endswith("repo_id=gpt2"):
+            return {"downloaded_bytes": 500 * 1024**2, "expected_bytes": 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/gpt2-lora", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024 + 500 * 1024**2
+    assert f"{BASE}/api/hub/download-progress?repo_id=gpt2" in reads
+
+
 def test_download_progress_display_forgets_the_last_repos_total(monkeypatch, capsys):
     monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
     display = start._DownloadProgressDisplay()

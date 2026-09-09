@@ -392,12 +392,8 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
-def _load_download_repos(
-    mc,
-    load_in_4bit: bool,
-    backend,
-    companions = (),
-) -> list[str]:
+def _load_download_repos(mc, load_in_4bit: bool, backend, companions = ()) -> list[str]:
+    from hub.utils.paths import is_valid_repo_id
     from utils.paths import is_local_path
     from utils.security.file_security import load_scan_target
     from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
@@ -423,7 +419,7 @@ def _load_download_repos(
     hub_ids: list[str] = []
     for repo in repos:
         repo, _subdirs = load_scan_target(repo, ())
-        if repo.count("/") == 1 and not is_local_path(repo) and repo not in hub_ids:
+        if is_valid_repo_id(repo) and not is_local_path(repo) and repo not in hub_ids:
             hub_ids.append(repo)
     return hub_ids
 

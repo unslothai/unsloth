@@ -1127,7 +1127,7 @@ class _ModelDownloadProgress:
             loading = item.get("owner") == _LOAD_DOWNLOAD_OWNER or bool(item.get("load_attached"))
             if not loading or repo.lower() == self._model.lower():
                 continue
-            if repo not in repos and _is_hub_model_id(repo):
+            if repo and repo not in repos:
                 repos.append(repo)
         return repos
 

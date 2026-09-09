@@ -93,6 +93,20 @@ def test_cancelling_a_load_owned_job_is_refused(registry, monkeypatch):
     assert registry.get_job("owner/base::").state == "running"
 
 
+def test_shutdown_leaves_no_cancel_marker_for_a_load_placeholder(registry, monkeypatch):
+    markers = []
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", lambda *args, **kwargs: markers.append(args[1]))
+    load_downloads.claim_load_downloads(["owner/adapter", "owner/base"])
+    assert registry.claim("owner/other::", "http", repo_type = "model", repo_id = "owner/other")[0]
+
+    registry.terminate_all()
+
+    assert markers == ["owner/other"]
+    assert registry.get_job("owner/adapter::").state == "idle"
+    assert registry.get_job("owner/base::").state == "idle"
+    assert _active(registry) == [("owner/other", None, "cancelling")]
+
+
 def test_the_orchestrator_registers_the_downloads_a_load_reports(registry, monkeypatch):
     class DummyThread:
         def __init__(self, *args, **kwargs):
@@ -169,6 +183,8 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     assert worker._load_download_repos(local, True, SimpleNamespace(device = "mlx")) == ["owner/base"]
     plain = SimpleNamespace(identifier = "owner/model", base_model = None)
     assert worker._load_download_repos(plain, True, cuda) == ["owner/model"]
+    legacy = SimpleNamespace(identifier = "owner/gpt2-lora", base_model = "gpt2")
+    assert worker._load_download_repos(legacy, False, cuda) == ["owner/gpt2-lora", "gpt2"]
 
     loader.ALLOW_PREQUANTIZED_MODELS = False
     assert worker._load_download_repos(adapter, True, cuda) == [

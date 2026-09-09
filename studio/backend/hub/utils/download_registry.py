@@ -1964,6 +1964,10 @@ class DownloadRegistry:
             for key, job in list(self._jobs.items()):
                 if job.state not in _ACTIVE_STATES or key in live_keys:
                     continue
+                placeholder = self._metadata.get(key)
+                if placeholder is not None and placeholder.owner is not None:
+                    self._jobs[key] = DownloadState("idle")
+                    continue
                 proc = self._processes.get(key)
                 if proc is not None:
                     if proc.poll() == 0:
