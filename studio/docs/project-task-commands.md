@@ -18,7 +18,8 @@ execution. A coordinator or reviewer cannot run commands. Implementer children
 inherit the captured opt-in, while explicit retries recheck host support.
 
 Each attempt may reserve six commands, with at most 120 seconds of execution per
-command and a 64 KiB output capture. A task deadline or cancellation also stops
+command and a 64 KiB output capture. Implementers can rerun the same command
+after an edit and reread changed files; each execution consumes a reservation. A task deadline or cancellation also stops
 command preparation/execution. Reservations are durable and never refunded after
 failure, interruption or cancellation. Each retry is a new attempt with a fresh
 checkout and command allowance. No network access or dependency installation is
@@ -63,7 +64,8 @@ passing command covers only its invocation; files may change afterward.
 The source split checks missing prerequisites. The composed suite covers role
 and opt-in policy, request injection, atomic command counts, evidence persistence,
 authenticated task/command scope, output bounds, final binding checks and a
-simulated model through the real Studio tool loop. Native Linux cases execute
+simulated model through the real Studio tool loop that observes a failing check,
+edits a file, rereads it and reruns the identical check successfully. Native Linux cases execute
 real confined commands and check pass/fail/timeout/cancel behavior, output floods,
 Git marker protection, primary-file isolation and network refusal. Adjacent task,
 Git, lifecycle, secure-edit and process-supervisor regressions remain in the same
@@ -80,5 +82,5 @@ Exact prerequisites used by this layer's CI:
 | #10633 lifecycle | `41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b` |
 | #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
 | #10594 Git/worktrees | `016da23650c227ccfb99d8e3fca16473143f5bb9` |
-| #10658 task execution/UI | `5e79f9deb8af6a014ad29d43c598d8cd2ef2ec36` |
+| #10658 task execution/UI | `696c253ff4bbb3b06602405bc280f3c06a0ab942` |
 | #10636 command supervisor | `354135952c8f48dfd224b874916805ea3a4833c4` |

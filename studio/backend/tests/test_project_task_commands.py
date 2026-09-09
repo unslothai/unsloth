@@ -379,7 +379,7 @@ def test_final_task_binding_check_reuses_the_held_process_fence(project, modules
             process_fence._release_project_execution_fence(fd)
 
 
-def test_shared_task_loop_records_a_command_result_in_its_owned_checkout(
+def test_shared_task_loop_rereads_edits_and_reruns_failed_checks_in_its_owned_checkout(
     project, modules, monkeypatch
 ):
     import asyncio
@@ -387,10 +387,12 @@ def test_shared_task_loop_records_a_command_result_in_its_owned_checkout(
 
     ctx = context(modules)
     monkeypatch.setattr(commands, "require_support", lambda: None)
+    observed = []
 
     def run(project_id, argv, **kwargs):
         assert kwargs["_task_context"] is ctx
         assert kwargs["output_limit_bytes"] == 65536 and kwargs["timeout_seconds"] <= 10
+        assert argv == ("python", "-m", "pytest")
         with commands.command_workspace_access(project_id, ctx) as workspace:
             assert workspace.root != project
             fd = process_fence._acquire_project_execution_fence(
@@ -398,11 +400,26 @@ def test_shared_task_loop_records_a_command_result_in_its_owned_checkout(
             )
             try:
                 kwargs["before_start"](workspace, argv)
+                observed.append((workspace.root / "example.txt").read_text())
             finally:
                 process_fence._release_project_execution_fence(fd)
-        return modules.supervisor.ProjectProcessResult("passed", 0, "1 test passed", 13, False)
+        passed = observed[-1] == "changed\n"
+        return modules.supervisor.ProjectProcessResult(
+            "passed" if passed else "failed", 0 if passed else 1, "test result", 11, False
+        )
 
     monkeypatch.setattr(modules.supervisor, "_run_project_process", run)
+    command_args = {"argv": ["python", "-m", "pytest"], "timeout": 10}
+    calls = [
+        ("task_read_file", {"path": "example.txt"}),
+        ("task_run_command", command_args),
+        (
+            "task_edit_file",
+            {"path": "example.txt", "expected": "original\n", "content": "changed\n"},
+        ),
+        ("task_read_file", {"path": "example.txt"}),
+        ("task_run_command", command_args),
+    ]
 
     class Model:
         heals_text_tool_calls = False
@@ -412,27 +429,25 @@ def test_shared_task_loop_records_a_command_result_in_its_owned_checkout(
 
         async def stream(self, *, messages, **_kwargs):
             self.turn += 1
-            if self.turn == 1:
+            if self.turn <= len(calls):
+                name, arguments = calls[self.turn - 1]
                 delta = {
                     "tool_calls": [
                         {
                             "index": 0,
-                            "id": "command-one",
+                            "id": f"step-{self.turn}",
                             "type": "function",
-                            "function": {
-                                "name": "task_run_command",
-                                "arguments": json.dumps(
-                                    {"argv": ["python", "-m", "pytest"], "timeout": 10}
-                                ),
-                            },
+                            "function": {"name": name, "arguments": json.dumps(arguments)},
                         }
                     ]
                 }
                 finish = "tool_calls"
             else:
-                result = next(json.loads(m["content"]) for m in messages if m.get("role") == "tool")
-                assert result["status"] == "passed" and result["exitCode"] == 0
-                delta, finish = {"content": "Verification recorded."}, "stop"
+                results = [m["content"] for m in messages if m.get("role") == "tool"]
+                assert results[0] == "original\n" and results[3] == "changed\n"
+                assert json.loads(results[1])["status"] == "failed"
+                assert json.loads(results[4])["status"] == "passed"
+                delta, finish = {"content": "Verification recorded after repair."}, "stop"
             yield (
                 "data: "
                 + json.dumps({"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
@@ -443,8 +458,13 @@ def test_shared_task_loop_records_a_command_result_in_its_owned_checkout(
         result = asyncio.run(
             modules.executor.run_task(ctx, workspace, worktree_id, transport = Model())
         )
-    assert result["output"] == "Verification recorded."
-    assert modules.evidence.read("commands", ctx.task["id"])[0]["status"] == "passed"
+    assert result["output"] == "Verification recorded after repair."
+    assert observed == ["original\n", "changed\n"]
+    assert [row["status"] for row in modules.evidence.read("commands", ctx.task["id"])] == [
+        "failed",
+        "passed",
+    ]
+    assert (project / "example.txt").read_text() == "original\n"
 
 
 def test_command_evidence_routes_are_authenticated_scoped_and_bounded(project, modules):
