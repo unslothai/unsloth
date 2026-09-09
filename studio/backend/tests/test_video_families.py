@@ -412,3 +412,55 @@ def test_minimax_h3_offers_every_advertised_aspect_ratio():
         assert width * height <= H3_CANVAS_MAX_PIXELS, (width, height)
         rule_width, rule_height = h3_canvas_for_aspect(width, height)
         assert width <= rule_width and height <= rule_height, (width, height)
+
+
+# ── the measured resident size of a hosted denoiser ──────────────────────────────
+def _resident_fam(**kwargs):
+    from core.inference.video_families import VideoFamily
+
+    base = dict(
+        name = "test-video",
+        pipeline_class = "TestPipeline",
+        transformer_class = "TestTransformer3DModel",
+        base_repo = "org/test-video",
+    )
+    base.update(kwargs)
+    return VideoFamily(**base)
+
+
+def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
+    """One float cannot describe a family hosting several schemes at different sizes, and this
+    term is what a hard unified-memory refusal is judged on. A scheme with no row of its own keeps
+    reading the single measurement that predates the table, which is what H3 has."""
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = _resident_fam(
+        prequant_resident_gb = 20.3,
+        prequant_resident_gb_by_scheme = (("nvfp4", 8.1), ("fp8", 13.6)),
+    )
+    assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(8.1)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(13.6)
+    # No row: the family-wide float.
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(20.3)
+
+
+def test_an_unmeasured_family_reports_nothing_rather_than_guessing():
+    # None means "not measured", and the caller keeps its generic estimate. A zero or a malformed
+    # row is the same answer, never a 500 on the memory-planning path.
+    import types
+
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    assert video_family_prequant_resident_gb(_resident_fam(), "nvfp4") is None
+    assert video_family_prequant_resident_gb(types.SimpleNamespace(), "nvfp4") is None
+    fam = _resident_fam(prequant_resident_gb_by_scheme = (("nvfp4",), ("nvfp4", "big")))
+    assert video_family_prequant_resident_gb(fam, "nvfp4") is None
+
+
+def test_the_h3_measurement_still_answers_through_the_helper():
+    # The one family with the legacy float keeps resolving it for both of its hosted schemes.
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(fam.prequant_resident_gb)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(fam.prequant_resident_gb)

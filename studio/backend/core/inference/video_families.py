@@ -102,6 +102,12 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
+    # The same measurement PER SCHEME, as (scheme, resident_gb). One float cannot describe a family that hosts several
+    # schemes at different sizes (an nvfp4 denoiser is ~40% smaller than the fp8 one of the same model), and the term
+    # this feeds is the one a hard unified-memory refusal is judged on, so the wrong row turns away a load that fits.
+    # A scheme with no row here falls back to ``prequant_resident_gb`` and then to the generic _QUANT_STEADY_FACTOR,
+    # which is what every family did before this field existed.
+    prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
     # its own denoiser needs its own entry; a variant without one falls through to prequant_repos and, if that
@@ -439,6 +445,32 @@ def video_family_prequant_repo(
         if entry_scheme == scheme and repo_id:
             return repo_id
     return None
+
+
+def video_family_prequant_resident_gb(fam: VideoFamily, scheme: str) -> Optional[float]:
+    """The MEASURED resident size, in decimal GB, of this family's hosted denoiser for ``scheme``.
+
+    Per-scheme row first, then the single ``prequant_resident_gb`` float (which predates the row
+    table and describes the one scheme family that has it), then None -- meaning nothing was
+    measured and the caller keeps its generic estimate.
+
+    Pure and never raises, like the resolvers above: it runs on the memory-planning path, where a
+    table typo must cost an estimate rather than the load.
+    """
+    for entry in getattr(fam, "prequant_resident_gb_by_scheme", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, resident_gb = entry
+        if entry_scheme == scheme and resident_gb:
+            try:
+                return float(resident_gb)
+            except (TypeError, ValueError):  # a malformed row is "not measured", never a 500
+                continue
+    measured = getattr(fam, "prequant_resident_gb", None)
+    try:
+        return float(measured) if measured else None
+    except (TypeError, ValueError):
+        return None
 
 
 def video_family_prequant_task_specific(fam: VideoFamily, scheme: str, task: str) -> bool:
