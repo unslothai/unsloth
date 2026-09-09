@@ -21,8 +21,6 @@ complete; the runtime validator used to require it, delete the sidecar and retry
 install that had just failed.
 """
 
-
-
 import sys
 import types as _types
 from pathlib import Path
@@ -40,7 +38,11 @@ sys.modules.setdefault("loggers", _loggers_stub)
 import utils.transformers_version as tv
 
 
-def _sidecar(root, *names, versions = None):
+def _sidecar(
+    root,
+    *names,
+    versions = None,
+):
     versions = versions or {}
     for name in names:
         (root / name).mkdir(parents = True)
@@ -66,7 +68,10 @@ def test_a_sidecar_without_tiktoken_is_still_valid(tmp_path):
         },
     )
     assert tv._venv_dir_is_valid(str(root), tv._VENV_T5_550_PACKAGES) is True
-    assert tv._venv_dir_is_valid(str(root), tv._venv_t5_latest_packages(tv.TRANSFORMERS_550_VERSION)) is True
+    assert (
+        tv._venv_dir_is_valid(str(root), tv._venv_t5_latest_packages(tv.TRANSFORMERS_550_VERSION))
+        is True
+    )
 
 
 def test_a_sidecar_without_a_required_package_is_still_invalid(tmp_path):
