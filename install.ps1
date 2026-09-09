@@ -637,7 +637,7 @@ function Install-UnslothStudio {
         $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
         $flush = {
             if ($inIndex -and $idxUrl) {
-                # An explicit index serves only pinned packages: skipped; explicit AND default is not modelled, so doubt.
+                # Explicit entries are skipped, as in the inline reader; explicit AND default is doubt.
                 if ($idxExplicit) { if ($idxDefault) { $entry.Doubt = $true } }
                 elseif ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
                 else { $entry.Extras += $idxUrl }
@@ -6360,8 +6360,7 @@ exit 0
                 }
             } catch {}
         }
-        # Wheels an EARLIER wheelhouse staged would be read as hosted by the scan below. Kept only when
-        # the listing could not be read (offline reuse); the directory as its own wheelhouse lists all of them.
+        # Wheels an EARLIER wheelhouse staged read as hosted below; kept only when the listing could not be read (offline reuse).
         if ($null -ne $_woaListing) {
             $_woaKeep = @(@($_woaListing) + @($script:WoaPyarrowWheelName) | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
             $_woaPruned = 0

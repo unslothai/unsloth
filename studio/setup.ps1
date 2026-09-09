@@ -4357,7 +4357,7 @@ function Read-WoaUvTomlIndexKeys {
     $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
     $flush = {
         if ($inIndex -and $idxUrl) {
-            # An explicit index serves only pinned packages: skipped; explicit AND default is not modelled, so doubt.
+            # Explicit entries are skipped, as in the inline reader; explicit AND default is doubt.
             if ($idxExplicit) { if ($idxDefault) { $entry.Doubt = $true } }
             elseif ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
             else { $entry.Extras += $idxUrl }

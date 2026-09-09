@@ -6475,9 +6475,7 @@ def _uv_config_index_policy() -> "dict[str, object]":
                 if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
                     continue
                 if entry.get("explicit") is True:
-                    # uv: an explicit index serves only packages pinned to it via [tool.uv.sources],
-                    # so it is neither the default nor an extra. With default = true it also
-                    # removes PyPI as the default, which is not modelled: doubt.
+                    # uv: explicit serves only packages pinned via [tool.uv.sources]; with default = true it also removes PyPI as the default (not modelled: doubt).
                     if entry.get("default") is True:
                         policy["unreadable"] = True
                     continue
