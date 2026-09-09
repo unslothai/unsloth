@@ -391,6 +391,9 @@ def macos_profile(
         lines.append(f"(allow file-read* (subpath {_sbpl(path)}))")
     for path in writable_roots:
         lines.append(f"(allow file-read* file-write* (subpath {_sbpl(path)}))")
+    # file-write* covers symlink creation; deny it last (later rules win), matching Landlock's
+    # withheld MAKE_SYM: the server follows links, so a tool must not plant one.
+    lines.append("(deny file-write-create (vnode-type SYMLINK))")
     return "\n".join(lines) + "\n"
 
 

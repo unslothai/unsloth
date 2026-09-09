@@ -191,6 +191,16 @@ async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
     return await future
 
 
+def _run_id_held_by_another_account(account: Any, run_id: str) -> bool:
+    """Run ids are client chosen and rows are per account, while the supervisor keys by bare
+    id. A live registration under another account is theirs; no registration still cancels."""
+    account_id = getattr(account, "account_id", None)
+    return any(
+        entry.get("run_id") == run_id and entry.get("account_id") != account_id
+        for entry in active_generations.snapshot()
+    )
+
+
 class ChatGenerationLeaseSweeper:
     """Periodically settle durable runs whose progress lease has expired.
 
@@ -266,11 +276,12 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled: list[str] = []
+        settled: list[tuple[Any, str]] = []
         # Deactivated accounts too: their wedged producer never sees the cancel event.
         for account in sweepable_job_accounts():
             settled.extend(
-                await _sweep_in_daemon_thread(
+                (account, run_id)
+                for run_id in await _sweep_in_daemon_thread(
                     run_as,
                     account,
                     db.reconcile_runs,
@@ -281,7 +292,7 @@ class ChatGenerationLeaseSweeper:
         if not settled:
             return []
         supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)
-        for run_id in settled:
+        for account, run_id in settled:
             logger.warning(
                 "chat_generation_run_lease_expired",
                 run_id = run_id,
@@ -289,22 +300,35 @@ class ChatGenerationLeaseSweeper:
             )
             if supervisor is None:
                 continue
+            if _run_id_held_by_another_account(account, run_id):
+                # Another account started a live run under this id; the slot is theirs.
+                logger.warning(
+                    "chat_generation_lease_cancel_skipped",
+                    run_id = run_id,
+                    reason = "another account holds the live registration for this id",
+                )
+                continue
             # The row is settled, but a producer wedged inside the engine is still holding its slot and activity
-            # reservation; cancel unwinds it.
+            # reservation; cancel unwinds it, bound to the owning account's namespace.
             try:
-                supervisor.cancel(run_id)
+                run_as(account, supervisor.cancel, run_id)
             except Exception as exc:
                 logger.warning(
                     "chat_generation_lease_cancel_failed", run_id = run_id, error = repr(exc)
                 )
                 continue
             asyncio.create_task(
-                self._force_cancel_after_grace(supervisor, run_id),
+                self._force_cancel_after_grace(supervisor, run_id, account),
                 name = f"chat-generation-lease-force-cancel:{run_id}",
             )
-        return settled
+        return [run_id for _account, run_id in settled]
 
-    async def _force_cancel_after_grace(self, supervisor: Any, run_id: str) -> None:
+    async def _force_cancel_after_grace(
+        self,
+        supervisor: Any,
+        run_id: str,
+        account: Any = None,
+    ) -> None:
         """Escalate from the cooperative cancel to cancelling the producer task.
 
         supervisor.cancel() only sets a threading.Event, which a producer blocked inside
@@ -315,6 +339,9 @@ class ChatGenerationLeaseSweeper:
         await asyncio.sleep(self._FORCE_CANCEL_GRACE_S)
         task = getattr(supervisor, "_tasks", {}).get(run_id)
         if task is None or task.done():
+            return
+        if account is not None and _run_id_held_by_another_account(account, run_id):
+            # The slot changed hands during the grace period.
             return
         logger.warning(
             "chat_generation_run_force_cancelled",

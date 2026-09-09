@@ -273,15 +273,37 @@ class RetiredAccountError(RuntimeError):
 root_retirement_lock = threading.RLock()
 
 
+def external_account_sandbox_root() -> Path | None:
+    """The managed account's tool sandbox when ``UNSLOTH_STUDIO_SANDBOX_HOME`` moves it out of
+    the workspace; a private root like the other three, so retirement and ``ensure_dir`` cover it."""
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if is_owner_context() or not override:
+        return None
+    return (
+        Path(os.path.abspath(os.path.expanduser(override)))
+        / "accounts"
+        / current_account().account_id
+    )
+
+
+def managed_account_roots() -> tuple[Path, ...]:
+    """Every private root retirement renames aside for the acting managed account."""
+    roots = [workspace_root(), project_workspaces_root(), tmp_root()]
+    sandbox = external_account_sandbox_root()
+    if sandbox is not None:
+        roots.append(sandbox)
+    return tuple(roots)
+
+
 def _under_managed_workspace(path: Path) -> bool:
-    """Lexically, whether *path* is inside one of the three roots retirement renames aside."""
+    """Lexically, whether *path* is inside one of the roots retirement renames aside."""
     if is_owner_context():
         return False
     try:
         absolute = Path(os.path.abspath(path))
-        for root in (workspace_root, project_workspaces_root, tmp_root):
+        for root in managed_account_roots():
             try:
-                absolute.relative_to(os.path.abspath(root()))
+                absolute.relative_to(os.path.abspath(root))
                 return True
             except ValueError:
                 continue

@@ -8195,10 +8195,10 @@ def sandbox_root() -> str:
     """
     override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
     if override:
-        root = os.path.expanduser(override)
         if not is_owner_context():
-            return os.path.join(root, "accounts", current_account_id())
-        return root
+            from utils.paths.storage_roots import external_account_sandbox_root
+            return str(external_account_sandbox_root())
+        return os.path.expanduser(override)
     try:
         from utils.paths.storage_roots import account_path
         return str(account_path("sandbox"))
