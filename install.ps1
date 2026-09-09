@@ -877,8 +877,18 @@ function Install-UnslothStudio {
         try {
             $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
                 -ClassName "Win32_DeviceGuard" -ErrorAction Stop
-            # 0 off, 1 audit, 2 enforced.
-            if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -eq 2) {
+            # 0 off, 1 audit, 2 enforced. Audit counts as well, which is not the
+            # obvious reading. Microsoft documents that option 19 Dynamic Code
+            # Security ALWAYS blocks loading unsigned assemblies built with
+            # System.Reflection.Emit, that there is no audit mode for it on
+            # Windows 10 or on Windows 11 before 24H2 (it is "turned on and
+            # enforced even if the policy is in audit mode" there), and that a
+            # blocked dynamic load usually stops or crashes the parent process.
+            # A crash is not something the catch below can recover, and losing
+            # exact path resolution is: so any active user-mode policy sends this
+            # host down the lexical path rather than gambling on the option bit,
+            # which Win32_DeviceGuard does not report.
+            if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
                 $enforced = $true
             }
         } catch {}
@@ -932,19 +942,24 @@ function Install-UnslothStudio {
             $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
 
         $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-        # Matches the CharSet the C# these replace declared. It selects name
-        # mangling as well as marshalling: the runtime probes <Name>W first and
-        # falls back to <Name>, which is how an unsuffixed export like CloseHandle
-        # or SHChangeNotify resolved before and still does.
+        # Per import, because CharSet is not decoration: it selects name mangling
+        # as well as marshalling. Unicode probes <Name>W before <Name>, Ansi probes
+        # <Name> before <Name>A. Every import here names an export that exists
+        # exactly as written, so both orders arrive; declaring the one the C# these
+        # replace declared keeps the metadata honest and puts the export that does
+        # exist first. Unicode is the default, since the calls carrying text are
+        # the ones already spelled W.
         $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
+        $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
         $standard = [System.Reflection.CallingConventions]::Standard
         $attributes = "Public, Static, HideBySig, PinvokeImpl"
         $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
 
         foreach ($import in $Imports) {
+            $charSet = if ($import.ContainsKey("Ansi") -and $import.Ansi) { $ansi } else { $unicode }
             $method = $builder.DefinePInvokeMethod(
                 $import.Name, $import.Library, $import.Name, $attributes,
-                $standard, $import.Return, $import.Args, $winapi, $unicode)
+                $standard, $import.Return, $import.Args, $winapi, $charSet)
             $method.SetImplementationFlags(
                 $method.GetMethodImplementationFlags() -bor $preserveSig)
         }
@@ -1008,9 +1023,18 @@ function Install-UnslothStudio {
                 @{ Name = "GetFinalPathNameByHandleW"; Library = "kernel32.dll"; Return = [uint32]
                    Args = @([IntPtr], [System.Text.StringBuilder], [uint32], [uint32]) },
                 @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr]) }
+                   Args = @([IntPtr])
+                   Ansi = $true }
             )
         } catch {
+            # A throw does not always mean nothing was defined: CreateType can
+            # publish the type and then fail on the way back, and the compiled
+            # version this replaces checked for exactly that before giving up. If
+            # the type is there it is usable, so ask before caching the negative.
+            if ("UnslothStudioFinalPathV3" -as [type]) {
+                $script:StudioFinalPathNativeState = $true
+                return $true
+            }
             $script:StudioFinalPathNativeState = $false
             Write-StudioFinalPathDegraded -Reason (($_.Exception.Message -split "`r?`n")[0].Trim())
             return $false
@@ -1046,16 +1070,24 @@ function Install-UnslothStudio {
         # the caller must see the same "no exact answer" it sees from a handle it
         # could not open. The callers already treat null that way; throwing past
         # them would be a new failure mode this change has no business inventing.
+        # Acquisition sits INSIDE the region that closes the handle. The C# this
+        # replaces returned a SafeFileHandle, whose finalizer was a backstop if the
+        # pipeline stopped between the open and the using block; an IntPtr has
+        # none, so the open and the finally are one region instead. What is left
+        # is the instant between the native return and the assignment, which no
+        # arrangement of PowerShell can close. It costs nothing here: the handle is
+        # opened with desired access 0 and FILE_SHARE_READ|WRITE|DELETE, so even a
+        # leaked one blocks no other opener, and it dies with the process.
         $handle = $invalidHandle
         try {
-            $handle = [UnslothStudioFinalPathV3]::CreateFileW(
-                $Path, [uint32]0, $fileShareAll, [IntPtr]::Zero,
-                $openExisting, $backupSemantics, [IntPtr]::Zero)
-        } catch {
-            return $null
-        }
-        if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) { return $null }
-        try {
+            try {
+                $handle = [UnslothStudioFinalPathV3]::CreateFileW(
+                    $Path, [uint32]0, $fileShareAll, [IntPtr]::Zero,
+                    $openExisting, $backupSemantics, [IntPtr]::Zero)
+            } catch {
+                return $null
+            }
+            if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) { return $null }
             $buffer = New-Object System.Text.StringBuilder 512
             $length = [UnslothStudioFinalPathV3]::GetFinalPathNameByHandleW(
                 $handle, $buffer, [uint32]$buffer.Capacity, [uint32]0)
@@ -1072,7 +1104,12 @@ function Install-UnslothStudio {
         } catch {
             return $null
         } finally {
-            try { [void][UnslothStudioFinalPathV3]::CloseHandle($handle) } catch {}
+            # Guarded now that the open is inside this region: the failure paths
+            # reach here with the sentinel, and closing it is a call Windows has no
+            # reason to be asked to make.
+            if ($handle -ne $invalidHandle -and $handle -ne [IntPtr]::Zero) {
+                try { [void][UnslothStudioFinalPathV3]::CloseHandle($handle) } catch {}
+            }
         }
     }
 
@@ -1610,11 +1647,14 @@ function Install-UnslothStudio {
             if (-not ("StudioVTNative" -as [type])) {
                 $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
                     @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
-                       Args = @([int]) },
+                       Args = @([int])
+                       Ansi = $true },
                     @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32].MakeByRefType()) },
+                       Args = @([IntPtr], [uint32].MakeByRefType())
+                       Ansi = $true },
                     @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32]) }
+                       Args = @([IntPtr], [uint32])
+                       Ansi = $true }
                 )
             }
             $h = [StudioVTNative]::GetStdHandle(-11)
@@ -3376,13 +3416,21 @@ exit 0
         try {
             $null = New-StudioEmittedNativeType -TypeName "UnslothStudioProcessImageV1" -Imports @(
                 @{ Name = "OpenProcess"; Library = "kernel32.dll"; Return = [IntPtr]
-                   Args = @([uint32], [bool], [int]) },
+                   Args = @([uint32], [bool], [int])
+                   Ansi = $true },
                 @{ Name = "QueryFullProcessImageNameW"; Library = "kernel32.dll"; Return = [bool]
                    Args = @([IntPtr], [uint32], [System.Text.StringBuilder], [uint32].MakeByRefType()) },
                 @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr]) }
+                   Args = @([IntPtr])
+                   Ansi = $true }
             )
         } catch {
+            # Same reason as the path helper: a throw on the way out of CreateType
+            # can still leave the type published, and a published type works.
+            if ("UnslothStudioProcessImageV1" -as [type]) {
+                $script:StudioProcessImageNativeState = $true
+                return $true
+            }
             $script:StudioProcessImageNativeState = $false
             return $false
         }
@@ -3397,15 +3445,17 @@ exit 0
     function Get-StudioNativeProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
         $queryLimitedInformation = [uint32]0x1000
+        # Same shape as Get-StudioNativeFinalPath: the open is inside the region
+        # that closes it, because an IntPtr has no finalizer to fall back on.
         $handle = [IntPtr]::Zero
         try {
-            $handle = [UnslothStudioProcessImageV1]::OpenProcess(
-                $queryLimitedInformation, $false, $ProcessId)
-        } catch {
-            return $null
-        }
-        if ($handle -eq [IntPtr]::Zero) { return $null }
-        try {
+            try {
+                $handle = [UnslothStudioProcessImageV1]::OpenProcess(
+                    $queryLimitedInformation, $false, $ProcessId)
+            } catch {
+                return $null
+            }
+            if ($handle -eq [IntPtr]::Zero) { return $null }
             $buffer = New-Object System.Text.StringBuilder 32768
             [uint32]$length = $buffer.Capacity
             if (-not [UnslothStudioProcessImageV1]::QueryFullProcessImageNameW(
@@ -3416,7 +3466,9 @@ exit 0
         } catch {
             return $null
         } finally {
-            try { [void][UnslothStudioProcessImageV1]::CloseHandle($handle) } catch {}
+            if ($handle -ne [IntPtr]::Zero) {
+                try { [void][UnslothStudioProcessImageV1]::CloseHandle($handle) } catch {}
+            }
         }
     }
 

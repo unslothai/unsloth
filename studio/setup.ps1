@@ -1614,8 +1614,12 @@ function Test-StudioCanDefineNativeTypes {
     try {
         $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
             -ClassName "Win32_DeviceGuard" -ErrorAction Stop
-        # 0 off, 1 audit, 2 enforced.
-        if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -eq 2) {
+        # 0 off, 1 audit, 2 enforced. Audit counts too: option 19 Dynamic Code
+        # Security always blocks unsigned System.Reflection.Emit assemblies, it has
+        # no audit mode on Windows 10 or Windows 11 before 24H2, and a blocked
+        # dynamic load usually stops or crashes the parent process. Same reasoning
+        # as install.ps1, which carries the full note.
+        if ($guard -and [int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
             $enforced = $true
         }
     } catch {}
@@ -1663,17 +1667,20 @@ function New-StudioEmittedNativeType {
         $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
 
     $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-    # Matches the CharSet the C# this replaces declared. It selects name mangling as well as
-    # marshalling: the runtime probes <Name>W first and falls back to <Name>.
+    # Per import, because CharSet selects name mangling as well as marshalling: Unicode probes
+    # <Name>W before <Name>, Ansi probes <Name> before <Name>A. Declaring the one the C# this
+    # replaces declared keeps the metadata honest and puts the export that does exist first.
     $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
+    $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
     $standard = [System.Reflection.CallingConventions]::Standard
     $attributes = "Public, Static, HideBySig, PinvokeImpl"
     $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
 
     foreach ($import in $Imports) {
+        $charSet = if ($import.ContainsKey("Ansi") -and $import.Ansi) { $ansi } else { $unicode }
         $method = $builder.DefinePInvokeMethod(
             $import.Name, $import.Library, $import.Name, $attributes,
-            $standard, $import.Return, $import.Args, $winapi, $unicode)
+            $standard, $import.Return, $import.Args, $winapi, $charSet)
         $method.SetImplementationFlags(
             $method.GetMethodImplementationFlags() -bor $preserveSig)
     }
@@ -1692,11 +1699,14 @@ function Enable-StudioVirtualTerminal {
         if (-not ("StudioVTNative" -as [type])) {
             $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
                 @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
-                   Args = @([int]) },
+                   Args = @([int])
+                   Ansi = $true },
                 @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr], [uint32].MakeByRefType()) },
+                   Args = @([IntPtr], [uint32].MakeByRefType())
+                   Ansi = $true },
                 @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr], [uint32]) }
+                   Args = @([IntPtr], [uint32])
+                   Ansi = $true }
             )
         }
         $h = [StudioVTNative]::GetStdHandle(-11)

@@ -1690,3 +1690,156 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (temp / "somebody-elses").is_dir()
     assert temp.is_dir()
     assert (data / "studio.port").exists()
+
+
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
+
+
+def _gate(source: str) -> str:
+    """The capability gate on its own, from whichever of the two scripts is passed."""
+    match = re.search(
+        r"^(?P<indent>\s*)function Test-StudioCanDefineNativeTypes \{.*?\n(?P=indent)\}\n",
+        source,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, "Test-StudioCanDefineNativeTypes not found"
+    return match.group(0)
+
+
+# 0 is "no policy", and only 0 may emit. 1 is the one worth a test of its own: audit sounds
+# like "observe and allow", and for option 19 Dynamic Code Security it is not. Microsoft
+# documents that unsigned System.Reflection.Emit assemblies are ALWAYS blocked when that
+# option is set, that there is no audit mode for it on Windows 10 or Windows 11 before 24H2,
+# and that a blocked dynamic load usually stops or crashes the parent process. Win32_DeviceGuard
+# does not report the option bit, so an active policy of either kind has to send the run down
+# the lexical path. Losing exact resolution is recoverable; a crashed installer is not.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("status,expected", [("0", "True"), ("1", "False"), ("2", "False")])
+def test_only_a_machine_with_no_user_mode_policy_may_emit(script: str, status: str, expected: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _gate(source),
+                # Every parameter the real call passes has to bind, or the stub is skipped and
+                # the test measures the absent-provider path instead of the reported status.
+                "function Get-CimInstance {",
+                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
+                f"    [pscustomobject]@{{ UsermodeCodeIntegrityPolicyEnforcementStatus = {status} }}",
+                "}",
+                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "CAN:") == [f"CAN:{expected}"]
+
+
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_an_unreadable_device_guard_does_not_refuse(script: str):
+    """Most machines have no Device Guard provider at all. Unreadable means unrestricted."""
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _gate(source),
+                "function Get-CimInstance {",
+                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
+                '    throw "no such namespace"',
+                "}",
+                'Write-Output "CAN:$(Test-StudioCanDefineNativeTypes)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "CAN:") == ["CAN:True"]
+
+
+# CharSet is not decoration on an emitted import: it picks the export the runtime looks for
+# first. Unicode asks for <Name>W, Ansi asks for <Name>. Every one of these names an export
+# that exists exactly as written, so the wrong charset still resolves, on the second probe;
+# what it stops being is an accurate description of the C# it replaced.
+@requires_pwsh
+@pytest.mark.parametrize(
+    "method,charset",
+    [
+        ("CreateFileW", "Unicode"),
+        ("GetFinalPathNameByHandleW", "Unicode"),
+        ("CloseHandle", "Ansi"),
+    ],
+)
+def test_each_import_carries_the_charset_its_declaration_had(method: str, charset: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _helpers(
+                    "Write-StudioLine",
+                    "Write-StudioFinalPathDegraded",
+                    "Test-StudioCanDefineNativeTypes",
+                    "New-StudioDynamicAssembly",
+                    "New-StudioEmittedNativeType",
+                    "Initialize-StudioFinalPathNativeType",
+                ),
+                "$null = Initialize-StudioFinalPathNativeType",
+                f'$m = [UnslothStudioFinalPathV3].GetMethod("{method}")',
+                # The pseudo-custom attribute the runtime synthesises from the P/Invoke
+                # metadata, which is the metadata itself rather than a copy of the intent.
+                "$a = $m.GetCustomAttributes(",
+                "    [System.Runtime.InteropServices.DllImportAttribute], $false)[0]",
+                'Write-Output "CHARSET:$($a.CharSet)"',
+                'Write-Output "ENTRY:$($a.EntryPoint)"',
+                'Write-Output "LIB:$($a.Value)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "CHARSET:") == [f"CHARSET:{charset}"]
+    assert _lines(result, "ENTRY:") == [f"ENTRY:{method}"]
+    assert _lines(result, "LIB:") == ["LIB:kernel32.dll"]
+
+
+@requires_pwsh
+def test_a_published_type_counts_even_when_creation_threw():
+    """CreateType can publish the type and then fail on the way back.
+
+    The compiled version asked whether the type had arrived anyway before it gave up, and
+    dropping that turned a recoverable failure into lexical resolution for the whole run.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _helpers(
+                    "Write-StudioLine",
+                    "Write-StudioFinalPathDegraded",
+                    "Test-StudioCanDefineNativeTypes",
+                    "New-StudioDynamicAssembly",
+                    "New-StudioEmittedNativeType",
+                    "Initialize-StudioFinalPathNativeType",
+                ),
+                # Publishes the type under the name the initializer wants, then throws, which
+                # is the shape being tested. Add-Type here is the test's own scaffolding, not
+                # the installer's: it is the shortest way to put a real type in the session.
+                "$real = ${function:New-StudioEmittedNativeType}",
+                "function New-StudioEmittedNativeType {",
+                "    param([string]$TypeName, [object[]]$Imports)",
+                "    Add-Type -TypeDefinition 'public static class UnslothStudioFinalPathV3 { }'",
+                '    throw "published, then failed"',
+                "}",
+                'Write-Output "OK:$(Initialize-StudioFinalPathNativeType)"',
+                'Write-Output "AGAIN:$(Initialize-StudioFinalPathNativeType)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "OK:") == ["OK:True"]
+    assert _lines(result, "AGAIN:") == ["AGAIN:True"]
+    # The degraded warning belongs to a run that really has no native side.
+    assert "Could not load the native path resolver" not in result.stdout
