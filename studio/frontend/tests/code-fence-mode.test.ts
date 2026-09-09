@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   SHIP_DEFAULT,
   resolveFenceMode,
 } from "../src/components/assistant-ui/code-fence-mode.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /**
  * The fence mode decision table, RUN rather than described.
@@ -106,13 +107,7 @@ test("a non-string non-boolean global is ignored rather than coerced", () => {
 
 /** JSX in the mode module makes this file unloadable and every assertion above a comment. */
 test("the mode module is plain TypeScript", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/code-fence-mode.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/code-fence-mode.ts");
   assert.ok(
     !/<[A-Za-z]/.test(source.replace(/^\s*[/*].*$/gm, "")),
     "no JSX in the mode module",

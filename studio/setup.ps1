@@ -1859,6 +1859,72 @@ function Clear-WebViewCaches {
     if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
 }
 
+# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it drives, so this
+# covers direct setup, update and desktop repair. Keep in step with the copies in install.ps1.
+if ($env:SKIP_STUDIO_BASE -ne "1") {
+    $ElevationState = "unknown"
+    try {
+        $_identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal($_identity)
+        $ElevationState = if ($_principal.IsInRole(
+                [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
+    } catch { }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+        [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
+        [Console]::Out.Flush()
+    }
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
+        try {
+            $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
+        } catch {
+            try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        }
+        return $_p.TrimEnd('\', '/')
+    }
+
+    if ($ElevationState -eq "true") {
+        # $StudioHome is resolved much later, so mirror its precedence for the message only.
+        # USERPROFILE can be unset (service, CI), where a bare Join-Path throws under Stop.
+        $_unslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            '%USERPROFILE%\.unsloth'
+        } else {
+            Join-Path $env:USERPROFILE ".unsloth"
+        }
+        $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $env:STUDIO_HOME.Trim()
+        } else {
+            $_unslothRoot
+        }
+        # A legacy-equal override is not a custom root: name the parent that holds llama.cpp.
+        if ((Get-CanonicalRootPath $_elevRoot) -ieq
+            (Get-CanonicalRootPath (Join-Path $_unslothRoot "studio"))) {
+            $_elevRoot = $_unslothRoot
+        }
+        Write-StudioLine ""
+        Write-StudioLine "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-StudioLine "            Anything written to $_elevRoot will be owned by Administrators," -ForegroundColor Yellow
+        Write-StudioLine "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-StudioLine "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-StudioLine "            update run normally fails on it." -ForegroundColor Yellow
+        Write-StudioLine "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+    }
+}
+
 # Resolve and preflight the install root before phase 1, with the same override
 # precedence as the other resolvers. Everything below joins onto USERPROFILE, so a
 # blank one must fail here instead of throwing a raw binding error under "Stop".
@@ -6774,10 +6840,21 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
     # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
     # the user as install-progress-detail text.
+    # DIAG as well: the progress detail is cleared by the next install-step, so only the
+    # marker can still answer "why is GGUF missing" afterwards.
     if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }
+}
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the block above
+# is skipped and a degraded repair recorded nothing. Marker only: the update stays successful.
+if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
+    (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
+    [Console]::Out.Flush()
 }

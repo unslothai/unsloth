@@ -21,6 +21,7 @@ from utils.paths.path_utils import wsl_automount_root
 # One policy, defined in utils.paths.storage_roots: the copy that used to live here drifted, and a
 # BOM'd settings.json was honoured by one side and dropped by the other (#9748).
 from utils.paths.storage_roots import (
+    hermes_model_dirs,
     lmstudio_model_dirs,
     ollama_model_dirs,
     well_known_model_dirs,
@@ -29,7 +30,7 @@ from utils.paths.storage_roots import (
 logger = get_logger(__name__)
 
 # Re-export shim: marks them used so the import-hoist safety net does not flag them.
-_REEXPORTED = (lmstudio_model_dirs, ollama_model_dirs, well_known_model_dirs)
+_REEXPORTED = (hermes_model_dirs, lmstudio_model_dirs, ollama_model_dirs, well_known_model_dirs)
 
 
 def _infer_studio_home_from_venv() -> Optional[Path]:
