@@ -129,7 +129,7 @@ class LoRA_MLP(torch.autograd.Function):
         gateA, gateB, upA, upB, downA, downB, X, e, g = ctx.saved_tensors
 
         batch, seq_len, hd = X.shape
-        dY = dY.view(-1, dY.shape[-1])
+        dY = dY.reshape(-1, dY.shape[-1])
         X = X.view(-1, X.shape[-1])
         e = e.view(-1, e.shape[-1])
         g = g.view(-1, g.shape[-1])
@@ -422,9 +422,9 @@ class LoRA_QKV(torch.autograd.Function):
         ) = ctx.saved_tensors
 
         batch, seq_len, hd = X.shape
-        dQ = dQ.view(-1, dQ.shape[-1])
+        dQ = dQ.reshape(-1, dQ.shape[-1])
         dK = dK.reshape(-1, dK.shape[-1])  # view doesn't work on K.T
-        dV = dV.view(-1, dV.shape[-1])
+        dV = dV.reshape(-1, dV.shape[-1])
         X = X.view(-1, X.shape[-1])
         dtype = X.dtype
 
