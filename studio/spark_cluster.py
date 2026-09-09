@@ -1106,16 +1106,34 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
     return result
 
 
+def peer_address_of(addr: str) -> Optional[str]:
+    """The OTHER endpoint of a two-node rail, given this node's address on it.
+
+    Setup assigns `NODE_BASE_OCTET + node_index`, so node 0 is `.12` and node 1 is `.13`.
+    Always adding one is right only on node 0: run from the second Spark it returned `.14`,
+    a host that does not exist, and doctor, provisioning, serving and training launched from
+    there all aimed at it. The direction has to come from which endpoint this node is."""
+    head, _, last = addr.rpartition(".")
+    if not head:
+        return None
+    try:
+        index = int(last) - NODE_BASE_OCTET
+    except ValueError:
+        return None
+    if index < 0:
+        return None
+    # Two-node rail: the peer is the other one of the pair, whichever end this is.
+    return f"{head}.{NODE_BASE_OCTET + (1 if index == 0 else 0)}"
+
+
 def peer_ip_for(rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
-    """The peer's address on the first configured rail (ours is .12, peer .13)."""
+    """The peer's address on the first configured rail."""
     rails = rails if rails is not None else cabled_rails()
     for rail in rails:
         for addr in rail.get("ipv4", []):
-            head, _, last = addr.rpartition(".")
-            try:
-                return f"{head}.{int(last) + 1}"
-            except ValueError:
-                continue
+            peer = peer_address_of(addr)
+            if peer:
+                return peer
     return None
 
 
@@ -1726,8 +1744,9 @@ def _cmd_status(benchmark: bool = False) -> int:
     peer_ip = None
     for rail in info["configured"]:
         for addr in rail["ipv4"]:
-            octets = addr.rsplit(".", 1)
-            peer_ip = f"{octets[0]}.{int(octets[1]) + 1}"
+            # Same resolution as peer_ip_for, not a second copy of the increment: this path had
+            # the identical off-by-one and aimed the benchmark at a nonexistent host on node 1.
+            peer_ip = peer_address_of(addr)
             break
         if peer_ip:
             break
@@ -1990,6 +2009,25 @@ def fast_path_decision(
         return no("peer address is our own")
     if local not in ipaddress.ip_network(f"{peer_ip}/24", strict = False):
         return no(f"{local_ip} and {peer_ip} are not in the same /24")
+    # Sharing a /24 is not the same as being alone on a wire. After `setup --nodes N --switched`
+    # every node shares these subnets, so the same-subnet test above still passes while the
+    # fabric carries other hosts. The SECURITY note on FAST_ENV is explicit that the plaintext
+    # transfer is acceptable ONLY because the rail is a point-to-point cable with nothing else
+    # on it, and `hosts allow` plus a one-shot secret restrict access without providing any
+    # confidentiality against another participant. So the persisted plan decides, and anything
+    # other than a two-node direct rail falls back to ssh.
+    config = load_config()
+    if config.get("switched"):
+        return no("the rails are switched, not point-to-point; bytes would cross in plaintext")
+    try:
+        configured_nodes = int(config.get("n_nodes") or 0)
+    except (TypeError, ValueError):
+        configured_nodes = 0
+    if configured_nodes > 2:
+        return no(
+            f"{configured_nodes} nodes share these rails, so they are not point-to-point; "
+            f"bytes would cross in plaintext"
+        )
     return {"ok": True, "reason": "direct rail", "local_ip": local_ip}
 
 
