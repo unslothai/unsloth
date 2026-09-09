@@ -1611,10 +1611,8 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
 
 
 def test_reset_clears_cached_cli_api_keys(monkeypatch, tmp_path):
-    # `unsloth studio reset-password` DELETEs every api_keys row, so any cached
-    # raw CLI key is now plaintext for a credential that no longer exists. It
-    # must be cleared alongside .bootstrap_password / .desktop_secret. The name
-    # is user-chosen via --api-key-name, so this globs.
+    # reset-password DELETEs every api_keys row, so a cached key is left as
+    # plaintext for a credential that no longer exists.
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
