@@ -160,16 +160,24 @@ def test_none_reaches_both_the_sft_config_and_for_training(run_vision_training):
     )
 
 
-def test_audio_vlm_honours_none_as_well(run_vision_training):
-    seen = run_vision_training("none", is_audio_vlm = True)
+@pytest.mark.parametrize("use_lora", [True, False])
+def test_audio_vlm_honours_none_as_well(run_vision_training, use_lora):
+    seen = run_vision_training("none", is_audio_vlm = True, use_lora = use_lora)
 
     assert seen["config_args"]["gradient_checkpointing"] is False
     assert "gradient_checkpointing_kwargs" not in seen["config_args"]
+    # A full finetune reaches this branch already flagged by load_model's for_training(),
+    # and SFTConfig never turns checkpointing off, so the flags must be reapplied here.
+    assert seen["for_training"] == [False], (
+        "the audio VLM branch left the module gradient_checkpointing flags alone, "
+        "so the run checkpoints despite the Memory tab saying None"
+    )
 
 
 @pytest.mark.parametrize("choice", ["unsloth", "true", ""])
-def test_the_default_path_still_checkpoints(run_vision_training, choice):
-    seen = run_vision_training(choice)
+@pytest.mark.parametrize("is_audio_vlm", [False, True])
+def test_the_default_path_still_checkpoints(run_vision_training, choice, is_audio_vlm):
+    seen = run_vision_training(choice, is_audio_vlm = is_audio_vlm)
 
     assert seen["config_args"]["gradient_checkpointing"] is True
     assert seen["config_args"]["gradient_checkpointing_kwargs"] == {"use_reentrant": False}

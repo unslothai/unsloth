@@ -4000,6 +4000,15 @@ class UnslothTrainer:
             elif self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM collator (e.g. Gemma 3N), mirrors the Gemma3N_(4B)-Audio notebook.
                 logger.info("Configuring audio VLM data collator...\n")
+                from unsloth import FastModel
+
+                # The module flags decide whether a layer checkpoints; SFTConfig only ever turns
+                # checkpointing on. A full finetune arrives here already flagged by load_model's
+                # for_training(), so the choice has to be reapplied or "none" is ignored.
+                FastModel.for_training(
+                    self.model,
+                    use_gradient_checkpointing = bool(self._use_gradient_checkpointing),
+                )
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
