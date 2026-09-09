@@ -192,6 +192,19 @@ jobs:
               # have nothing to do with this measurement, and the question here is only
               # whether a compiler ran on the way.
               Write-Host "install.ps1 --tauri exited $exit"
+              # It IS gated on having got as far as the work. A run that stopped at
+              # argument validation spawns nothing at all, so both detectors come back
+              # empty and this step prints "no compiler" having measured nothing. The
+              # STEP line is emitted after the install lock is taken, which is where the
+              # native declarations happen, so seeing it means the branch under test ran.
+              $log = ""
+              if (Test-Path "$env:UNSLOTH_EVIDENCE\install-tauri.log") {
+                  $log = Get-Content -Raw "$env:UNSLOTH_EVIDENCE\install-tauri.log"
+              }
+              if ($log -notmatch 'Checking system dependencies') {
+                  throw ("the desktop-mode install stopped before it reached any install " +
+                         "work (exit $exit), so this measurement is void rather than clean.")
+              }
           }
           $seen = Invoke-WithCompilerWatch -Name 'installer-tauri' -Action $desktop `
               -EvidenceRoot $env:UNSLOTH_EVIDENCE

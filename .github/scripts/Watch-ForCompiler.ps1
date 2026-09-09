@@ -148,11 +148,17 @@ function Invoke-WithCompilerWatch {
 
     New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 
+    # Baseline first, THEN open the window. The sweep walks every temp root
+    # recursively and can take seconds on a runner with a large temp tree, and a
+    # csc.exe the machine started during that walk predates the action: counting it
+    # fails the positive control or the installer measurement for something neither
+    # one did. Same reasoning as the $until below, which is taken before the second
+    # sweep for the same reason.
+    $before = New-Object 'System.Collections.Generic.HashSet[string]' (
+        [string[]](Get-StudioTempArtifacts), [StringComparer]::OrdinalIgnoreCase)
     # A second back, so a process created in the same tick as the timestamp is not
     # filtered out by a strictly-later comparison inside Get-WinEvent.
     $since = (Get-Date).AddSeconds(-1)
-    $before = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [string[]](Get-StudioTempArtifacts), [StringComparer]::OrdinalIgnoreCase)
 
     $failure = $null
     try {
