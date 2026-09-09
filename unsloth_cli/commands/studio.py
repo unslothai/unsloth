@@ -1622,6 +1622,7 @@ def studio_default(
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
 ):
+    """Launch the Unsloth Studio server."""
     # --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     _ensure_studio_env_exported()
@@ -2230,12 +2231,19 @@ def run(
 ):
     """Start Unsloth, load a model, print an API key -- one-liner server.
 
-    Unknown flags pass through to llama-server (GGUF only). Unsloth rejects managed flags with
-    HTTP 400: model identity, network, auth/TLS, single-model UI, and parallel slots (use
-    --parallel). Full denylist in studio/backend/core/inference/llama_server_args.py.
+    Unknown flags pass through to llama-server (GGUF only). Unsloth
+    rejects managed flags with HTTP 400: model identity, network
+    (--host/--port/--path/--api-prefix/--reuse-port), auth/TLS
+    (--api-key/--ssl-*), single-model UI (--ui/--models-*/--webui),
+    and parallel slots (use --parallel above). Full denylist in
+    studio/backend/core/inference/llama_server_args.py. Other knobs
+    (-c, -ngl, --jinja, --flash-attn, -t, ...) pass through and
+    last-wins-override Unsloth's auto-set value.
 
+    Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
-        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --parallel 8
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
+        unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
     # Passed via env, so an older re-exec target ignores it instead of treating it as a llama-server arg.
@@ -2795,8 +2803,10 @@ def _signal_stop(pid: int) -> "str | None":
 
 @studio_app.command()
 def stop():
-    """Stop every running Unsloth Studio server for this STUDIO_HOME. The port fallback can leave
-    more than one running."""
+    """Stop every running Unsloth Studio server for this STUDIO_HOME.
+
+    The port fallback can leave more than one running, so stop them all.
+    """
     unreadable: "list[Path]" = []
     entries = _pid_file_entries(unreadable)
     if not entries:
@@ -4215,8 +4225,14 @@ def verify_install(
         help = "Emit machine-readable JSON.",
     ),
 ):
-    """Check that the Unsloth Studio dependency install completed. Exits 0 when complete; setup.sh
-    and setup.ps1 use the code for the "already up to date" fast path. Scans installed files too."""
+    """Check that the Unsloth Studio dependency install completed.
+
+    Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
+    to decide whether the "already up to date" fast path may be taken.
+
+    Scans the installed files too, unlike `desktop-capabilities`: nothing times
+    this one out.
+    """
     state = _install_state(deep = True)
 
     if json_output:

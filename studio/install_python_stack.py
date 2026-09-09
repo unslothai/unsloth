@@ -8138,7 +8138,8 @@ def install_python_stack() -> int:
             )
         elif _codec_index:
             # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
-            # dependency set, so a --no-deps install from a cuNNN index imports and then fails.
+            # dependency set, so an older cuNNN wheel installs fine under --no-deps and then
+            # fails to import. 0.12+ no longer links NPP, so this only guards the older pins.
             # _npp_requirement spells the name, which stops being suffixed after 12.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
