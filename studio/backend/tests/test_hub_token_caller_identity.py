@@ -2277,3 +2277,68 @@ def test_the_config_memo_is_rechecked_before_it_is_served(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
     monkeypatch.setattr(tv, "_env_offline", lambda: True)
     assert tv._load_config_json("acme/private", "hf_dummy") is None, "revoked token kept the memo"
+
+
+def test_the_inner_preview_gate_does_not_veto_the_outer_one(monkeypatch):
+    """Two gates on the same request, and only the outer one was public-aware, so the
+    anonymous sentinel cleared the guard and was then refused by the reader behind it:
+    a prefer-local request answered local-cache-miss for a public dataset on disk."""
+    from hub.services.datasets import formatting
+
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(
+        formatting, "_load_cached_hf_preview_slice", lambda *_a, **_k: ("ROWS", 3)
+    )
+
+    served = formatting._load_any_cached_hf_preview_slice(
+        SimpleNamespace(dataset_name = "acme/public"), 5, False
+    )
+
+    assert served == ("ROWS", 3), "a public cached preview was withheld from the sentinel"
+
+
+def test_the_gguf_partial_state_is_withheld_with_the_rest(monkeypatch, tmp_path):
+    """The snapshot walk was gated and the partial-download accounting beside it was not,
+    so a caller who can list a gated repo's public metadata still learned the operator had
+    an interrupted download: `partial`, its transport, and the bytes left to fetch."""
+    from hub.services.models import gguf_variants as gv
+    from hub.utils.gguf import GgufVariantInfo
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    reads: list = []
+
+    monkeypatch.setattr(
+        gv,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [GgufVariantInfo(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 256)],
+            False,
+            [],
+        ),
+    )
+    monkeypatch.setattr(gv, "iter_hf_cache_snapshots", lambda *_a, **_k: [snapshot])
+    monkeypatch.setattr(
+        gv.download_registry,
+        "incomplete_blob_hashes",
+        lambda *_a, **_k: reads.append("registry") or {"deadbeef"},
+    )
+    monkeypatch.setattr(
+        gv,
+        "_local_main_gguf_blobs_by_quant",
+        lambda *_a, **_k: reads.append("blobs") or {},
+    )
+    monkeypatch.setattr(
+        gv.hf_cache_scan,
+        "is_variant_partial",
+        lambda *_a, **_k: reads.append("manifest") or True,
+    )
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+    _hub_reachable(monkeypatch)
+
+    answer = asyncio.run(gv.get_gguf_variants_answer("acme/gated", hf_token = "hf_dummy"))
+    variant = answer.response.variants[0]
+
+    assert variant.partial is False
+    assert reads == [], "the operator's download state was read for a refused caller"

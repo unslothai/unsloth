@@ -1534,16 +1534,24 @@ async def get_gguf_variants_answer(
 
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
-        try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes(
-                "model",
-                repo_id,
-                active_only = True,
-                root = hub_cache,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
-            incomplete_hashes = set()
+        # The rest of this accounting reads the operator's disk too: the download registry,
+        # the snapshot markers and manifests, and the local blobs. The snapshot walk above
+        # is gated and this was not, so a caller who can still list a gated repo's PUBLIC
+        # metadata was handed `partial`, `partial_transport` and the remaining byte count
+        # for a download it cannot see. Same authorization, one variable.
+        partial_scan_variants = variants if cache_reads_authorized else ()
+        incomplete_hashes: set = set()
+        if cache_reads_authorized:
+            try:
+                incomplete_hashes = download_registry.incomplete_blob_hashes(
+                    "model",
+                    repo_id,
+                    active_only = True,
+                    root = hub_cache,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+                incomplete_hashes = set()
         scan_snapshot_dir = snapshot_scope or hf_cache_scan.resolve_snapshot_dir_for_scan(
             "model",
             repo_id,
@@ -1568,7 +1576,7 @@ async def get_gguf_variants_answer(
 
         # Manifest + marker + main incomplete-blob check: catches variants whose download was cancelled or whose
         # expected shards are missing/undersized.
-        for variant in variants:
+        for variant in partial_scan_variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 variant_hashes = requirement.main_hashes if requirement is not None else None
@@ -1601,7 +1609,7 @@ async def get_gguf_variants_answer(
                 )
         # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
-            for variant in variants:
+            for variant in partial_scan_variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
@@ -1623,7 +1631,11 @@ async def get_gguf_variants_answer(
                         ),
                     )
 
-        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+        local_blobs_by_quant = (
+            _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+            if cache_reads_authorized
+            else {}
+        )
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
-from hub.utils.hf_tokens import HfTokenArg, cache_reads_authorized, hf_token_arg
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
