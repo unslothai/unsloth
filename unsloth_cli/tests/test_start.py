@@ -4211,9 +4211,18 @@ def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatc
 
 
 def test_model_download_progress_counts_a_hub_download_the_load_attached_to(monkeypatch):
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
-            return {"downloads": [{"repo_id": "owner/base", "load_attached": True, "state": "running"}]}
+            return {
+                "downloads": [{"repo_id": "owner/base", "load_attached": True, "state": "running"}]
+            }
         if url.endswith("repo_id=owner%2Fbase"):
             return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
         return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
@@ -4231,11 +4240,21 @@ def test_download_progress_display_forgets_the_last_repos_total(monkeypatch, cap
     display = start._DownloadProgressDisplay()
 
     display.update(
-        {"downloaded_bytes": 1024**3, "completed_bytes": 0, "expected_bytes": 60 * 1024**3, "progress": 0.02},
+        {
+            "downloaded_bytes": 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 60 * 1024**3,
+            "progress": 0.02,
+        },
         "owner/base",
     )
     display.update(
-        {"downloaded_bytes": 6 * 1024**3, "completed_bytes": 0, "expected_bytes": 6 * 1024**3, "progress": 0.99},
+        {
+            "downloaded_bytes": 6 * 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 6 * 1024**3,
+            "progress": 0.99,
+        },
         "unsloth/base-bnb-4bit",
     )
     display.complete()

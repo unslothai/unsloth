@@ -185,14 +185,18 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
         "owner/base",
         "hubertsiuzdak/snac_24khz",
     ]
-    spark = SimpleNamespace(identifier = "owner/spark-lora", base_model = "unsloth/Spark-TTS-0.5B/LLM", audio_type = "bicodec")
+    spark = SimpleNamespace(
+        identifier = "owner/spark-lora", base_model = "unsloth/Spark-TTS-0.5B/LLM", audio_type = "bicodec"
+    )
     monkeypatch.setattr(worker, "_load_download_repos", worker._load_download_repos)
     import utils.security.file_security as file_security
 
     monkeypatch.setattr(
         file_security,
         "load_scan_target",
-        lambda name, subdirs: ("unsloth/Spark-TTS-0.5B", ("LLM",)) if name.endswith("/LLM") else (name, subdirs),
+        lambda name, subdirs: ("unsloth/Spark-TTS-0.5B", ("LLM",))
+        if name.endswith("/LLM")
+        else (name, subdirs),
     )
     assert worker._load_download_repos(spark, True, SimpleNamespace(device = "mlx")) == [
         "owner/spark-lora",
