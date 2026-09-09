@@ -3344,7 +3344,13 @@ class MLXInferenceBackend:
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
-            preserves_think_close = bool(tools)
+            # The same activation the decoder below uses: in unrestricted mode ``tools`` is
+            # empty while the protocol is live, so ``bool(tools)`` said the closer would be
+            # stripped, the opener was suppressed, and the stream ran on to an orphan
+            # ``</think>``. Mirrors the text path.
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or vlm_reasoning_markers is not None
+            )
             and decoder_preserves_token(self._tokenizer, "</think>"),
         )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))

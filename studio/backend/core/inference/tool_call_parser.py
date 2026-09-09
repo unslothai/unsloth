@@ -1192,7 +1192,20 @@ def _mask_blocked_bodies(
     if think:
         # Merged, not just sorted: a blocked body may CONTAIN a reasoning block, and sorting
         # alone moves the masking cursor backward and re-appends the rest of it unmasked.
-        spans = _merge_spans(spans + _tool_healing._think_spans_outside_tool_markup(text))
+        think_spans = _tool_healing._think_spans_outside_tool_markup(text)
+        # ``_think_spans_outside_tool_markup`` only knows the XML/JSON wrappers, so a literal
+        # ``<think>`` in the arguments of an INFERENCE-only wrapper (python_tag, TML, DeepSeek,
+        # Kimi) read as reasoning and was masked, handing the tool a run of U+E000 to execute.
+        # Inside one of those, the tags are argument data, exactly as for the wrappers it does
+        # know. Start tested only, matching that helper.
+        inference_spans = _inference_wrapper_spans(text)
+        if inference_spans:
+            think_spans = [
+                (s, e)
+                for (s, e) in think_spans
+                if not any(ws <= s < we for ws, we in inference_spans)
+            ]
+        spans = _merge_spans(spans + think_spans)
     if not spans:
         return text, []
     out: list = []

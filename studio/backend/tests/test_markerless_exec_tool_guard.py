@@ -2244,3 +2244,33 @@ def test_a_dotted_tool_name_wrapper_keeps_its_arguments():
         calls = parse_tool_calls_from_text(text, enabled_tool_names = gate)
         assert [c["function"]["name"] for c in calls] == [name]
         assert json.loads(calls[0]["function"]["arguments"]) == {"q": "call:terminal{command:id}"}
+
+
+def test_a_think_literal_inside_an_inference_wrapper_reaches_the_tool():
+    """``_think_spans_outside_tool_markup`` only knows the XML/JSON wrappers, so a literal
+    ``<think>`` in the arguments of an inference-only wrapper read as reasoning and was
+    masked, handing the tool a run of U+E000 to execute instead of the tags asked for."""
+    text = "<|python_tag|>python.call(code=\"print('<think>x</think>')\")"
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "python.call"})
+    assert calls, "the wrapped call was lost entirely"
+    arguments = calls[0]["function"]["arguments"]
+    assert _BLOCKED_BODY_MASK not in arguments, f"the mask corrupted real arguments: {arguments!r}"
+    assert json.loads(arguments) == {"code": "print('<think>x</think>')"}
+
+
+def test_reasoning_outside_a_wrapper_is_still_hidden_from_the_parse_path():
+    """The exemption above is scoped to wrapper interiors: a call rehearsed inside a genuine
+    reasoning block must still not execute."""
+    assert (
+        parse_tool_calls_from_text(
+            '<think>terminal[ARGS]{"command":"id"}</think>', enabled_tool_names = EXEC_ENABLED
+        )
+        == []
+    )
+    # And a real call after a reasoning block still parses with its arguments.
+    calls = parse_tool_calls_from_text(
+        '<think>reasoning</think><tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>',
+        enabled_tool_names = EXEC_ENABLED,
+    )
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"q": "x"}

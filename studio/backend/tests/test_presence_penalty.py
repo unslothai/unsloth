@@ -340,3 +340,17 @@ def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
     after = src[src.index("vlm_token_decoder = ") :]
     gate = after[: after.index("else None")]
     assert "vlm_reasoning_markers is not None" in gate, "the VLM decoder gate ignores reasoning"
+
+
+def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
+    """The VLM prefill predicate has to name the same activation as the VLM decoder gate, or
+    an unrestricted turn suppresses the opener and the stream ends on an orphan closer."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_vlm)
+    after = src[src.index("preserves_think_close") :]
+    predicate = after[: after.index("decoder_preserves_token")]
+    for condition in ("tools", "tool_protocol_active", "vlm_reasoning_markers is not None"):
+        assert condition in predicate, f"the VLM prefill predicate omits {condition}"
