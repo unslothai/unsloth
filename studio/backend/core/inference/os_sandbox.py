@@ -23,7 +23,6 @@ can still send it. Keeping that gap honest is why the record says
 """
 
 from __future__ import annotations
-import errno
 import functools
 import hashlib
 import os
@@ -305,12 +304,6 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     links: dict[tuple[int, int], list] = {}
 
     def stop(exc: OSError) -> None:
-        if exc.errno in (errno.EACCES, errno.EPERM):
-            # A directory a tool call chmodded to 000: unreadable to the scan and
-            # equally unreadable to whatever the bind carries it into, so not a
-            # channel, and not something to refuse a launch over.
-            logger.info("Skipped an unreadable session workdir entry: %s", exc.filename)
-            return
         raise WorkdirUnsafeError(
             f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
         ) from exc

@@ -33,6 +33,8 @@ import sysconfig
 import tempfile
 from functools import lru_cache
 
+from loggers import get_logger
+
 from . import sandbox_landlock, sandbox_seccomp
 from .os_sandbox import (
     PROFILE_VERSION,
@@ -43,6 +45,8 @@ from .os_sandbox import (
     WorkdirUnsafeError,
     scan_workdir_for_host_channels,
 )
+
+logger = get_logger(__name__)
 
 BACKEND_NAME = "bubblewrap"
 PROFILE_ID = f"linux-bwrap-{PROFILE_VERSION}"
@@ -425,17 +429,19 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
 def _model_cache_path(workdir: str) -> str | None:
     """The host cache to share, which is where the SERVER's own downloads went.
 
-    HF_HOME is read from Studio's environment rather than assumed: an operator
-    who keeps models on another disk sets it, and sharing the default path
-    instead would share an empty directory and re-download the weights into every
-    session, which is the cost this hole exists to avoid. The child never sees the
-    variable -- _build_safe_env drops it as a credential location, and the backend
-    sets its own -- so this is the only place it can be honoured.
+    Asked of the cache-settings layer rather than read off HF_HOME: moving the
+    cache through Studio Settings deliberately leaves HF_HOME at the default and
+    puts the real paths in HF_HUB_CACHE and HF_XET_CACHE, so reading one variable
+    finds an empty default and re-downloads the weights into every session, which
+    is the cost this hole exists to avoid. The child never sees any of those
+    variables -- _build_safe_env drops them as credential locations and the
+    backend sets its own -- so this is the only place they can be honoured.
     """
-    configured = os.environ.get("HF_HOME", "").strip()
-    if configured:
-        path = os.path.abspath(configured)
-    else:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        path = os.path.abspath(str(get_hf_cache_paths().cache_home))
+    except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
+        logger.debug("could not resolve the configured Hugging Face cache", exc_info = True)
         home = os.path.expanduser("~")
         if not os.path.isabs(home):
             return None

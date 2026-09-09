@@ -1104,38 +1104,40 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
     assert (workdir / ".cache" / "huggingface" / "hub").read_text() == "not a directory"
 
 
-def test_an_unreadable_directory_is_skipped_rather_than_refused(tmp_path):
-    """A tool call can `mkdir -m 000`, and refusing on something sandboxed code
-    can create is how one call reaches into the next one's isolation. It is not a
-    channel either: unreadable to the scan is unreadable to anything the bind
-    carries it into."""
+def test_an_unreadable_directory_is_refused(tmp_path):
+    """A mode-000 directory hides whatever is inside it from the check that exists
+    to find a link out, and the process that owns it can chmod it back. Refusing
+    costs a tool call that made one its own next call, which is a self-inflicted
+    and visible failure; accepting it costs the boundary."""
     locked = tmp_path / "locked"
     locked.mkdir()
     (locked / "inside").write_text("x")
     locked.chmod(0o000)
     try:
-        assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+        with pytest.raises(SandboxUnavailableError, match = "cannot be fully inspected"):
+            sandbox_linux._validate_workdir(str(tmp_path))
     finally:
         locked.chmod(0o700)
 
 
-def test_a_configured_hugging_face_cache_root_is_the_one_shared(tmp_path, monkeypatch):
-    """An operator who keeps models on another disk sets HF_HOME. Sharing the
-    default path instead shares an empty directory and re-downloads the weights
-    into every session, which is the cost this hole exists to avoid."""
+def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch):
+    """Moving the cache through Studio Settings deliberately leaves HF_HOME at the
+    default and puts the real paths in the component variables, so reading one
+    variable finds an empty default and re-downloads into every session."""
     elsewhere = tmp_path / "models"
     (elsewhere / "hub").mkdir(parents = True)
-    monkeypatch.setenv("HF_HOME", str(elsewhere))
-    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(elsewhere)
-    # And it is still refused when it would be inside the workdir.
-    assert sandbox_linux._model_cache_path(str(elsewhere)) is None
+    import utils.hf_cache_settings as cache_settings
 
-
-def test_the_default_cache_root_is_used_when_nothing_is_configured(tmp_path, monkeypatch):
-    monkeypatch.delenv("HF_HOME", raising = False)
-    home = tmp_path / "home"
-    (home / ".cache" / "huggingface" / "hub").mkdir(parents = True)
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(home) if p == "~" else p)
-    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(
-        home / ".cache" / "huggingface"
+    monkeypatch.setattr(
+        cache_settings,
+        "get_hf_cache_paths",
+        lambda: cache_settings.HuggingFaceCachePaths(
+            cache_home = elsewhere,
+            hub_cache = elsewhere / "hub",
+            xet_cache = elsewhere / "xet",
+            source = "studio",
+        ),
     )
+    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(elsewhere)
+    # And still refused when the resolved root would be inside the workdir.
+    assert sandbox_linux._model_cache_path(str(elsewhere)) is None
