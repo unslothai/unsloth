@@ -719,7 +719,7 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
 
 
 def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None:
-    """A snapshot taken from the shared cache was never authorized by the caller's token, so its grants have to."""
+    """A shared-cache snapshot was never authorized by the caller's token, so grants must be."""
     if managed_account():
         from hub.services.models import account_access
         reference = canonical_model_repo_id(model_name) if repo_type == "model" else model_name
@@ -2708,7 +2708,8 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
 
 
 def _resolve_diffusion_data_dir(raw: str) -> Path:
-    """Prefer ``datasets_root()``: uploads and recipe roots would shadow a same-named image dataset, and the account check must run on the RESOLVED directory since ``raw`` resolves against the process cwd."""
+    """Prefer ``datasets_root()``: uploads and recipe roots would shadow a same-named image
+    dataset. The account check must run on the RESOLVED dir, since ``raw`` resolves against cwd."""
     from utils.paths import datasets_root
 
     value = str(raw or "").strip()

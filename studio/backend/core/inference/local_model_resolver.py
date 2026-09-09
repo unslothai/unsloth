@@ -44,9 +44,8 @@ _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 _EMPTY_SCAN: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
-# One snapshot per managed account, like the /v1/models catalog: the scanned roots are account
-# private, so a shared snapshot would answer the next account with the previous one's paths.
-# The owner keeps ``_scan`` so a single-user install has exactly one index.
+# One snapshot per managed account: scanned roots are account private, so a shared snapshot would
+# answer the next account with the previous one's paths. The owner keeps ``_scan``.
 _managed_scans: dict[str, tuple[float, dict[str, _LocalGgufEntry]]] = {}
 
 

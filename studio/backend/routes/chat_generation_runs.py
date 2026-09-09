@@ -226,7 +226,8 @@ def _require_run(run_id: str) -> dict[str, Any]:
 
 
 def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
-    """Signal only the caller's registration; a bare cancel ID is never stashed, since another account can legitimately reuse it."""
+    """Signal only the caller's registration: another account may legitimately reuse a bare
+    cancel ID, so it is never stashed."""
     if policy.installation_has_managed_accounts():
         active_generations.cancel_run(run_id, account_id = current_account_id())
         if supervisor_name == "chat_generation_supervisor":
@@ -241,9 +242,8 @@ def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -
 
 
 def _require_available_supervisor_run_id(run_id: str) -> None:
-    """A legacy supervisor keys tasks by bare ID; refuse a foreign active slot.
-    Keyed on managed accounts: a deactivated account's producer keeps its entry and
-    start() no-ops on a held id, so an admitted owner run would never be scheduled."""
+    """A legacy supervisor keys tasks by bare ID, and start() no-ops on a held id, so a foreign
+    active slot must be refused or an admitted owner run would never be scheduled."""
     if policy.installation_has_managed_accounts():
         for entry in active_generations.snapshot():
             if entry["run_id"] == run_id:

@@ -1717,8 +1717,8 @@ class SdCppDiffusionBackend:
                 return
             logger.error("sd_cpp.load_failed: %s", exc)
             if self._state is not None:
-                # The previous pipeline stays resident: hand GPU residency back to the account this
-                # load displaced (no-op on the CPU path) and drop the records it published.
+                # A resident pipeline is being displaced: give its account back GPU residency
+                # (no-op on CPU) and drop its published records.
                 from .gpu_arbiter import DIFFUSION, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 

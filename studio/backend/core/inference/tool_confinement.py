@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Confine a managed account's tool subprocesses: Landlock on Linux, ``sandbox-exec`` on macOS, refused elsewhere unless ``UNSLOTH_STUDIO_ALLOW_UNCONFINED_TOOLS=1``."""
+"""Confine managed-account tool subprocesses: Landlock (Linux), sandbox-exec (macOS), else
+refuse unless the override env allows it."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from utils.account_context import is_owner_context
 
 _OVERRIDE_ENV = "UNSLOTH_STUDIO_ALLOW_UNCONFINED_TOOLS"
 
-# Landlock syscall numbers are the same on every architecture.
+# Landlock syscall numbers are architecture independent.
 _SYS_LANDLOCK_CREATE_RULESET = 444
 _SYS_LANDLOCK_ADD_RULE = 445
 _SYS_LANDLOCK_RESTRICT_SELF = 446
@@ -34,7 +35,7 @@ _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
-_SCOPE_SIGNAL = 1 << 1  # ABI 6: signals reach only processes inside the same domain
+_SCOPE_SIGNAL = 1 << 1  # ABI 6: signals confined to the same domain
 _FS_ABI1_MASK = (1 << 13) - 1
 
 _SYSTEM_READ_ROOTS = (
@@ -55,8 +56,7 @@ _SYSTEM_READ_ROOTS = (
 )
 _DEVICE_ROOT = "/dev"
 
-# XDG_RUNTIME_DIR is 0700 for the Studio process's own user, so DAC does not stop a managed
-# tool; the rest of /run stays readable (resolv.conf usually points into /run/systemd).
+# /run/user is Studio's own 0700 dir, so DAC alone does not stop a tool; rest of /run readable.
 _PRIVATE_RUNTIME_ROOTS = ("/run/user",)
 
 
@@ -66,7 +66,7 @@ class ToolConfinementUnavailable(RuntimeError):
 
 @dataclass(frozen = True)
 class Confinement:
-    """``preexec`` runs in the forked child (Linux), ``wrap`` rewrites the argv (macOS)."""
+    """``preexec`` runs in the forked child (Linux); ``wrap`` rewrites argv (macOS)."""
 
     mechanism: str
     preexec: Optional[Callable[[], None]] = None
@@ -117,8 +117,7 @@ def _interpreter_roots() -> list[str]:
 
 
 def _ensure_dirs(paths) -> list[str]:
-    """A Landlock rule can only name a path that already exists. ``ensure_dir`` refuses a
-    launch that races the account's deletion instead of rematerializing the roots."""
+    """Landlock rules need existing paths; ``ensure_dir`` refuses a launch racing account delete."""
     from utils.paths.storage_roots import ensure_dir
 
     roots = []
@@ -132,7 +131,7 @@ def _ensure_dirs(paths) -> list[str]:
 
 
 def _readable_account_roots() -> list[str]:
-    """The account's workspace, readable but never writable: a tool could otherwise rewrite the grants that authorize it."""
+    """Account workspace: readable, never writable, else a tool could rewrite its own grants."""
     from utils.paths.storage_roots import workspace_root
     return _ensure_dirs((workspace_root(),))
 
@@ -144,7 +143,7 @@ def _writable_roots() -> list[str]:
 
 
 def _hf_cache_roots() -> tuple[str, ...]:
-    """The install-wide HF cache: an ancestor read grant would expose other accounts' private repos and the owner token."""
+    """Install-wide HF cache: an ancestor read grant would leak other accounts' repos and tokens."""
     try:
         from utils.hf_cache_settings import known_hf_cache_homes, known_hf_hub_caches
         return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
@@ -185,10 +184,10 @@ def _with_shared_bases(roots: list[str], bases) -> list[str]:
 def _grant_excluding(
     path: str, access: int, protected: list[str], rules: list[tuple[str, int]]
 ) -> None:
-    """Landlock has no deny rule, so an ancestor is granted child by child."""
+    """Landlock has no deny rule, so grant an ancestor child by child."""
     inside = [p for p in protected if _contains(path, p)]
     if not inside:
-        # A rule on a plain file may not carry directory rights.
+        # A plain-file rule may not carry directory rights.
         rules.append((path, access if os.path.isdir(path) else access & ~_FS_READ_DIR))
         return
     if any(p == path for p in inside):
@@ -200,10 +199,10 @@ def _grant_excluding(
     for name in children:
         child = os.path.join(path, name)
         if not os.path.exists(child):
-            # A dangling link under a volatile root cannot carry a rule.
+            # A dangling link cannot carry a rule.
             continue
         if os.path.islink(child):
-            # A link opens as its target: one under or above a protected root grants the tree.
+            # A link opens as its target, so one near a protected root would grant that tree.
             target = os.path.realpath(child)
             if any(_contains(p, target) or _contains(target, p) for p in protected):
                 continue
@@ -211,7 +210,7 @@ def _grant_excluding(
 
 
 class _RulesetAttr(ctypes.Structure):
-    # The kernel accepts this ABI 1 size from every later ABI, zeroing the rest.
+    # Later ABIs accept this ABI 1 size, zeroing the rest.
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 
 
@@ -241,7 +240,7 @@ _landlock_abi: Optional[int] = None
 
 
 def landlock_abi() -> int:
-    """Highest Landlock ABI the running kernel offers, 0 when unavailable."""
+    """Highest Landlock ABI of the running kernel, 0 when unavailable."""
     global _landlock_abi
     if _landlock_abi is not None:
         return _landlock_abi
@@ -287,7 +286,7 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
         rules.append((path, read))
     for path in _existing((_DEVICE_ROOT,)):
         rules.append((path, device))
-    # No symlink creation: the server follows links, so a tool must not plant one pointing outside the account's tree.
+    # No symlink creation: the server follows links, so a tool must not plant an escaping one.
     writable = handled & ~_FS_MAKE_SYM
     for path in writable_roots:
         rules.append((path, writable))
@@ -331,7 +330,7 @@ def _landlock_preexec(
         os.close(ruleset_fd)
 
 
-# Truncation is only handled from ABI 3 (Linux 6.2); below that a confined child could still empty a foreign file.
+# Only ABI 3+ (Linux 6.2) handles truncation; below that a child could empty a foreign file.
 _MIN_LANDLOCK_ABI = 3
 
 
@@ -369,7 +368,7 @@ def macos_profile(
     writable_roots: list[str],
     account_read_roots: list[str] = (),
 ) -> str:
-    """A sandbox-exec profile; later rules win, so the account's own roots are allowed after the install root is denied."""
+    """sandbox-exec profile; later rules win, so account roots outrank the install deny."""
     lines = [
         "(version 1)",
         "(deny default)",
@@ -382,9 +381,9 @@ def macos_profile(
         "(allow network*)",
         "(allow file-read-metadata)",
         '(allow file-read* file-write* (subpath "/dev"))',
-        # No shared /private/tmp: the account's own tmp root is granted with the writable roots.
+        # No shared /private/tmp: the account tmp root is granted with the writable roots.
         '(allow file-read* (subpath "/private/var/db"))',
-        # The per-user darwin tree holds every account's tmp root: deny it, keep the cache dir dyld needs.
+        # The per-user darwin tree holds every account tmp root: deny it, keep dyld's cache dir.
         '(deny file-read* file-write* (subpath "/private/var/folders") (subpath "/var/folders"))',
         *(f"(allow file-read* (subpath {_sbpl(path)}))" for path in _darwin_user_cache_dirs()),
     ]
@@ -403,8 +402,7 @@ def macos_profile(
         lines.append(f"(allow file-read* (subpath {_sbpl(path)}))")
     for path in writable_roots:
         lines.append(f"(allow file-read* file-write* (subpath {_sbpl(path)}))")
-    # file-write* covers symlink creation; deny it last (later rules win), matching Landlock's
-    # withheld MAKE_SYM: the server follows links, so a tool must not plant one.
+    # file-write* covers symlinks; deny last (later rules win), matching Landlock's held MAKE_SYM.
     lines.append("(deny file-write-create (vnode-type SYMLINK))")
     return "\n".join(lines) + "\n"
 
@@ -450,7 +448,7 @@ def _macos_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
 
 
 def account_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
-    """Confinement for the acting account's next tool child; ``None`` for the owner, raises ``ToolConfinementUnavailable`` on an unsupported host."""
+    """Confinement for the account's next tool child; ``None`` for owner, raises on bad host."""
     if is_owner_context():
         return None
     confinement = None

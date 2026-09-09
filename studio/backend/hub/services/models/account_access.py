@@ -51,8 +51,7 @@ _link_accounts_lock = threading.Lock()
 
 
 def _signed_link_account(account_id: str) -> AccountContext | None:
-    """The account a signed link names, or None once deactivated. Keyed on the policy
-    generation so a deactivation revokes links immediately, not at the TTL."""
+    """Keyed on policy generation so deactivation revokes links at once, not at TTL."""
     generation = policy.account_generation()
     with _link_accounts_lock:
         cached = _link_accounts.get(account_id)
@@ -87,8 +86,8 @@ def managed_account() -> bool:
 
 
 def account_scope() -> str | None:
-    """None keeps legacy installation-wide queries on installs that never had a managed
-    account; a deactivated account's downloads keep running, so any record scopes the owner."""
+    """None keeps legacy installation-wide scope; any managed-account record scopes owner work,
+    since a deactivated account's downloads keep running."""
     if not is_owner_context():
         return current_account_id()
     return current_account_id() if policy.installation_has_managed_accounts() else None
@@ -102,8 +101,8 @@ _generation_lock = threading.Lock()
 
 @contextmanager
 def media_generation(modality: str):
-    """Recorded on one-account installs too: a first managed account created mid-generation
-    must still see this work as foreign. Same-account entries never read as foreign."""
+    """Recorded even on one-account installs: an account created mid-generation must still see
+    this work as foreign. Same-account entries never read as foreign."""
     account_id = current_account_id()
     with _generation_lock:
         counts = _generation_accounts.setdefault(modality, {})
@@ -127,8 +126,7 @@ _generation_holders: dict[str, list[str]] = {}
 
 @contextmanager
 def media_generation_slot(modality: str):
-    """Entered once the backend slot is held, so a queued request is not the running one.
-    Recorded on one-account installs too, for the reason ``media_generation`` gives."""
+    """Entered only with the slot held, so a queued request is not the running one."""
     account_id = current_account_id()
     with _generation_lock:
         _generation_holders.setdefault(modality, []).append(account_id)
@@ -159,7 +157,7 @@ def generation_is_mine(modality: str) -> bool:
 
 
 def generation_is_foreign(modality: str) -> bool:
-    # account_scope, not the login mode: a deactivated account's job keeps running and stays foreign.
+    # account_scope, not login mode: a deactivated account's job keeps running and stays foreign.
     if account_scope() is None:
         return False
     account_id = current_account_id()
@@ -184,7 +182,7 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(count for account, count in counts.items() if account != account_id)
         for holders in _generation_holders.values():
             total += sum(1 for holder in holders if holder != account_id)
-    # sys.modules, not an import: no video job can be in flight before its module is loaded.
+    # sys.modules, not an import: no video job is in flight before its module loads.
     video = sys.modules.get("core.inference.video")
     reserved = video.generation_account_in_flight() if video is not None else None
     if reserved is not None and reserved != account_id:
@@ -192,15 +190,15 @@ def foreign_media_generations(account_id: str) -> int:
     return total
 
 
-# A failed load leaves the previous model resident, and its account keeps control of it.
+# A failed load leaves the previous model resident, still owned by its account.
 _prior_resident_accounts: dict[str, tuple[str, frozenset[str]]] = {}
-# What each publish displaced, so a load that never commits can put it back.
+# What each publish displaced, so a load that never commits can restore it.
 _uncommitted_resident: dict[str, tuple] = {}
 _uncommitted_components: dict[str, tuple] = {}
 
 
 def note_resident_account(modality: str, *references: str) -> None:
-    """CPU residents have no GPU lease, so retain their load provenance at the route boundary."""
+    """CPU residents have no GPU lease, so record load provenance at the route boundary."""
     if policy.installation_has_managed_accounts():
         previous = _resident_accounts.get(modality)
         _uncommitted_resident[modality] = (
@@ -231,9 +229,7 @@ def note_resident_components(modality: str, primary: str, *references: str) -> N
 
 
 def restore_resident_metadata(modality: str) -> bool:
-    """Undo the records a failed load published; the previous pipeline is still resident.
-    The record-keeping half of ``restore_owner_account``, and like it a no-op once another
-    load took residency."""
+    """Undo a failed load's records; no-op once another load took residency."""
     if not policy.installation_has_managed_accounts():
         return False
     account_id = current_account_id()
@@ -295,8 +291,8 @@ def gpu_busy_error(path: str | None = None) -> HTTPException:
 
 
 def require_idle_other_accounts(path: str | None = None) -> None:
-    # Managed accounts, not login mode: deactivating the last one drops the active count
-    # while its generation still holds the GPU.
+    # Managed accounts, not login mode: deactivating the last drops the active count while
+    # its generation still holds the GPU.
     if policy.installation_has_managed_accounts():
         from core.inference.gpu_arbiter import require_no_foreign_generations
         require_no_foreign_generations(current_account_id(), path = path)
@@ -329,7 +325,7 @@ def ambient_hf_token():
 
 
 def account_hf_token(token):
-    """False is Hugging Face's anonymous sentinel; None would lend the installation token instead."""
+    """False is the Hub's anonymous sentinel; None would lend the installation token."""
     if managed_account() and (not token or (isinstance(token, str) and not token.strip())):
         return False
     return token
@@ -411,8 +407,8 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
 
 
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
-    """Only an anonymous Hub answer proves a shared-cache repo public; the proof is kept on
-    disk and withdrawn by a definitive private/gated/missing answer."""
+    """Only an anonymous Hub answer proves a shared-cache repo public; a definitive
+    private/gated/missing answer withdraws the on-disk proof."""
     key = (repo_type, repo_id.lower())
     name = f"{repo_type}:{repo_id.lower()}"
     with _public_lock:
@@ -450,7 +446,7 @@ def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
 
 
 def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]:
-    """Distinct repo ids ``model_visible`` would have to ask the Hub about, staged cheapest first."""
+    """Distinct repo ids ``model_visible`` would ask the Hub about, cheapest checks first."""
     candidates = {}
     for reference in references:
         if not isinstance(reference, str) or not reference:
@@ -488,7 +484,7 @@ def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]
 
 
 def _warm_public_repos(repo_ids: set[str], repo_type: str) -> None:
-    """Probe unknown repos concurrently; threads are joined here so none outlives the request."""
+    """Probe unknown repos concurrently; helpers are joined so none outlives the request."""
     if len(repo_ids) < 2:
         return
     pending = deque(repo_ids)
@@ -522,7 +518,7 @@ def _grant_key(repo_id: str, repo_type: str) -> str:
 
 
 def model_grants() -> set[str]:
-    """Read only this account's grants; absent or malformed records confer no access."""
+    """This account's grants only; absent or malformed records confer no access."""
     path = studio_db_path()
     if not path.is_file():
         return set()
@@ -540,8 +536,8 @@ def model_grants() -> set[str]:
 
 
 def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
-    """Record an authorized download in the initiating account's studio.db, transactionally
-    so simultaneous completions both survive."""
+    """Record a grant in the initiating account's studio.db, transactionally so concurrent
+    completions both survive."""
     if not managed_account() or not repo_id:
         return
     from core.training.account_jobs import account_is_retired
@@ -612,8 +608,8 @@ def model_visible(
     grants: set[str] | None = None,
     repo_type: str = "model",
 ) -> bool:
-    """Apply grants equally to repo ids and cache snapshot/file spellings; arbitrary local
-    paths stay private to the workspace."""
+    """Grants cover repo ids and cache snapshot/file spellings alike; other local paths stay
+    private to the workspace."""
     if not managed_account():
         return True
     if not isinstance(reference, str) or not reference:
@@ -632,7 +628,7 @@ def model_visible(
                 return False
             cached = _cached_repo(path)
             if cached is not None:
-                # HF snapshots point to the same repository's blobs; cross-repo links are refused.
+                # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
                 return actual == cached and repo_visible(cached[0], cached[1], grants = grants)
         except (OSError, RuntimeError, ValueError):
@@ -657,7 +653,7 @@ def _row_reference(row):
 
 
 def filter_model_rows(rows, *, repo_type: str = "model"):
-    """Filter after shared scans/caches, never store a caller's filtered catalog globally."""
+    """Filter after shared scans/caches; never store a caller's filtered catalog globally."""
     if not managed_account():
         return rows
     grants = model_grants()
@@ -672,14 +668,14 @@ def filter_model_rows(rows, *, repo_type: str = "model"):
 
 
 def private_directory(path: str, folder: str) -> str:
-    """Rebase import-time owner defaults and refuse arbitrary account-external scans."""
+    """Rebase import-time owner defaults; refuse account-external scans."""
     if not managed_account():
         return path
     from utils.paths.storage_roots import studio_root
 
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
-    # The project workspace is the account's own too, as within_account() agrees.
+    # The project workspace counts as the account's own, matching within_account().
     own_roots = (workspace_root(), project_workspaces_root())
     resolved = target.resolve()
     if not any(resolved.is_relative_to(root.resolve()) for root in own_roots):
@@ -688,7 +684,7 @@ def private_directory(path: str, folder: str) -> str:
 
 
 def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
-    """A cache hit is not proof the requester may download private Hub content."""
+    """A cache hit is not proof the requester may read private Hub content."""
     if not managed_account():
         return
     try:
@@ -698,7 +694,7 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
         if getattr(info, "gated", False):
             # Gated repo metadata is public even when the caller cannot read its files.
             api.auth_check(repo_id, repo_type = repo_type, token = token)
-    except Exception as exc:  # noqa: BLE001 - never convert another account's cached files into a grant
+    except Exception as exc:  # noqa: BLE001 - a cached file is never a grant
         raise HTTPException(status_code = 404, detail = "Repository not found") from exc
 
 
@@ -723,14 +719,14 @@ def resident_components(status: dict, modality: str | None = None) -> list[str]:
     repo_id = status.get("repo_id")
     references = [repo_id, status.get("base_repo")]
     primary, components = _resident_components.get(modality, ("", frozenset()))
-    # Baked adapters are not in status(), so the load's authorized list stands in.
+    # Baked adapters are absent from status(), so the load's authorized list stands in.
     if primary and repo_id and primary == repo_id:
         references.extend(sorted(components))
     return [ref for ref in references if isinstance(ref, str) and ref]
 
 
 def require_media_generation_access(status: dict, modality: str | None = None) -> None:
-    """Recheck the actual resident before a cache-only generation can reuse it."""
+    """Recheck the actual resident before a cache-only generation reuses it."""
     if managed_account() and status.get("loaded"):
         for reference in resident_components(status, modality):
             require_model_access(reference)
@@ -766,7 +762,7 @@ def require_media_adapters(request) -> None:
 
 
 def media_adapter_references(request) -> list[str]:
-    """Resolve catalog aliases to the repo or path each adapter actually loads."""
+    """Resolve catalog aliases to the repo or path each adapter loads."""
     references: list[str] = []
     loras = getattr(request, "loras", None)
     controlnet = getattr(request, "controlnet", None)

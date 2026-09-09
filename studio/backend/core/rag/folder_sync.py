@@ -41,7 +41,7 @@ _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
 _worker_lock = threading.Lock()
 _worker_state = threading.local()
-# Scheduling cursor of the single linked-folder worker; see _next_account_job.
+# Scheduling cursor of the single worker; see _next_account_job.
 _last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
@@ -1768,7 +1768,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         run_as(account, _initialize_account_sync, project_exists, recover = True)
                         initialized += 1
                     except Exception:
-                        # One unreadable account database must not keep the worker out of the loop.
+                        # One bad account database must not keep the worker out of the loop.
                         logger.warning(
                             "linked-folder worker initialization failed for one account",
                             exc_info = True,
@@ -1942,8 +1942,8 @@ def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
 
 
 def _next_account_job():
-    # Round robin from the account after the last claim: folders are reconciled one at a
-    # time, so restarting at the first account starves everyone behind a backlog.
+    # Round robin from the account after the last claim: one folder is reconciled at a time,
+    # so always restarting at the first account starves everyone behind a backlog.
     global _last_job_account
     accounts = job_accounts()
     start = 0
@@ -1956,7 +1956,7 @@ def _next_account_job():
         try:
             job = run_as(account, _next_job)
         except Exception:
-            # The order is stable, so one corrupt database would shadow every account behind it.
+            # The order is stable, so one corrupt database would shadow the accounts behind it.
             logger.warning("linked-folder queue selection failed for one account", exc_info = True)
             continue
         if job:

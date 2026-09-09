@@ -230,8 +230,8 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
-# Downgrade fence: managed credentials live in the ``account_*`` columns with prefixed hashes, so
-# a build without account support 401s a managed login.
+# Downgrade fence: managed creds live in ``account_*`` with prefixed hashes, so a build
+# without account support 401s a managed login.
 _FENCE_PREFIX = "account:"
 _FENCED_HASH_SQL = "IN (?, ?)"
 _LEGACY_PASSWORD_HASH_SENTINEL = "managed-account"
@@ -440,8 +440,8 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     if all(name in existing for name, _decl in _ACCOUNT_COLUMNS):
         _repair_owner_account_id(conn)
         return
-    # Two connections can both see the columns missing: re-read under the write lock. An ALTER that
-    # still loses is the other side's, not an error.
+    # Both connections can see the columns missing: re-read under the write lock, and a losing
+    # ALTER is the other side's, not an error.
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
@@ -473,8 +473,8 @@ _account_keys_synced: set[str] = set()
 
 
 def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
-    """Idempotently pin managed API keys to the immutable ``account_id``, so a recreated namesake
-    inherits no keys, and mirror them into ``account_api_keys``."""
+    """Pin managed API keys to the immutable ``account_id`` (a recreated namesake inherits none)
+    and mirror them into ``account_api_keys``. Idempotent."""
     db_key = str(DB_PATH)
     if db_key in _account_keys_synced and "account_id" in existing:
         return
@@ -546,7 +546,7 @@ def _backfill_account_columns(conn: sqlite3.Connection, fence_added: bool) -> No
 
 
 def _fence_managed_credentials(conn: sqlite3.Connection) -> None:
-    # Positional reads: the caller's connection may not have a row factory.
+    # Positional reads: the caller's connection may lack a row factory.
     rows = conn.execute(
         "SELECT id, password_salt, password_hash, jwt_secret FROM auth_user "
         "WHERE role = 'user' AND account_jwt_secret IS NULL"
@@ -618,8 +618,8 @@ def count_active_accounts() -> int:
 
 
 def account_counts() -> tuple[int, int]:
-    """``(active, managed-of-any-state)``; the second counts deactivated accounts, whose files are
-    still on disk."""
+    """``(active, managed-of-any-state)``; the second counts deactivated accounts, whose files
+    remain on disk."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -675,8 +675,8 @@ def _managed_account(conn: sqlite3.Connection, account_id: str):
 
 
 def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
-    # These frozen legacy tables key on username; resolve it from the immutable account id under
-    # the same write lock as the mutation.
+    # These frozen legacy tables key on username; resolve it from the account id under the same
+    # write lock as the mutation.
     conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM account_api_keys WHERE account_id = ?", (row["account_id"],))
@@ -746,9 +746,8 @@ def issue_account_setup_code(
 def authenticate_account_login(
     username: str, password: str
 ) -> Optional[Tuple[str, str, str, bool]]:
-    """Managed login: consume a setup code once, so a consumed code cannot log in again.
-    must_change_password with no pending code admits only the already-issued session's
-    change-password request."""
+    """Managed login. A setup code is consumed once, so it cannot log in again; and
+    must_change_password with no pending code admits only the issued session's password change."""
     from auth.hashing import verify_password
 
     conn = get_connection()
@@ -841,8 +840,8 @@ def set_account_active(account_id: str, is_active: bool) -> dict:
 
 
 def delete_account(account_id: str, retire) -> None:
-    """Revoke, retire files, then remove the identity under a write lock. ``retire()`` must not
-    write auth.db under that lock; a failed retire leaves the account disabled for a retry."""
+    """Revoke, retire files, then drop the identity under a write lock. ``retire()`` must not write
+    auth.db under that lock; a failed retire leaves the account disabled for a retry."""
     from auth.policy import account_mutation
     from utils.account_context import AccountContext
 
@@ -860,11 +859,10 @@ def delete_account(account_id: str, retire) -> None:
                 )
                 conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
         except Exception:
-            # The identity survives the rollback, so the roots must come back with it.
+            # The identity survives the rollback, so the roots must come back too.
             if restore_roots is not None:
                 restore_roots()
-            # An owner request can reactivate between the revocation and this write lock; login must
-            # stay disabled anyway.
+            # An owner may reactivate between revocation and this lock; stay disabled anyway.
             with contextlib.suppress(sqlite3.Error):
                 set_account_active(account_id, False)
             raise
@@ -1481,7 +1479,7 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
 
 
 def revoke_user_refresh_tokens(username: str, *, account_id: Optional[str] = None) -> None:
-    """Revoke all refresh tokens for a user. ``account_id`` pins the username-keyed table to the
+    """Revoke a user's refresh tokens. ``account_id`` pins the username-keyed table to the
     immutable identity, so a recreated namesake keeps its sessions."""
     conn = get_connection()
     try:
@@ -1815,8 +1813,7 @@ def validate_api_key_with_credential(
 
 def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tuple[dict, str]]:
     """Validate *raw_key* -> ``(account record, jwt_secret)``, or ``None``. The record comes from
-    the statement that matched the key, so a recreated namesake cannot bind; ``touch=False`` drops
-    that write."""
+    the matching statement, so a namesake cannot bind; ``touch=False`` skips the last-used write."""
     cache_id = _api_key_cache_id(raw_key)
     cached_hash = _api_key_hash_cache.get(cache_id)
     key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)

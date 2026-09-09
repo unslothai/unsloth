@@ -1458,7 +1458,7 @@ def record_import_ledger(
 
 
 def _snapshot_chat_images() -> Optional[set[str]]:
-    """Registry and thumbnail cache are account-scoped, so this snapshot bounds the reap to the acting account."""
+    """Registry and thumbnail cache are account-scoped, so this bounds the reap to the caller."""
     from core.inference.search_images import snapshot_and_fence_registrations
     return snapshot_and_fence_registrations()
 

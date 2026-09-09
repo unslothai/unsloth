@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installation-wide account policy, cached against an account generation bumped on create/delete so a one-user install queries nothing."""
+"""Installation-wide account policy, cached against a generation bumped on account writes."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ LOGIN_MODE_MULTI = "multi"
 _lock = threading.Lock()
 _generation = 0
 _cached: Optional[tuple[int, int, int]] = None
-# Depth of in-flight account mutations; the cache is bypassed entirely while any is open.
+# Depth of in-flight account mutations; the cache is bypassed while any is open.
 _mutating = 0
 
 
@@ -31,17 +31,16 @@ def invalidate_account_cache() -> None:
 
 @contextlib.contextmanager
 def account_mutation():
-    """Wrap an account write, invalidation included. Invalidating only after the commit leaves a
-    window where the row is durable but the cache still answers the pre-write verdict; bypassing
-    the cache for the whole write makes every reader recompute. Counted, so nested mutations work
-    and a slow write never blocks a policy read."""
+    """Wrap an account write, invalidation included. Post-commit invalidation alone leaves a window
+    where the row is durable but the cache still answers the pre-write verdict, so the cache is
+    bypassed for the whole write. Counted, so nesting works."""
     global _mutating, _generation, _cached
     with _lock:
         _mutating += 1
     try:
         yield
     finally:
-        # One critical section: dropping the suppression before invalidating would reopen the window.
+        # One critical section: unsuppressing before invalidating would reopen the window.
         with _lock:
             _mutating -= 1
             _generation += 1
@@ -63,7 +62,7 @@ def _account_counts() -> tuple[int, int]:
     try:
         active, managed = storage.account_counts()
     except Exception:  # noqa: BLE001 - an unreadable auth.db is a one-user install
-        # Never cached: a transient read error would hold full access off until restart.
+        # Never cached: a transient error would hold full access off until restart.
         from utils.account_context import is_owner_context
 
         # A bound managed account proves a multi-user install, so isolation stays on.
@@ -92,12 +91,12 @@ def login_mode() -> str:
 
 
 def installation_has_managed_accounts() -> bool:
-    """Whether any managed account exists; gates on this rather than the login mode, since a deactivated account's files stay on disk."""
+    """Any managed account exists. Gated on this, not login mode: deactivated files stay on disk."""
     return installation_is_multi_user() or managed_account_count() > 0
 
 
 def full_access_permitted() -> bool:
-    """Whether the unsandboxed tool modes may run; refused install-wide, owner included, once any managed account exists."""
+    """Unsandboxed tool modes: refused install-wide, owner included, if a managed account exists."""
     return not installation_has_managed_accounts()
 
 
@@ -112,12 +111,12 @@ async def require_owner() -> None:
 
 
 def require_account_scope(resource_account_id: Optional[str]) -> None:
-    """Refuse a resource owned by another account; ``None`` predates accounts and is the owner's."""
+    """Refuse a resource owned by another account; ``None`` predates accounts and is owner-owned."""
     from utils.account_context import OWNER_ACCOUNT_ID, current_account_id
 
     owner_of = resource_account_id or OWNER_ACCOUNT_ID
     if owner_of != current_account_id():
-        # 404 rather than 403: the resource's existence is itself information.
+        # 404 rather than 403: existence is itself information.
         raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "Not found")
 
 

@@ -54,8 +54,7 @@ def account_path(
     reference: bool = False,
     shared_cache: bool = False,
 ):
-    """Validate a supplied local path, resolving symlinks. Remote Hub ids are accepted only for
-    ``reference`` fields."""
+    """Validate a local path (symlinks resolved). Remote Hub ids only for ``reference`` fields."""
     if not value or not managed_account():
         return value
     raw = str(value)
@@ -225,8 +224,8 @@ def refresh_job_owner(service) -> None:
 
 
 def owned_job(*, continuation: bool = False):
-    """Reserve ownership across validation/spawn and hold it while work is live. Skipped only on
-    installs that never had a managed account."""
+    """Hold ownership across validation/spawn and while work is live. Skipped when no managed
+    account ever existed."""
 
     def decorate(fn):
         @wraps(fn)
@@ -383,8 +382,7 @@ class AccountRetirementError(RuntimeError):
 
 
 def retire_account_jobs(account: AccountContext) -> None:
-    """Revoke new starts and cancel only this account's work. Call before renaming its
-    directories."""
+    """Revoke new starts and cancel only this account's work. Call before renaming its dirs."""
     with _services_lock:
         _retired.add(account.account_id)
         services = list(_services)
@@ -475,8 +473,7 @@ def _inactive_job_accounts() -> list[AccountContext]:
 
 
 def startup_reconciliation_accounts() -> list[AccountContext]:
-    """Accounts a boot-time reconciliation visits. One with no database yet is skipped, since
-    opening one would create it."""
+    """Accounts boot-time reconciliation visits; one with no db is skipped (opening creates it)."""
     from utils.paths.storage_roots import studio_db_path
 
     accounts: list[AccountContext] = []
@@ -497,8 +494,7 @@ def startup_reconciliation_accounts() -> list[AccountContext]:
 
 
 def sweepable_job_accounts() -> list[AccountContext]:
-    """The boot-reconcile set: a deactivated account still holds a registration and a GPU
-    reservation."""
+    """Boot-reconcile set: a deactivated account still holds a registration and GPU reservation."""
     return startup_reconciliation_accounts()
 
 
@@ -515,8 +511,7 @@ def validate_recipe_access(recipe) -> None:
         for key, value in recipe.items():
             if key in {"api_key_env", "token_env", "hf_token_env"} and value:
                 raise HTTPException(status_code = 403, detail = "Supply your own provider credential")
-            # The recipe engine resolves these through the environment before treating them
-            # as literals, so a bare variable name would send the host credential.
+            # Env-resolved before literals: a bare variable name would send the host credential.
             if key in {"api_key", "token", "hf_token"} and isinstance(value, str):
                 if value in os.environ:
                     raise HTTPException(

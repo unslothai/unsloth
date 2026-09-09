@@ -192,8 +192,8 @@ async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
 
 
 def _run_id_held_by_another_account(account: Any, run_id: str) -> bool:
-    """Run ids are client chosen and rows are per account, while the supervisor keys by bare
-    id. A live registration under another account is theirs; no registration still cancels."""
+    """Client-chosen ids are per account but the supervisor keys by bare id, so a live
+    registration under another account is theirs. No registration still cancels."""
     account_id = getattr(account, "account_id", None)
     return any(
         entry.get("run_id") == run_id and entry.get("account_id") != account_id

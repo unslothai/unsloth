@@ -7184,7 +7184,7 @@ def _sandbox_preexec():
 
 
 def _account_confinement():
-    """The OS-level confinement for the acting account's next child; None for the owner, and a host with no mechanism raises ToolConfinementUnavailable."""
+    """Confinement for the acting account's next child: None for owner, raises if unavailable."""
     return account_confinement(_SANDBOX_SITE_DIR)
 
 
@@ -7351,8 +7351,8 @@ def _get_shell_cmd(command: str) -> list[str]:
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
-    """A confined account's command text never rides on argv: another account's
-    tool can read /proc/<pid>/cmdline and Landlock cannot deny per-pid reads."""
+    """Keep a confined account's command text off argv: other accounts' tools can read
+    /proc/<pid>/cmdline and Landlock cannot deny per-pid reads."""
     argv = _get_shell_cmd(command)
     if confinement is None or sys.platform == "win32" or argv[1] != "-c":
         return argv, None

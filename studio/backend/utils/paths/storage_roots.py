@@ -66,9 +66,8 @@ def studio_root() -> Path:
 
 
 def workspace_root() -> Path:
-    """Private persistent root of the acting account. The owner keeps the historical install-root
-    layout, others live under ``accounts/<account_id>/``, keyed by immutable id so a renamed or
-    reused name inherits nothing."""
+    """Private persistent root of the acting account: owner keeps the historical install-root
+    layout, others get ``accounts/<account_id>/``, keyed by id so a reused name inherits nothing."""
     root = studio_root()
     if is_owner_context():
         return root
@@ -91,9 +90,8 @@ def studio_bin_root() -> Path:
 
 
 def account_path(relative: str) -> Path:
-    """``workspace_root() / relative`` for the acting account. A managed account's entry must
-    really live inside its own workspace, or a directory replaced by a link into another account's
-    tree would carry every reader and writer there."""
+    """``workspace_root() / relative``, checked to really live inside the account's workspace: a
+    directory swapped for a link into another account's tree would carry all its readers there."""
     path = workspace_root() / relative
     if not is_owner_context() and not within_account(path):
         raise ValueError(f"path escapes the account workspace: {path!s}")
@@ -215,8 +213,7 @@ def documents_root() -> Path:
 
 
 def shared_project_workspaces_root() -> Path:
-    """The base every account's ``project_workspaces_root`` lives under; confinement hides it
-    first."""
+    """Base every account's ``project_workspaces_root`` lives under; confinement hides it first."""
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
     return Path(override).expanduser() if override else documents_root() / "Unsloth Studio"
 
@@ -274,8 +271,8 @@ root_retirement_lock = threading.RLock()
 
 
 def external_account_sandbox_root() -> Path | None:
-    """The managed account's tool sandbox when ``UNSLOTH_STUDIO_SANDBOX_HOME`` moves it out of
-    the workspace; a private root like the other three, so retirement and ``ensure_dir`` cover it."""
+    """The managed account's tool sandbox when ``UNSLOTH_STUDIO_SANDBOX_HOME`` moves it out of the
+    workspace. A private root like the others, so retirement and ``ensure_dir`` cover it."""
     override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
     if is_owner_context() or not override:
         return None
@@ -320,15 +317,13 @@ def ensure_dir(path: Path) -> Path:
 
 
 def ensure_account_dir(path: Path) -> Path:
-    """``ensure_dir`` inside the acting account's workspace. A finalizer outliving deletion
-    would recreate the renamed-aside roots; refuse once the tombstone is set.
-    Check and creation share ``root_retirement_lock`` with the rename."""
+    """``ensure_dir`` inside the acting account's workspace: refuse once the tombstone is set, or a
+    finalizer outliving deletion recreates the renamed-aside roots. Locked against the rename."""
     with root_retirement_lock:
         if not is_owner_context():
             from core.training.account_jobs import account_is_retired
 
-            # Existence is not proof of life: a request that outlived the delete can mkdir the
-            # workspace back. The tombstone says the account is gone.
+            # Existence is not proof of life: a late request can mkdir the workspace back.
             if account_is_retired():
                 raise RetiredAccountError(
                     f"account has been deleted; refusing to recreate {path!s}"

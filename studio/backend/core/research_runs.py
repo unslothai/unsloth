@@ -1303,7 +1303,7 @@ class ResearchSupervisor:
             try:
                 run = run_as(account, db.claim_next, self.worker_id)
             except Exception:
-                # The order is stable, so one corrupt database would shadow every account behind it.
+                # The order is stable, so one corrupt database would shadow the accounts behind it.
                 logger.exception("research.claim_failed_for_account")
                 continue
             if run is not None:

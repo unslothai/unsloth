@@ -7060,8 +7060,8 @@ async def _lease_ollama_model_ref(
 
 
 def _defers_access_to_native_grant(request) -> bool:
-    """A native selection sends a display label; the account check waits for the lease's
-    canonical path, which the account roots are checked against."""
+    """A native selection sends a display label, so the account check waits for the lease's
+    canonical path, which is what the account roots are checked against."""
     return bool(
         account_access.managed_account()
         and getattr(request, "native_path_lease", None)
@@ -13657,11 +13657,10 @@ def _raise_or_cancel_active_generations(
 
     scope = account_access.account_scope()
     if scope is not None:
-        # Before the count and the cancel: a foreign generation refuses the swap, so
-        # cancelling first would end the caller's chats for nothing, and the caller's own
-        # count is zero when only foreign work runs. Keyed on account_scope() because
-        # deactivating the last managed account drops the count while its generation
-        # still holds the GPU.
+        # Before the count and the cancel: a foreign generation refuses the swap, so cancelling
+        # first would end the caller's chats for nothing, and the caller's count is zero when only
+        # foreign work runs. Keyed on account_scope(): deactivating the last managed account drops
+        # the count while its generation still holds the GPU.
         require_no_foreign_generations(scope)
     if not active_generations.count(scope):
         return 0
@@ -14272,7 +14271,7 @@ async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bo
 
 
 def _require_resolved_base_access(config) -> None:
-    """Grants apply to the base an adapter's config names, so an owned adapter cannot pull
+    """Grants apply to the base named in an adapter's config, so an owned adapter cannot pull
     another account's cached base."""
     base = getattr(config, "base_model", None)
     if account_access.managed_account() and isinstance(base, str) and base.strip():
@@ -35822,8 +35821,8 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
-        # Engine activation can unload the previous engine and begin_load signals whatever
-        # generation is running, so guard on every device; only the GPU handoff is conditional.
+        # Activation can unload the previous engine and begin_load signals whatever generation is
+        # running, so guard on every device; only the GPU handoff is conditional.
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
@@ -36526,7 +36525,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
         return {"cancelled": False}
 
     # The slot can change hands between the checks above and the executor callback, so the engine
-    # rechecks under the lock that binds the cancel event.
+    # rechecks under the lock binding the cancel event.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:

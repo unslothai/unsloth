@@ -1048,9 +1048,8 @@ async def get_gguf_variants_answer(
         try:
             await asyncio.to_thread(account_access.require_model_access, repo_id)
         except HTTPException:
-            # A grant only lands after a download, so picking a quant for a private repo
-            # has none yet; the caller's own token proving Hub access stands in, as the
-            # download itself demands. A cache-only request without a token needs the grant.
+            # No grant exists before the first download, so for a private repo the caller's own
+            # token proves Hub access instead. A cache-only request without a token needs the grant.
             if not isinstance(hf_token, str) or not hf_token.strip():
                 raise
             if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
