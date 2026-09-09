@@ -51,7 +51,8 @@ _link_accounts_lock = threading.Lock()
 
 
 def _signed_link_account(account_id: str) -> AccountContext | None:
-    """The account a signed link names, or None once deactivated. Keyed on the policy generation so a deactivation revokes links immediately, not at the TTL."""
+    """The account a signed link names, or None once deactivated. Keyed on the policy
+    generation so a deactivation revokes links immediately, not at the TTL."""
     generation = policy.account_generation()
     with _link_accounts_lock:
         cached = _link_accounts.get(account_id)
@@ -412,7 +413,8 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
 
 
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
-    """Only an anonymous Hub answer proves a shared-cache repo public; the proof is kept on disk and withdrawn by a definitive private/gated/missing answer."""
+    """Only an anonymous Hub answer proves a shared-cache repo public; the proof is kept on
+    disk and withdrawn by a definitive private/gated/missing answer."""
     key = (repo_type, repo_id.lower())
     name = f"{repo_type}:{repo_id.lower()}"
     with _public_lock:
@@ -540,7 +542,8 @@ def model_grants() -> set[str]:
 
 
 def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
-    """Record an authorized download in the initiating account's studio.db, transactionally so simultaneous completions both survive."""
+    """Record an authorized download in the initiating account's studio.db, transactionally
+    so simultaneous completions both survive."""
     if not managed_account() or not repo_id:
         return
     from core.training.account_jobs import account_is_retired
@@ -611,7 +614,8 @@ def model_visible(
     grants: set[str] | None = None,
     repo_type: str = "model",
 ) -> bool:
-    """Apply grants equally to repo ids and cache snapshot/file spellings; arbitrary local paths stay private to the workspace."""
+    """Apply grants equally to repo ids and cache snapshot/file spellings; arbitrary local
+    paths stay private to the workspace."""
     if not managed_account():
         return True
     if not isinstance(reference, str) or not reference:

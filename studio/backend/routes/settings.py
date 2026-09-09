@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings policy: the account, shared and owner routers decide who may reach each /api/settings path."""
+"""Settings policy: the account, shared and owner routers decide who may reach each
+/api/settings path."""
 
 import functools
 import hashlib

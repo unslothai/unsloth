@@ -556,10 +556,9 @@ async def generate_video(
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
     )
-    # The access check must cover the state the clip is actually denoised on. Authorize the exact
-    # resident token generation_snapshot hands back and pin it to the reservation, so a load
-    # committing in the gap cannot render another account's private weights into this gallery; on a
-    # mismatch, re-authorize the replacement once and retry, as /images/generate does.
+    # Authorize the exact resident token generation_snapshot hands back and pin it to the
+    # reservation, so a load committing in the gap cannot render another account's private weights
+    # into this gallery; on a mismatch re-authorize once and retry, as /images/generate does.
     # The real rule for shape is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
     # concurrent load cannot leave the shape judged against one family and denoised by another.
     # Unloaded still falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE
@@ -623,7 +622,8 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
         return {"cancelled": False}
     if _generation_started_by(backend) is None and account_access.foreign_work_active():
         return {"cancelled": False}
-    # The job can finish and another account reserve between the check above and the worker thread below, so the backend rechecks under its lock.
+    # The job can finish and another account reserve between the check above and the worker
+    # thread below, so the backend rechecks under its lock.
     reserved = getattr(backend, "generate_job_account", None)
     reserved = reserved() if callable(reserved) else None
     if reserved is None:

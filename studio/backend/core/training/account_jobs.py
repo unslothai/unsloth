@@ -54,7 +54,8 @@ def account_path(
     reference: bool = False,
     shared_cache: bool = False,
 ):
-    """Validate a supplied local path, resolving symlinks; remote Hub ids only for ``reference`` fields."""
+    """Validate a supplied local path, resolving symlinks. Remote Hub ids are accepted only for
+    ``reference`` fields."""
     if not value or not managed_account():
         return value
     raw = str(value)
@@ -224,7 +225,8 @@ def refresh_job_owner(service) -> None:
 
 
 def owned_job(*, continuation: bool = False):
-    """Reserve ownership across validation/spawn and hold it while work is live; skipped only on installs that never had a managed account."""
+    """Reserve ownership across validation/spawn and hold it while work is live. Skipped only on
+    installs that never had a managed account."""
 
     def decorate(fn):
         @wraps(fn)
@@ -356,7 +358,8 @@ class AccountRetirementError(RuntimeError):
 
 
 def retire_account_jobs(account: AccountContext) -> None:
-    """Revoke new starts and cancel only this account's work; call before renaming its directories."""
+    """Revoke new starts and cancel only this account's work. Call before renaming its
+    directories."""
     with _services_lock:
         _retired.add(account.account_id)
         services = list(_services)
@@ -447,7 +450,8 @@ def _inactive_job_accounts() -> list[AccountContext]:
 
 
 def startup_reconciliation_accounts() -> list[AccountContext]:
-    """Accounts a boot-time reconciliation visits; one with no database yet is skipped, since opening one would create it."""
+    """Accounts a boot-time reconciliation visits. One with no database yet is skipped, since
+    opening one would create it."""
     from utils.paths.storage_roots import studio_db_path
 
     accounts: list[AccountContext] = []
@@ -468,7 +472,8 @@ def startup_reconciliation_accounts() -> list[AccountContext]:
 
 
 def sweepable_job_accounts() -> list[AccountContext]:
-    """The boot-reconcile set: a deactivated account still holds a registration and a GPU reservation."""
+    """The boot-reconcile set: a deactivated account still holds a registration and a GPU
+    reservation."""
     return startup_reconciliation_accounts()
 
 

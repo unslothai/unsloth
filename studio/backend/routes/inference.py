@@ -8502,7 +8502,8 @@ async def _reject_unservable_model(
 
 
 async def _require_named_model_access(named_model: str) -> None:
-    """Authorize a named model; a path-free local id from /v1/models resolves through the account catalog."""
+    """Authorize a named model; a path-free local id from /v1/models resolves through the
+    account catalog."""
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
@@ -14188,7 +14189,8 @@ async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bo
 
 
 def _require_resolved_base_access(config) -> None:
-    """Grants apply to the base an adapter's config names, so an owned adapter cannot pull another account's cached base."""
+    """Grants apply to the base an adapter's config names, so an owned adapter cannot pull
+    another account's cached base."""
     base = getattr(config, "base_model", None)
     if account_access.managed_account() and isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
@@ -35909,7 +35911,8 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
-        # Ahead of the run: milestones are keyed on the previous poll, so a run starting at or above where the last one stopped would log nothing.
+        # Ahead of the run: milestones are keyed on the previous poll, so a run starting at or
+        # above where the last one stopped would log nothing.
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
@@ -35953,7 +35956,8 @@ async def generate_diffusion_image(
                 raise HTTPException(status_code = 409, detail = str(exc))
             continue
         except RuntimeError as exc:
-            # Both engines raise these two EXACT client-state messages (409); the native engine also raises RuntimeError for sd-cli failures, so match exactly.
+            # Both engines raise these two EXACT client-state messages (409); the native engine
+            # also raises RuntimeError for sd-cli failures, so match exactly.
             msg = str(exc)
             if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
@@ -36428,7 +36432,8 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     ):
         return {"cancelled": False}
 
-    # The slot can change hands between the checks above and the executor callback, so the engine rechecks under the lock that binds the cancel event.
+    # The slot can change hands between the checks above and the executor callback, so the engine
+    # rechecks under the lock that binds the cancel event.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:

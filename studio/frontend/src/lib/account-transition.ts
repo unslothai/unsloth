@@ -26,7 +26,10 @@ export const ACCOUNT_CHROME_PREFIXES = [
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
-/** Purged on an account change. Durable stores are named per account instead (`accountDatabaseName`). */
+/**
+ * Purged on an account change. Durable stores are named per account instead
+ * (`accountDatabaseName`).
+ */
 export const ACCOUNT_DATABASES = [
   // Legacy store: its one-shot import would push these threads into the next account.
   "unsloth-chat",
@@ -56,7 +59,10 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The owner keeps the historical name; a managed account gets its own store, so a switch never has to delete saved data. */
+/**
+ * The owner keeps the historical name; a managed account gets its own store, so
+ * a switch never has to delete saved data.
+ */
 export function accountDatabaseName(
   name: string,
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
@@ -88,7 +94,10 @@ function parseAccountMarker(marker: string): MarkedAccount {
   };
 }
 
-/** Whether the browser's data may carry over. Ids decide when both sides have one; the username fallback cannot tell a recreated account apart. */
+/**
+ * Whether the browser's data may carry over. Ids decide when both sides have
+ * one; the username fallback cannot tell a recreated account apart.
+ */
 function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   if (previous.accountId && next.accountId)
     return previous.accountId === next.accountId;
@@ -134,7 +143,11 @@ function deleteAccountDatabase(
   });
 }
 
-/** Run before publishing new tokens; an absent marker means the historical owner browser, and the marker is published last so other tabs reload only once the new session is ready. */
+/**
+ * Run before publishing new tokens; an absent marker means the historical owner
+ * browser. The marker is published last, so other tabs reload only once the new
+ * session is ready.
+ */
 export async function transitionBrowserAccount(
   account: BrowserAccount | string,
   postAuthRoute: string,

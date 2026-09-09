@@ -101,7 +101,8 @@ def retire_account_roots(account: AccountContext):
                 Path.rename(root, destination)
                 moved.append((root, destination))
         except OSError:
-            # All or nothing: reactivation restores no roots, so a half-retired account comes back with an empty workspace.
+            # All or nothing: reactivation restores no roots, so a half-retired account
+            # would come back with an empty workspace.
             restore()
             raise
     return restore
