@@ -603,9 +603,7 @@ def test_an_active_download_blocks_the_delete_that_now_reaches_its_build():
         assert registry.has_active_variant(repo, delete_variant) is True
     # A genuinely different quant still downloads and deletes concurrently.
     registry = DownloadRegistry()
-    registry.claim(
-        f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m"
-    )
+    registry.claim(f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m")
     assert registry.begin_delete(repo, "q8_0") is True
     assert registry.has_active_variant(repo, "q8_0") is False
 
@@ -623,9 +621,7 @@ def test_a_whole_snapshot_job_still_blocks_every_variant_delete():
     assert registry.has_active_variant(repo, None) is True
 
     registry = DownloadRegistry()
-    registry.claim(
-        f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m"
-    )
+    registry.claim(f"{repo}::q4_k_m", "http", repo_type = "model", repo_id = repo, variant = "q4_k_m")
     assert registry.begin_delete(repo, None) is False
 
 
