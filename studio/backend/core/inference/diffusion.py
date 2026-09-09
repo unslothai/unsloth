@@ -128,6 +128,7 @@ from .diffusion_attention import (
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_gguf_compile as gguf_compile
+from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -881,6 +882,8 @@ class _LoadState:
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
+    # GraphedForward handles installed on the denoiser modules.
+    cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
     hf_token: Optional[str] = None
     # Per-control provenance {control: {value, source, reason}}, for status badges.
@@ -4466,6 +4469,7 @@ class DiffusionBackend:
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None or cache_may_toggle,
+                        cache_engaged = cache_engaged is not None,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
@@ -4626,6 +4630,16 @@ class DiffusionBackend:
                                 cache_engaged or "off",
                                 cache_reason,
                             ),
+                            "cuda_graph": (
+                                None,
+                                "on" if speed_applied.get("cuda_graph") else "off",
+                                "denoiser step captured per input shape, replayed bit-identically"
+                                if speed_applied.get("cuda_graph")
+                                else str(
+                                    getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                                    or "speed tier does not capture"
+                                ),
+                            ),
                             "cpu_offload": (
                                 True if cpu_offload else None,
                                 effective_policy != OFFLOAD_NONE,
@@ -4650,6 +4664,7 @@ class DiffusionBackend:
                         memory_mode = plan.requested_mode,
                         speed_mode = effective_speed,
                         speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                        cuda_graphs = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()),
                         backend_flags_before = backend_flags_before,
                         text_encoder_quant = te_quant,
                         transformer_quant = transformer_quant_engaged,
@@ -4679,6 +4694,7 @@ class DiffusionBackend:
                         restore_backend_flags(backend_flags_before)
                         compile_cache.restore(compile_ctx)
                         gguf_compile.uninstall_all()  # idempotent
+                        cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -5556,6 +5572,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
 
         if not diffusion_lora.supports_lora(
@@ -5598,8 +5615,13 @@ class DiffusionBackend:
             except Exception:  # noqa: BLE001
                 pass
             pipe._unsloth_loras = ()
+            # The adapters the graphs were captured with are gone and the marker says none are applied,
+            # so no later call reaches the resets above; without this a base-model render replays them.
+            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
+        # load_lora_weights can re-materialise parameters the graphs baked pointers to.
+        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
 
     def _adjust_baked_loras(
         self,
@@ -5632,6 +5654,8 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
                 pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
+                # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
         desired = self._resolve_lora_set(
             specs,
@@ -5647,6 +5671,7 @@ class DiffusionBackend:
                 adapter_weights = [w for (_n, _p, w) in desired],
             )
             pipe._unsloth_loras = desired
+            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
         raise ValueError(
             "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
@@ -5742,11 +5767,15 @@ class DiffusionBackend:
             family = state.family,
             speed_mode = SPEED_DEFAULT,
             cache_active = state.transformer_cache is not None or state.cache_auto,
+            cache_engaged = state.transformer_cache is not None,
             offload_active = state.offload_policy != OFFLOAD_NONE,
             logger = logger,
         )
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
+        object.__setattr__(
+            state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
         entry = (state.resolved or {}).get("speed_mode")
         if isinstance(entry, dict):
             entry["value"] = SPEED_DEFAULT
@@ -6184,6 +6213,10 @@ class DiffusionBackend:
                             chunk_kwargs["negative_prompt"] = [
                                 chunk_kwargs["negative_prompt"]
                             ] * len(chunk)
+                    # A step cache keys residuals on the cond/uncond context, which a graph key
+                    # cannot see. Per chunk because an AUTO decision is re-taken per generation.
+                    if state.cuda_graphs:
+                        cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
                     # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
@@ -6193,7 +6226,15 @@ class DiffusionBackend:
                         with torch.inference_mode():
                             out = pipe(**chunk_kwargs).images
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        if len(chunk) < 2 or not is_oom_error(exc):
+                        oom = is_oom_error(exc)
+                        if oom:
+                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                            # pool is segregated from the ordinary allocator), so the halved retry below and the
+                            # user's next smaller request would both run a step's worth of VRAM short. The shape
+                            # that finally renders re-captures on its first step.
+                            cuda_graph.reset_all(state.cuda_graphs)
+                        if len(chunk) < 2 or not oom:
                             raise
                         # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry reproducible.
                         empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
@@ -6368,6 +6409,8 @@ class DiffusionBackend:
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
         compile_cache.restore(state.compile_cache_ctx)
+        # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
+        cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.

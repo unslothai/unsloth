@@ -4362,6 +4362,59 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
+class _GraphHandle:
+    def __init__(self):
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        return self
+
+
+def test_a_failed_lora_switch_drops_the_captured_graphs(monkeypatch):
+    """A failed switch records an empty applied set, so the later "none requested" reset never fires."""
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+
+    class _FailingPipe(_BakePipe):
+        def load_lora_weights(
+            self,
+            path,
+            adapter_name = None,
+        ):
+            raise RuntimeError("size mismatch for the adapter")
+
+        def unload_lora_weights(self):
+            self.calls.append(("unload",))
+
+    pipe = _FailingPipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 1.0),)
+    handle = _GraphHandle()
+    state = types.SimpleNamespace(
+        pipe = pipe,
+        transformer_quant = None,
+        kind = "dense",
+        family = types.SimpleNamespace(name = "z-image"),
+        hf_token = None,
+        speed_optims = ("cuda_graph",),
+        cuda_graphs = (handle,),
+    )
+
+    with pytest.raises(ValueError, match = "Failed to apply LoRA"):
+        backend._apply_loras(state, [("other", 1.0)], threading.Event())
+
+    assert pipe._unsloth_loras == ()
+    assert handle.resets == 1
+    backend._apply_loras(state, [], threading.Event())
+    assert handle.resets == 1
+
+
 def test_baked_lora_names_survive_being_disabled_at_generate_time(monkeypatch):
     # A generate with no `loras` zeroes every baked adapter and _active_lora_pairs drops zero-weight entries, so a baked
     # load's APPLIED set is always empty. Baked-and-disabled is not never-baked, so record it separately.
@@ -6182,6 +6235,35 @@ def test_generate_oom_backoff_halves_the_batch(fake_runtime, tmp_path):
     assert out["seeds"] == [1, 2, 3, 4]
 
 
+def test_generate_oom_backoff_drops_the_batch_shaped_graphs(fake_runtime, tmp_path):
+    """A captured entry is batch-shaped and empty_cache() cannot reclaim it, so the retry OOMs too."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe(max_images = 2)
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.reset_after = []
+
+        def reset(self):
+            # WHEN the reset landed, in forwards attempted so far.
+            self.reset_after.append(len(pipe.batch_attempts))
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+
+    assert pipe.batch_attempts == [4, 2, 2]
+    assert len(out["images"]) == 4 and out["seeds"] == [1, 2, 3, 4]
+    # Exactly once, after the batch of 4 failed and before either half ran.
+    assert handle.reset_after == [1]
+
+
 class _BoomPipe(_CountingPipe):
     """Fails every forward with a NON-OOM error (must not trigger backoff)."""
 
@@ -6193,6 +6275,58 @@ class _BoomPipe(_CountingPipe):
     ):
         self.batch_attempts.append(kwargs.get("num_images_per_prompt", 1))
         raise RuntimeError("shape mismatch")
+
+
+def test_generate_single_image_oom_drops_the_graphs_before_raising(fake_runtime, tmp_path):
+    """A one-image OOM raises instead of splitting, so the graphs must be dropped on the way out."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe(max_images = 0)  # every forward OOMs, so a single image cannot be split
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.generate(prompt = "p", seed = 1)
+
+    assert pipe.batch_attempts == [1]  # not splittable: raised, not retried
+    assert handle.resets == 1, "the graphs stayed pinned across the raise"
+
+
+def test_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime, tmp_path):
+    """Only an OOM justifies throwing away working graphs; a shape mismatch does not."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _BoomPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "p", seeds = [1, 2])
+    assert handle.resets == 0
 
 
 def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
