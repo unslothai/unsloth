@@ -105,25 +105,7 @@ test("vLLM server default omits Min P while retaining other sampling fields", ()
   const { min_p, ...other } = custom;
   assert.equal(min_p, PARAMS.minP);
   assert.deepEqual(server, other);
-});
-
-test("vLLM explicit zero reaches the payload", () => {
   assert.equal(bodyFor("vllm", { ...PARAMS, minP: 0 }).min_p, 0);
-});
-
-test("Server default mode does not change other providers", () => {
-  for (const provider of [
-    "openrouter",
-    "llama_cpp",
-    "openai",
-    "custom",
-    "ollama",
-  ]) {
-    assert.deepEqual(
-      bodyFor(provider, { ...PARAMS, minPMode: "server-default" }),
-      bodyFor(provider),
-    );
-  }
 });
 
 for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
@@ -135,6 +117,12 @@ for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
     assert.equal(body.presence_penalty, PARAMS.presencePenalty);
     assert.equal(body.temperature, PARAMS.temperature);
     assert.equal(body.top_p, PARAMS.topP);
+    if (providerType !== "vllm") {
+      assert.deepEqual(
+        bodyFor(providerType, { ...PARAMS, minPMode: "server-default" }),
+        body,
+      );
+    }
   });
 }
 
