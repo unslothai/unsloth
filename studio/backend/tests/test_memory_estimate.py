@@ -3178,12 +3178,12 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
     @pytest.fixture
     def vision(self, tmp_path):
         weight = _write_gguf(
-            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144},
+            tmp_path,
+            "qwen3",
+            {**_GQA_FIELDS, "context_length": 262144},
             name = "model-Q4_K_M.gguf",
         )
-        projector = _write_gguf(
-            tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf"
-        )
+        projector = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf")
         config = SimpleNamespace(
             identifier = "local/vision",
             gguf_file = weight,
@@ -3205,17 +3205,16 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
     def test_the_panel_prices_the_raised_micro_batch(self, vision):
         weight, config = vision
         priced = ri._gguf_memory_breakdown(config, weight, n_ctx = 8192)
-        pinned = ri._gguf_memory_breakdown(
-            config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048
-        )
+        pinned = ri._gguf_memory_breakdown(config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048)
         # Identical, because the launch runs at 2048 either way. Before the mirror the
         # left-hand side priced 512 and came out four times smaller.
         assert priced.compute_bytes == pinned.compute_bytes
 
     def test_a_text_only_load_still_prices_the_llama_cpp_default(self, vision):
         weight, config = vision
-        text_only = SimpleNamespace(**{**vars(config), "is_vision": False,
-                                       "gguf_mmproj_file": None})
+        text_only = SimpleNamespace(
+            **{**vars(config), "is_vision": False, "gguf_mmproj_file": None}
+        )
         priced = ri._gguf_memory_breakdown(text_only, weight, n_ctx = 8192)
         floored = ri._gguf_memory_breakdown(
             text_only, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048
@@ -3240,7 +3239,11 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
             config, weight, n_ctx = 8192, llama_extra_args = ["--no-mmproj"]
         )
         floored = ri._gguf_memory_breakdown(
-            config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048,
+            config,
+            weight,
+            n_ctx = 8192,
+            n_batch = 2048,
+            n_ubatch = 2048,
             llama_extra_args = ["--no-mmproj"],
         )
         assert suppressed.compute_bytes < floored.compute_bytes

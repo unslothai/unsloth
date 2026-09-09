@@ -10253,7 +10253,6 @@ def _estimate_gguf_required_gb(
         # decides whether a chat load may sit next to a training job.
         if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
             from core.inference.llama_cpp import _mmproj_batch_floor
-
             n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
@@ -10548,7 +10547,6 @@ def _estimate_gguf_required_gb(
             # 4x compute reserve belongs in the charge.
             if has_vision and not extra_args_disable_mmproj(llama_extra_args):
                 from core.inference.llama_cpp import _mmproj_batch_floor
-
                 n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
             companions = _remote_gguf_companion_bytes(
                 repo,
@@ -11564,7 +11562,6 @@ def _gguf_memory_breakdown(
     # which is the half of the row that moves with the settings above it.
     if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
         from core.inference.llama_cpp import _mmproj_batch_floor
-
         n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
 
     # Manual owns the offload flags: /load translates the last -ngl into the field and
