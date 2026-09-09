@@ -1771,17 +1771,30 @@ class TestTheSweepIsNotBlindDuringPrefill:
         source = Path(inference.__file__).read_text()
         return source.split("def _gguf_recost", 1)[1].split("\n            def ", 1)[0]
 
+    def _publish_body(self):
+        """The recording and the sweep live in the helper both tool loops call."""
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        body = source.split("def _openai_llama_publish_round_charge", 1)[1]
+        return body.split("\ndef ", 1)[0]
+
     def test_the_round_boundary_sweeps_and_does_not_merely_record(self):
-        body = self._recost_body()
+        assert (
+            "_openai_llama_publish_round_charge(" in self._recost_body()
+        ), "the round boundary must reach the ledger"
+        body = self._publish_body()
         assert "note_tokens(" in body, "the new size must still be recorded"
         assert (
-            "_gguf_observe_tokens(" in body
+            "observe_tokens(" in body
         ), "recording without sweeping leaves the eviction until the next 32 tokens"
 
     def test_it_sweeps_after_recording_not_before(self):
-        body = self._recost_body()
+        body = self._publish_body()
         assert body.index("note_tokens(") < body.index(
-            "_gguf_observe_tokens("
+            "observe_tokens("
         ), "sweeping first would plan against the previous round's figure"
 
     def test_note_tokens_rebaselines_so_zero_growth_is_correct(self):

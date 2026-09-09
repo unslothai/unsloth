@@ -2674,6 +2674,49 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
+def _openai_llama_publish_round_charge(
+    *,
+    llama_backend,
+    gen_id: str,
+    reservation,
+    payload,
+    conversation,
+    injected_tools,
+    observe_tokens,
+) -> None:
+    """Hand a tool round's re-costed charge to the preemptor, then sweep on it.
+
+    A round boundary is a safe point, so the ledger learns what this run holds before
+    anyone decides who must stop. `note_tokens` only records the figure, so the sweep has
+    to follow it: a round that grew the prompt by thousands would otherwise update the
+    ledger silently and three chats could prefill past the cache together. Zero generated
+    is right, since `note_tokens` has just re-baselined.
+
+    Shared by both tool loops rather than written twice: they run the same 25-round loop
+    against the same cache, and the Anthropic copy publishing nothing left its participant
+    sized by its opening prompt for the whole run, so the watermark was late by the entire
+    tool history.
+    """
+    try:
+        lease = reservation.lease_nowait() if reservation is not None else None
+        if lease is None:
+            return
+        get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
+            gen_id,
+            int(lease.tokens or 0),
+            # The round's own prompt, apart from the output the re-cost reserved on top.
+            _openai_llama_admission_charged_prompt_tokens(
+                payload,
+                conversation = conversation,
+                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                injected_tools = injected_tools,
+            ),
+        )
+        observe_tokens(0)
+    except Exception:
+        pass
+
+
 def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
     """Register a surface that occupies the cache but cannot be paused.
 
@@ -23605,31 +23648,15 @@ async def produce_openai_chat_completions(
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
                 )
-                # A round boundary is a safe point, so tell the preemptor what this run
-                # holds before it decides who should stop.
-                try:
-                    _res = _gguf_admission_hold["reservation"]
-                    _lease = _res.lease_nowait() if _res is not None else None
-                    if _lease is not None:
-                        get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
-                            completion_id,
-                            int(_lease.tokens or 0),
-                            # The round's own prompt, apart from the output the re-cost
-                            # reserved on top of it.
-                            _openai_llama_admission_charged_prompt_tokens(
-                                payload,
-                                conversation = conversation,
-                                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-                                injected_tools = tools_to_use,
-                            ),
-                        )
-                        # And SWEEP on the new figure: note_tokens only records it, so a
-                        # round that grew the prompt by thousands updated the ledger
-                        # silently and three chats could prefill past the cache together.
-                        # Zero generated is right: note_tokens has just re-baselined.
-                        _gguf_observe_tokens(0)
-                except Exception:
-                    pass
+                _openai_llama_publish_round_charge(
+                    llama_backend = llama_backend,
+                    gen_id = completion_id,
+                    reservation = _gguf_admission_hold["reservation"],
+                    payload = payload,
+                    conversation = conversation,
+                    injected_tools = tools_to_use,
+                    observe_tokens = _gguf_observe_tokens,
+                )
                 return _recosted_allowance
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
@@ -32388,7 +32415,9 @@ async def anthropic_messages(
     _anthropic_admission_hold: dict = {"reservation": None}
 
     def _anthropic_recost(conversation, round_tools = None) -> Optional[int]:
-        return _openai_llama_admission_recost(
+        # RE-COST FIRST, as the GGUF loop does: the publish below reads `lease.tokens`,
+        # and this is what grows it for the round that just began.
+        _recosted_allowance = _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
             conversation,
             request = request,
@@ -32401,6 +32430,16 @@ async def anthropic_messages(
             wire_tools = round_tools,
             cancel_event = cancel_event,
         )
+        _openai_llama_publish_round_charge(
+            llama_backend = llama_backend,
+            gen_id = message_id,
+            reservation = _anthropic_admission_hold["reservation"],
+            payload = payload,
+            conversation = conversation,
+            injected_tools = openai_tools,
+            observe_tokens = _anthropic_observe_tokens,
+        )
+        return _recosted_allowance
 
     async def _admitted_anthropic(
         coro,
@@ -32762,6 +32801,7 @@ async def anthropic_messages(
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     think_provenance = _think_prov,
                     count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
+                    note_state = _anthropic_note_state,
                 ),
                 # Same server-side loop the chat route runs, up to 25 rounds on one lease.
                 tool_loop = True,
@@ -32861,9 +32901,17 @@ async def _anthropic_tool_stream(
     parse_think = True,
     think_provenance = None,
     count_template_kwargs = None,
+    note_state = None,
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
+
+    # Where this chat is, for the preemptor. Armed like the GGUF tool loop but reporting
+    # nothing, it stayed DECODING through a tool that may legitimately run for the whole
+    # 300s timeout: `await_resume` extends its stall deadline only while somebody is
+    # PARKED_ON_TOOL or TOOLS_RUNNING, so a chat paused behind this one gave its turn up
+    # after 90 seconds of a backend that was working fine.
+    _note_state = note_state if note_state is not None else (lambda _state: _state)
 
     # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
     # answer is prose and must survive in the delivered text.
@@ -32947,6 +32995,22 @@ async def _anthropic_tool_stream(
                     if event is _sentinel:
                         break
                     etype = event.get("type")
+                    # Reported BEFORE the drop skips below: an event dropped from the wire
+                    # still describes a tool that is running and cells that are held.
+                    if not (etype == "tool_start" and event.get("awaiting_confirmation")):
+                        if _note_state(None) == ParticipantState.PARKED_ON_TOOL:
+                            # Answered: the tool runs next, and decoding follows.
+                            _note_state(ParticipantState.TOOLS_RUNNING)
+                    if etype == "tool_start":
+                        _note_state(
+                            ParticipantState.PARKED_ON_TOOL
+                            if event.get("awaiting_confirmation")
+                            else ParticipantState.TOOLS_RUNNING
+                        )
+                    elif etype in ("tool_args", "content"):
+                        # Streamed arguments are decoded tokens too, and a chat left
+                        # TOOLS_RUNNING through them cannot be paused as it grows.
+                        _note_state(ParticipantState.DECODING)
                     if etype == "heartbeat":
                         # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
                         # a dropped tool still runs and suppresses the stall keepalive.

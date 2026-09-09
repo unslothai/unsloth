@@ -144,12 +144,17 @@ class TestTheRoundBoundaryPublishesTheNewCharge:
         body = source[source.index("def _gguf_recost(conversation, round_tools = None)") :]
         body = body[: body.index("# Active tool names gating the bare-rehearsal strip")]
         recost = body.index("_openai_llama_admission_recost(")
-        publish = body.index(".note_tokens(")
+        publish = body.index("_openai_llama_publish_round_charge(")
         assert recost < publish, (
             "the sweep publishes `lease.tokens` and must read it after the re-cost that "
             "grew it, not before"
         )
-        assert body.index("_gguf_observe_tokens(0)") > recost
+        # The publish and the sweep that follows it live in the helper both tool loops
+        # call; recording the figure without sweeping on it is what let three chats
+        # prefill past the cache together.
+        helper = _function(source, "_openai_llama_publish_round_charge")
+        assert _calls(helper, "note_tokens") == 1
+        assert _calls(helper, "observe_tokens") == 1
 
 
 class TestTheParallelToolClosureBindsItsOwnCall:
