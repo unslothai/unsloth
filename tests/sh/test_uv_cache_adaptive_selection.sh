@@ -28,6 +28,7 @@
 #   * unset, uv's default is empty       -> studio
 #   * populated but not writable, root or bucket -> studio; uv aborts on either
 #   * a relative cache-dir               -> resolved against UV_WORKING_DIR before scanning
+#   * a bucket too big for one pipe read -> still warm, pipefail or not
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -66,13 +67,15 @@ _SH="${BASH:-/bin/bash}"
 
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
 # $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
-# resolved against the wrong base is visible). Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
+# resolved against the wrong base is visible), $6 = "true" to run under pipefail.
+# Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
 _run() {
     _stub_bin=$(mktemp -d)
     printf '#!/bin/sh\ncase "$1 $2" in "cache dir") printf "%%s\\n" "%s" ;; esac\n' \
         "$3" > "$_stub_bin/uv"
     chmod +x "$_stub_bin/uv"
     "$_SH" -c "
+        [ '${6:-false}' = true ] && set -o pipefail
         STUDIO_HOME='$1'
         _ISOLATE_UV_CACHE='${4:-false}'
         if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
@@ -139,6 +142,12 @@ mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
 : > "$_TMP/cwd/relcache/archive-v0/decoy/other.so"
 mkdir -p "$_TMP/work/relcache/archive-v0/torch"
 : > "$_TMP/work/relcache/archive-v0/torch/libtorch.so"
+# Big enough that `head -n 1` closes the pipe before find is done, which is every real cache
+# holding Torch and CUDA wheels. Under pipefail the pipeline then reports SIGPIPE.
+_big="$_TMP/uvbig"
+mkdir -p "$_big/archive-v0/pkg"
+_i=0
+while [ "$_i" -lt 3000 ]; do : > "$_big/archive-v0/pkg/file-$_i.bin"; _i=$((_i + 1)); done
 
 echo "=== the installer's own default does NOT count as a caller override ==="
 # This is the regression. Before the fix the mode here was `custom` and the two lines below
@@ -180,6 +189,13 @@ echo "=== a relative cache-dir resolves against UV_WORKING_DIR, not the installe
 _out=$(_run "$_TMP/h" '' "relcache" false "$_TMP/work")
 assert_eq "relative default is still warm" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "resolved against UV_WORKING_DIR" "$_TMP/work/relcache" "$(echo "$_out" | cut -d' ' -f2)"
+
+echo "=== a big warm bucket stays warm under pipefail ==="
+# The scan's exit status is head's SIGPIPE, not a verdict on the path it already captured.
+assert_eq "big bucket without pipefail" "shared" \
+    "$(_run "$_TMP/k" '' "$_big" | cut -d' ' -f1)"
+assert_eq "big bucket under pipefail"   "shared" \
+    "$(_run "$_TMP/l" '' "$_big" false '' true | cut -d' ' -f1)"
 
 echo "=== a CALLER's UV_CACHE_DIR still outranks the selection, untouched ==="
 _out=$(_run "$_TMP/c" "$_TMP/mine" "$_populated")

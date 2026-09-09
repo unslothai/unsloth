@@ -770,10 +770,14 @@ _configure_uv_cache() {
                 || _uv_default_writable=false
             [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
             if [ "$_uv_default_populated" != true ]; then
+                # `|| true`, not `|| _uv_artifact=""`: head closes the pipe after the first
+                # line, so find dies on SIGPIPE on any large bucket, and under pipefail that
+                # becomes the pipeline's status. It says nothing about the path already
+                # captured, and clearing it read a warm cache as empty.
                 _uv_artifact=$(find -L "$_uv_bucket" -type f \
                     ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                     ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                    -print 2>/dev/null | head -n 1) || _uv_artifact=""
+                    -print 2>/dev/null | head -n 1) || true
                 [ -z "$_uv_artifact" ] || _uv_default_populated=true
             fi
         done
