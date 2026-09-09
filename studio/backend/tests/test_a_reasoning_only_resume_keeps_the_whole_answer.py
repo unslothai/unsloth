@@ -22,6 +22,10 @@ def _reasoning(content: str) -> str:
     )
 
 
+def _delta(content: str) -> str:
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
+
+
 def _finish(reason: str = "stop") -> str:
     return (
         "data: "
@@ -35,9 +39,12 @@ def _done() -> str:
 
 
 class _Recorder:
-    def __init__(self, monkeypatch, streams, *, signal):
+    def __init__(self, monkeypatch, streams, *, signal, pause_after_chunks = 1):
         self.payloads: list[dict] = []
         self.signal = signal
+        # Which data chunk of the first attempt the pressure lands on. One by default, so
+        # the pause is mid-thought; higher to let prose stream first.
+        self.pause_after_chunks = pause_after_chunks
         self._streams = [list(stream) for stream in streams]
         self.backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend = self.backend
@@ -75,9 +82,13 @@ class _Recorder:
             preempt_event = None,
         ):
             attempt = len(recorder.payloads) - 1
+            seen = 0
             for chunk in response.chunks:
                 yield chunk
-                if attempt == 0 and chunk.startswith("data: {"):
+                if not chunk.startswith("data: {"):
+                    continue
+                seen += 1
+                if attempt == 0 and seen >= recorder.pause_after_chunks:
                     recorder.signal.request("kv_pressure")
                     raise preemption.LlamaStreamPreempted
 
@@ -158,3 +169,114 @@ class TestThePromotedFallbackCoversBothAttempts:
         )
         final = [item for item in items if isinstance(item, str)][-1]
         assert final == "<think>Just the one.</think>Just the one."
+
+
+_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "search",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _tool_content(items) -> list[str]:
+    return [
+        item["text"]
+        for item in items
+        if isinstance(item, dict) and item.get("type") == "content"
+    ]
+
+
+class TestTheToolLoopPromotesTheWholeThought:
+    """Every GUI chat carries tools, so the tool loop runs this too."""
+
+    def test_the_answer_is_not_cut_to_its_second_half(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_reasoning("The first half. "), _finish(), _done()],
+                [_reasoning("The second half."), _finish(), _done()],
+            ],
+            signal = signal,
+        )
+        items = list(
+            recorder.backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "answer me"}],
+                tools = [_TOOL],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = _Policy(),
+                promote_reasoning_only = True,
+            )
+        )
+        texts = _tool_content(items)
+        assert texts, "the chat produced no text at all"
+        final = texts[-1]
+        thought, _, fallback = final.partition("</think>")
+        assert (
+            "The first half. " in thought and "The second half." in thought
+        ), f"the thought lost an attempt: {final!r}"
+        assert "The first half. " in fallback, (
+            "the promoted fallback IS the answer for a reasoning-only model, and it was "
+            f"built from the resumed attempt alone: {final!r}"
+        )
+        assert "The second half." in fallback
+
+    def test_an_uninterrupted_tool_chat_is_unchanged(self, monkeypatch):
+        """No pause, so nothing is carried and the fallback is this attempt's own."""
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [[_reasoning("Just the one."), _finish(), _done()]],
+            signal = signal,
+        )
+        recorder.backend._iter_text_cancellable = (
+            lambda response, _cancel_event, first_token_deadline = None, preempt_event = None: iter(
+                response.chunks
+            )
+        )
+        items = list(
+            recorder.backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "answer me"}],
+                tools = [_TOOL],
+                cancel_event = threading.Event(),
+                promote_reasoning_only = True,
+            )
+        )
+        assert _tool_content(items)[-1] == "<think>Just the one.</think>Just the one."
+
+    def test_a_thought_that_already_produced_prose_is_not_promoted(self, monkeypatch):
+        """Prose makes the thought a thinking block, so the pause carries no fallback."""
+        signal = preemption.PreemptSignal()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_reasoning("Thinking. "), _delta("Half one"), _finish(), _done()],
+                [_reasoning("More thought."), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_after_chunks = 2,
+        )
+        items = list(
+            recorder.backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "answer me"}],
+                tools = [_TOOL],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = _Policy(),
+                promote_reasoning_only = True,
+            )
+        )
+        final = _tool_content(items)[-1]
+        assert "Half one" in final, f"the paused prose was dropped: {final!r}"
+        _, _, fallback = final.rpartition("</think>")
+        assert "Thinking. " not in fallback, (
+            f"a thought the turn already answered around was promoted as the answer: {final!r}"
+        )

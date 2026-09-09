@@ -30658,7 +30658,13 @@ class LlamaCppBackend:
         _carried_truncations: list[dict] = []
         # Seeds the resumed attempt's display so its snapshots extend the paused one's:
         # every consumer diffs snapshots, and a shorter one loses the first emission.
-        _preempt_display_seed: Optional[tuple[str, str, bool]] = None
+        _preempt_display_seed: Optional[tuple[str, str, bool, str]] = None
+        # The thought the paused attempts already decoded. A reasoning-only turn promotes
+        # its thought as the visible answer, and that promotion is built from the CURRENT
+        # attempt's `reasoning_accum`, which resets every round; without this the answer is
+        # only the half decoded after the pause. Rebound per iteration below, as
+        # `_last_emitted` is. Mirrors `_preempt_earlier_reasoning` on the plain path.
+        _preempt_earlier_reasoning = ""
         # Rebound per iteration below; bound here too because the re-cost at the top of a
         # round reads what the PREVIOUS round left on screen, and round zero has none.
         _last_emitted = ""
@@ -31066,10 +31072,18 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
+                # Cleared with the display: a round that was not resumed is a new turn.
+                _preempt_earlier_reasoning = ""
                 if _preempt_display_seed is not None:
-                    # Only the display: `content_accum` and `reasoning_accum` stay per
-                    # attempt, since the checkpoint and the replay are built from them.
-                    cumulative_display, _last_emitted, in_thinking = _preempt_display_seed
+                    # The display and the thought so far: `content_accum` and
+                    # `reasoning_accum` stay per attempt, since the checkpoint and the
+                    # replay are built from them.
+                    (
+                        cumulative_display,
+                        _last_emitted,
+                        in_thinking,
+                        _preempt_earlier_reasoning,
+                    ) = _preempt_display_seed
                     _preempt_display_seed = None
                 # Provisional tool_start cards already shown, keyed by tool_call_id.
                 provisional_started_tool_calls: dict[str, str] = {}
@@ -31190,7 +31204,7 @@ class LlamaCppBackend:
                                     else:
                                         cumulative_display = _finalize_reasoning_only_cumulative(
                                             cumulative_display,
-                                            reasoning_accum,
+                                            _preempt_earlier_reasoning + reasoning_accum,
                                             _iter_finish_reason,
                                             promote_reasoning_only,
                                         )
@@ -31752,7 +31766,7 @@ class LlamaCppBackend:
                                     yield _summary
                             cumulative_display = _finalize_reasoning_only_cumulative(
                                 cumulative_display,
-                                reasoning_accum,
+                                _preempt_earlier_reasoning + reasoning_accum,
                                 _iter_finish_reason,
                                 promote_reasoning_only,
                             )
@@ -33767,7 +33781,15 @@ class LlamaCppBackend:
                 if _preempt_cap_left is not None:
                     # Floored at 1: a request for zero tokens returns nothing at all.
                     _continuation_max_tokens = max(1, _preempt_cap_left)
-                _preempt_display_seed = (cumulative_display, _last_emitted, in_thinking)
+                _preempt_display_seed = (
+                    cumulative_display,
+                    _last_emitted,
+                    in_thinking,
+                    # Carried so the promoted answer is the WHOLE thought. Dropped once the
+                    # attempt has prose: the thought is then a thinking block, not the
+                    # answer, and the resume replays the prose instead.
+                    "" if content_accum else _preempt_earlier_reasoning + reasoning_accum,
+                )
                 continue
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
