@@ -58,8 +58,14 @@ def test_rmsnorm_forward_column_strided_input(gemma, dtype):
     weights = torch.rand(strided.shape[-1], device = "cuda", dtype = dtype)
 
     reference_source = source.detach().clone().requires_grad_()
-    reference_inputs = reference_source[..., ::2].contiguous()
-    expected = Fast_RMS_Layernorm.apply(reference_inputs, weights, 1e-6, gemma)
+    reference_inputs = reference_source[..., ::2]
+    normalized = reference_inputs.float() * torch.rsqrt(
+        reference_inputs.float().square().mean(-1, keepdim = True) + 1e-6
+    )
+    if gemma:
+        expected = (normalized * (weights.float() + 1.0)).to(dtype)
+    else:
+        expected = normalized.to(dtype) * weights
     expected.backward(torch.ones_like(expected))
 
     actual = Fast_RMS_Layernorm.apply(strided, weights, 1e-6, gemma)
