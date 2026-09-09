@@ -6826,6 +6826,7 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     }
     Write-StudioLine "  $Rule" -ForegroundColor DarkGray
 }
+substep "Optional Windows sandbox: choose Set up Windows sandbox in the Python and Terminal controls. Auto works without it."
 step "launch" "unsloth studio -p 8888"
 substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
 substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
