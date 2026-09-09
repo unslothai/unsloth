@@ -1256,6 +1256,7 @@ export const en = {
       copy: "Copy",
       copied: "Copied",
       commandBuilder: "Command builder",
+      commandShell: "Shell for all commands",
       agent: "Coding agent",
       model: "Model",
       searchModels: "Search GGUF models...",

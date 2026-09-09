@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
+    qualify_cache_identity,
     HfTokenArg,
     is_anonymous,
     normalize_token,
@@ -78,7 +79,9 @@ def _token_fingerprint(token: HfTokenArg) -> str:
         return ANONYMOUS_CACHE_IDENTITY
     if not token:
         return ""
-    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
+    return qualify_cache_identity(
+        token, hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
+    )
 
 
 def _file_identity(path: Optional[str]) -> Optional[tuple]:
