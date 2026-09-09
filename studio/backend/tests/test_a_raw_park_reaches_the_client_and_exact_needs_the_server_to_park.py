@@ -212,7 +212,8 @@ class TestTheNamedBudgetIsJudged:
     def test_the_shortfall_follows_the_server_that_came_up(self):
         # A drafter priced before launch and dropped by the retry: the budget is judged again
         # with no draft state, before a healthy exact server is failed on the stale answer.
-        source = inspect.getsource(LlamaCppBackend.load_model)
+        # Whitespace folded: the formatter wraps these expressions.
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         at = source.index("_mtp_will_engage and not _mtp_active_for_launched_server")
         again = source.index("_exact_parking_shortfall_mib(", at)
         assert "draft_bytes = 0" in source[again : again + 400]
@@ -302,9 +303,9 @@ class TestTheNamedBudgetIsJudged:
         )
 
     def test_the_pool_sized_after_launch_prices_its_draft_state_too(self):
-        source = inspect.getsource(LlamaCppBackend.load_model)
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index("_fitted_bytes = _kv_bytes(_fitted_ctx)")
-        window = source[site : site + 1100]
+        window = source[site : site + 700]
         assert (
             "_draft_kv_state_bytes(_fitted_ctx) if _mtp_active_for_launched_server else 0" in window
         )
