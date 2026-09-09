@@ -183,26 +183,32 @@ export function resolveMemoryAdvisory(
   if (!estimate.kvEstimable) {
     return {
       tone: "warn",
-      text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
+      text: "KV cache size is unknown: missing attention dimensions. Actual usage will be higher.",
     };
   }
   if (estimate.drafterKvUnsized) {
     return {
       tone: "warn",
-      text: "Part of this load is a file the server will fetch rather than one on this disk, so it can't be sized from here. The figures above are a floor.",
+      text: "A remote draft model or vision component is partly unmeasured. Actual usage will be higher.",
+    };
+  }
+  if (estimate.adaptersUnsized) {
+    return {
+      tone: "warn",
+      text: "An adapter or control vector is unmeasured. Actual usage will be higher.",
     };
   }
   if (estimate.moeOffloadUnmodelled) {
     return {
       tone: "muted",
-      text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
+      text: "Expert layers on the CPU are not reflected here. GPU usage may be lower.",
     };
   }
   if (verdicts.singleMemoryPool) {
     if (verdicts.totalFit === "exceeds") {
       return {
         tone: "warn",
-        text: "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
+        text: "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
       };
     }
     // One pool, so one pressure question however it was measured: the GPU's free reading and the
@@ -210,7 +216,7 @@ export function resolveMemoryAdvisory(
     if (verdicts.hostPressured || verdicts.gpuPressured) {
       return {
         tone: "muted",
-        text: "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused.",
+        text: "Memory is tight. Free memory or try Auto context.",
       };
     }
     return null;
@@ -221,31 +227,31 @@ export function resolveMemoryAdvisory(
   if (verdicts.hostShareFit === "exceeds") {
     return {
       tone: "warn",
-      text: "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
+      text: "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
     };
   }
   if (verdicts.totalFit === "exceeds") {
     return {
       tone: "warn",
-      text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
     };
   }
   if (verdicts.gpuFit === "exceeds") {
     return {
       tone: "warn",
-      text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+      text: "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
     };
   }
   if (verdicts.hostPressured) {
     return {
       tone: "muted",
-      text: "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
+      text: "System RAM is tight. Free memory or use fewer CPU layers.",
     };
   }
   if (verdicts.rawGpuFit === "fits" && verdicts.gpuPressured) {
     return {
       tone: "muted",
-      text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+      text: "GPU memory is tight. Free memory or try Auto context.",
     };
   }
   return null;

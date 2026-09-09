@@ -135,19 +135,19 @@ test("worseMemoryFit is symmetric for every pair", () => {
 
 const ADVISORY_TEXTS = {
   singlePoolExceeds:
-    "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
+    "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
   singlePoolPressure:
-    "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused.",
+    "Memory is tight. Free memory or try Auto context.",
   hostShareExceeds:
-    "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
+    "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
   totalExceeds:
-    "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
+    "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
   gpuExceeds:
-    "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
+    "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
   hostPressure:
-    "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
+    "System RAM is tight. Free memory or use fewer CPU layers.",
   gpuPressure:
-    "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
+    "GPU memory is tight. Free memory or try Auto context.",
 };
 
 test("D1: a single-pool host under memory pressure now says so", () => {
@@ -182,6 +182,18 @@ test("D1: the single-pool pressure text is reachable from EITHER free reading", 
     APPLE,
   );
   assert.equal(hostSide.advisory?.text, ADVISORY_TEXTS.singlePoolPressure);
+});
+
+test("a tight reading warns without claiming the load exceeds available memory", () => {
+  const result = fit(
+    { gpuBytes: 26 * GB, totalBytes: 26 * GB },
+    { freeGpuCapacityGb: 30, usableSystemRamGb: 30 },
+    APPLE,
+  );
+  assert.equal(result.freeGpuFit, "tight");
+  assert.equal(result.usableHostFit, "tight");
+  assert.match(result.advisory?.text ?? "", /Memory is tight/);
+  assert.doesNotMatch(result.advisory?.text ?? "", /not what is free|will be|refused/);
 });
 
 test("D1: no discrete-host string can be chosen on a single-pool host", () => {
@@ -241,7 +253,7 @@ test("the floor notes outrank every verdict, in their own order", () => {
     { drafterKvUnsized: true, moeOffloadUnmodelled: true, totalBytes: 900 * GB },
     {},
   );
-  assert.match(drafter.advisory?.text ?? "", /fetch rather than one on this disk/);
+  assert.match(drafter.advisory?.text ?? "", /remote draft model or vision component/);
   const moe = fit({ moeOffloadUnmodelled: true, totalBytes: 900 * GB }, {});
   assert.equal(moe.advisory?.tone, "muted");
   assert.match(moe.advisory?.text ?? "", /Expert layers/);
@@ -271,7 +283,7 @@ test("a load beyond GPU and RAM combined, with a host share that fits RAM", () =
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
 });
 
-test("a load that only overflows the card is told it will spill", () => {
+test("a load that only overflows the card gets conditional offload advice", () => {
   const result = fit({ gpuBytes: 30 * GB, totalBytes: 30 * GB }, {});
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.gpuExceeds);
 });
@@ -491,9 +503,21 @@ test("an unsizable pass-through adapter marks the total a floor", () => {
     IDLE_DISCRETE,
   );
   assert.equal(bounded.bounded, true);
+  assert.equal(bounded.prefix, "≥ ");
+  assert.equal(bounded.advisory?.tone, "warn");
+  assert.match(bounded.advisory?.text ?? "", /adapter or control vector/);
   const sized = resolveMemoryFit(
     { ...SIZED, totalBytes: 8 * GB, gpuBytes: 8 * GB },
     IDLE_DISCRETE,
   );
   assert.equal(sized.bounded, false);
+});
+
+test("an unsized adapter warning takes precedence over a placement verdict", () => {
+  const result = fit(
+    { adaptersUnsized: true, moeOffloadUnmodelled: true, totalBytes: 200 * GB },
+    {},
+  );
+  assert.match(result.advisory?.text ?? "", /adapter or control vector/);
+  assert.equal(result.advisory?.tone, "warn");
 });
