@@ -488,8 +488,12 @@ def test_the_managed_runtime_path_override_is_not_treated_as_a_custom_runtime(mo
     assert active() is True
 
 
-def _active_helper():
-    """The helper, read out of the CLI source: importing the module pulls in typer."""
+def _helper_namespace(studio_home = None):
+    """The helper block, read out of the CLI source: importing the module pulls in typer.
+
+    ``studio_home`` stands in for the root ``_resolve_studio_home`` inferred off
+    ``sys.prefix``; None is the ordinary legacy install.
+    """
     text = (
         pathlib.Path(__file__).resolve().parents[3] / "unsloth_cli" / "commands" / "studio.py"
     ).read_text(encoding = "utf-8")
@@ -500,9 +504,72 @@ def _active_helper():
         "sys": __import__("sys"),
         "Path": pathlib.Path,
         "_PACKAGE_ROOT": pathlib.Path(__file__).resolve().parents[3],
+        "STUDIO_HOME": pathlib.Path(studio_home)
+        if studio_home is not None
+        else pathlib.Path.home() / ".unsloth" / "studio",
+        "_STUDIO_HOME_IS_CUSTOM": studio_home is not None,
     }
     exec(compile(text[start:end], "<helper>", "exec"), namespace)
-    return namespace["_managed_llama_runtime_is_the_active_one"]
+    return namespace
+
+
+def _active_helper():
+    return _helper_namespace()["_managed_llama_runtime_is_the_active_one"]
+
+
+def test_an_inferred_studio_root_is_graded_not_the_legacy_tree(tmp_path, monkeypatch):
+    """Codex 3971960862, P1. The desktop scrubs UNSLOTH_STUDIO_HOME and STUDIO_HOME before
+    it spawns this command (MANAGED_CHILD_SCRUBBED_ENV), so default_managed_llama_dir read
+    an empty environment and answered the legacy ~/.unsloth/llama.cpp, while
+    preflight::managed::inferred_studio_llama_root fingerprints <root>/llama.cpp off the
+    same sys.prefix inference the CLI already made. The two halves graded different trees,
+    so quarantine in the runtime actually in use never moved the cached verdict."""
+    for name in (
+        "LLAMA_SERVER_PATH",
+        "UNSLOTH_LLAMA_CPP_PATH",
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+        "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    root = tmp_path / "custom-studio"
+    graded = _helper_namespace(root)["_llama_runtime_to_grade"]()
+    assert graded == root / "llama.cpp"
+    # And the environment is left exactly as it was found, since this runs inside a command
+    # that goes on to read it.
+    assert "UNSLOTH_STUDIO_HOME" not in os.environ
+
+
+def test_a_legacy_install_still_grades_the_legacy_tree(tmp_path, monkeypatch):
+    """The other direction: nothing was inferred, so nothing is exported and the answer is
+    the tree every ordinary install has."""
+    for name in (
+        "LLAMA_SERVER_PATH",
+        "UNSLOTH_LLAMA_CPP_PATH",
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+        "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    graded = _helper_namespace()["_llama_runtime_to_grade"]()
+    assert graded == pathlib.Path.home() / ".unsloth" / "llama.cpp"
+
+
+def test_an_explicit_studio_home_is_left_alone(tmp_path, monkeypatch):
+    """An ambient UNSLOTH_STUDIO_HOME is the user's, not an inference, and it must survive
+    the call unchanged rather than being replaced by the inferred root."""
+    for name in (
+        "LLAMA_SERVER_PATH",
+        "UNSLOTH_LLAMA_CPP_PATH",
+        "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH",
+        "STUDIO_HOME",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    theirs = tmp_path / "theirs"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(theirs))
+    graded = _helper_namespace(tmp_path / "inferred")["_llama_runtime_to_grade"]()
+    assert graded == theirs / "llama.cpp"
+    assert os.environ["UNSLOTH_STUDIO_HOME"] == str(theirs)
 
 
 def test_a_deleted_llama_server_path_does_not_suppress_the_managed_verdict(tmp_path, monkeypatch):

@@ -1888,6 +1888,15 @@ mod tests {
         })
     }
 
+    /// The entrypoint name `holds_a_llama_server` looks for on this platform.
+    fn server_file_name() -> &'static str {
+        if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        }
+    }
+
     fn install_fake_runtime(root: &Path) -> PathBuf {
         let bin = runtime_bin_dir(root);
         fs::create_dir_all(&bin).unwrap();
@@ -2683,6 +2692,11 @@ mod tests {
         assert!(!holds_a_llama_server(&root.join("not-there")));
 
         let bin = install_fake_runtime(&root);
+        // The name the finder looks for, which is not the name that fixture writes:
+        // it exists to be counted, and the counters do not care what a file is
+        // called. On Windows the entrypoint carries .exe, so writing it here is what
+        // makes this a tree the backend would actually stop at.
+        fs::write(bin.join(server_file_name()), b"binary").unwrap();
         assert!(
             holds_a_llama_server(&root),
             "build/bin/llama-server is one of the layouts the backend accepts"
@@ -2693,22 +2707,13 @@ mod tests {
         // into _unavailable, which ends the search here rather than walking on.
         let flat = scratch_dir("override-flat");
         fs::create_dir_all(&flat).unwrap();
-        let server = flat.join(if cfg!(windows) {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        });
+        let server = flat.join(server_file_name());
         fs::write(&server, b"binary").unwrap();
         assert!(holds_a_llama_server(&flat));
 
         // A directory of that name is not a server, and neither is an empty tree.
         let decoy = scratch_dir("override-decoy");
-        fs::create_dir_all(decoy.join(if cfg!(windows) {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        }))
-        .unwrap();
+        fs::create_dir_all(decoy.join(server_file_name())).unwrap();
         assert!(!holds_a_llama_server(&decoy));
         let _ = fs::remove_dir_all(&decoy);
 

@@ -4300,15 +4300,39 @@ def _layout_stops_discovery(candidates) -> bool:
 
 
 def _managed_llama_dir_ignoring_the_override() -> Path:
-    """default_managed_llama_dir with UNSLOTH_LLAMA_CPP_PATH out of the way."""
+    """default_managed_llama_dir with UNSLOTH_LLAMA_CPP_PATH out of the way, and the
+    inferred studio home put back.
+
+    The desktop scrubs UNSLOTH_STUDIO_HOME and STUDIO_HOME before it spawns this
+    (MANAGED_CHILD_SCRUBBED_ENV), so default_managed_llama_dir reads an empty
+    environment and answers the legacy ~/.unsloth/llama.cpp. _resolve_studio_home has
+    already recovered the real root off sys.prefix by then, and preflight::managed's
+    inferred_studio_llama_root fingerprints <root>/llama.cpp on the strength of the
+    same inference, so reading only the environment here graded the legacy tree while
+    the cache watched the custom one: quarantine in the runtime actually in use
+    reported Ready and failed at model load.
+
+    Exported rather than computed, because _ensure_studio_env_exported writes exactly
+    this value and there should be one rule for it, not two that can drift.
+    """
     from studio.install_llama_prebuilt import default_managed_llama_dir
 
     saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
+    had_home = "UNSLOTH_STUDIO_HOME" in os.environ
+    saved_home = os.environ.get("UNSLOTH_STUDIO_HOME")
+    # Truthy-check, not a bare presence one, the way _ensure_studio_env_exported reads
+    # it: a blank UNSLOTH_STUDIO_HOME= is not a root either.
+    if _STUDIO_HOME_IS_CUSTOM and not (saved_home or "").strip():
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         return default_managed_llama_dir()
     finally:
         if saved is not None:
             os.environ["UNSLOTH_LLAMA_CPP_PATH"] = saved
+        if had_home:
+            os.environ["UNSLOTH_STUDIO_HOME"] = saved_home
+        else:
+            os.environ.pop("UNSLOTH_STUDIO_HOME", None)
 
 
 @studio_app.command("desktop-capabilities", hidden = True)
