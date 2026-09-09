@@ -6607,19 +6607,29 @@ def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch
     pinned install takes the fast path instead of repeating the release work on every
     update."""
     host = macos_host(macos_version = (15, 5))
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_api_newest_release_tag", lambda repo: pytest.fail("listed releases"))
     monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda repo: pytest.fail("resolved latest")
+        INSTALL_LLAMA_PREBUILT,
+        "_api_newest_release_tag",
+        lambda repo: pytest.fail("listed releases"),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_download_host_latest_release_tag",
+        lambda repo: pytest.fail("resolved latest"),
     )
     marker = {"release_tag": INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG}
     assert (
-        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = host)
+        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(
+            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = host
+        )
         == INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG
     )
     # At or above the floor the pin does not apply and the repository's newest release is the answer.
     newer = macos_host(macos_version = (26, 0))
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_api_newest_release_tag", lambda repo: "b9999")
     assert (
-        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = newer)
+        INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(
+            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = newer
+        )
         == "b9999"
     )
