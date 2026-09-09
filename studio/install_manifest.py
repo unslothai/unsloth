@@ -313,10 +313,9 @@ def write_manifest(
     # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
-        # urlsplit raises on a malformed authority, which would break the never-raises contract.
+        # urlsplit raises on a malformed authority, which would break the never-raises contract. Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
         try:
             parsed = urlsplit(candidate)
-            # Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
             _woa_ok = (
                 parsed.scheme.lower() == "https"
                 and parsed.hostname == "pypi.nvidia.com"
@@ -326,8 +325,7 @@ def write_manifest(
             )
         except ValueError:
             _woa_ok = False
-        # netloc, not hostname: hostname strips ":443", so a value with a port was written and
-        # then refused by setup.ps1's reader. Equality drops userinfo with it.
+        # netloc, not hostname: hostname strips ":443", so a value with a port is refused. Equality drops userinfo with it.
         if _woa_ok:
             payload["woa_torch_index"] = "https://pypi.nvidia.com" + parsed.path.rstrip("/")
     path = manifest_path(root)

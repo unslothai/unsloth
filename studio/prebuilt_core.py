@@ -847,9 +847,7 @@ def release_asset_digests(release: dict[str, Any]) -> dict[str, str]:
         if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
             continue
         raw = asset.get("digest")
-        # The prefix is required, not stripped for convenience: normalize_sha256_digest
-        # accepts a bare 64-hex string, and an unprefixed digest is one whose algorithm
-        # GitHub did not state.
+        # The prefix is required, not stripped for convenience: normalize_sha256_digest accepts a bare 64-hex string, and an unprefixed digest is one whose algorithm GitHub did not state.
         if not isinstance(raw, str) or not raw.lower().startswith("sha256:"):
             continue
         digest = normalize_sha256_digest(raw)

@@ -3886,8 +3886,7 @@ function Get-PersistedWoaTorchIndex {
 }
 
 # The dependency pass drops the manifest before rebuilding it, so this marker lives outside it.
-# Parity copies of install.ps1's index probe, kept identical by a parity test: the forced repair
-# below carries the same unsafe-best-match, so an open-ended spec lets a PyPI CPU release win.
+# Parity copies of install.ps1's index probe, kept identical by a parity test: the forced repair below carries the same unsafe-best-match, so an open-ended spec lets a PyPI CPU release win.
 function Test-WoaWheelTagsParity {
     param([string]$Name, [string]$PyTag, [string]$AbiTag)
     if (-not $Name) { return $false }
@@ -3930,7 +3929,6 @@ function Test-WoaPairsWithTorchParity {
     }
 }
 
-# The same swap install.ps1 makes: overrides.txt, with its torch floors, is back in UV_OVERRIDE.
 function New-WoaTorchStepOverrideValueParity {
     param([string]$Value, [string]$Dir = "")
     $result = @{ Value = $null; Temps = @() }
@@ -3960,8 +3958,7 @@ function New-WoaTorchStepOverrideValueParity {
     return $result
 }
 
-# Parity copies of install.ps1's uv index policy readers: the index that serves torch's shared
-# dependencies beside the CUDA one has to be the same answer from a fresh shell.
+# Parity copies of install.ps1's uv index policy readers: the index that serves torch's shared dependencies beside the CUDA one has to be the same answer from a fresh shell.
 function Remove-WoaTomlComment {
     param([string]$Line)
     $inD = $false; $inS = $false
@@ -4014,21 +4011,11 @@ function Split-WoaTomlKey {
     return ,$parts
 }
 
-# uv's inline spelling of [[index]]: `index = [{ url = "...", default = true }]`. Valid and
-# documented, so refusing it outright made every legitimate corporate mirror written this way
-# read as Unreadable. Returns @{ DefaultUrl; Extras }, or $null on ANY doubt -- the caller turns
-# $null into Unreadable, which the consumers already treat conservatively, so guessing is the
-# only outcome worse than not parsing. Accepts a single-line, brace-balanced array of FLAT
-# inline tables and nothing else: a multi-line array, a nested structure or a bare entry is $null.
-#
-# The brace characters are built from their code points on purpose. The parity and composition
-# tests extract a function by counting braces without understanding quoting, so a literal one
-# inside a string here would make this body unextractable and silently un-tested.
+# uv's inline spelling of [[index]], returning @{ DefaultUrl; Extras } or $null on ANY doubt, and only for a single-line array of FLAT inline tables. The brace characters below are built from code points: the parity tests extract a function by counting braces.
 function Read-WoaUvInlineIndexArray {
     param([string]$Value)
     $lb = [char]0x7B; $rb = [char]0x7D
     $v = ([string]$Value).Trim()
-    # A multi-line array never reaches here whole, so it fails this and stays Unreadable.
     if ($v -notmatch '^\[(.*)\]$') { return $null }
     $inner = $Matches[1].Trim()
     $result = @{ DefaultUrl = $null; Extras = @() }
@@ -4040,8 +4027,7 @@ function Read-WoaUvInlineIndexArray {
         $c = $inner[$i]
         if ($inD) { if ($c -eq '\') { $i++ } elseif ($c -eq '"') { $inD = $false }; continue }
         if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
-        # A quote at depth 0 opens a BARE entry, not an inline table. Tested before string
-        # mode starts, or the literal is consumed whole and the reject below never sees it.
+        # A quote at depth 0 opens a BARE entry, not an inline table. Tested before string mode starts, or the literal is consumed whole.
         if (($c -eq '"' -or $c -eq "'") -and $depth -eq 0) { return $null }
         if ($c -eq '"') { $inD = $true; continue }
         if ($c -eq "'") { $inS = $true; continue }
@@ -4052,12 +4038,10 @@ function Read-WoaUvInlineIndexArray {
             if ($depth -eq 0) { $groups += $inner.Substring($start, $i - $start); $start = -1 }
             continue
         }
-        # Nested arrays and bare entries are not modelled; only separators sit between tables.
         if ($depth -eq 0 -and ([string]$c) -notmatch '[\s,]') { return $null }
     }
     if ($depth -ne 0 -or $inD -or $inS -or -not $groups.Count) { return $null }
     foreach ($g in $groups) {
-        # Nothing nested inside an entry either: a sub-table would carry keys this cannot rank.
         if ($g.IndexOf($lb) -ge 0 -or $g.IndexOf('[') -ge 0) { return $null }
         $url = $null; $isDefault = $false
         foreach ($pair in ($g -split ',')) {
@@ -4071,14 +4055,10 @@ function Read-WoaUvInlineIndexArray {
             $bool = if ($raw -match '^(true|false)$') { $raw -eq 'true' } else { $null }
             if ($k -eq 'url') { if (-not $str) { return $null }; $url = $str }
             elseif ($k -eq 'default') { if ($null -eq $bool) { return $null }; $isDefault = $bool }
-            # An explicit index serves only packages pinned to it, so it is neither the default
-            # nor a general extra. Not modelled, so it is doubt, so it is $null.
+            # An explicit index serves only packages pinned to it, so it is neither the default nor a general extra: not modelled, so it is doubt, so $null.
             elseif ($k -eq 'explicit') { if ($null -eq $bool -or $bool) { return $null } }
-            # name, format, authenticate and friends do not change which indexes are consulted
-            # for an unpinned package, so they are read past rather than refused.
         }
         if (-not $url) { return $null }
-        # First default wins, matching the [[index]] flush below.
         if ($isDefault) { if (-not $result.DefaultUrl) { $result.DefaultUrl = $url } }
         else { $result.Extras += $url }
     }
@@ -4130,7 +4110,6 @@ function Read-WoaUvTomlIndexKeys {
         $str = if ($val -match '^"(.*)"$' -or $val -match "^'(.*)'$") { $Matches[1] } else { $null }
         $bool = if ($val -match '^(true|false)$') { $val -eq 'true' } else { $null }
         if ($inIndex) {
-            # A dotted key inside [[index]] names some other table, not this entry.
             if (-not $prefix) {
                 if ($key -eq 'url' -and $str) { $idxUrl = $str }
                 if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
@@ -4142,7 +4121,6 @@ function Read-WoaUvTomlIndexKeys {
         if ($null -eq $scope) { continue }
         if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $scope.NoIndex) { $scope.NoIndex = $bool }
         if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $scope.IndexUrl) { $scope.IndexUrl = $str }
-        # A one-line array of strings; anything else is not guessed at.
         if ($key -eq 'extra-index-url') {
             if ($val -match '^\[(.*)\]$') {
                 foreach ($m in [regex]::Matches($Matches[1], ('"([^"]*)"' + "|'([^']*)'"))) {
@@ -4152,8 +4130,6 @@ function Read-WoaUvTomlIndexKeys {
         }
         if ($key -eq 'index') {
             $inline = Read-WoaUvInlineIndexArray -Value $val
-            # Still $null for anything it will not vouch for, which keeps the old behaviour
-            # exactly where the old behaviour was the honest answer.
             if ($null -eq $inline) { return $null }
             if ($inline.DefaultUrl -and -not $entry.DefaultUrl) { $entry.DefaultUrl = $inline.DefaultUrl }
             $entry.Extras += @($inline.Extras)
@@ -4195,22 +4171,18 @@ function Get-WoaUvConfigIndexPolicy {
         if (-not (Test-Path -LiteralPath $f.Path -PathType Leaf)) { continue }
         $policy = Read-WoaUvTomlIndexKeys -Path $f.Path -Top $f.Top
         if ($null -eq $policy) {
-            # The first unreadable file, so a message can name what to go and fix.
             $result.Unreadable = $true
             if (-not $result.UnreadablePath) { $result.UnreadablePath = $f.Path }
             continue
         }
         if (-not $noIndexSet -and $null -ne $policy.NoIndex) { $result.NoIndex = $policy.NoIndex; $noIndexSet = $true }
         if (-not $result.DefaultIndex -and $policy.DefaultIndex) { $result.DefaultIndex = $policy.DefaultIndex }
-        # Additive across files, like the option itself.
         $result.ExtraIndexes = @($result.ExtraIndexes) + @($policy.ExtraIndexes)
     }
     return $result
 }
 
-# True when uv's own config decides the indexes and we could not read it, so no dependency index
-# can be named. Harmless where uv reads that file itself; fatal where the caller scrubs UV_* and
-# sets UV_NO_CONFIG, because there the trio index would be the only source left.
+# True when uv's own config decides the indexes and we could not read it: fatal where the caller scrubs UV_* and sets UV_NO_CONFIG, because the trio index would be the only source left.
 function Test-WoaUvIndexPolicyUnreadable {
     foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
         $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
@@ -4239,14 +4211,10 @@ function Get-WoaDependencyIndexArgs {
         $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
         foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
     }
-    # uv's configuration files are uv's; pip does not read them.
     if (-not $pip -and (-not $default -or -not $extras)) {
         $cfg = Get-WoaUvConfigIndexPolicy
         if ($cfg.NoIndex) { return @() }
-        # An unreadable policy with no env default is doubt, and the PyPI fallback below would
-        # resolve that doubt by naming public PyPI -- silently overriding whatever mirror the
-        # file configured. Name nothing instead, the same way Test-WoaResolveReachesPyPI treats
-        # it. The uv call sites let uv read the file itself; the one that cannot stops first.
+        # An unreadable policy with no env default: name nothing, or the PyPI fallback below would silently override whatever mirror the file configured.
         if ($cfg.Unreadable -and -not $default) { return @() }
         if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }
         if (-not $extras) { $extras = @($cfg.ExtraIndexes) }
@@ -4306,7 +4274,6 @@ function Get-WoaCudaWheelVersionParity {
         try { $key = [version]$numeric } catch { continue }
         if ($null -eq $bestKey -or $key -gt $bestKey) { $bestKey = $key; $best = $version }
         elseif ($key -eq $bestKey) {
-            # Same release: PEP 440 order, so a final build outranks every prerelease and later numbers win within a kind.
             $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
             if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
         }
@@ -4380,12 +4347,10 @@ function Resolve-WoaOverrideLine {
         $lead = $Matches[1]; $opt = $Matches[2]; $sep = $Matches[3]
         $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
         $rebased = & $abs $bare
-        # Re-quoted when needed: these options take ONE file argument.
         if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
         return "$lead$opt$sep$rebased$tail"
     }
-    # -e / --editable names a path too. Extras split off first: GetFullPath would fold
-    # ".[dev]" into the parent and leave a directory nobody has.
+    # -e / --editable names a path too. Extras split off first, or GetFullPath folds ".[dev]" into the parent.
     if ($Line -match '^(\s*)(-e|--editable)([=\s]+)(.+?)(\s*)$') {
         $lead = $Matches[1]; $opt = $Matches[2]; $sep = $Matches[3]
         $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
@@ -4397,12 +4362,10 @@ function Resolve-WoaOverrideLine {
     }
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
-        # PEP 508 separates a marker from a URL with whitespace before the ";": kept aside, or it
-        # would be rebased as part of the path.
+        # PEP 508 separates a marker from a URL with whitespace before the ";": kept aside, or it would be rebased as part of the path.
         $marker = ""
         if ($target -match '^(.*?)(\s+;.*)$') { $target = $Matches[1]; $marker = $Matches[2] }
         if ($target -match '^file:(?!//)(.*)$') {
-            # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
             $rebasedPath = & $abs $Matches[1]
             $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
             return "$head$uri$marker$tail"
@@ -4413,8 +4376,7 @@ function Resolve-WoaOverrideLine {
         $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
         if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest" }
     }
-    # A bare local directory: pip and uv both take one as a requirement, and a leading dot
-    # segment is what tells it from a package name, which may not start with one.
+    # A bare local directory is a requirement to pip and uv both; the leading dot segment is what tells it from a package name.
     if ($Line -match '^(\s*)(\.{1,2}[^\s#;]*)(\s*(?:[;#].*)?)$') {
         $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
         $extras = ""
@@ -4445,7 +4407,6 @@ function Get-RequirementEntries {
     $dir = [System.IO.Path]::GetDirectoryName($full)
     $entries = @()
     foreach ($line in $lines) {
-        # Comments and blanks come across as entries: a fold should carry the file faithfully.
         if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
             # pip needs whitespace before an inline "#": "-r a#b.txt" keeps its hash.
             $nested = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"', "'")
@@ -4468,9 +4429,7 @@ function Get-RequirementNames {
     return @($names | Sort-Object -Unique)
 }
 
-# Put back what install.ps1 exported: process-scoped, so a direct update starts without them.
-# The merged override file copies caller lines, which can carry credentials, so it lives only for
-# one run: removed here at exit (and by Exit-SetupFailure), and any stale copy before it is rewritten.
+# Put back what install.ps1 exported: process-scoped, so a direct update starts without them. The merged override file copies caller lines, which can carry credentials, so it lives for one run only.
 function Remove-WoaMergedOverrides {
     if ($script:WoaMergedOverrides) {
         Remove-Item -LiteralPath $script:WoaMergedOverrides -Force -ErrorAction SilentlyContinue
@@ -4775,8 +4734,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         }
     }
 
-    # Keep a CUDA torch already here: its family tag is not one download.pytorch.org publishes, so
-    # the comparison can only disagree. ANY explicit pin is exempt; this distrusts the INFERRED one.
+    # Keep a CUDA torch already here: its family tag is not one download.pytorch.org publishes, so the comparison can only disagree. ANY explicit pin is exempt; this distrusts the INFERRED one.
     if ((Test-WinArm64Venv) -and $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
         -not $_pinnedIdx) {
         if ($shouldRebuild) {
@@ -5303,9 +5261,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 # the catch: this is the last statement before Fast-Install starts resolving `python`.
 Assert-VenvActivated -VenvDir $VenvDir
 
-# pip does not understand uv's resolver flags. Drops them with any value that follows.
-# One of --prerelease's five values has a pip equivalent: allow is --pre. disallow is pip's
-# default, and if-necessary/explicit have no flag, so those three drop rather than invert.
+# pip does not understand uv's resolver flags, so they are dropped with any value that follows. Of --prerelease's five values only allow maps to pip (--pre); the rest drop rather than invert.
 function Remove-UvOnlyResolverFlags {
     param([object[]]$Arguments)
     $kept = @()
@@ -5643,22 +5599,17 @@ $WinArm64Venv = Test-WinArm64Venv
 $_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) { $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/') } else { "" }
 # The index install.ps1 probed, or the CUDA branch takes a driver-derived family with no wheel.
 $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL) {
-    # The user's own channel, ahead of both records: only NVIDIA's channels are ever persisted.
     $env:UNSLOTH_WOA_TORCH_INDEX_URL.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv) {
-    # A fresh shell has no handover: the manifest carries the answer, the marker when a run died.
     $_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir
     if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }
 } else { "" }
-# Re-exported, not just held locally: the manifest rewrite reads it, so a fresh-shell update would
-# erase the index for good. Either record opens the block: the WoA chain alone lost a mirror pin.
+# Re-exported, not just held locally: the manifest rewrite reads it, so a fresh-shell update would erase the index for good. Either record opens the block: the WoA chain alone lost a mirror pin.
 $_woaPinnedIndex = if ($WinArm64Venv) { Get-PinnedTorchIndexUrl } else { $null }
 if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
-    # RECORD the index the torch steps will USE, the generic pin when there is one: the WoA chain
-    # named a channel the run had not installed from. BOTH, since the read chain prefers the manifest.
-    # An unpersistable pin is refused at each end rather than leaving a stale answer.
+    # RECORD the index the torch steps will USE, the generic pin when there is one, in BOTH records since the read chain prefers the manifest. An unpersistable pin is refused rather than left stale.
     $_woaMarkerIndex = $_woaPinnedIndex
     if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }
     else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
@@ -5671,9 +5622,7 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     # Written BEFORE the manifest is dropped below, so an interrupted run still leaves this index.
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
-# A terminating error after this point (a throw) reaches neither Exit-SetupFailure nor the last
-# statement of the script, so the merged override file, which copies caller lines that can carry
-# credentials, would stay on disk. The trap removes it and rethrows.
+# A terminating error after this point reaches neither Exit-SetupFailure nor the last statement, so the merged override file, which can carry the caller's credentials, would stay on disk. The trap removes it.
 trap { Remove-WoaMergedOverrides; break }
 Restore-WoaResolverEnvironment
 
@@ -5828,8 +5777,7 @@ $_effectiveTorchIndexUrl = $TorchInstallIndexUrl
 
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
-# Absent install.ps1's answer assume no torchaudio: an absent wheel makes the trio unresolvable.
-# Which index the torch steps ACTUALLY use; neither flag applies unless that index still stands.
+# Absent install.ps1's answer assume no torchaudio: an absent wheel makes the trio unresolvable. $WinArm64EffectiveTorchIndexUrl is which index the torch steps ACTUALLY use.
 $WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl) { ([string]$PinnedTorchIndexUrl).Trim().TrimEnd('/') }
                                   elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
                                   else { "" }
@@ -5853,14 +5801,11 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
-            # Paired with that torch, never merely newest: two maximized pins can be unsatisfiable.
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
             if ($_woaVisionV) {
                 $WinArm64VisionSpec = "torchvision==$_woaVisionV"
             } else {
-                # install.ps1 takes the native path only with a torchvision paired to the torch. Here the venv
-                # already exists, so a lagging index keeps the installed pair rather than pinning a torch whose
-                # torchvision would resolve against a build it was not made for.
+                # The venv already exists, so a lagging index keeps the installed pair rather than pinning a torch whose torchvision would resolve against a build it was not made for.
                 $_woaInstalledPair = ""
                 try {
                     $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m; print(m.version('torch') + '|' + m.version('torchvision'))" 2>$null | Out-String).Trim()
@@ -5878,8 +5823,7 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
             }
             $_woaAudioV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchaudio" -PairWith $_woaTorchV
             if ($_woaAudioV) { $WinArm64AudioSpec = "torchaudio==$_woaAudioV" }
-            # This probe is the same one install.ps1 ran, so it decides: a fresh shell has no handoff, and
-            # the handoff alone would drop an audio wheel the index does pair with this torch.
+            # This probe is the same one install.ps1 ran, so it decides: a fresh shell has no handoff, and the handoff alone would drop an audio wheel the index does pair with this torch.
             $_woaProbeHasAudio = [bool]($_woaAudioV -and (Test-WoaAudioMatchesTorchParity -TorchVersion $_woaTorchV -AudioVersion $_woaAudioV))
             if ($WinArm64NoAudio -eq $_woaProbeHasAudio) {
                 $WinArm64NoAudio = -not $_woaProbeHasAudio
@@ -5892,17 +5836,10 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's
-# configured one, public PyPI by default) and best-match comes with it. Not gated on $UseUv: pip
-# needs the extra index too.
+# The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
-    # The dependency index follows the caller's resolver policy, as install.ps1's trio step does.
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
-    # Stop rather than guess. Get-WoaDependencyIndexArgs names no index when uv's config decides
-    # them and we could not read it, and install.ps1's trio step can take that answer because it
-    # calls uv directly, so uv reads the file itself. This one cannot: Fast-Install sets
-    # UV_NO_CONFIG and scrubs UV_* whenever --index-url is passed, which it is below, so an empty
-    # answer here leaves the trio index as the only source and torch's dependencies unresolvable.
+    # Stop rather than guess: Fast-Install sets UV_NO_CONFIG and scrubs UV_* whenever --index-url is passed, so an unreadable uv policy would leave the trio index as the only source here.
     if ($_woaResolver -eq "uv" -and (Test-WoaUvIndexPolicyUnreadable)) {
         $_woaCfgPath = [string](Get-WoaUvConfigIndexPolicy).UnreadablePath
         if (-not $_woaCfgPath) { $_woaCfgPath = "your uv configuration" }
@@ -5919,21 +5856,17 @@ $WinArm64IndexArgs = if ($WinArm64Venv) {
         Exit-SetupFailure "Unreadable uv index policy in $_woaCfgPath"
     }
     $_woaIndexArgs = @("--index-strategy", "unsafe-best-match") + @(Get-WoaDependencyIndexArgs -Resolver $_woaResolver)
-    # Fast-Install clears UV_FIND_LINKS and PIP_FIND_LINKS beside the other inherited index settings
-    # whenever --index-url is given, so the staged wheelhouse is named on the command line; under
-    # no-index it is the only dependency source. Only when it exists: uv fails on a missing directory.
+    # Fast-Install clears UV_FIND_LINKS and PIP_FIND_LINKS whenever --index-url is given, so the staged wheelhouse is named on the command line. Only when it exists: uv fails on a missing directory.
     $_woaWheels = Join-Path (Join-Path $StudioHome "woa") "wheels"
     if (Test-Path -LiteralPath $_woaWheels -PathType Container) {
         $_woaIndexArgs += @("--find-links", (Get-UvSafePath $_woaWheels))
     }
-    # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal.
     if (($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1") -or
         ($WinArm64EffectiveTorchIndexUrl -match 'nightly')) {
         $_woaIndexArgs = @("--prerelease=allow") + $_woaIndexArgs
     }
     $_woaIndexArgs
 } else { @() }
-# Recovered above the no-torch guard because the manifest rewrite needs it in every mode.
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
@@ -6133,7 +6066,6 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
                          elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
                          else { $TorchInstallIndexUrl }
         $_effectiveTorchIndexUrl = $_cudaIndexUrl
-        # The exact WoA pins are only worth sending if the override file cannot undo them.
         $_woaStepSaved = $null; $_woaStepSwapped = $false; $_woaStepTemps = @(); $_woaCutoffSaved = @{}
         if ($WinArm64Venv -and $env:UV_OVERRIDE) {
             $_woaStepSaved = $env:UV_OVERRIDE
@@ -6152,9 +6084,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
                     substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pins (the index carries no upload dates)."
                 }
             }
-            # --no-index ignores every registry index, the CUDA one included, and Fast-Install leaves UV_NO_INDEX
-            # alone (it does clear PIP_NO_INDEX). It yields for this one command: the trio comes from the CUDA
-            # index and its dependencies from the wheelhouse named above.
+            # --no-index ignores every registry index, the CUDA one included, and Fast-Install leaves UV_NO_INDEX alone. It yields for this one command: the trio from the CUDA index, dependencies from the wheelhouse.
             $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
             if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
                 $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
@@ -6199,8 +6129,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         if ($_woaAudioProbe.Ok) {
             $_woaTorchVer = if ($_woaAudioProbe.Output -match '(?m)^T=(\S+)\s*$') { $Matches[1] } else { "" }
             $_woaAudioVer = if ($_woaAudioProbe.Output -match '(?m)^A=(\S+)\s*$') { $Matches[1] } else { "" }
-            # The whole pairing, as at selection: major.minor, and the build (dev stamp, CUDA tag) too,
-            # since the extension is linked against one libtorch.
+            # The whole pairing, as at selection: major.minor, and the build (dev stamp, CUDA tag) too, since the extension is linked against one libtorch.
             if ($_woaAudioVer -and $_woaTorchVer -and -not (
                     (Test-WoaAudioMatchesTorchParity -TorchVersion $_woaTorchVer -AudioVersion $_woaAudioVer) -and
                     (Test-WoaPairsWithTorchParity -TorchVersion $_woaTorchVer -OtherVersion $_woaAudioVer -Project "torchaudio"))) {
@@ -6245,7 +6174,6 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # Windows wheel is 2.11.0+cpu, and only install.ps1 -- never on the updater's path -- repaired
 # that. Vocabulary is Get-InstalledTorchTag's; an unknown leaf publishes nothing.
 if (-not $NoTorchMode) {
-    # $_effectiveTorchIndexUrl, so a native run does not publish the driver-derived family.
     $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
     # $ROCmIndexUrl first: on the AMD path $TorchInstallIndexUrl still points at /cpu.
     $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
@@ -6852,17 +6780,13 @@ if ($LocalLlamaCppLinked) {
             try {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for now.
-                # windows-vulkan is in every branch: any x64 Windows host can land there,
-                # and a guard without it deletes a working Vulkan install on every run.
-                # The VENV's arch, not the machine's: a WoA host on the x64 fallback wants windows-cuda.
+                # windows-vulkan is in every branch: any x64 Windows host can land there, and a guard without it deletes a working Vulkan install on every run. The VENV's arch, not the machine's.
                 $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
                 # Still valid unopted: the selector falls back to it when no ARM64 CUDA asset exists.
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
                     if ($_arm64CudaOptOut) { @("windows-arm64", "windows-vulkan") } else { @("windows-arm64-cuda", "windows-arm64", "windows-vulkan") }
                 } else { @("windows-cuda", "windows-vulkan") }
-                # A probe that did not answer is not evidence the GPU is gone.
-                # Read here, not from the dependency pass, which $SkipPythonDeps skips whole.
+                # A probe that did not answer is not evidence the GPU is gone. Read here, not from the dependency pass, which $SkipPythonDeps skips whole.
                 $_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl) { $WinArm64EffectiveTorchIndexUrl }
                     else {
                         $_p = Get-PinnedTorchIndexUrl
@@ -6874,9 +6798,7 @@ if ($LocalLlamaCppLinked) {
                     }
                 $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
-                # No ROCm bundle exists for Windows ARM64: upstream's is hip-radeon-x64 and we
-                # publish none, so the selector falls through to the ARM64 CPU bundle. Without
-                # that kind here the gate deletes and refetches it on every single update.
+                # No ROCm bundle exists for Windows ARM64 (upstream's is hip-radeon-x64), so the selector falls through to the ARM64 CPU bundle; without that kind here the gate refetches it every update.
                 $_rocmKinds = if (Test-WinArm64Venv) {
                     @("windows-rocm", "windows-hip", "windows-arm64", "windows-vulkan")
                 } else { @("windows-rocm", "windows-hip", "windows-vulkan") }

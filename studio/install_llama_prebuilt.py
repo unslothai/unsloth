@@ -748,7 +748,6 @@ def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
 
 # Upstream names these llama-<tag>-bin-win-cuda-<runtime>-<arch>.zip, arch in {x64, arm64}.
 WINDOWS_CUDA_ARCHS = ("x64", "arm64")
-# Both Windows CUDA kinds, for the checks that must treat them alike.
 _WINDOWS_CUDA_INSTALL_KINDS = ("windows-cuda", "windows-arm64-cuda")
 
 
@@ -3770,8 +3769,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         )
 
     if host.is_windows and host.is_arm64:
-        # CUDA first on an NVIDIA host, then the CPU bundle; without this branch every Windows
-        # ARM64 host fell through to a source build.
+        # CUDA first on an NVIDIA host, then the CPU bundle; without this branch every Windows ARM64 host fell through to a source build.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             attempts = _drop_blackwell_incapable_windows_cuda(
                 host,
@@ -3885,8 +3883,7 @@ def resolve_release_asset_choice(
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
         # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
-        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch, since the
-        # published half returns before the upstream tail is reached.
+        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -3907,9 +3904,8 @@ def resolve_release_asset_choice(
                         "published Windows ARM64 CUDA assets ignored for install planning: "
                         f"{release.repo}@{release.release_tag} ({exc})"
                     )
-            # Same rule as the digest fetch below: a rate limit, an outage or a malformed
-            # payload from the release API costs the CUDA bundle, never the install. The
-            # published ARM64 CPU bundle is still there to fall through to.
+            # Same rule as the digest fetch below: a rate limit, an outage or a malformed payload from the
+            # release API costs the CUDA bundle, never the install; the ARM64 CPU bundle is still there.
             try:
                 upstream_arm64_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
             except Exception as exc:
@@ -3931,14 +3927,8 @@ def resolve_release_asset_choice(
                 try:
                     return apply_approved_hashes(upstream_arm64_cuda, checksums)
                 except PrebuiltFallback as exc:
-                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream
-                    # ggml-org's: the same release this fork repackages. Verified against
-                    # GitHub's own per-asset digest, which the API now reports for every
-                    # asset. Weaker than our manifest, which we compute ourselves, but it
-                    # pins the bytes to what the API listed and is what makes this the only
-                    # branch that does not simply refuse. An asset GitHub states no digest
-                    # for is refused rather than installed unchecked, so this is never the
-                    # path by which an unverified archive lands.
+                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream ggml-org's, the same release this fork
+                    # repackages. Verified against GitHub's per-asset digest; an asset it states no digest for is refused, not installed.
                     verified = _apply_release_digests(
                         upstream_arm64_cuda,
                         github_release_asset_digests(UPSTREAM_REPO, llama_tag),
@@ -7272,7 +7262,6 @@ def runtime_payload_health_groups(
     if install_kind in {"windows-cpu", "windows-arm64"}:
         return _windows_shared_groups(source_label, tag)
     if install_kind in {"windows-cuda", "windows-arm64-cuda"}:
-        # Same payload names on both Windows CUDA arches; only the build differs.
         groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:

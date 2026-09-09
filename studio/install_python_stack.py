@@ -4553,7 +4553,6 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """
     if NO_TORCH:
         return True
-    # A CUDA torch already here is the only one win_arm64 has, so inference can only disagree.
     if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
@@ -4949,7 +4948,6 @@ def _ensure_rocm_torch() -> None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
-            # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists there.
             _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
@@ -6009,7 +6007,7 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
-# No win_arm64 wheel and no sdist buildable without MSVC / Rust / LLVM / FFmpeg. All optional.
+# No win_arm64 wheel and no sdist buildable without MSVC / Rust / LLVM / FFmpeg. All optional:
 #   tensorboard needs grpcio; librosa and openai-whisper need numba -> llvmlite (cp314 only).
 # Lowercase entries only: _filter_requirements lowercases the line and compares verbatim.
 WINDOWS_ARM64_SKIP_PACKAGES = {
@@ -6062,7 +6060,6 @@ def _wheel_matches_interpreter(filename: str) -> bool:
                 if pure and int(pure.group(1)) == major and int(pure.group(2) or 0) <= minor:
                     return True
             elif abi_tag == "abi3" and not free_threaded:
-                # Forward compatible from 3.2 up, and not implemented free-threaded.
                 stable = re.fullmatch(r"cp(\d)(\d+)", py_tag)
                 if stable and int(stable.group(1)) == major and 2 <= int(stable.group(2)) <= minor:
                     return True
@@ -6131,7 +6128,6 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
     specifier = (specifier or "").strip()
     if not specifier:
         return True
-    # packaging first: it is what pip and uv answer this with.
     for module_name in ("packaging.specifiers", "pip._vendor.packaging.specifiers"):
         try:
             module = importlib.import_module(module_name)
@@ -6143,7 +6139,6 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
             return bool(spec_set.contains(version, prereleases = bool(spec_set.prereleases)))
         except Exception:
             break
-    # The comparison below models the numeric release only, so a non-final version is not judged.
     if not re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", version or ""):
         return False
     got = _parse_release(version)
@@ -6251,23 +6246,17 @@ def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
     return pins
 
 
-# Skipped for their DEPENDENCIES: whisper's metadata needs tiktoken unconditionally, so filtering
-# the direct line does not stop the sdist arriving transitively.
+# Skipped for their DEPENDENCIES: whisper's metadata needs tiktoken unconditionally, so filtering the direct line does not stop the sdist arriving transitively.
 WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
     "tensorboard": ("grpcio",),
-    # soxr as well as the numba pair: librosa 0.11.0 requires soxr>=0.3.2, and soxr has never
-    # published a win_arm64 wheel in any release. Without it here, hosting cp313 numba and
-    # llvmlite would un-skip librosa and the extras pass would then build soxr from an sdist,
-    # which is the outcome the skip list exists to prevent.
+    # soxr as well as the numba pair: librosa 0.11.0 requires soxr>=0.3.2 and soxr has never published a win_arm64 wheel, so un-skipping librosa would build it from an sdist.
     "librosa": ("llvmlite", "numba", "soxr"),
-    # openai-whisper does not depend on soxr; its metadata asks for numba and tiktoken only.
     "openai_whisper": ("llvmlite", "numba", "tiktoken"),
 }
 
 
 # The blocker versions the packages' OWN metadata demands: too old, and the extras pass fails.
-# {blocker: (specifier, package it was read from, that package's pinned version)}; the provenance
-# makes a bump to extras.txt a prompt to re-read the metadata. llvmlite arrives through numba.
+# {blocker: (specifier, package it was read from, that package's pinned version)}. llvmlite arrives through numba.
 WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
     "grpcio": (">=1.74.0", "tensorboard", "2.21.0"),
     "numba": (">=0.51.0", "librosa", "0.11.0"),
@@ -6275,13 +6264,10 @@ WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
 }
 
 
-# Excluded on win_arm64 by MARKER, so a hosted wheel has no requirement to satisfy. Floors given,
-# because --no-deps otherwise takes whatever happens to be hosted.
+# Excluded on win_arm64 by MARKER, so a hosted wheel has no requirement to satisfy. Floors given, because --no-deps otherwise takes whatever happens to be hosted.
 WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = {
     "hf-transfer": "",
     "xformers": ">=0.0.22.post7",
-    # Excluded by marker in pyproject.toml and studio.txt; the unconditional line is one the torch
-    # install never applies.
     "sqlite-vec": "",
 }
 
@@ -6368,7 +6354,6 @@ def _evict_xformers_built_for_another_torch() -> bool:
     return True
 
 
-# Blockers the PUBLIC index resolves, per interpreter: {dist: {interpreter tag: version}}.
 WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
     "llvmlite": {"cp314": "0.49.0"},
     "numba": {"cp314": "0.67.0"},
@@ -6469,7 +6454,6 @@ def _uv_config_index_policy() -> "dict[str, object]":
                     if file_default is None:
                         file_default = entry["url"]
                 else:
-                    # An [[index]] without default = true is consulted in addition to the default.
                     extras.append(entry["url"])
         for scope in (pip_scope, section):
             value = scope.get("extra-index-url")
@@ -6661,13 +6645,11 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
 
     def hosted(name: str) -> bool:
         canonical = _canonical_dist_name(name)
-        # A blocker the public index already resolves for this interpreter needs no local copy.
         versions = set(available.get(canonical) or ()) | _public_index_win_arm64_versions(canonical)
         if not versions:
             return False
         clauses = [clause for clause in pins.get(canonical, []) if clause]
         if not clauses:
-            # No direct line to satisfy: a transitive blocker or an unpinned entry, still floored.
             floor = WINDOWS_ARM64_BLOCKER_FLOORS.get(canonical)
             if floor is None:
                 return True
@@ -6675,7 +6657,6 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
         verdicts = [_version_satisfies(v, c) for v in versions for c in clauses]
         if any(verdict is True for verdict in verdicts):
             return True
-        # All False is a definite miss; a None means the pin is beyond the comparison.
         return any(verdict is None for verdict in verdicts)
 
     keep_skipping: set[str] = set()
@@ -6683,7 +6664,6 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
         canonical = _canonical_dist_name(package)
         blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
         if blockers:
-            # The blockers decide even when the package's own wheel is hosted.
             if all(hosted(b) for b in blockers):
                 continue
         elif hosted(package):
@@ -8138,7 +8118,6 @@ def pip_install(
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
     if actual_req is not None and _is_win_arm64_interpreter():
-        # The ORIGINAL file: same pins, and independent of which filters ran first.
         _arm64_skip = _windows_arm64_skip_packages(req if req is not None else actual_req)
         if _arm64_skip:
             actual_req = _filter_requirements(actual_req, _arm64_skip)
@@ -8149,7 +8128,6 @@ def pip_install(
     if (
         actual_req is not None
         and PLATFORM_LACKS_TORCHCODEC_WHEEL
-        # Unless the wheelhouse carries one: extras-no-deps.txt is the only line asking for it.
         and not _wheelhouse_hosts("torchcodec")
     ):
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
@@ -8983,7 +8961,6 @@ def install_python_stack() -> int:
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
             and _expected_torch_flavor_was_pinned(_recordable_torch_flavor_tag(torch_flavor_tag)),
-            # Windows on ARM only: write_manifest keeps NVIDIA's channels and drops the rest.
             woa_torch_index = os.environ.get("UNSLOTH_WOA_SELECTED_TORCH_INDEX"),
         )
         is None
