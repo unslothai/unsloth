@@ -2890,9 +2890,9 @@ class TestEveryDeviceSetChangeReAsks:
         arm = src[src.index("def _dio_decision_for(") :]
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
-        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat          # live
+        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat  # live
         assert "_for((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat  # forced on
-        assert "_for((False,False),_off_view)" in flat                        # toggles off
+        assert "_for((False,False),_off_view)" in flat  # toggles off
 
     def test_the_reactive_gate_can_gain_the_pair_not_only_lose_it(self):
         """Narrowing onto the surviving discrete card can gain a full offload the

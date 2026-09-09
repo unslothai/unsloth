@@ -23596,19 +23596,16 @@ class LlamaCppBackend:
                             settings = pair,
                         )
 
-                    live_emitted, live_effective = _for(
-                        _mem_settings, _fit_load_mode_env_view
-                    )
+                    live_emitted, live_effective = _for(_mem_settings, _fit_load_mode_env_view)
                     hypo_emitted, hypo_effective = _for(
                         (_mem_keep_resident, True), _mem_env_view_no_reserve
                     )
-                    pair = (
-                        list(MANAGED_DIO_FLAGS) if (live_emitted and live_effective) else []
-                    )
+                    pair = list(MANAGED_DIO_FLAGS) if (live_emitted and live_effective) else []
                     # Redundant with a loader the user picked themselves changes nothing
                     # a relaunch could undo, so it is not activity.
                     active = bool(pair) and live_effective != _for((False, False), _off_view)[1]
                     return pair, (hypo_emitted and hypo_effective), active
+
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -24274,9 +24271,7 @@ class LlamaCppBackend:
                         if _gate_dio and not self._memory_dio_flags:
                             cmd = [*cmd, *_gate_dio]
                             self._memory_dio_flags = list(_gate_dio)
-                            self._memory_policy_active = (
-                                _gate_active or self._memory_policy_active
-                            )
+                            self._memory_policy_active = _gate_active or self._memory_policy_active
                             self._record_memory_state(cmd, env)
                             logger.info(
                                 "Model Memory: applying %s; the arch gate pins this "
@@ -24807,8 +24802,8 @@ class LlamaCppBackend:
                                 # last-wins parse still leaves a hand-typed flag on top.
                                 # This rung turned the fitter OFF, so -ngl falls back to
                                 # every layer: that is the full offload to establish.
-                                _retry_dio, _retry_applicable, _retry_active = (
-                                    _dio_decision_for(gpu_indices, fully_offloaded = True)
+                                _retry_dio, _retry_applicable, _retry_active = _dio_decision_for(
+                                    gpu_indices, fully_offloaded = True
                                 )
                                 self._memory_dio_applicable = _retry_applicable
                                 if _retry_dio and not self._memory_dio_flags:
@@ -25415,9 +25410,7 @@ class LlamaCppBackend:
                             _dio_left_cmd = True
                             cmd = [*cmd, *_arch_dio]
                             self._memory_dio_flags = list(_arch_dio)
-                            self._memory_policy_active = (
-                                _arch_active or self._memory_policy_active
-                            )
+                            self._memory_policy_active = _arch_active or self._memory_policy_active
                             logger.info(
                                 "Model Memory: applying %s; the arch-crash retry's "
                                 "remaining GPU(s) %s confirm a full offload.",
