@@ -1928,21 +1928,49 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
-    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
-            {"content": "<think>leaked</think>answer"},
+            {"content": "Use <think>hi</think> in your prompt."},
             payload = payload,
             llama_backend = SimpleNamespace(
                 is_loaded = True,
                 reasoning_always_on = False,
                 supports_reasoning = True,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
+                        {"enable_thinking": bool(enable_thinking)}
+                    )
+                ),
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_effort_dial_gguf_still_parses_think_tags_when_disabled(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                # gpt-oss cannot stop thinking: "none" is not a level it offers, so the
+                # request leaves it on a low effort and genuine markup still streams.
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
+                        {"reasoning_effort": "low"}
+                    )
+                ),
             ),
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
