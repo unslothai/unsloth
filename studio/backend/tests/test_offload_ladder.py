@@ -1280,3 +1280,69 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
     seen.clear()
     plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
     assert seen and seen[-1] == 256, seen
+
+
+def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
+    """A slot the cache does not shrink for is concurrency given up for nothing.
+
+    Two shapes reach that: a floor map that is flat across the slot count, and
+    --kv-unified, where one cache serves every slot whatever the count. The rung
+    stepped 4 slots down to 1 in both, and the spill it emitted afterwards was
+    byte-identical to the plan pinned at 4.
+    """
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor = 4096, GIB
+    flat = {4: floor, 3: floor, 2: floor, 1: floor}
+    falls = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - 3 * layout.blocks[0].ffn_down_bytes
+    base = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, n_parallel = 4)
+    # A flat map, and a map that falls under a cache the slot count does not size.
+    for extra in (
+        dict(kv_bytes_floor_by_parallel = flat),
+        dict(kv_bytes_floor_by_parallel = falls, kv_unified = True),
+    ):
+        pinned = plan_placement(
+            layout,
+            [card],
+            64 * GIB,
+            ctx,
+            kv_bytes_floor = floor,
+            opts = opts(**base, **extra, min_parallel = 4),
+        )
+        plan = plan_placement(
+            layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, **extra)
+        )
+        assert plan.spills_anything, plan.reason
+        assert plan.n_parallel == 0, plan.reason
+        assert plan.ot_patterns == pinned.ot_patterns
+        assert plan.host_bytes == pinned.host_bytes
+
+
+def test_the_slot_rung_still_fires_where_a_slot_really_is_a_cache():
+    """The guard above must not cost the rung the case it was built for: with a
+    floor map that falls with the count, one slot fewer still closes a deficit
+    no weight has to move for."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor = 4096, GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - floor // 4
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            n_parallel = 4,
+            kv_bytes_floor_by_parallel = table,
+        ),
+    )
+    assert plan.n_parallel == 3 and not plan.ot_patterns, plan.reason

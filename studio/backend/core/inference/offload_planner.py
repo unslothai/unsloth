@@ -2302,15 +2302,22 @@ def _plan_at(
     # layers grow with the slots while the full-attention ones do not, so the
     # per-device check would split a re-priced total by ratios that no longer
     # hold and could pass a card that then fails allocation under --fit off.
+    #
+    # And not at all under --kv-unified, where one cache serves every slot: the
+    # slot count does not size it, so the whole rung buys concurrency away for
+    # nothing. Where the count DOES size it, a step that leaves ``needed`` where
+    # it was (a floor map that is flat across the count) says the same thing one
+    # step at a time, so it is undone and the rung ends there.
     slots_repriceable_per_device = not (n_devices > 1 and layout.has_swa)
     while (
         needed > budget
+        and not opts.kv_unified
         and slots_repriceable_per_device
         and knobs.n_parallel > max(1, opts.min_parallel)
     ):
         cand = _Knobs(knobs.n_parallel - 1, knobs.mmproj_to_host, knobs.draft_dropped)
         got = price(cand)
-        if got is None:
+        if got is None or got[0] >= needed:
             break
         knobs, (needed, budget, floor) = cand, got
     # Rung 2: the draft.
