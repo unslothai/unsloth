@@ -79,6 +79,7 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
 };
 const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
 const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const BUNDLE_DOWNLOAD_POLL_MS = 500;
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
@@ -360,12 +361,19 @@ export function useTauriUpdate(isExternalServer = false) {
     setUpdateProgress(0);
     const version = updateRef.current?.version;
     if (!version) throw new Error("No desktop update has been checked.");
-    // A bundle retained by an earlier attempt is reused; the check itself
-    // rehydrates it, so this is the common case for a retry.
-    const bundle = await desktopUpdateBundleStatus();
-    if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
-      setUpdateProgress(100);
-      return;
+    for (;;) {
+      // A bundle retained by an earlier attempt is reused; the update check
+      // rehydrates it, so a retry usually stops here.
+      const bundle = await desktopUpdateBundleStatus();
+      if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
+        setUpdateProgress(100);
+        return;
+      }
+      // A webview reload during a download leaves the native one running with no
+      // listener attached, and download_desktop_update refuses a second one. Wait
+      // that out rather than failing the whole update on it.
+      if (!bundle.downloading) break;
+      await new Promise((resolve) => setTimeout(resolve, BUNDLE_DOWNLOAD_POLL_MS));
     }
     await downloadDesktopUpdate(version, setUpdateProgress);
   }
