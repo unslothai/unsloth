@@ -6,13 +6,11 @@
 // no connections. These pin the parts that make it land where a user expects.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const dialog = readFileSync(
-  new URL("../src/features/chat/chat-providers-dialog.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
 
 test("an empty connection list opens the add-connection form", () => {
   // Both operands matter: `syncedProviders` is the backend answer, and

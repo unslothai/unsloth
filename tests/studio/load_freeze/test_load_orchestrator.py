@@ -46,7 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import logging as _logging  # noqa: E402
 
+# Stub get_logger so this file need not import the real package's structlog chain, but keep
+# __path__ pointing at the real package: this entry outlives the module in sys.modules, and a
+# stub with no __path__ makes every later-collected test that reaches loggers.media_progress
+# die with "'loggers' is not a package". Same care the structlog block below already takes.
 _loggers_stub = types.ModuleType("loggers")
+_loggers_stub.__path__ = [str(_STUDIO_BACKEND / "loggers")]
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 # structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would shadow the real package.
