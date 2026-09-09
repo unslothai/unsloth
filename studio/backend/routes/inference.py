@@ -11188,16 +11188,30 @@ def _launch_raises_projector_batch(
     """
     from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
 
-    if extra_args_disable_mmproj(extras):
-        return False
+    # An explicitly named projector opens even under --no-mmproj, which only stops the
+    # resolve and the auto-download; server-context.cpp gates on a non-empty mmproj.path.
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
     if override and Path(override).is_file():
         return True
+    if extra_args_disable_mmproj(extras):
+        return False
     if not getattr(config, "is_vision", False):
         return False
     resolved = getattr(config, "gguf_mmproj_file", None)
     if not resolved or not Path(str(resolved)).is_file():
         return False
+    # The loader resolves through _resolve_launch_mmproj_path, which rejects a projector
+    # whose name does not match the model family and launches text-only. Pricing 2048
+    # for that child overstates the panel and the guard by the same 1.8-2.3 GB the
+    # missing floor understated them by, just in the other direction.
+    main = getattr(config, "gguf_file", None)
+    if main:
+        try:
+            from utils.models.model_config import mmproj_matches_model_family
+            if not mmproj_matches_model_family(str(main), str(resolved)):
+                return False
+        except Exception:
+            pass
     if disable_vision:
         # The switch drops an image tower and keeps an audio-only one, and the kept
         # projector still launches, so it still carries the floor.

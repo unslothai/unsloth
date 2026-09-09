@@ -230,8 +230,12 @@ def test_a_projector_named_only_in_advanced_arguments_still_gets_the_floor(tmp_p
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
-def test_no_mmproj_in_the_extras_beats_an_extras_projector(tmp_path):
-    """--no-mmproj is the opt-out, so nothing loads and nothing is floored."""
+def test_no_mmproj_does_not_excuse_an_explicitly_named_projector(tmp_path):
+    """--no-mmproj sets params.no_mmproj, which stops Unsloth resolving one and stops
+    the HF auto-download, but server-context.cpp gates the load on a non-empty
+    mmproj.path and never reads that field (the same reasoning
+    test_mmproj_placement_policy.py applies to an inherited projector). The named file
+    still opens, so it still needs the floor."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -247,8 +251,49 @@ def test_no_mmproj_in_the_extras_beats_an_extras_projector(tmp_path):
         extra_args = ["--mmproj", str(mmproj), "--no-mmproj"],
     )["cmd"]
 
+    # The projector is still on the command line, which is the whole premise.
+    assert cmd[cmd.index("--mmproj") + 1] == str(mmproj)
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_no_mmproj_alone_still_floors_nothing(tmp_path):
+    """Without a named path there is nothing for the opt-out to fail to unload, so the
+    resolve is suppressed, no projector opens, and no floor is priced."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+
+    cmd = _launch(backend, gguf, is_vision = True, extra_args = ["--no-mmproj"])["cmd"]
+
+    assert "--mmproj" not in cmd
     assert "--batch-size" not in cmd
     assert "--ubatch-size" not in cmd
+
+
+def test_the_retry_leaves_a_pass_through_batch_last_wins(tmp_path):
+    """The argv is managed-flags-first with the extras appended after, so only the
+    first occurrence is ours. Rewriting every one deletes the user's pass-through, and
+    appending ours at the end puts it after their -b and quietly wins."""
+    vision_cmd = [
+        "/fake/llama-server",
+        "--batch-size", "2048",          # managed
+        "--ubatch-size", "2048",         # managed
+        "--mmproj", "mmproj-F16.gguf",
+        "-b", "4096",                    # user extras, appended last
+        "--batch-size", "4096",          # the same thing spelled long
+    ]
+
+    retried = LlamaCppBackend._restore_batch_args(
+        LlamaCppBackend._strip_mmproj_args(vision_cmd), None, None, 1
+    )
+
+    # Ours is gone; both of theirs survive, in their original order and position.
+    assert retried == ["/fake/llama-server", "-b", "4096", "--batch-size", "4096"]
 
 
 @pytest.mark.parametrize(

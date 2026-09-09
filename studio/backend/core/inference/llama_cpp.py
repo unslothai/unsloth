@@ -17883,24 +17883,33 @@ class LlamaCppBackend:
 
         ``None`` means the request named no batch at all, so the flag is removed rather
         than pinned: emitting nothing is what lets llama.cpp apply its own defaults.
+
+        Only the FIRST occurrence of each flag is rewritten, in place. The argv is built
+        managed-flags-first with the user's extras appended after, so the first one is
+        ours and any later one is theirs; rewriting every occurrence would delete a
+        pass-through ``--batch-size`` from Advanced Arguments, and appending ours at the
+        end would put it after a pass-through ``-b`` and quietly win. Both invert the
+        last-wins contract the rest of the argv builder documents.
         """
         emitted = {
             "--batch-size": _emitted_n_batch(n_batch, n_parallel),
             "--ubatch-size": n_ubatch,
         }
+        seen: set[str] = set()
         out: list[str] = []
         skip_value = False
         for tok in cmd:
             if skip_value:
                 skip_value = False
                 continue
-            if tok in emitted:
+            if tok in emitted and tok not in seen:
+                seen.add(tok)
                 skip_value = True
+                value = emitted[tok]
+                if value is not None:
+                    out.extend([tok, str(value)])
                 continue
             out.append(tok)
-        for flag, value in emitted.items():
-            if value is not None:
-                out.extend([flag, str(value)])
         return out
 
     @staticmethod
@@ -19515,11 +19524,15 @@ class LlamaCppBackend:
                 # while the extras, appended last, still hand the child a projector to
                 # load. That launch hit the assert with no flags emitted at all, which is
                 # #10559 reached through the settings box instead of the model picker.
-                _extras_mmproj = (
-                    None
-                    if extra_args_disable_mmproj(extra_args)
-                    else _extra_args_device(extra_args, {"--mmproj", "-mm"})
-                )
+                # NOT gated on the extras opt-out. --no-mmproj sets params.no_mmproj,
+                # which stops Unsloth resolving one and stops the HF auto-download, but
+                # server-context.cpp gates the load on a non-empty mmproj.path and never
+                # reads that field, so an explicitly named projector opens straight
+                # through it. Upstream scopes the flag to the -hf auto-download too. The
+                # opt-out still governs Studio's own resolution above, where it does
+                # decide whether a --mmproj is emitted at all; here the file is already
+                # on the command line and the child will load it.
+                _extras_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
                 _launch_opens_projector = bool(effective_is_vision) or bool(
                     _extras_mmproj and os.path.isfile(_extras_mmproj)
                 )
@@ -25195,9 +25208,17 @@ class LlamaCppBackend:
                                     "session; check memory, GPU/driver logs, or update Unsloth."
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
+                            # The fields too, not just the argv. The post-launch record
+                            # below re-derives self._n_ubatch from these locals, and a
+                            # stale 2048 against a child running llama.cpp's 512 enters
+                            # the slot fingerprint and over-states the prompt-cache slot
+                            # estimate fourfold, which silently skips saves under the
+                            # size cap.
+                            n_batch, n_ubatch = _requested_batch_pair
                             cmd = self._restore_batch_args(
                                 self._strip_mmproj_args(_vision_gpu_cmd),
-                                *_requested_batch_pair,
+                                n_batch,
+                                n_ubatch,
                                 n_parallel,
                             )
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
