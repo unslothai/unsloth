@@ -40,7 +40,8 @@ AfterAll {
 Describe 'Test-UvOfflineRequested' {
     It 'accepts <value>' -ForEach @(
         @{ value = '1' }, @{ value = 'true' }, @{ value = 'TRUE' }, @{ value = 'True' },
-        @{ value = 'yes' }, @{ value = 'on' }, @{ value = '  true  ' }
+        @{ value = 'yes' }, @{ value = 'on' }, @{ value = '  true  ' },
+        @{ value = 't' }, @{ value = 'T' }, @{ value = 'y' }
     ) {
         $env:UV_OFFLINE = $value
         Test-UvOfflineRequested | Should -BeTrue
@@ -48,7 +49,7 @@ Describe 'Test-UvOfflineRequested' {
 
     It 'rejects <value>' -ForEach @(
         @{ value = '0' }, @{ value = 'false' }, @{ value = '' }, @{ value = 'maybe' },
-        @{ value = 'offline' }
+        @{ value = 'offline' }, @{ value = 'tr' }
     ) {
         $env:UV_OFFLINE = $value
         Test-UvOfflineRequested | Should -BeFalse

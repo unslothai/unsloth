@@ -4958,8 +4958,10 @@ sys.exit(0 if ok else 1)
 # UV_OFFLINE is uv's own "there is no network" switch, and every install command this script
 # runs goes through uv. Same boolish spelling the POSIX side accepts.
 function Test-UvOfflineRequested {
+    # uv's boolish parser: y, yes, t, true, on, 1 (checked against uv 0.10.7, where
+    # UV_OFFLINE=t and =y both disable the network). Mirrors _uv_offline_requested.
     $value = "$($env:UV_OFFLINE)".Trim()
-    return @('1', 'true', 'yes', 'on') -contains $value.ToLowerInvariant()
+    return @('1', 't', 'true', 'y', 'yes', 'on') -contains $value.ToLowerInvariant()
 }
 
 function Invoke-FastPathEscapes {
@@ -5186,6 +5188,7 @@ sys.exit(2 if conflict else (0 if version else 1))
         if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             $SkipPythonDeps = $true
+            $script:OfflineFastPath = $true
             Invoke-FastPathEscapes
         } else {
             substep "could not reach PyPI, updating to be safe..."
@@ -6148,6 +6151,20 @@ if (Test-Path -LiteralPath $VenvT5Legacy) {
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.0")) { $_NeedT5_550 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_NeedT5_510 = $true }
+# The offline rule above kept the install because nothing could be fetched. A sidecar
+# rebuild is a wipe followed by four fetches, and Fast-Install falls back from an offline
+# uv to pip, so under that rule it would either reach for the network or destroy a usable
+# sidecar and then fail. Left for the next online update; the runtime self-heal covers a
+# missing tier in the meantime. Mirrors the _OFFLINE_FAST_PATH guard in setup.sh.
+if ($script:OfflineFastPath) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
+        $flag = "_NeedT5_$($tier[0])"
+        if ((Get-Variable -Name $flag -ValueOnly)) {
+            substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
+            Set-Variable -Name $flag -Value $false
+        }
+    }
+}
 
 if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {
 Write-StudioLine ""

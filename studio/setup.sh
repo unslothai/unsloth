@@ -1867,12 +1867,14 @@ sys.exit(0 if ok else 1)
 
 _uv_offline_requested() {
     # UV_OFFLINE is uv's own "there is no network" switch, and every install command this
-    # script runs goes through uv. Same boolish spelling as _uv_no_cache_requested.
+    # script runs goes through uv. The spellings are uv's boolish parser's: y, yes, t,
+    # true, on, 1 (checked against uv 0.10.7: UV_OFFLINE=t and =y both disable the
+    # network), so a value uv honours is never one this rule misses.
     _uvo=${UV_OFFLINE:-}
     _uvo=${_uvo#"${_uvo%%[![:space:]]*}"}
     _uvo=${_uvo%"${_uvo##*[![:space:]]}"}
     case "$_uvo" in
-        1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) unset _uvo; return 0 ;;
+        1 | [Tt] | [Tt][Rr][Uu][Ee] | [Yy] | [Yy][Ee][Ss] | [Oo][Nn]) unset _uvo; return 0 ;;
     esac
     unset _uvo
     return 1
@@ -2137,6 +2139,7 @@ sys.exit(2 if conflict else (0 if version else 1))
         if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             _SKIP_PYTHON_DEPS=true
+            _OFFLINE_FAST_PATH=true
             _fast_path_escapes
         else
             substep "could not reach PyPI, updating to be safe..."
@@ -2367,6 +2370,21 @@ fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
 _sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
 _sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
+# The offline rule above kept the install because nothing could be fetched. A sidecar
+# rebuild is a wipe followed by four fetches, and fast_install falls back from an offline
+# uv to pip, so under that rule it would either reach for the network or destroy a
+# usable sidecar and then fail. Left for the next online update; the runtime self-heal
+# (transformers_version._ensure_venv_dir) covers a missing tier in the meantime.
+if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
+    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+        set -- $_ofp
+        if eval "[ \"\$_NEED_T5_$1\" = true ]"; then
+            substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$1=false"
+        fi
+    done
+    unset _ofp
+fi
 
 if [ "$_NEED_T5_530" = true ]; then
     _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"

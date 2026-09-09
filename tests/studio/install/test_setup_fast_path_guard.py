@@ -299,10 +299,16 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
         ("TRUE", "yes"),
         ("  yes  ", "yes"),
         ("on", "yes"),
+        # uv's boolish parser also takes the single letters; checked against uv 0.10.7,
+        # where UV_OFFLINE=t and =y both disable the network.
+        ("t", "yes"),
+        ("T", "yes"),
+        ("y", "yes"),
         ("0", "no"),
         ("false", "no"),
         ("", "no"),
         ("maybe", "no"),
+        ("tr", "no"),
     ):
         result = subprocess.run(
             ["sh", str(probe)],
@@ -311,3 +317,30 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
             env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
         )
         assert result.stdout.strip() == expected, (value, result.stdout)
+
+
+def test_the_offline_fast_path_never_wipes_a_sidecar():
+    """The offline rule keeps the install because nothing can be fetched. A sidecar
+    rebuild is a wipe followed by four fetches, so under that rule it would either reach
+    for the network or destroy a usable sidecar and then fail. Both shells flag the
+    offline keep and clear every rebuild flag behind it."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    keep_sh = sh.index("keeping the verified install")
+    assert "_OFFLINE_FAST_PATH=true" in sh[keep_sh : keep_sh + 400]
+    guard_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
+    assert (
+        sh.index('_sidecar_current "$VENV_T5_510_DIR"')
+        < guard_sh
+        < sh.index('if [ "$_NEED_T5_530" = true ]; then')
+    )
+    assert 'eval "_NEED_T5_$1=false"' in sh[guard_sh : guard_sh + 900]
+    keep_ps1 = ps1.index("keeping the verified install")
+    assert "$script:OfflineFastPath = $true" in ps1[keep_ps1 : keep_ps1 + 400]
+    guard_ps1 = ps1.index("if ($script:OfflineFastPath) {")
+    assert (
+        ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
+        < guard_ps1
+        < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
+    )
+    assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
