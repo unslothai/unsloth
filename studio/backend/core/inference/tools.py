@@ -16560,7 +16560,6 @@ def project_workspace_in_flight(project_id: str):
         yield
 
 
-
 def _project_execution_id(
     session_id: "str | None", workdir: str, *, disable_sandbox: bool
 ) -> "str | None":
