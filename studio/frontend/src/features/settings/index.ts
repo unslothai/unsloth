@@ -52,6 +52,16 @@ export type {
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
+  applyInterfaceScale,
+  useInterfaceScaleStore,
+} from "./stores/interface-scale-store";
+// The runtime module, not the store, so consumers outside this feature do not have to pull
+// zustand in with them. native-drop-position.ts imports it directly for that reason.
+export {
+  NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
+} from "./lib/interface-scale-runtime";
+export {
   type MonitorFrame,
   useMonitorFrameStore,
 } from "./stores/monitor-frame-store";
