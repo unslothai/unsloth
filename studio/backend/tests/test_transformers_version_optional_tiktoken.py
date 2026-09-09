@@ -431,3 +431,26 @@ def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_
     tv._top_up_optional_packages(str(root), ("tiktoken",))
     assert not stale.exists()
     assert (good / "RECORD").is_file()
+
+
+def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, monkeypatch):
+    """`studio update` under UV_OFFLINE leaves a stale tier for the next online update;
+    the runtime repair used to delete that tier and then reach for the network."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    (root / "keep.txt").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    for name, value in (("UV_OFFLINE", "1"), ("HF_HUB_OFFLINE", "true")):
+        monkeypatch.delenv("UV_OFFLINE", raising = False)
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv(name, value)
+        assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+        assert (root / "keep.txt").is_file()
+        assert installed == []
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setenv("UV_OFFLINE", "0")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert installed == list(tv._VENV_T5_550_PACKAGES)

@@ -2717,11 +2717,34 @@ def _optional_top_up_lock(venv_dir: str):
         handle.close()
 
 
+def _runtime_repair_is_offline() -> bool:
+    """Whether a sidecar repair could only reach for a network the caller declared absent.
+
+    UV_OFFLINE is what `studio update` honours when it keeps a verified install and
+    leaves a stale sidecar for the next online update; the HF offline switches are what
+    the backend reads for its own fetches. Under either, the repair below would wipe a
+    tree it cannot rebuild: uv refuses the network and _install_to_dir then falls back to
+    a pip that would use it, or fails after the deletion.
+    """
+    if os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
+        return True
+    return _env_offline()
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
         _top_up_optional_packages(venv_dir, packages)
         return True
+
+    if _runtime_repair_is_offline():
+        logger.warning(
+            "%s not found or incomplete at %s, and this session is offline -- left as is "
+            "until the next online update",
+            label,
+            venv_dir,
+        )
+        return False
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
