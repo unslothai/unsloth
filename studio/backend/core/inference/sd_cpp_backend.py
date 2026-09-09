@@ -1716,6 +1716,10 @@ class SdCppDiffusionBackend:
             if self._load_token != _load_token:
                 return
             logger.error("sd_cpp.load_failed: %s", exc)
+            if self._state is not None:
+                # The previous pipeline stays resident; drop the records this load published.
+                from hub.services.models.account_access import restore_resident_metadata
+                restore_resident_metadata("diffusion")
             # Redact filesystem paths before this reaches /images/load-progress (as diffusers does).
             from utils.native_path_leases import redact_native_paths
 

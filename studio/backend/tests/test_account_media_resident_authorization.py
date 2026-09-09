@@ -323,3 +323,76 @@ def test_every_generation_access_check_names_its_modality():
         text = path.read_text(encoding = "utf-8")
         calls = text.count("require_media_generation_access,")
         assert len(pattern.findall(text)) == calls, path.name
+
+
+def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_resident(monkeypatch):
+    """The records a load publishes are undone when that load fails with the old build resident.
+
+    Alice loads a shared base with a private adapter baked in. Bob asks for the same base with his
+    own adapter and the background load fails, so the engine keeps serving ALICE's pipeline. The
+    ownership record names one reference (the model path), which is unchanged, so the prior-owner
+    fallback never fires, and the component record was replaced with Bob's adapter set: without the
+    rollback Bob clears his own list and generates on Alice's private build."""
+    monkeypatch.setattr(access, "_prior_resident_accounts", {})
+    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising = False)
+    monkeypatch.setattr(access, "_uncommitted_components", {}, raising = False)
+    ran = []
+    status = {"loaded": True, "repo_id": "org/public-model", "family": "z-image", "base_repo": None}
+    _install_backend(
+        monkeypatch,
+        lambda: status,
+        lambda **kwargs: (ran.append("ran"), _result("org/public-model"))[1],
+    )
+    run_as(ALICE, access.record_model_grant, "alice/private-lora")
+    run_as(BOB, access.record_model_grant, "bob/private-lora")
+    run_as(ALICE, access.note_resident_account, "diffusion", "org/public-model")
+    run_as(
+        ALICE,
+        access.note_resident_components,
+        "diffusion",
+        "org/public-model",
+        "alice/private-lora",
+    )
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "_prior_account", None)
+
+    # Bob's load route: the arbiter claim, then the two records published right after begin_load.
+    run_as(BOB, gpu_arbiter.acquire_for, "diffusion", lambda: None)
+    run_as(BOB, access.note_resident_account, "diffusion", "org/public-model")
+    run_as(
+        BOB,
+        access.note_resident_components,
+        "diffusion",
+        "org/public-model",
+        None,
+        "bob/private-lora",
+    )
+    # ... and the background load fails with Alice's pipeline still resident.
+    assert run_as(BOB, gpu_arbiter.restore_owner_account, "diffusion") is True
+    assert run_as(BOB, access.restore_resident_metadata, "diffusion") is True
+
+    assert access.resident_components(status, "diffusion") == [
+        "org/public-model",
+        "alice/private-lora",
+    ]
+    with client_for(BOB) as client:
+        assert (
+            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            == 404
+        )
+    assert ran == []
+    assert run_as(ALICE, access.resident_hidden, "diffusion", "org/public-model") is False
+
+
+def test_restoring_residency_records_is_a_noop_once_another_load_took_them(monkeypatch):
+    """Mirrors restore_owner_account: a rollback may never displace a newer account's claim."""
+    monkeypatch.setattr(access, "_prior_resident_accounts", {})
+    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising = False)
+    monkeypatch.setattr(access, "_uncommitted_components", {}, raising = False)
+    run_as(ALICE, access.note_resident_account, "diffusion", "a/model")
+    run_as(ALICE, access.note_resident_components, "diffusion", "a/model", "alice/private-lora")
+    run_as(BOB, access.note_resident_account, "diffusion", "b/model")
+    run_as(BOB, access.note_resident_components, "diffusion", "b/model", "bob/private-lora")
+    assert run_as(ALICE, access.restore_resident_metadata, "diffusion") is False
+    assert access._resident_accounts["diffusion"][0] == BOB.account_id
+    assert access._resident_components["diffusion"] == ("b/model", frozenset({"bob/private-lora"}))

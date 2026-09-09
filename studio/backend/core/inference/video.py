@@ -1650,7 +1650,10 @@ class VideoBackend:
             logger.error("video.load_failed: %s", exc)
             if self._state is not None:
                 from .gpu_arbiter import VIDEO, restore_owner_account
+                from hub.services.models.account_access import restore_resident_metadata
+
                 restore_owner_account(VIDEO)
+                restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             try:
                 clear_gpu_cache()

@@ -195,12 +195,20 @@ def foreign_media_generations(account_id: str) -> int:
 
 # A failed load leaves the previous model resident, and its account keeps control of it.
 _prior_resident_accounts: dict[str, tuple[str, frozenset[str]]] = {}
+# What each publish displaced, so a load that never commits can put it back.
+_uncommitted_resident: dict[str, tuple] = {}
+_uncommitted_components: dict[str, tuple] = {}
 
 
 def note_resident_account(modality: str, *references: str) -> None:
     """CPU residents have no GPU lease, so retain their load provenance at the route boundary."""
     if policy.installation_is_multi_user():
         previous = _resident_accounts.get(modality)
+        _uncommitted_resident[modality] = (
+            current_account_id(),
+            previous,
+            _prior_resident_accounts.get(modality),
+        )
         if previous is not None and previous[1] != frozenset(references):
             _prior_resident_accounts[modality] = previous
         _resident_accounts[modality] = (current_account_id(), frozenset(references))
@@ -212,10 +220,45 @@ _resident_components: dict[str, tuple[str, frozenset[str]]] = {}
 def note_resident_components(modality: str, primary: str, *references: str) -> None:
     """A generation on a shared resident must clear its base repo and baked adapters too."""
     if policy.installation_is_multi_user():
+        _uncommitted_components[modality] = (
+            current_account_id(),
+            _resident_components.get(modality),
+            None,
+        )
         _resident_components[modality] = (
             str(primary or ""),
             frozenset(r for r in references if isinstance(r, str) and r),
         )
+
+
+def restore_resident_metadata(modality: str) -> bool:
+    """Undo the records a failed load published; the previous pipeline is still resident.
+    The record-keeping half of ``restore_owner_account``, and like it a no-op once another
+    load took residency."""
+    if not policy.installation_is_multi_user():
+        return False
+    account_id = current_account_id()
+    restored = False
+    for published, live in (
+        (_uncommitted_resident, _resident_accounts),
+        (_uncommitted_components, _resident_components),
+    ):
+        entry = published.get(modality)
+        if entry is None or entry[0] != account_id:
+            continue
+        del published[modality]
+        _, previous, prior = entry
+        if previous is None:
+            live.pop(modality, None)
+        else:
+            live[modality] = previous
+        if live is _resident_accounts:
+            if prior is None:
+                _prior_resident_accounts.pop(modality, None)
+            else:
+                _prior_resident_accounts[modality] = prior
+        restored = True
+    return restored
 
 
 def resident_hidden(modality: str | None = None, reference: str | None = None) -> bool:
@@ -491,6 +534,11 @@ def model_grants() -> set[str]:
 def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
     """Record an authorized download in the initiating account's studio.db, transactionally so simultaneous completions both survive."""
     if not managed_account() or not repo_id:
+        return
+    # A late completion must not recreate a retired account's workspace.
+    from core.training.account_jobs import account_is_retired
+
+    if account_is_retired():
         return
     path = studio_db_path()
     path.parent.mkdir(parents = True, exist_ok = True)

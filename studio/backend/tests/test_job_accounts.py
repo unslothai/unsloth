@@ -1160,3 +1160,76 @@ def test_startup_reconciliation_settles_a_deactivated_accounts_interrupted_runs(
         assert run_as(alice, studio_db.get_run, "interrupted")["status"] == "error"
     finally:
         policy.invalidate_account_cache()
+
+
+def test_retirement_cancels_model_downloads_and_no_late_grant_recreates_the_workspace(
+    tmp_path, monkeypatch
+):
+    """A model download of a deleted account is killed, and a worker that still completes cannot
+    rebuild the workspace retirement just renamed aside."""
+    import subprocess
+    import sys
+
+    from hub.services import download_lifecycle
+    from hub.services.models import account_access, downloads as model_downloads
+    from hub.utils import download_registry
+    from routes.accounts import retire_account_roots
+    from core.rag import folder_sync, ingestion
+    from core import research_runs
+    from hub.services.datasets import downloads as dataset_downloads
+    from utils.paths import storage_roots as roots
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(jobs, "_services", [])
+    monkeypatch.setattr(ingestion, "retire_account_ingestions", lambda: None)
+    monkeypatch.setattr(folder_sync, "retire_account_sync", lambda: None)
+    monkeypatch.setattr(research_runs, "retire_account_research", lambda account: None)
+    monkeypatch.setattr(dataset_downloads, "retire_account_downloads", lambda: None)
+
+    repo_id = "acme/retired-model"
+    registry = model_downloads._registry
+    key = model_downloads._download_job_key(repo_id, None)
+    claimed, state = registry.claim(
+        key, download_registry.TRANSPORT_HTTP, repo_type = "model", repo_id = repo_id
+    )
+    assert claimed, state
+    run_as(ALICE, download_lifecycle.record_download_account, registry, key)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"], stderr = subprocess.PIPE
+    )
+    assert registry.register_process(key, proc)
+    workspace = run_as(ALICE, roots.workspace_root)
+    workspace.mkdir(parents = True, exist_ok = True)
+
+    try:
+        retire_account_roots(ALICE)
+        assert proc.poll() is not None, "the retired account's model worker is still running"
+        assert not workspace.exists()
+
+        # A worker of the same account that still reaches a clean exit must not write the account back.
+        registry.drop_process(key, proc)
+        finished = subprocess.Popen([sys.executable, "-c", "pass"], stderr = subprocess.PIPE)
+        registry.register_process(key, finished)
+        run_as(
+            ALICE,
+            lambda: download_lifecycle.finalize_worker_exit(
+                registry,
+                key,
+                finished,
+                hf_token = None,
+                label = repo_id,
+                log_prefix = "test",
+                logger = download_lifecycle.logger,
+                repo_type = "model",
+                repo_id = repo_id,
+            ),
+        )
+        assert not workspace.exists(), "a late completion recreated a deleted workspace"
+        assert run_as(ALICE, account_access.model_grants) == set()
+    finally:
+        for handle in (proc, finished if "finished" in dir() else None):
+            if handle is not None and handle.poll() is None:
+                handle.kill()
+        registry.set_job(key, "idle")

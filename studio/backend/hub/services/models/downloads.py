@@ -375,6 +375,28 @@ async def download_model_response(
     }
 
 
+def retire_account_downloads() -> None:
+    """Cancel and reap this account's model downloads before its roots are renamed aside."""
+    stragglers = []
+    for job in _registry.active_job_refs():
+        if not download_lifecycle.download_belongs_to_account(_registry, job.key):
+            continue
+        download_lifecycle.cancel_worker(
+            _registry, job.key, generation = job.generation, label = "model", logger = logger
+        )
+        proc = _registry.get_process(job.key)
+        if proc is None:
+            continue
+        try:
+            proc.wait(timeout = 10)
+        except Exception:
+            stragglers.append(job.key)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account model downloads have not stopped: {sorted(stragglers)}"
+        )
+
+
 async def cancel_download_model_response(body: CancelDownloadRequest):
     """Cancel an in-flight model download (SIGKILL; HF cache resumes on next download)."""
     repo_id = body.repo_id.strip()

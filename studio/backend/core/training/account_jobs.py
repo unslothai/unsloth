@@ -380,11 +380,15 @@ def retire_account_jobs(account: AccountContext) -> None:
         except Exception as exc:
             errors.append(exc)
     from hub.services.datasets.downloads import retire_account_downloads
+    from hub.services.models.downloads import (
+        retire_account_downloads as retire_account_model_downloads,
+    )
     from core.rag import folder_sync, ingestion
     from core.research_runs import retire_account_research
 
     for cancel in (
         retire_account_downloads,
+        retire_account_model_downloads,
         ingestion.retire_account_ingestions,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),
