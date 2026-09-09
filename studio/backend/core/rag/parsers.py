@@ -29,6 +29,7 @@ class Page:
     text: str
     page_number: int | None = None
     char_count: int = 0
+    needs_ocr: bool = False
 
 
 @dataclass(frozen = True)
@@ -162,7 +163,21 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
-            pages.append(_page(text, page_number + 1))
+            # Markdown may contain image placeholders even when there is no text layer.
+            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            images_on_page = page.get_image_info()
+            needs_ocr = bool(images_on_page) and (
+                len(plain.strip()) < config.OCR_MIN_CHARS
+                or any(
+                    fitz.Rect(info["bbox"]).get_area() >= page.rect.get_area() * 0.5
+                    and len(page.get_text("text", clip = fitz.Rect(info["bbox"])).strip())
+                    < config.OCR_MIN_CHARS
+                    for info in images_on_page
+                )
+            )
+            if needs_ocr:
+                text = plain
+            pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
                     xref = img[0]

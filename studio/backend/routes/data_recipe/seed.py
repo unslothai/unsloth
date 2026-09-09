@@ -428,10 +428,27 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
-        import pymupdf4llm
-        raw = pymupdf4llm.to_markdown(
-            str(file_path), write_images = False, show_progress = False, use_ocr = False
+        from core.rag import config, parsers, pdf_ocr
+
+        pages = parsers.parse(str(file_path))
+        scanned = [page.page_number for page in pages if page.needs_ocr]
+        texts = (
+            pdf_ocr.ocr_pages(str(file_path), scanned[: config.OCR_MAX_PAGES])
+            if config.OCR_SCANNED
+            else {}
         )
+        if set(scanned) - texts.keys():
+            raise pdf_ocr.unreadable_pages_error(set(scanned) - texts.keys())
+        parts = []
+        for page in pages:
+            original = page.text.strip()
+            text = texts.get(page.page_number, "")
+            parts.append(
+                text
+                if not original or original in text
+                else "\n\n".join(filter(None, [original, text]))
+            )
+        raw = "\n\n".join(parts)
     elif ext == ".docx":
         import mammoth
         with open(str(file_path), "rb") as f:
@@ -614,6 +631,8 @@ async def upload_unstructured_file(
             error = "Text extraction failed.",
         )
     except Exception as e:
+        from core.rag.pdf_ocr import PDFOCRError
+
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         logger.error(
@@ -626,7 +645,7 @@ async def upload_unstructured_file(
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = "Text extraction failed.",
+            error = str(e) if isinstance(e, PDFOCRError) else "Text extraction failed.",
         )
 
     try:
