@@ -21701,6 +21701,11 @@ async def produce_openai_chat_completions(
     monitor_id = None
 
     async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
+        if request.headers.get("X-Unsloth-Require-Text") == "1":
+            raise HTTPException(
+                status_code = 400,
+                detail = "This request requires text output; select a text model.",
+            )
         tts_monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
@@ -21785,7 +21790,14 @@ async def produce_openai_chat_completions(
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
+        model_info = backend.models.get(backend.active_model_name, {})
         if _response_format_constrains_decoding(payload):
+            if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format cannot be honored by an audio reply; send the request to a text model "
+                    "to use guided decoding.",
+                )
             _raise_unsupported_openai_parameter(
                 "response_format",
                 "response_format needs the llama.cpp grammar engine; load a GGUF model to use it.",
@@ -21793,7 +21805,6 @@ async def produce_openai_chat_completions(
 
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS -- handled below in audio input path)
-        model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")

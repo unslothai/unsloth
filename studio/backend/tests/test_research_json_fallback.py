@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
 from core import research_runs
@@ -230,16 +231,10 @@ def test_unrelated_errors_and_provider_contracts_are_not_retried(
 
 
 def test_an_audio_model_is_refused_rather_than_re_sent(monkeypatch, research_call):
-    """The non-GGUF branch refuses the format before it routes audio, so this refusal
-    alone does not prove a prompt-only re-send would be answered with text. Re-sending
-    reaches text-to-speech instead, which synthesizes the planner prompt and then stalls
-    the run on a reply that carries no SSE."""
+    """Audio refusal must remain distinct from unavailable grammar support."""
     backend = _ScriptedBackend(_fixed('{"ok": true}'))
     backend.models[backend.active_model_name].update(is_audio = True, audio_type = "tts")
     _install(monkeypatch, backend)
-    # _install replaces the getter routes.inference holds; the probe reads the orchestrator
-    # getter that one is imported from, so point the double at both.
-    monkeypatch.setattr(research_runs, "_peek_inference_backend", lambda: backend)
     app = FastAPI()
     app.include_router(inference_route.router, prefix = "/v1")
     install_api_error_handlers(app)
@@ -261,41 +256,109 @@ def test_an_audio_model_is_refused_rather_than_re_sent(monkeypatch, research_cal
     assert research_call.revoked == [1]
 
 
-def test_the_audio_probe_reads_both_local_backends(monkeypatch):
-    """Whichever backend is serving, the flag routes.inference branches on is the one read."""
-    from types import SimpleNamespace as _NS
+@pytest.mark.parametrize("requested_audio", [False, True])
+def test_fallback_uses_the_refused_request_not_an_intervening_model(
+    monkeypatch, research_call, requested_audio
+):
+    backend = _ScriptedBackend(_fixed('{"ok": true}'))
+    backend.models["sf-model"].update(is_audio = requested_audio, audio_type = "tts")
+    backend.models["intervening"] = {"is_audio": not requested_audio, "audio_type": "tts"}
+    _install(monkeypatch, backend)
+    monkeypatch.setattr(research_runs, "_peek_inference_backend", lambda: backend)
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    statuses = []
+    audio_calls = []
 
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = True, _is_audio = True)
-    )
-    assert research_runs._local_audio_model_loaded() is True
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = True, _is_audio = False)
-    )
-    assert research_runs._local_audio_model_loaded() is False
+    async def audio(*args, **kwargs):
+        audio_calls.append(True)
+        return JSONResponse({"unexpected_audio": True})
 
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NS(is_loaded = False))
-    monkeypatch.setattr(
-        research_runs,
-        "_peek_inference_backend",
-        lambda: _NS(active_model_name = "m", models = {"m": {"is_audio": True}}),
-    )
-    assert research_runs._local_audio_model_loaded() is True
-    monkeypatch.setattr(
-        research_runs,
-        "_peek_inference_backend",
-        lambda: _NS(active_model_name = "m", models = {"m": {}}),
-    )
-    assert research_runs._local_audio_model_loaded() is False
-    # A run on an external connection is not served by either local backend.
-    assert research_runs._local_audio_model_loaded({"providerType": "openai"}) is False
+    monkeypatch.setattr(inference_route, "generate_audio", audio)
 
-    # An unprobeable backend keeps the fallback, rather than disabling it on a failed read.
-    def boom():
-        raise RuntimeError("no orchestrator")
+    class SwitchingTransport(httpx.ASGITransport):
+        async def handle_async_request(self, request):
+            # Model loading is scripted; requests and the refusal use the real route.
+            backend.active_model_name = "sf-model"
+            response = await super().handle_async_request(request)
+            statuses.append(response.status_code)
+            if len(statuses) == 1:
+                backend.active_model_name = "intervening"
+            return response
 
-    monkeypatch.setattr(research_runs, "_peek_inference_backend", boom)
-    assert research_runs._local_audio_model_loaded() is False
+    research_call.install(SwitchingTransport(app = app))
+    if requested_audio:
+        with pytest.raises(httpx.HTTPStatusError):
+            research_call.complete()
+        assert statuses == [400]
+    else:
+        assert json.loads(research_call.complete()[0]) == {"ok": True}
+        assert statuses == [400, 200]
+    assert audio_calls == []
+    assert research_call.revoked == [1]
+
+
+@pytest.mark.parametrize("gguf", [False, True], ids = ["non-gguf", "gguf"])
+def test_text_requirement_survives_a_manual_switch_before_resend(monkeypatch, research_call, gguf):
+    backend = _ScriptedBackend(_fixed('{"ok": true}'))
+    backend.models["audio-model"] = {"is_audio": True, "audio_type": "tts"}
+    _install(monkeypatch, backend)
+    monkeypatch.setattr(research_runs, "_peek_inference_backend", lambda: backend)
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    audio_calls = []
+    statuses = []
+
+    async def switch_after_check(*args):
+        backend.active_model_name = "audio-model"
+        if gguf:
+            monkeypatch.setattr(
+                inference_route,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = True, _is_audio = True, context_length = 8192),
+            )
+
+    async def audio(*args, **kwargs):
+        audio_calls.append(True)
+        return JSONResponse({"unexpected_audio": True})
+
+    monkeypatch.setattr(research_call.supervisor, "_check_active", switch_after_check)
+    monkeypatch.setattr(inference_route, "generate_audio", audio)
+
+    class RecordingTransport(httpx.ASGITransport):
+        async def handle_async_request(self, request):
+            response = await super().handle_async_request(request)
+            statuses.append(response.status_code)
+            return response
+
+    research_call.install(RecordingTransport(app = app))
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        research_call.complete()
+    assert "text output" in caught.value.response.text
+    assert statuses == [400, 400]
+    assert audio_calls == []
+    assert research_call.revoked == [1]
+
+
+def test_ordinary_audio_request_retains_audio_dispatch(monkeypatch):
+    from .test_sf_client_tools_passthrough import _call, _request
+
+    backend = _ScriptedBackend(_fixed("unused"))
+    backend.models["sf-model"].update(is_audio = True, audio_type = "tts")
+    audio_calls = []
+
+    async def audio(*args, **kwargs):
+        audio_calls.append(True)
+        return JSONResponse({"audio": "scripted"})
+
+    monkeypatch.setattr(inference_route, "generate_audio", audio)
+    response = _call(_request(), monkeypatch, backend)
+    assert response.status_code == 200
+    assert audio_calls == [True]
 
 
 def test_format_fallback_is_attempted_only_once(research_call):

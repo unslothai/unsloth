@@ -396,35 +396,6 @@ def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | Non
     return None
 
 
-def _local_audio_model_loaded(inference: dict[str, Any] | None = None) -> bool:
-    """Whether the local backend serving this run answers with speech rather than text.
-
-    Same two probes as _loaded_context_length, reading the flags routes.inference itself
-    branches on: llama.cpp's ``_is_audio`` and the orchestrator's ``is_audio`` model info.
-    Only the guided-decoding fallback consults this, and only to refuse to negotiate: a
-    text-to-speech route cannot answer a research prompt whether or not the format is sent,
-    and re-sending without it swaps a refusal that names the problem for a synthesized clip.
-    Unknown reads as "not audio", so an unprobeable backend keeps today's behaviour."""
-    if _external_provider_run(inference):
-        return False
-    try:
-        from routes.inference import get_llama_cpp_backend
-        llama = get_llama_cpp_backend()
-        if getattr(llama, "is_loaded", False):
-            return bool(getattr(llama, "_is_audio", False))
-    except Exception:
-        logger.debug("research.audio_probe_llama_failed", exc_info = True)
-    try:
-        backend = _peek_inference_backend()
-        name = getattr(backend, "active_model_name", None)
-        models = getattr(backend, "models", {}) or {}
-        info = models.get(name) if (name and isinstance(models, dict)) else None
-        return bool((info or {}).get("is_audio"))
-    except Exception:
-        logger.debug("research.audio_probe_failed", exc_info = True)
-    return False
-
-
 def _estimate_prompt_tokens(messages: list[dict]) -> int:
     """Conservative prompt token estimate for max_tokens clamping.
 
@@ -1724,7 +1695,11 @@ class ResearchSupervisor:
                             "POST",
                             self._endpoint(),
                             json = payload,
-                            headers = {"Authorization": f"Bearer {token}"},
+                            headers = {
+                                "Authorization": f"Bearer {token}",
+                                # Keep text-only intent across retries and model switches.
+                                "X-Unsloth-Require-Text": "1",
+                            },
                         )
                         try:
                             send_task = asyncio.create_task(client.send(request, stream = True))
@@ -1746,12 +1721,6 @@ class ResearchSupervisor:
                                 and payload.get("response_format") == {"type": "json_object"}
                                 and isinstance(exc, httpx.HTTPStatusError)
                                 and await _response_format_unsupported(exc.response)
-                                # The non-GGUF branch refuses the format before it reaches the
-                                # audio routing below it, so this refusal does not prove the
-                                # re-send would be answered as text.
-                                and not await asyncio.to_thread(
-                                    _local_audio_model_loaded, inference
-                                )
                             ):
                                 # MLX/transformers cannot enforce a grammar. Research already
                                 # prompts for JSON and validates it; retry once without guided
