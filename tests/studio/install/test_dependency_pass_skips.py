@@ -866,3 +866,11 @@ def test_the_verdict_is_recorded_after_the_manifest_is_written() -> None:
             break
     else:  # pragma: no cover - the function is the subject of this file
         raise AssertionError("_report_mlx_stack_health is gone")
+
+
+def test_the_escape_hatch_reaches_the_pip_bootstrap_skip() -> None:
+    """UNSLOTH_STUDIO_FULL_DEPS is what a user is told to set when the install is
+    behaving oddly. A step it cannot turn off is a step they cannot work around, and the
+    pip bootstrap skip is not gated on the manifest, so nothing else would reach it."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "if not _full_deps_requested() and _venv_pip_is_usable():" in source

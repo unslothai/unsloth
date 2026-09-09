@@ -8173,7 +8173,10 @@ def install_python_stack() -> int:
     USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
-    if _venv_pip_is_usable():
+    # The escape hatch reaches this skip too: UNSLOTH_STUDIO_FULL_DEPS is the one switch
+    # a user is told to set when the install is behaving oddly, and a step it cannot turn
+    # off is a step they cannot work around.
+    if not _full_deps_requested() and _venv_pip_is_usable():
         # Nothing to do, and saying so is the point: this step used to reinstall pip
         # from the index on every update of an install that already had one.
         _progress("pip bootstrap (satisfied, skipped)")
