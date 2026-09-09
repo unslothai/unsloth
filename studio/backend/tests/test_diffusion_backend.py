@@ -4562,8 +4562,7 @@ class _GraphHandle:
 
 
 def test_a_failed_lora_switch_drops_the_captured_graphs(monkeypatch):
-    """A failed switch has already unloaded the adapters the graphs were captured with and records an
-    empty applied set, so the later "current and none requested" reset never fires."""
+    """A failed switch records an empty applied set, so the later "none requested" reset never fires."""
     backend = DiffusionBackend()
     monkeypatch.setattr(
         DiffusionBackend,
@@ -6529,12 +6528,7 @@ def test_generate_oom_backoff_halves_the_batch(fake_runtime, tmp_path):
 
 
 def test_generate_oom_backoff_drops_the_batch_shaped_graphs(fake_runtime, tmp_path):
-    """The backoff is the last thing between this render and a failure, so it must get the memory
-    the eager path would have had. A captured entry is batch-shaped and empty_cache() cannot reclaim
-    it: the statics and outputs are live allocations and a graph's pool is segregated from the
-    ordinary allocator. Measured on one 6-block DiT at 4096 tokens: batch 4 peaks at 4.43 GB,
-    empty_cache() alone leaves 3.93 of it and the halved retry OOMs; dropping the graphs first
-    leaves 1.68 and it fits."""
+    """A captured entry is batch-shaped and empty_cache() cannot reclaim it, so the retry OOMs too."""
     backend = _load_zimage_backend(tmp_path)
     pipe = _CountingPipe(max_images = 2)
     object.__setattr__(backend._state, "pipe", pipe)

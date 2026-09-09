@@ -4028,7 +4028,6 @@ class VideoBackend:
                 # crashes)
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
-                # Only a family that opts in via supports_cuda_graph is captured.
                 cuda_graph_default = False,
             )
             if view is pipe:
@@ -4787,7 +4786,6 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
-                # Only a family that opts in via supports_cuda_graph is captured.
                 cuda_graph_default = False,
                 logger = logger,
             )

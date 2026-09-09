@@ -327,9 +327,8 @@ class GraphedForward:
                         type(exc).__name__,
                         exc,
                     )
-                # The handled exception keeps _capture's frame, and with it the statics and the pool
-                # slice, alive through the eager retry: on a tight card that retry OOMs (measured 2.68 of
-                # 3.3 GB still held here). The formatted traceback is already on capture_error.
+                # The handled exception keeps _capture's frame, and with it the statics and the pool slice,
+                # alive through the eager retry, which then OOMs on a tight card. capture_error has the text.
                 exc.__traceback__ = None
             if captured is None:
                 self._release()
@@ -455,7 +454,6 @@ def graph_eligible(
         _warn(logger, "availability probe", exc)
         return False, "torch.cuda unavailable"
 
-    # Opt-in per family on the video backend, opt-out on the image backend.
     if not bool(getattr(family, "supports_cuda_graph", family_default)):
         return False, "family opts out"
 
@@ -500,14 +498,9 @@ def set_bypass(handles: Any, on: bool) -> None:
 def reset_all(handles: Any) -> None:
     """Drop every captured graph, for every handle (the weights changed).
 
-    Ends with the same ``_drop_pool_if_unused`` as ``uninstall_all``: a reset can destroy the last
-    graph recorded into the shared pool, and a token whose pool the allocator has since erased is
-    only harmless while the erase SUCCEEDED. It erases the pool entry only once every segment came
-    back (``cudaMalloc_count == 0``); when one did not, the entry survives with ``use_count == 0``
-    and the next capture handed that token dies in ``create_or_incref_pool`` with
-    "use_count > 0 INTERNAL ASSERT FAILED" -- raised from ``capture_begin``, which
-    ``torch.cuda.graph.__enter__`` reaches AFTER entering its side stream, so the thread is also
-    left off the default stream for the rest of the render."""
+    Drops the pool token with the last graph: a stale token dies on the allocator's
+    "use_count > 0 INTERNAL ASSERT FAILED", raised after ``torch.cuda.graph`` entered its side
+    stream, so the thread is left off the default stream too."""
     for handle in handles or ():
         try:
             handle.reset()

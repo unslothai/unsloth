@@ -1027,7 +1027,6 @@ def _stub_cuda_graph(
 
 @pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
 def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
-    # The arm is NOT gated on the compile landing: an uncompiled quantised DiT is launch-bound too.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1035,12 +1034,11 @@ def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
     applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
     assert applied["cuda_graph"] is True
     assert calls["installs"] == 1
-    assert pipe._unsloth_cuda_graph_reason == "ok"  # status reports it
+    assert pipe._unsloth_cuda_graph_reason == "ok"
 
 
 @pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
 def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
-    # off is the bit-identical reference and eager is the no-compile tier: neither asks at all.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1064,7 +1062,6 @@ def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
 
 
 def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
-    # Video passes False so only a family setting supports_cuda_graph opts in; image leaves True.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1088,8 +1085,6 @@ def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
 
 
 def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monkeypatch):
-    # cache_active also covers an auto cache that MAY toggle on later, which the compile must
-    # respect but the graph arm must not, since the caller bypasses per chunk when it does.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
@@ -1107,7 +1102,6 @@ def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monke
 
 
 def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
-    # A capture allocates a pool and can OOM: that must degrade to eager, never fail the load.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)

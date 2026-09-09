@@ -271,7 +271,7 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     generation can allocate into.
 
     A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
-    credited here although a replay needs it; that is one denoiser step and errs the quiet way.
+    credited here although a replay needs it.
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":

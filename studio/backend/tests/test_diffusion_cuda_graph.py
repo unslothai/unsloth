@@ -554,13 +554,8 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
 
 
 def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
-    """A reset that destroys the last graph in the shared pool must forget its token.
-
-    Handing a token back after the allocator erased the pool is only safe while the erase happened:
-    it erases the entry only when every segment came back, and otherwise the entry survives with
-    use_count 0 and the next capture raises "use_count > 0 INTERNAL ASSERT FAILED" out of
-    capture_begin, after torch.cuda.graph.__enter__ has already entered its side stream.
-    """
+    """A reset that destroys the last graph in the shared pool must forget its token, or the next
+    capture dies on the allocator's "use_count > 0 INTERNAL ASSERT FAILED"."""
     first, second = _armed(), _armed()
     first(_t(), timestep = _t((1,)), return_dict = False)
     second(_t((2, 4)), timestep = _t((1,)), return_dict = False)

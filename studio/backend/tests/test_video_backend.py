@@ -9108,7 +9108,6 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
 
 
 def test_cuda_graph_is_a_per_family_opt_in():
-    # cuda_graph_default=False, so the capture reaches only a family that asks for it.
     from core.inference.video_families import detect_video_family
 
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
@@ -9121,8 +9120,7 @@ def test_cuda_graph_is_a_per_family_opt_in():
 
 
 def test_every_rebuilt_speed_target_carries_the_backend():
-    """The CUDA-graph arm refuses ROCm by target.backend (ROCm reports device "cuda"), so a target
-    video.py builds itself must carry the field."""
+    """The CUDA-graph arm refuses ROCm by target.backend, which ROCm reports as device "cuda"."""
     import ast
     from pathlib import Path
 

@@ -322,8 +322,7 @@ def apply_speed_optims(
             applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
 
-    # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile, and that is where the
-    # capture gains most. Every refusal lives in graph_eligible, so this arm only hands it the context.
+    # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         cuda_graph = None
         ok, reason = False, "cuda graph layer unavailable"
@@ -424,7 +423,7 @@ def _compile_repeated_blocks(
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
     # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
     # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
-    # stays on -no-cudagraphs and the capture is taken manually one level up, at the denoiser module boundary.
+    # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
         "dynamic": not max_autotune,
