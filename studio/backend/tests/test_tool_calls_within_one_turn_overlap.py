@@ -486,3 +486,106 @@ class TestARoundIsPreparedWholeAndBounded:
         assert all(
             "TOGETHER" in result for result in _results(ends)
         ), f"a round at the cap serialised: {_results(ends)}"
+
+
+class TestTheRoundIsPricedOnceForEveryCallInIt:
+    """A worker that re-prices the round from its own thread under-budgets a late call."""
+
+    def test_a_slow_call_gets_the_same_room_as_the_one_that_finished_first(self, monkeypatch):
+        """The first tool returns at once and its result settles into `conversation` while
+        the second is still running. Both were launched on the same promise of the same
+        share of the window, so both have to be handed it."""
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _gguf_round(
+                    [
+                        ("call_a", "web_search", {"query": "alpha"}),
+                        ("call_b", "web_search", {"query": "beta"}),
+                    ]
+                ),
+                [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+            ],
+            payloads,
+        )
+        main = threading.current_thread()
+        off_thread: list = []
+        lock = threading.Lock()
+        counted: list = []
+
+        def _count(messages, *_args, **_kwargs):
+            # Each count is dearer than the last, which is what a conversation the round
+            # is settling results into does. Priced once, the round reads one number
+            # whoever asks; priced per worker, every call reads a different one.
+            with lock:
+                if threading.current_thread() is not main:
+                    off_thread.append(threading.current_thread().name)
+                counted.append(1)
+                return 200 + 600 * (len(counted) - 1)
+
+        monkeypatch.setattr(backend, "count_chat_tokens", _count)
+        alpha_returned = threading.Event()
+        budgets: dict = {}
+
+        def _execute(name, arguments, **kwargs):
+            query = (arguments or {}).get("query")
+            budgets[query] = kwargs.get("result_budget_tokens")
+            if query == "alpha":
+                alpha_returned.set()
+                return "RESULT<alpha>"
+            alpha_returned.wait(0.2)
+            return "RESULT<beta>"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 2,
+            )
+        )
+        assert sorted(budgets) == ["alpha", "beta"], budgets
+        if not isinstance(budgets["alpha"], int):
+            pytest.skip("this build does not pass result_budget_tokens")
+        assert budgets["alpha"] > 0, budgets
+        assert budgets["beta"] == budgets["alpha"], (
+            f"the round handed out {budgets}: the call that was still running priced "
+            "itself against a conversation the first result had already landed in, so a "
+            "valid result is cut to a window notice the model then retries against"
+        )
+        assert not off_thread, (
+            f"{len(off_thread)} count(s) came from a tool worker: the round is sized on "
+            "the generator thread precisely because `conversation` is shared and mutable"
+        )
+
+    def test_the_worker_reads_the_rounds_figure_before_it_counts_anything(self):
+        import ast
+
+        import core.inference.llama_cpp as mod
+
+        source = Path(mod.__file__).read_text(encoding = "utf-8")
+        node = next(
+            n
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_invoke_tool"
+        )
+        folded = " ".join((ast.get_source_segment(source, node) or "").split())
+        assert "_round_budget_cell[0] is not None" in folded, folded[:200]
+        assert folded.index("_round_budget_cell[0] is not None") < folded.index(
+            "count_chat_tokens"
+        ), (
+            "the worker counts before it looks at the round's own figure, so an overlapped "
+            "round is sized once per call again"
+        )
+
+    def test_the_round_is_sized_before_its_deferred_drivers_start(self):
+        import core.inference.llama_cpp as mod
+
+        folded = " ".join(Path(mod.__file__).read_text(encoding = "utf-8").split())
+        assert folded.index("_round_budget_cell[0] = _round_budget") < folded.index(
+            "for _entry_index, _entry in enumerate(_pending_calls)"
+        ), (
+            "the drivers start before the cell is filled, so the first worker to run finds "
+            "it empty and counts for itself"
+        )

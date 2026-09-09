@@ -96,6 +96,30 @@ class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
         controller.note_resident(10000, reclaimable = 0)
         controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
         assert controller.committed_tokens() == 13000
-        # Its first data line: the prompt is resident and the next sample carries it.
+        # Its first data line: the prompt is resident, but the reading in hand is from
+        # before it, and folding the charge into that reading would swallow it.
         controller.note_measured("raw")
-        assert controller.committed_tokens() == 10000
+        assert controller.committed_tokens() == 13000
+        # The next reading has it, so it is no longer added on top.
+        controller.note_resident(13000, reclaimable = 0)
+        assert controller.committed_tokens() == 13000
+
+    def test_a_failed_reading_does_not_fold_the_raw_charge(self):
+        controller = _controller("http://raw-holder-unread")
+        controller.register("chat", tokens = 6000)
+        controller.note_measured("chat")
+        controller.note_resident(10000, reclaimable = 0)
+        controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
+        controller.note_measured("raw")
+        controller.note_resident(None)
+        # No reading at all: the ledger is the only figure, and it has every holder.
+        assert controller.committed_tokens() == 9000
+        controller.note_resident(13000, reclaimable = 0)
+        assert controller.committed_tokens() == 13000
+
+    def test_without_any_reading_the_mark_is_immediate(self):
+        controller = _controller("http://raw-holder-noprobe")
+        controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
+        controller.note_measured("raw")
+        controller.note_resident(3000, reclaimable = 0)
+        assert controller.committed_tokens() == 3000

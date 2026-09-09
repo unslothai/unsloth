@@ -534,6 +534,9 @@ class Participant:
     # Last count `observe` was given, so cumulative reports become a DELTA. Falls back to zero
     # rather than going negative when a resumed attempt restarts llama-server's counter.
     generated_seen: int = 0
+    # Set by `note_measured`: the charge stays on top of the resident figure until a sample
+    # taken after that call, the first reading that can hold its cells.
+    measured_at_seq: Optional[int] = None
 
     def resident_tokens(self, generated: int) -> int:
         """Cells this holder occupies now that its prompt is in the cache.
@@ -619,6 +622,7 @@ class PreemptionController:
         "_slots",
         "_batch_tokens",
         "_resident",
+        "_resident_seq",
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
@@ -647,6 +651,8 @@ class PreemptionController:
         # True cells resident from the last GET /slots, or None when it could not be read.
         # Includes the residue of FINISHED requests, which the ledger cannot see.
         self._resident: Optional[int] = None
+        # Bumped per successful reading, so a holder marked between two can tell them apart.
+        self._resident_seq = 0
         # Set by the route to a callable that re-reads GET /slots. Optional: everything works
         # from the ledger alone, less precisely.
         self._residency_probe: Optional[Callable[[], None]] = None
@@ -904,6 +910,12 @@ class PreemptionController:
             ceiling = self._budget if self._budget > 0 else int(resident)
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            self._resident_seq += 1
+            for participant in self._participants.values():
+                if participant.measured_at_seq is not None:
+                    # This reading was taken after its prefill landed, so it is inside.
+                    participant.measured = True
+                    participant.measured_at_seq = None
 
     def note_tokens(
         self,
@@ -1091,17 +1103,22 @@ class PreemptionController:
 
     def note_measured(self, gen_id: str) -> None:
         """A holder that never reports tokens has prefilled: its charge stops being a
-        reservation on top of the resident figure.
+        reservation on top of the resident figure once a reading taken after this call is in.
 
         The raw passthroughs never call `observe` or `note_tokens`, so `_committed_locked`
         counted them twice once `/slots` saw them, pausing every Studio chat for a holder
-        that is never a victim. Idempotent; the state is left alone.
+        that is never a victim. Folded at once, a reading from before the prefill swallowed
+        the whole charge instead, and the raw path has no probe of its own to refresh it.
+        Idempotent; the state is left alone.
         """
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is None:
                 return
-            participant.measured = True
+            if self._resident is None or participant.measured:
+                participant.measured = True
+            else:
+                participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
             participant.prefill_done()
 

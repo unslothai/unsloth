@@ -32959,6 +32959,11 @@ class LlamaCppBackend:
                 # one-shot stores no result, and dividing the room by the raw list cut a lone
                 # real read short. A cell the workers read; final before any driver starts.
                 _round_launched = [0]
+                # The room ONE call of the round gets, and the prompt it was priced
+                # against. Filled below the loop, with every call attached and after the
+                # round compacts, and read by the workers instead of each counting a
+                # `conversation` its siblings are already settling into.
+                _round_budget_cell: list = [None, None]
 
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
@@ -33422,6 +33427,7 @@ class LlamaCppBackend:
                             _round_parallel = _parallel_round,
                             # Read, not bound by value: the cell completes after this closure.
                             _round_launched_cell = _round_launched,
+                            _round_budget_cell = _round_budget_cell,
                         ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
@@ -33443,6 +33449,19 @@ class LlamaCppBackend:
                             # truncation protects, so a top_k the window cannot hold ends
                             # the turn in an unrecoverable context-length error.
                             if self._effective_context_length:
+                                # The round's own figure, sized ONCE on the generator
+                                # thread with every call attached and after the round
+                                # compacted, read here before any count. A worker counting
+                                # the shared `conversation` sees whatever calls of its own
+                                # round have already settled into it and still divides by
+                                # the whole round, so a late call is priced short and a
+                                # valid result is cut to a window notice it then retries
+                                # against.
+                                _frozen_budget, _frozen_spent = (
+                                    _round_budget_cell
+                                    if _round_parallel and _round_budget_cell[0] is not None
+                                    else (None, None)
+                                )
                                 # Priced against the catalogue too: the messages alone
                                 # leave the tools array out, and a big catalogue can put
                                 # the request near its budget while this still reports
@@ -33502,25 +33521,26 @@ class LlamaCppBackend:
                                 }
                                 if _decision.tool_call_id:
                                     _size_probe["tool_call_id"] = _decision.tool_call_id
-                                try:
-                                    _exact_prompt_tokens = self.count_chat_tokens(
-                                        neutralize_control_markup_in_messages(
-                                            messages_without_unpriced_media(
-                                                [*conversation, _size_probe]
+                                if _frozen_spent is None:
+                                    try:
+                                        _exact_prompt_tokens = self.count_chat_tokens(
+                                            neutralize_control_markup_in_messages(
+                                                messages_without_unpriced_media(
+                                                    [*conversation, _size_probe]
+                                                ),
+                                                _markup_cache,
+                                                self.markup_profile,
                                             ),
-                                            _markup_cache,
-                                            self.markup_profile,
-                                        ),
-                                        None,
-                                        safe_tools,
-                                        strict = True,
-                                        chat_template_kwargs = _reasoning_kw,
-                                    )
-                                except Exception:
-                                    logger.debug(
-                                        "recall budget: exact prompt count failed",
-                                        exc_info = True,
-                                    )
+                                            None,
+                                            safe_tools,
+                                            strict = True,
+                                            chat_template_kwargs = _reasoning_kw,
+                                        )
+                                    except Exception:
+                                        logger.debug(
+                                            "recall budget: exact prompt count failed",
+                                            exc_info = True,
+                                        )
                                 # Dense on the fallback leg only: `_prompt_token_offset`
                                 # already carries the fit's exact tokenizer count, so it
                                 # needs no correction, while the estimate that stands in
@@ -33533,7 +33553,9 @@ class LlamaCppBackend:
                                 # budget and throws its output away, in the one case where
                                 # the room is about to be there.
                                 _spent = (
-                                    _compacted_tokens
+                                    _frozen_spent
+                                    if _frozen_spent is not None
+                                    else _compacted_tokens
                                     if _compact_flag and _compacted_tokens
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
@@ -33595,25 +33617,30 @@ class LlamaCppBackend:
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
-                                    _result_budget = tool_result_budget(
-                                        self._effective_context_length,
-                                        # This iteration's cap, not the caller's whole
-                                        # one. A recovery turn with 100 of 1000 tokens
-                                        # left had the result priced as if 1000 were
-                                        # still to come, which reserves room away and can
-                                        # starve a read the request had space for.
-                                        _iteration_max_tokens,
-                                        _spent + _pending_args,
-                                    ) // (
-                                        # Sequentially, call k divides by the calls still to
-                                        # run. Run together they price against the same
-                                        # `_spent`, so per-call remainders would hand out
-                                        # more than the batch has; the launched calls, since
-                                        # a suppressed one stores no result.
-                                        max(1, _round_launched_cell[0])
-                                        if _round_parallel
-                                        else (len(_pending) + 1)
-                                    )
+                                    if _frozen_budget is not None:
+                                        # Handed over whole, so two calls of one round
+                                        # cannot price against different conversations.
+                                        _result_budget = int(_frozen_budget)
+                                    else:
+                                        _result_budget = tool_result_budget(
+                                            self._effective_context_length,
+                                            # This iteration's cap, not the caller's whole
+                                            # one. A recovery turn with 100 of 1000 tokens
+                                            # left had the result priced as if 1000 were
+                                            # still to come, which reserves room away and can
+                                            # starve a read the request had space for.
+                                            _iteration_max_tokens,
+                                            _spent + _pending_args,
+                                        ) // (
+                                            # Sequentially, call k divides by the calls still to
+                                            # run. Run together they price against the same
+                                            # `_spent`, so per-call remainders would hand out
+                                            # more than the batch has; the launched calls, since
+                                            # a suppressed one stores no result.
+                                            max(1, _round_launched_cell[0])
+                                            if _round_parallel
+                                            else (len(_pending) + 1)
+                                        )
                                     # A budget at or near zero means the call cannot deliver
                                     # A budget at or near zero means the call cannot deliver
                                     # anything: the result is cut to a notice that reads as a fresh
@@ -33788,23 +33815,55 @@ class LlamaCppBackend:
                     # The room every call of the round shares, sized once with the whole round as
                     # the divisor and reclaimed on the generator thread, the one place that is safe.
                     if self._effective_context_length:
-                        try:
-                            _round_spent = self.count_chat_tokens(
-                                neutralize_control_markup_in_messages(
-                                    messages_without_unpriced_media(conversation),
-                                    _markup_cache,
-                                    self.markup_profile,
-                                ),
-                                None,
-                                safe_tools,
-                                strict = True,
-                                chat_template_kwargs = _reasoning_kw,
-                            )
-                        except Exception:
-                            logger.debug("round budget: prompt count failed", exc_info = True)
-                            _round_spent = estimate_messages_tokens_dense(
-                                messages_without_unpriced_media(conversation)
-                            )
+
+                        def _round_prompt_tokens(_messages):
+                            """The prompt this round is about to produce, its results still empty."""
+                            # With one empty stand-in reply per deferred call, as the gate
+                            # and `_invoke_tool` price a single call: templates that render
+                            # an assistant call only once a `tool` reply follows drop the
+                            # round's own arguments otherwise.
+                            _probe = list(_messages)
+                            for _e in _pending_calls:
+                                if _e[0] is not _TOOL_START_DEFERRED:
+                                    continue
+                                _stand_in: dict = {
+                                    "role": "tool",
+                                    "name": _e[1].tool_name,
+                                    "content": "",
+                                }
+                                if _e[1].tool_call_id:
+                                    _stand_in["tool_call_id"] = _e[1].tool_call_id
+                                _probe.append(_stand_in)
+                            # And with the arguments of every call the gate admitted on the
+                            # promise that they are compacted before the next prompt already
+                            # compacted, or the round is priced against a prompt it will
+                            # never send.
+                            for _e in _pending_calls:
+                                if _e[0] is _TOOL_START_DEFERRED and _e[5] and _e[1].tool_call_id:
+                                    _probe = compact_executed_call_arguments(
+                                        _probe, _e[1].tool_call_id
+                                    )
+                            try:
+                                return self.count_chat_tokens(
+                                    neutralize_control_markup_in_messages(
+                                        messages_without_unpriced_media(_probe),
+                                        _markup_cache,
+                                        self.markup_profile,
+                                    ),
+                                    None,
+                                    safe_tools,
+                                    strict = True,
+                                    chat_template_kwargs = _reasoning_kw,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "round budget: prompt count failed", exc_info = True
+                                )
+                                return estimate_messages_tokens_dense(
+                                    messages_without_unpriced_media(_probe)
+                                )
+
+                        _round_spent = _round_prompt_tokens(conversation)
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
                             _iteration_max_tokens,
@@ -33816,6 +33875,18 @@ class LlamaCppBackend:
                             )
                             if _n_roomier:
                                 conversation[:] = _roomier
+                                # Re-priced on the room that was just reclaimed, which is
+                                # the whole point of reclaiming it here.
+                                _round_spent = _round_prompt_tokens(conversation)
+                                _round_budget = tool_result_budget(
+                                    self._effective_context_length,
+                                    _iteration_max_tokens,
+                                    _round_spent,
+                                ) // max(1, _round_launched[0])
+                        # Final before any driver starts: every worker takes this instead of
+                        # counting a `conversation` its siblings are already settling into.
+                        _round_budget_cell[0] = _round_budget
+                        _round_budget_cell[1] = _round_spent
                     for _entry_index, _entry in enumerate(_pending_calls):
                         if _entry[0] is _TOOL_START_DEFERRED:
                             _pending_calls[_entry_index] = _start_tool_call(
