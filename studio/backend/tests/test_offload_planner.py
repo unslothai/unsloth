@@ -2798,3 +2798,36 @@ def test_an_exact_cache_is_charged_as_given_at_any_architecture():
     assert _cache_bytes(layout, 32768, kv_bytes_floor = product // 4, trust_floor = True) == (
         product // 4
     )
+
+
+def test_a_card_the_requested_context_leaves_nothing_of_still_reaches_the_ladder():
+    """The budget was priced once, at the context the caller asked for.
+
+    The per-device reserve grows with the context, so an explicit 262144 on a
+    small card charges more reserve than the card has and the planner answered
+    "no creditable VRAM" -- above the FIT_ONLY ladder, which would have found a
+    context that fits with room to spare. NEVER_REDUCE has nothing else to try
+    and still stops there.
+    """
+    layout = _small_layout(
+        blocks = tuple(BlockLayout(i, 0, int(0.175 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 4096,
+        n_ctx_train = 262144,
+    )
+    shape = dict(
+        overhead_bytes_per_device = 1536 * MIB,
+        overhead_bytes_per_token = 23961,
+        overhead_free_ctx = 32768,
+        min_ctx = 8192,
+        allow_lm_head_spill = False,
+    )
+    card = [4 * GIB]
+    fit_only = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, **shape)
+    plan = plan_placement(layout, card, 64 * GIB, 262144, opts = fit_only)
+    assert "no creditable VRAM" not in plan.reason, plan.reason
+    assert plan.priced and 32768 <= plan.n_ctx < 262144, plan.reason
+    assert not plan.spills_anything, plan.reason
+    # Asked for the same context with the context pinned, the answer is unchanged.
+    pinned = plan_placement(layout, card, 64 * GIB, 262144, opts = PlanOptions(**shape))
+    assert "no creditable VRAM" in pinned.reason, pinned.reason

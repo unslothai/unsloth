@@ -1678,8 +1678,14 @@ def plan_placement(
             _kv_floor_at(layout, opts, kv_bytes_floor, n_ctx, n_ctx, max(1, opts.n_parallel)) or 0
         )
 
+    # A policy that may shrink prices the budget again at every candidate context, so
+    # this is not its answer: the reserve has a context-linear term, and an 8 GiB card
+    # asked at 131072 can be left with nothing while 32768 fits resident. Returning here
+    # meant the ladder that exists for exactly that case never ran. NEVER_REDUCE has no
+    # candidate but the context it was asked for, so it still stops here.
+    may_shrink = opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT)
     budget = _usable_vram(vram_bytes_per_device, opts, n_ctx)
-    if budget <= 0:
+    if budget <= 0 and not may_shrink:
         return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
     if layout.has_swa and kv_bytes_floor <= 0:
         # Sliding-window attention, and nobody measured the cache. The layout's
@@ -1766,7 +1772,6 @@ def plan_placement(
                 ),
             )
 
-    may_shrink = opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT)
     declined: Optional[Plan] = None
     for quantised in _kv_modes(opts):
         plan = _plan_at(
@@ -1862,6 +1867,12 @@ def plan_placement(
 
     if declined is not None:
         return declined
+
+    if budget <= 0:
+        # The ladder ran and no context fit either. The requested one is still the one
+        # the reserve leaves nothing of, and reporting a floor against a zero budget
+        # would only describe the context nobody can have.
+        return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
 
     floor = resident_floor_bytes(
         layout,
