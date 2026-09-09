@@ -1242,35 +1242,17 @@ def test_both_loaders_give_the_bare_spelling_to_the_root_build(tmp_path):
 def test_the_resident_check_canonicalises_both_spellings(monkeypatch):
     """A lone tagged build loaded through its legacy bare spelling keeps that value in
     ``hf_variant``; a request through the advertised qualified row resolved to the qualified key
-    and compared unequal, forcing a full reload of weights already serving."""
+    and compared unequal, forcing a full reload of weights already serving. Both spellings are
+    now read against the repo's inventory."""
     from core.inference import local_model_resolver
     from routes.inference import _resident_variant_matches
 
-    inventory = {"q4_0": "gemma-4-31B_q4_0-it", "gemma-4-31b_q4_0-it": "gemma-4-31B_q4_0-it"}
-    monkeypatch.setattr(
-        local_model_resolver,
-        "resolve_local_gguf",
-        lambda requested, **kw: (
-            ("/p", inventory.get(requested.split(":", 1)[1].lower()), "id")
-            if inventory.get(requested.split(":", 1)[1].lower())
-            else None
-        ),
-    )
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("gemma-4-31B_q4_0-it",))
     assert _resident_variant_matches("repo", "gemma-4-31B_q4_0-it", "q4_0") is True
     assert _resident_variant_matches("repo", "q4_0", "gemma-4-31B_q4_0-it") is True
     # A plain sibling owning the bare key keeps the two apart.
-    split = {"q4_k_m": "Q4_K_M", "model-q4_k_m-mtp": "model-Q4_K_M-mtp"}
-    monkeypatch.setattr(
-        local_model_resolver,
-        "resolve_local_gguf",
-        lambda requested, **kw: (
-            ("/p", split.get(requested.split(":", 1)[1].lower()), "id")
-            if split.get(requested.split(":", 1)[1].lower())
-            else None
-        ),
-    )
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
     assert _resident_variant_matches("repo", "Q4_K_M", "model-Q4_K_M-mtp") is False
-
 
 def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path):
     """Two revisions each caching one tagged build looked unambiguous on their own, so the
@@ -1536,6 +1518,7 @@ def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(mon
         return ("/p", index[v], "org/repo") if v in index else None
 
     monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", resolve)
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: tuple(index.values()))
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
     assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
     # A tag that names no build at all still means the repo, as before.
@@ -1572,3 +1555,51 @@ def test_the_cached_template_walk_resolves_the_spelling_across_every_snapshot(tm
     monkeypatch.setattr(ps, "is_local_path", lambda name: False)
     template = ps.read_default_chat_template("org/repo", "tok", gguf_variant = "Q4_K_M")
     assert template == f"template-of:{older / 'model-Q4_K_M.gguf'}"
+
+
+def test_a_resident_loaded_through_a_bare_spelling_is_not_trusted_once_a_sibling_appears(monkeypatch):
+    """Loaded through the legacy bare ``Q4_K_M`` while only the tagged build existed, the resident
+    records ``Q4_K_M``. Once a plain sibling is cached, that same request names the plain build,
+    and an equality shortcut on the two spellings served the tagged weights for it."""
+    from core.inference import local_model_resolver
+    from routes.inference import _resident_variant_matches
+
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("model-Q4_K_M-mtp",))
+    assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is True
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "model-Q4_K_M-mtp"))
+    assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is False
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ("Q4_K_M", "Q8_0"))
+    assert _resident_variant_matches("repo", "Q4_K_M", "Q4_K_M") is True
+
+
+def test_the_recipe_gate_never_resolves_an_empty_active_variant(monkeypatch):
+    """With llama.cpp idle and a non-GGUF backend active, the active variant is empty. Resolving
+    ``target:`` answered the indexed DEFAULT, so a recipe selecting that default passed against
+    the other backend's weights."""
+    from routes.data_recipe import jobs
+
+    monkeypatch.setattr(jobs, "_resolved_local_variant", lambda target, variant: "Q4_K_M")
+    assert jobs._recipe_variant_matches("org/repo", "", "Q4_K_M") is False
+    assert jobs._recipe_variant_matches("org/repo", None, "Q4_K_M") is False
+    assert jobs._recipe_variant_matches("org/repo", "Q4_K_M", "Q4_K_M") is True
+    assert jobs._recipe_variant_matches("org/repo", "", None) is True
+
+
+def test_the_cached_template_walk_folds_key_case_across_snapshots(tmp_path, monkeypatch):
+    """Two revisions spelling one key with different casing fold to one identity everywhere
+    else; an exact-case membership test kept only the representative's spelling and read a
+    stale older snapshot instead of the newer one."""
+    import picker.service as ps
+
+    # The NEWER revision spells the key in upper case and the older in lower case. The sorted
+    # representative the resolver returns is the upper-case one; an exact-case membership test
+    # then kept only the snapshot spelled that way -- which, unfolded, is decided by the file's
+    # spelling rather than its identity. Folded keys keep the newer snapshot regardless.
+    newer = _materialize(tmp_path / "newer", [("model-Q4_K_M.gguf", 1)])
+    older = _materialize(tmp_path / "older", [("model-q4_k_m.gguf", 1)])
+    monkeypatch.setattr(ps, "iter_snapshots_preferring_whole", lambda resolved, variant: [newer, older])
+    monkeypatch.setattr(ps, "read_gguf_chat_template", lambda path: f"template-of:{path}")
+    monkeypatch.setattr(ps, "is_anonymous", lambda token: False)
+    monkeypatch.setattr(ps, "is_local_path", lambda name: False)
+    template = ps.read_default_chat_template("org/repo", "tok", gguf_variant = "Q4_K_M")
+    assert template == f"template-of:{newer / 'model-Q4_K_M.gguf'}"

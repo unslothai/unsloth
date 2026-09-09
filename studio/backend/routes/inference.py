@@ -8035,32 +8035,42 @@ def _resident_variant_matches(base: str, requested_variant: str, loaded_variant:
     """
     left = (loaded_variant or "").strip().lower()
     right = (requested_variant or "").strip().lower()
-    if not right or left == right:
+    if not right:
         return True
-    # Both sides through the inventory: a lone tagged build loaded through its legacy bare
-    # spelling keeps that bare value in ``hf_variant``, and a request through its advertised
-    # qualified row resolved to the qualified key and compared unequal -- a needless full reload
-    # of the weights already serving. Where a plain sibling owns the bare key the two resolve to
-    # different rows and stay apart.
     try:
-        from core.inference.local_model_resolver import resolve_local_gguf
+        from core.inference.local_model_resolver import local_variant_keys
+        from hub.utils.gguf import (
+            accepts_bare_quant_alias,
+            bare_quant_alias,
+            is_qualified_gguf_variant_key,
+            resolve_variant_alias,
+        )
 
-        def canon(spelling: str) -> str:
-            hit = resolve_local_gguf(f"{base}:{spelling}", allow_scan = False)
-            resolved = hit[1] if hit and len(hit) > 1 and hit[1] else None
-            return (resolved or spelling).strip().lower()
-
-        # Canonicalise the two together only when they COULD name one build: an inventory that
-        # answers the same entry for any spelling would otherwise fold two different quants into
-        # "already serving" and suppress a switch the request actually asked for.
-        from hub.utils.gguf import variant_spellings_may_name_one_build
-
-        if not variant_spellings_may_name_one_build(requested_variant, loaded_variant):
-            return canon(requested_variant) == left
-        return canon(requested_variant) == canon(loaded_variant)
+        keys = list(local_variant_keys(base, allow_scan = False))
     except Exception:
         return False
-
+    if not keys:
+        # No inventory to consult: the spellings themselves are all there is.
+        return left == right
+    # Only an ABSENT request bypasses the inventory. Equal spellings are not equal builds: a
+    # resident loaded through the legacy bare ``Q4_K_M`` while only the tagged build existed
+    # still records ``Q4_K_M``, and once a plain sibling is cached that same request names the
+    # plain build.
+    requested_key = resolve_variant_alias(keys, requested_variant)
+    resident_key = resolve_variant_alias(keys, loaded_variant)
+    if requested_key is None or resident_key is None:
+        return False
+    if not is_qualified_gguf_variant_key(loaded_variant) and any(
+        key.lower() != resident_key.lower()
+        and accepts_bare_quant_alias(key)
+        and bare_quant_alias(key).lower() == left
+        for key in keys
+    ):
+        # A bare-loaded resident may be the plain build or the tagged sibling that answered to
+        # that spelling at load time, and the inventory has grown since: its identity cannot be
+        # read off its spelling, so it is not "already serving". A reload is the safe error.
+        return False
+    return requested_key.lower() == resident_key.lower()
 
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.

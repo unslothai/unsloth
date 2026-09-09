@@ -1029,6 +1029,23 @@ def resolve_local_gguf(
         return None
 
 
+def local_variant_keys(base: str, *, allow_scan: bool = False) -> tuple[str, ...]:
+    """Every variant key the local index holds for *base*, or ``()`` when it holds none.
+
+    The resident check needs the WHOLE inventory, not one resolution: whether a bare spelling is
+    owned exactly, and whether a sibling also answers to it, decides if a resident loaded through
+    that spelling can be trusted to be the build a request now names.
+    """
+    if not isinstance(base, str) or not base.strip():
+        return ()
+    try:
+        index = _index() if allow_scan else _scan[1]
+        entry = index.get(base.strip().lower())
+    except Exception:
+        return ()
+    return tuple(entry.variants) if entry is not None else ()
+
+
 def _resolve_from_index(
     requested: str,
     index: dict[str, _LocalGgufEntry],

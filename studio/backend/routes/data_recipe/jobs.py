@@ -177,6 +177,22 @@ def _resolved_local_variant(target: str, variant: str) -> Optional[str]:
     return hit[1] if hit and len(hit) > 1 and hit[1] else None
 
 
+def _recipe_variant_matches(target: str, active_variant: Optional[str], gguf_variant: Optional[str]) -> bool:
+    """Whether the ACTIVE variant is the one the recipe selected, both resolved against the repo.
+
+    An EMPTY active variant is never resolved: ``resolve_local_gguf("target:")`` reads the empty
+    suffix as a foreign tag and answers the indexed default, which let a recipe that selected that
+    default pass while the non-GGUF backend was serving the same identifier from other weights.
+    """
+    if not gguf_variant:
+        return True
+    active = (
+        (_resolved_local_variant(target, active_variant) or active_variant) if active_variant else ""
+    )
+    selected = _resolved_local_variant(target, gguf_variant) or gguf_variant
+    return bool(active) and active.strip().lower() == selected.strip().lower()
+
+
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
@@ -195,13 +211,7 @@ def _ensure_selected_local_model_loaded(
     # actually publishes rather than comparing the two strings loosely: where a plain row owns
     # the bare quant BESIDE a tagged one, the two name different checkpoints and a loose match
     # would run the recipe against the wrong weights.
-    variant_matches = (
-        not gguf_variant
-        or (_resolved_local_variant(target, active_variant or "") or active_variant or "")
-        .strip()
-        .lower()
-        == (_resolved_local_variant(target, gguf_variant) or gguf_variant).strip().lower()
-    )
+    variant_matches = _recipe_variant_matches(target, active_variant, gguf_variant)
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
