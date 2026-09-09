@@ -228,7 +228,29 @@ test("a bare src in a project chat resolves to the project's current workspace s
     "the renderer passes the project row's current session",
   );
   assert.ok(
-    MARKDOWN_TEXT.includes("const scopeReady = !projectId || project !== undefined;"),
-    "and holds a sandbox src until that row has loaded",
+    MARKDOWN_TEXT.includes("sandboxSessionInSrc(src) === null"),
+    "and holds a sandbox src until that row has loaded -- but only one that needs it",
   );
+});
+
+test("a src that records its own session does not wait for the project row", () => {
+  // The row is the fallback scope, and a recorded src never reaches the fallback. Gating
+  // every sandbox image on the row blanked these out for as long as the project list was
+  // slow, and forever once it had failed, though their own route was answering all along.
+  const written = sandboxFilePath("project-workspace-9f3", "plot.png");
+  assert.equal(sandboxSessionInSrc(written), "project-workspace-9f3");
+  assert.equal(
+    markdownSandboxImageSrc(written, {
+      threadId: "t-1",
+      projectId: "p-1",
+      workspaceSessionId: undefined,
+    }),
+    written,
+  );
+  const gate = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("const waitingForScope"),
+    MARKDOWN_TEXT.indexOf("const file ="),
+  );
+  assert.ok(gate.includes("sandboxSessionInSrc(src) === null"), "the gate skips recorded srcs");
+  assert.ok(gate.includes("project === undefined"), "and only holds while the row is missing");
 });

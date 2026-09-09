@@ -84,6 +84,7 @@ import {
   decodeSegment,
   markdownSandboxImageSrc,
   sandboxFileForSrc,
+  sandboxSessionInSrc,
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
@@ -168,19 +169,24 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
     : undefined;
   // Changing a project's working directory rotates its workspace session, so a bare `plot.png` in
   // a project chat resolves against the row's current value. Until that row has loaded there is
-  // nothing to resolve against, and the src waits rather than guessing `project-<id>`: that is the
-  // folder from before the change, which the route answers with a 410.
-  const scopeReady = !projectId || project !== undefined;
+  // nothing to resolve against, and only such a src waits, rather than guessing `project-<id>`:
+  // that is the folder from before the change, which the route answers with a 410. A src that
+  // records its own session names the folder its files were written to and needs no row at all,
+  // so a project list that is slow or has failed must not blank those out.
+  const waitingForScope =
+    src !== undefined &&
+    !!projectId &&
+    project === undefined &&
+    sandboxFileForSrc(src) !== null &&
+    sandboxSessionInSrc(src) === null;
   const file =
-    src && scopeReady
+    src && !waitingForScope
       ? markdownSandboxImageSrc(src, {
           threadId: remoteId ?? activeThreadId ?? undefined,
           projectId,
           workspaceSessionId: project?.workspaceSessionId,
         })
       : null;
-  const waitingForScope =
-    src !== undefined && !scopeReady && sandboxFileForSrc(src) !== null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src is renderable only once the authed fetch has produced a blob: until then it is
