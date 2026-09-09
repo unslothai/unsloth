@@ -14,6 +14,7 @@ stall deadline for.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import threading
 from types import SimpleNamespace
 
@@ -24,6 +25,9 @@ from core.inference.llama_preemption import (
     PreemptionController,
 )
 import routes.inference as inference_route
+
+
+ROUTES = pathlib.Path(inference_route.__file__)
 
 
 def _controller(key: str = "test://anthropic") -> PreemptionController:
@@ -63,7 +67,7 @@ class TestTheRoundChargeReachesTheLedger:
             reservation = SimpleNamespace(lease_nowait = lambda: SimpleNamespace(tokens = 6000)),
             payload = payload,
             conversation = conversation,
-            injected_tools = None,
+            rendered_tools = None,
             observe_tokens = swept.append,
         )
 
@@ -86,7 +90,7 @@ class TestTheRoundChargeReachesTheLedger:
             reservation = SimpleNamespace(lease_nowait = lambda: None),
             payload = SimpleNamespace(),
             conversation = [{"role": "user", "content": "hi"}],
-            injected_tools = None,
+            rendered_tools = None,
             observe_tokens = swept.append,
         )
         assert swept == []
@@ -316,3 +320,123 @@ class TestTheAnthropicToolLoopIsHandedTheReporter:
             "the observer's third callback is the only way the controller hears about a "
             "tool that may run for the whole 300 second timeout"
         )
+
+
+class TestTheFinalPassIsNotChargedForACatalogueItDoesNotSend:
+    """`on_conversation_grew(messages, None)`: the synthesis pass renders no tools."""
+
+    def test_the_resident_figure_drops_the_catalogue_on_the_final_pass(self, monkeypatch):
+        controller = _controller("test://rendered")
+        monkeypatch.setattr(inference_route, "get_preemption_controller", lambda key: controller)
+        backend = _backend()
+        catalogue = [
+            {"type": "function", "function": {"name": f"t{i}", "description": "x" * 400}}
+            for i in range(4)
+        ]
+        conversation = [{"role": "user", "content": "hi"}]
+
+        def _publish(rendered):
+            controller._participants.clear()
+            controller.register("gen", tokens = 1000, prompt_tokens = 800)
+            inference_route._openai_llama_publish_round_charge(
+                llama_backend = backend,
+                gen_id = "gen",
+                reservation = SimpleNamespace(lease_nowait = lambda: SimpleNamespace(tokens = 20000)),
+                payload = SimpleNamespace(),
+                conversation = conversation,
+                rendered_tools = rendered,
+                observe_tokens = lambda _n: None,
+            )
+            return controller.participant("gen").prompt_tokens
+
+        with_tools = _publish(catalogue)
+        without = _publish(None)
+        assert with_tools > without, "the catalogue has to be worth measuring here"
+        # A round that sends none must not carry them as cells the cache holds: on a small
+        # context that difference is enough to preempt a healthy chat.
+        assert without < 100
+
+    @pytest.mark.parametrize(
+        ("opener", "closer"),
+        [
+            (
+                "def _gguf_recost(conversation, round_tools = None)",
+                "# Active tool names gating the bare-rehearsal strip",
+            ),
+            (
+                "def _anthropic_recost(conversation, round_tools = None)",
+                "async def _admitted_anthropic(",
+            ),
+        ],
+    )
+    def test_both_recosts_publish_the_rounds_own_tools(self, opener, closer):
+        text = ROUTES.read_text(encoding = "utf-8")
+        body = text[text.index(opener) :]
+        body = body[: body.index(closer)]
+        assert "rendered_tools = round_tools," in body, (
+            "the publish must use what the round SENDS; the lease keeps charging the "
+            "whole catalogue, which is a separate and deliberate thing"
+        )
+
+
+class TestEveryDrainReportsItsToolStates:
+    @pytest.mark.parametrize(
+        ("opener", "closer"),
+        [
+            # The GGUF streaming loop and its non-streaming drain.
+            (
+                "async def produce_openai_chat_completions(",
+                "\ndef _openai_messages_for_passthrough",
+            ),
+            # The Anthropic streaming loop.
+            ("async def _anthropic_tool_stream(", "\nasync def _anthropic_plain_stream("),
+            # The Anthropic non-streaming drain.
+            ("def _collect_anthropic_events(", "\ndef _anthropic_tool_response_from_events("),
+        ],
+    )
+    def test_the_shared_reader_is_called(self, opener, closer):
+        text = ROUTES.read_text(encoding = "utf-8")
+        body = text[text.index(opener) :]
+        body = body[: body.index(closer)]
+        assert "_note_tool_loop_state(" in body, (
+            "an armed drain that reports no state leaves the participant DECODING through "
+            "a tool that may run for the whole 300 second timeout"
+        )
+
+    def test_the_reader_is_the_only_implementation(self):
+        text = ROUTES.read_text(encoding = "utf-8")
+        # Written out at a call site, a later fix lands in one copy and not the others,
+        # which is how the non-streaming drains came to be three rounds behind.
+        assert text.count("ParticipantState.PARKED_ON_TOOL\n") <= 2, (
+            "the parked/tools-running transition is written out somewhere other than "
+            "_note_tool_loop_state"
+        )
+
+
+class TestAPausedAnthropicStreamKeepsTalking:
+    def test_the_pause_events_reach_the_wire(self):
+        chunks = _drive_tool_stream(
+            lambda: [
+                {"type": "preempt", "state": "paused"},
+                {"type": "preempt", "state": "keepalive"},
+                {"type": "preempt", "state": "keepalive"},
+                {"type": "preempt", "state": "resumed"},
+                {"type": "content", "text": "the answer"},
+            ],
+            None,
+        )
+        # Dropped, the connection is silent for the whole pause: the wait's two-second
+        # keepalive completes next(gen) before the stall timer can fire, so an
+        # intermediary that drops an idle connection at ~100s cancels a resumable answer.
+        assert inference_route._OPENAI_PREEMPT_SSE_PAUSED in chunks, "the pause was not forwarded"
+        assert chunks.count(inference_route._OPENAI_PREEMPT_SSE_KEEPALIVE) == 2
+        assert inference_route._OPENAI_PREEMPT_SSE_RESUMED in chunks
+        assert any("the answer" in chunk for chunk in chunks)
+
+    def test_the_plain_stream_forwards_them_too(self):
+        text = ROUTES.read_text(encoding = "utf-8")
+        body = text[text.index("async def _anthropic_plain_stream(") :]
+        body = body[: body.index("\nasync def _anthropic_plain_non_streaming(")]
+        assert (
+            "_OPENAI_PREEMPT_SSE_BY_STATE" in body
+        ), "the no-tool Anthropic stream pauses too, and its emitter ignores the event"

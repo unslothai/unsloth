@@ -2674,6 +2674,37 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
+def _note_tool_loop_state(note_state, event) -> None:
+    """Report where a tool-loop event leaves this chat, for the preemptor.
+
+    One reader for all four drains -- the GGUF stream and its non-streaming drain, and the
+    two Anthropic ones -- because the streaming pair grew these transitions and the
+    non-streaming pair did not. An armed participant that reads DECODING through a tool
+    which may run for the whole 300 second timeout can be chosen by a sweep, does not see
+    its signal until the tool returns, and leaves a peer paused behind it to exhaust the
+    90 second stall deadline `await_resume` only extends while somebody is PARKED_ON_TOOL
+    or TOOLS_RUNNING.
+
+    Reported before any wire-level drop: an event a surface does not forward still
+    describes a tool that is running and cells that are held.
+    """
+    etype = (event or {}).get("type")
+    if not (etype == "tool_start" and event.get("awaiting_confirmation")):
+        if note_state(None) == ParticipantState.PARKED_ON_TOOL:
+            # Answered: the tool runs next, and decoding follows.
+            note_state(ParticipantState.TOOLS_RUNNING)
+    if etype == "tool_start":
+        note_state(
+            ParticipantState.PARKED_ON_TOOL
+            if event.get("awaiting_confirmation")
+            else ParticipantState.TOOLS_RUNNING
+        )
+    elif etype in ("tool_args", "content"):
+        # Streamed arguments are decoded tokens too, and a chat left TOOLS_RUNNING through
+        # them cannot be paused as it grows.
+        note_state(ParticipantState.DECODING)
+
+
 def _openai_llama_publish_round_charge(
     *,
     llama_backend,
@@ -2681,7 +2712,7 @@ def _openai_llama_publish_round_charge(
     reservation,
     payload,
     conversation,
-    injected_tools,
+    rendered_tools,
     observe_tokens,
 ) -> None:
     """Hand a tool round's re-costed charge to the preemptor, then sweep on it.
@@ -2696,6 +2727,14 @@ def _openai_llama_publish_round_charge(
     against the same cache, and the Anthropic copy publishing nothing left its participant
     sized by its opening prompt for the whole run, so the watermark was late by the entire
     tool history.
+
+    ``rendered_tools`` is the catalogue THIS round sends, not the one it is charged for.
+    The two differ on the final synthesis pass, which sends none: charged, the roughly 1250
+    token Studio catalogue would sit in the participant's resident figure as cells the
+    cache does not hold, and on a small context that is enough to preempt a healthy chat or
+    refuse a resume against room that is really there. The lease keeps charging the whole
+    catalogue, which is deliberate and separate: a charge may cover what a request does not
+    send, a residency figure may not.
     """
     try:
         lease = reservation.lease_nowait() if reservation is not None else None
@@ -2709,7 +2748,7 @@ def _openai_llama_publish_round_charge(
                 payload,
                 conversation = conversation,
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-                injected_tools = injected_tools,
+                injected_tools = rendered_tools,
             ),
         )
         observe_tokens(0)
@@ -23711,7 +23750,8 @@ async def produce_openai_chat_completions(
                     reservation = _gguf_admission_hold["reservation"],
                     payload = payload,
                     conversation = conversation,
-                    injected_tools = tools_to_use,
+                    # What this round SENDS: None on the final pass, which renders none.
+                    rendered_tools = round_tools,
                     observe_tokens = _gguf_observe_tokens,
                 )
                 return _recosted_allowance
@@ -23982,9 +24022,10 @@ async def produce_openai_chat_completions(
                             event["type"] == "tool_start" and event.get("awaiting_confirmation")
                         ):
                             await _park_admission(False)
-                            if _gguf_note_state(None) == ParticipantState.PARKED_ON_TOOL:
-                                # Answered: the tool runs next, and decoding follows.
-                                _gguf_note_state(ParticipantState.TOOLS_RUNNING)
+                        # The ledger's side of the same events. Admission parking stays
+                        # inline beside it: they are different mechanisms and only one of
+                        # them is awaited.
+                        _note_tool_loop_state(_gguf_note_state, event)
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -23994,10 +24035,6 @@ async def produce_openai_chat_completions(
                         if event["type"] in ("tool_output", "tool_args"):
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
-                            if event["type"] == "tool_args":
-                                # Streamed arguments are decoded tokens, and a chat left
-                                # TOOLS_RUNNING through them cannot be paused as it grows.
-                                _gguf_note_state(ParticipantState.DECODING)
                             if _ui_events:
                                 yield f"data: {json.dumps(event)}\n\n"
                             elif _drop_keepalive.due():
@@ -24044,11 +24081,6 @@ async def produce_openai_chat_completions(
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
                                 approval_flush_pending = bool(event.get("awaiting_confirmation"))
-                                _gguf_note_state(
-                                    ParticipantState.PARKED_ON_TOOL
-                                    if event.get("awaiting_confirmation")
-                                    else ParticipantState.TOOLS_RUNNING
-                                )
                             if _ui_events:
                                 yield f"data: {json.dumps(event)}\n\n"
                             elif _drop_keepalive.due():
@@ -24089,7 +24121,6 @@ async def produce_openai_chat_completions(
                         # "content" type -- cumulative text. Sanitize the full
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
-                        _gguf_note_state(ParticipantState.DECODING)
                         raw_cumulative = event.get("text", "")
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
@@ -24375,6 +24406,9 @@ async def produce_openai_chat_completions(
                     for event in gen:
                         if cancel_event.is_set():
                             break
+                        # Armed like the streaming branch, so it owes the ledger the same
+                        # states: nothing here forwards events, but a tool still runs.
+                        _note_tool_loop_state(_gguf_note_state, event)
                         if event.get("type") == "metadata":
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
@@ -32497,7 +32531,8 @@ async def anthropic_messages(
             reservation = _anthropic_admission_hold["reservation"],
             payload = payload,
             conversation = conversation,
-            injected_tools = openai_tools,
+            # What this round SENDS: None on the final pass, which renders none.
+            rendered_tools = round_tools,
             observe_tokens = _anthropic_observe_tokens,
         )
         return _recosted_allowance
@@ -32886,6 +32921,7 @@ async def anthropic_messages(
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 think_provenance = _think_prov,
                 cancel_event = cancel_event,
+                note_state = _anthropic_note_state,
             ),
             tool_loop = True,
             wire_tools = openai_tools,
@@ -33063,22 +33099,17 @@ async def _anthropic_tool_stream(
                     if event is _sentinel:
                         break
                     etype = event.get("type")
-                    # Reported BEFORE the drop skips below: an event dropped from the wire
-                    # still describes a tool that is running and cells that are held.
-                    if not (etype == "tool_start" and event.get("awaiting_confirmation")):
-                        if _note_state(None) == ParticipantState.PARKED_ON_TOOL:
-                            # Answered: the tool runs next, and decoding follows.
-                            _note_state(ParticipantState.TOOLS_RUNNING)
-                    if etype == "tool_start":
-                        _note_state(
-                            ParticipantState.PARKED_ON_TOOL
-                            if event.get("awaiting_confirmation")
-                            else ParticipantState.TOOLS_RUNNING
+                    _note_tool_loop_state(_note_state, event)
+                    if etype == "preempt":
+                        # The pause, on the wire. Dropped, this stream emits NOTHING for the
+                        # whole pause: the keepalive the wait yields every two seconds
+                        # completes next(gen) before the stall timer can fire, so an
+                        # intermediary that drops an idle connection at ~100s cancels an
+                        # answer that was about to resume.
+                        yield _OPENAI_PREEMPT_SSE_BY_STATE.get(
+                            event.get("state"), _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         )
-                    elif etype in ("tool_args", "content"):
-                        # Streamed arguments are decoded tokens too, and a chat left
-                        # TOOLS_RUNNING through them cannot be paused as it grows.
-                        _note_state(ParticipantState.DECODING)
+                        continue
                     if etype == "heartbeat":
                         # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
                         # a dropped tool still runs and suppresses the stall keepalive.
@@ -33232,6 +33263,13 @@ async def _anthropic_plain_stream(
                     if cumulative is _sentinel:
                         break
                     if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "preempt":
+                            # See the tool stream: the emitter ignores these, and dropped
+                            # they leave the connection silent for the whole pause.
+                            yield _OPENAI_PREEMPT_SSE_BY_STATE.get(
+                                cumulative.get("state"), _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            )
+                            continue
                         if cumulative.get("type") == "metadata":
                             _fr = cumulative.get("finish_reason")
                             if _fr is not None:
@@ -33290,7 +33328,11 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
 _WRAPPED_SO_FAR = "_wrapped_so_far"
 
 
-def _collect_anthropic_events(run_gen, think_provenance = None) -> list:
+def _collect_anthropic_events(
+    run_gen,
+    think_provenance = None,
+    note_state = None,
+) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500.
 
@@ -33300,10 +33342,16 @@ def _collect_anthropic_events(run_gen, think_provenance = None) -> list:
     aggregate -- in a tool loop that lets an early turn's literal ``<think>``
     claim a later turn's genuine wrap. Stamp the live count on each event so the
     reducer replays the same ledger the streamed path saw.
+
+    ``note_state`` reports tool states to the preemptor, as the streaming drain does. This
+    path is armed too, so without it the participant reads DECODING for the length of a
+    tool run.
     """
 
     def _drain():
         for event in run_gen():
+            if note_state is not None and isinstance(event, dict):
+                _note_tool_loop_state(note_state, event)
             if (
                 think_provenance is not None
                 and isinstance(event, dict)
@@ -33543,12 +33591,13 @@ async def _anthropic_tool_non_streaming(
     parse_think = True,
     think_provenance = None,
     cancel_event = None,
+    note_state = None,
 ):
     """Generate and reduce a tool response entirely off the event loop."""
 
     def _drain_and_build():
         return _anthropic_tool_response_from_events(
-            _collect_anthropic_events(run_gen, think_provenance),
+            _collect_anthropic_events(run_gen, think_provenance, note_state),
             message_id,
             model_name,
             disable_parallel_tool_use = disable_parallel_tool_use,

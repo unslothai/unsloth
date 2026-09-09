@@ -237,8 +237,11 @@ class DeferredPreemptionPolicy:
     """A policy handed to the stream before the real one can exist.
 
     The tool-loop generator is BUILT before admission returns and only ITERATED after, so
-    it cannot yet know its lease. Unbound it behaves as ``NullPreemptionPolicy``, which is
-    correct rather than convenient: nothing can pause before the generator is iterated.
+    it cannot yet know its lease. Unbound it never pauses, which is correct rather than
+    convenient: nothing can pause before the generator is iterated. NOT the same as
+    ``NullPreemptionPolicy``, which the two must not be merged on: unbound, `await_resume`
+    answers False, since a wait with no policy behind it is a turn that has to end, while
+    Null answers True because it is only installed where no pause can be raised at all.
     """
 
     __slots__ = ("_inner",)
