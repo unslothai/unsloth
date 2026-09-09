@@ -213,14 +213,37 @@ def _add_gguf_picks(
     }
     if not openable:
         return True
+    # The legacy bare spelling of a qualified key, where exactly one build answers to it. The
+    # loaders and the chat index both still accept it, so an image or video request persisted
+    # before the same-quant split has to reach the build here too rather than 404.
+    from hub.utils.gguf import (
+        accepts_bare_quant_alias,
+        bare_quant_alias,
+        collapse_same_quant_root_builds,
+    )
+
+    alias_owners: dict[str, list[str]] = {}
+    for quant in openable:
+        if not accepts_bare_quant_alias(quant):
+            continue
+        alias = bare_quant_alias(quant)
+        if alias and alias.lower() not in {q.lower() for q in openable}:
+            alias_owners.setdefault(alias.lower(), []).append(quant)
+
     for quant, variant in openable.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant
+        spellings = [quant]
+        spellings += [
+            alias for alias, owners in alias_owners.items() if owners == [quant]
+        ]
         _register(
             index,
-            [f"{key}:{quant}" for key in keys],
+            [f"{key}:{spelling}" for key in keys for spelling in spellings],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
     unqualified = [quant for quant in openable if "/" not in quant]
+    # Same collapse the chat and OpenAI resolvers apply, so a bare id means one build here too.
+    unqualified = collapse_same_quant_root_builds(unqualified) or unqualified
     best = preferred_quant(unqualified or list(openable)) or next(iter(unqualified or openable))
     _register(
         index,

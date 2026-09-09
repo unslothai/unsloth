@@ -265,6 +265,38 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
+def _state_spellings_for_delete(target_repo, variant: str) -> set[str]:
+    """Every spelling the manifest and cancel marker for this build could be stored under.
+
+    State is written under the spelling the DOWNLOAD used, which need not be the one the delete
+    asks for, and the two are keyed separately, so whichever direction is missed leaves state
+    that outlives its files -- an offline refresh then rebuilds a partial row for a checkpoint
+    that is gone. ``_variant_keys_to_delete`` covers bare-request-to-qualified-key; this adds the
+    reverse, and only when no plain sibling owns the bare spelling, since then it is another
+    build's state.
+    """
+    wanted = (variant or "").strip().lower()
+    spellings = {wanted} | _variant_keys_to_delete(target_repo, variant)
+    if not wanted or not accepts_bare_quant_alias(wanted):
+        return spellings
+    bare = bare_quant_alias(wanted).lower()
+    if not bare:
+        return spellings
+    keys = {
+        gguf_variant_key(name).lower()
+        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
+    }
+    owners = {
+        key
+        for key in keys
+        if key == bare
+        or (accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == bare)
+    }
+    if owners == {wanted}:
+        spellings.add(bare)
+    return spellings
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -288,7 +320,7 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        purge_variants.update(wanted_keys)
+        purge_variants.update(_state_spellings_for_delete(target_repo, variant))
         matched = _repo_file_matches(
             target_repo,
             lambda name, keys = wanted_keys: _is_main_gguf_filename(name)

@@ -809,3 +809,98 @@ def test_the_requirement_cache_answers_the_spelling_it_was_asked():
         service._fetch_gguf_variant_requirements = real_fetch
     assert first is not None and second is not None
     assert calls["n"] == 1, f"the bare spelling re-fetched {calls['n']} times"
+
+
+def test_two_bit_widths_are_two_precisions_not_two_builds():
+    """``extract_quant_token`` drops the bpw modifier, so the collapse grouped
+    ``IQ4_XS-3.53bpw`` with ``IQ4_XS-4.05bpw`` and kept the lexicographically first. The listers
+    sort larger first, so a bare repo id that meant 4.05bpw silently dropped to 3.53bpw."""
+    from core.inference.openai_auto_download import preferred_quant
+    from hub.utils.gguf import collapse_same_quant_root_builds
+
+    widths = ["IQ4_XS-4.05bpw", "IQ4_XS-3.53bpw"]
+    assert collapse_same_quant_root_builds(widths) == widths
+    assert preferred_quant(collapse_same_quant_root_builds(widths)) == "IQ4_XS-4.05bpw"
+    # A tagged build at the SAME bit width is still a second build of that precision.
+    same_width = ["IQ4_XS-3.53bpw", "m-IQ4_XS-3.53bpw-mtp"]
+    assert collapse_same_quant_root_builds(same_width) == ["IQ4_XS-3.53bpw"]
+    # And a plain quant with no modifier is unaffected.
+    assert collapse_same_quant_root_builds(["Q4_K_M", "m-Q4_K_M-mtp"]) == ["Q4_K_M"]
+
+
+def test_a_qualified_delete_purges_the_bare_state_too():
+    """State is written under the spelling the DOWNLOAD used. A build fetched through the legacy
+    bare quant and deleted through its advertised row took the exact-key return, so the bare
+    manifest and marker were never purged and an offline refresh rebuilt a partial row."""
+    from hub.services.models.deletion import _state_spellings_for_delete
+
+    class _Repo:
+        def __init__(self, names):
+            self._names = names
+
+    def _matches(target_repo, _pred):
+        return [(None, None, name) for name in target_repo._names]
+
+    import hub.services.models.deletion as deletion
+
+    real = deletion._repo_file_matches
+    deletion._repo_file_matches = _matches
+    try:
+        lone = _Repo(["model-Q4_K_M-mtp.gguf", "model-Q6_K.gguf"])
+        # Qualified request: the bare spelling its download may have used is purged as well.
+        assert _state_spellings_for_delete(lone, "model-q4_k_m-mtp") == {
+            "model-q4_k_m-mtp",
+            "q4_k_m",
+        }
+        # Bare request: still resolves forward onto the qualified key.
+        assert _state_spellings_for_delete(lone, "q4_k_m") == {"q4_k_m", "model-q4_k_m-mtp"}
+        # A plain sibling OWNS the bare spelling, so it is another build's state; leave it.
+        shared = _Repo(["model-Q4_K_M.gguf", "model-Q4_K_M-mtp.gguf"])
+        assert _state_spellings_for_delete(shared, "model-q4_k_m-mtp") == {"model-q4_k_m-mtp"}
+    finally:
+        deletion._repo_file_matches = real
+
+
+def test_the_media_index_answers_the_legacy_spelling_too(tmp_path):
+    """An image or video request persisted as ``repo:Q4_K_M`` has to reach a lone tagged build,
+    the way the chat index and both loaders do. The media index registered only the exact key,
+    so the same reference the GGUF paths accept was rejected as unavailable here."""
+    from core.inference import media_model_index as mmi
+
+    for name in ("model-Q4_K_M-mtp.gguf", "model-Q6_K.gguf"):
+        (tmp_path / name).write_bytes(b"GGUF" + b"\0" * 64)
+
+    # The loader probe reads real headers; this test is about which NAMES get indexed.
+    real_can_open = mmi._loader_can_open
+    mmi._loader_can_open = lambda *a, **k: True
+    index: dict = {}
+    try:
+        assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
+    finally:
+        mmi._loader_can_open = real_can_open
+
+    assert index["repo:model-q4_k_m-mtp"].gguf_filename == "model-Q4_K_M-mtp.gguf"
+    # The legacy bare spelling, which nothing else in the repo owns.
+    assert index["repo:q4_k_m"].gguf_filename == "model-Q4_K_M-mtp.gguf"
+    assert index["repo:q6_k"].gguf_filename == "model-Q6_K.gguf"
+
+
+def test_the_media_index_leaves_a_contested_bare_spelling_alone(tmp_path):
+    """A plain row owning the bare quant means the alias is that row's, not the tagged one's."""
+    from core.inference import media_model_index as mmi
+
+    for name in ("model-Q4_K_M.gguf", "model-Q4_K_M-mtp.gguf"):
+        (tmp_path / name).write_bytes(b"GGUF" + b"\0" * 64)
+
+    real_can_open = mmi._loader_can_open
+    mmi._loader_can_open = lambda *a, **k: True
+    index: dict = {}
+    try:
+        mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path)
+    finally:
+        mmi._loader_can_open = real_can_open
+
+    assert index["repo:q4_k_m"].gguf_filename == "model-Q4_K_M.gguf"
+    assert index["repo:model-q4_k_m-mtp"].gguf_filename == "model-Q4_K_M-mtp.gguf"
+    # And the bare id itself means the plain build, as it does in every other resolver.
+    assert index["repo"].gguf_filename == "model-Q4_K_M.gguf"

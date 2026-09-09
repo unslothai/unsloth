@@ -926,6 +926,23 @@ def variant_spellings_may_name_one_build(a: Optional[str], b: Optional[str]) -> 
     return False
 
 
+def _quant_group_identity(key: str) -> Optional[str]:
+    """The precision two builds have to share before one may stand in for the other.
+
+    The quant token plus its bit-width modifier when the key carries one: ``IQ4_XS-3.53bpw`` and
+    ``IQ4_XS-4.05bpw`` are different precisions the listers publish as separate rows, so they are
+    never two builds of one quant.
+    """
+    token = extract_quant_token(key)
+    if token is None:
+        return None
+    # Not the trailing-anchored form: a tagged build carries its modifier mid-name
+    # (``m-IQ4_XS-3.53bpw-mtp``), and it is a second build of THAT precision, so it has to group
+    # with the plain 3.53bpw build rather than land in a bpw-less group of its own.
+    bpw = _GGUF_BPW_SUFFIX_RE.search(key or "")
+    return f"{token}{bpw.group(0)}".lower() if bpw else token.lower()
+
+
 def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
     """One key per quant token among ROOT-level builds, for DEFAULT selection only.
 
@@ -939,17 +956,22 @@ def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:
     UNqualified id means, and it means the plain build wherever the repo publishes one. Ties
     among tagged-only builds fall to the lexicographically first key, which is deterministic and
     is the family the grouped row used to pick.
+
+    Grouped on the bpw-PRESERVING identity, because two bit widths are two precisions, not two
+    builds of one. ``extract_quant_token`` drops the modifier, so ``IQ4_XS-3.53bpw`` and
+    ``IQ4_XS-4.05bpw`` grouped together and the lexicographically first won -- and the listers
+    sort larger first, so a bare repo id that meant 4.05bpw silently dropped to 3.53bpw.
     """
     # Materialised once: the input is read twice, and an Iterable may be a one-shot generator.
     ordered = list(keys)
     groups: dict[str, list[str]] = {}
     passthrough: set[str] = set()
     for key in ordered:
-        token = extract_quant_token(key)
+        token = _quant_group_identity(key)
         if token is None or "/" in (key or "").replace("\\", "/"):
             passthrough.add(key)
             continue
-        groups.setdefault(token.lower(), []).append(key)
+        groups.setdefault(token, []).append(key)
     winners = []
     for token, members in groups.items():
         if len(members) == 1:
