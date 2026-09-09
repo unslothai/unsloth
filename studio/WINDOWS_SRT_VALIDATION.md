@@ -124,3 +124,34 @@ No upstream CI result is claimed by these local checks.
 
 After #10526 merges, reconcile this branch against its actual merged revision
 and retarget the draft to `main`. Do not retarget or merge it ahead of that event.
+
+
+## Review remediation, 2026-09-09
+
+Reviewed head `2eb2f1809a12db0a9b049b8d538f721fdf7ce73a` was followed by
+remediation code at `25662f2e12dc02e62543086a982ed29d44c2f012`:
+
+- Both safetensors wrappers forward the requested isolation mode.
+- The Codex policy accepts and forwards isolation to the shared tool loop.
+- Output draining with no captured process group no longer references launch-local metadata.
+- Execution disclosures use the pane and run-unique tool part ID, retaining first-turn
+  records after autosave/settlement without sharing records with another run or pane.
+
+Focused backend regressions: 26 passed. Neighboring safetensors/shared tool-loop
+suites: 386 passed. Frontend controls: 4 passed. Frontend application/test typecheck
+and production build passed. Changed backend Ruff checks passed; the execution-record
+module has no ESLint errors and retains three Fast Refresh warnings.
+
+Commands, from the respective backend/frontend directory:
+
+```text
+python -m pytest tests/test_tool_isolation_forwarding.py tests/test_tool_output_streaming.py::test_drain_process_output_without_posix_process_group_apis tests/test_tool_isolation_modes.py tests/test_tool_stream_events.py -q --disable-warnings
+python -m pytest tests/test_conversation_search_safetensors_loop.py tests/test_studio_tool_loop.py tests/test_safetensors_tool_loop.py -q --disable-warnings
+node --experimental-strip-types --test tests/tool-execution-record.test.ts tests/isolation-http-boundary.test.ts
+npm run typecheck
+npm run build
+```
+
+These checks address the four retained review mechanisms. The broader review's
+native-platform, authenticated-browser and structural closure gaps remain open;
+this is not a completed whole-PR review or sandbox qualification.
