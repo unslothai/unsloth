@@ -93,7 +93,8 @@ def test_preset_load_config_carries_reasoning_budget():
     assert "reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1" in source
     assert "? snapshot.reasoningBudgetMessage" in source
     routes = _read("studio/backend/routes/chat_history.py")
-    assert "reasoningBudget: Optional[int]" in routes
+    # NotABoolean: bool subclasses int, so a lax parse would take `true` for a budget of 1.
+    assert "reasoningBudget: NotABoolean" in routes
     assert "reasoningBudgetMessage: Optional[str]" in routes
 
 

@@ -2737,6 +2737,20 @@ def test_reasoning_resets_reach_the_server_without_making_backfill_destructive()
     assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
 
 
+def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
+    """Captured from /status beside the context request and replayed the same way; a recipe's
+    own target carries neither and runs at the defaults."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("reasoningBudget: status.reasoning_budget ?? -1,") == 2, src
+    assert src.count('reasoningBudgetMessage: status.reasoning_budget_message ?? "",') == 2, src
+    assert "reasoning_budget: reasoningBudget ?? -1," in src
+    assert 'reasoning_budget_message: reasoningBudgetMessage ?? "",' in src
+    assert "(left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1)" in src
+
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "mirrors_reasoning_budget: true," in api
+
+
 def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
     api = _read("features/chat/api/chat-api.ts")
     validate_body = api.split("export async function validateModel", 1)[1].split(

@@ -816,6 +816,9 @@ class ModelOverridePayload(BaseModel):
     # False, so an old payload is the safe case. Not a blanket carry-over: that would make clearing impossible for
     # everyone.
     mirrors_server_tuning: bool = False
+    # The reasoning pair came later than the four, so a build that mirrors them can still
+    # predate it: its own flag, same contract.
+    mirrors_reasoning_budget: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -1667,7 +1670,11 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import drop_managed_flags, strip_shadowing_flags, validate_extra_args
+    from core.inference.llama_server_args import (
+        drop_managed_flags,
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -1686,6 +1693,7 @@ def update_openai_auto_switch_override(
                 "remove",
                 "fill_absent_fields",
                 "mirrors_server_tuning",
+                "mirrors_reasoning_budget",
             },
             exclude_none = True,
         )
@@ -1761,8 +1769,13 @@ def update_openai_auto_switch_override(
         # caller never knew about must survive it. Gated on is_removal, not on payload.remove: the documented legacy
         # contract is a payload carrying only model_id, which leaves remove None while is_removal is true.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
-        if not payload.mirrors_server_tuning and not is_removal:
+        _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        # Each group is carried only for a client that does not mirror it.
+        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
+            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        )
+        if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match, so a
             # save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -1783,7 +1796,7 @@ def update_openai_auto_switch_override(
                 _stored_tuning = get_model_override(_alias_id)
                 if not _stored_tuning:
                     continue
-                for name in _tuning_fields:
+                for name in _carried_fields:
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
@@ -1853,12 +1866,12 @@ def update_openai_auto_switch_override(
                 reasoning_budget = (
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget
-                    else payload.reasoning_budget
+                    else _kept_tuning["reasoning_budget"]
                 ),
                 reasoning_budget_message = (
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget_message
-                    else payload.reasoning_budget_message
+                    else _kept_tuning["reasoning_budget_message"]
                 ),
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,

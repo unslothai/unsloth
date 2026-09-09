@@ -60,7 +60,12 @@ except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
-from models.inference import InferenceStatusResponse, LoadRequest, LoadResponse
+from models.inference import (
+    InferenceStatusResponse,
+    LoadRequest,
+    LoadResponse,
+    ValidateModelRequest,
+)
 
 
 class _FakeProcess:
@@ -325,7 +330,12 @@ def test_reasoning_budget_is_part_of_backend_dedupe():
     assert (
         _matches(
             backend,
-            **{**common, "reasoning_budget": -1, "reasoning_budget_message": "", "extra_args": flags},
+            **{
+                **common,
+                "reasoning_budget": -1,
+                "reasoning_budget_message": "",
+                "extra_args": flags,
+            },
         )
         is True
     )
@@ -466,3 +476,11 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "self._effective_cache_types=_effective_main_cache_types(" in load
         assert "self._requested_cache_types=_planned_cache_pair" in load
+
+
+@pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
+def test_reasoning_budget_rejects_booleans(model):
+    # bool subclasses int and pydantic parses lax, so `true` would launch a one-token budget.
+    with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
+        model(model_path = "unsloth/x", reasoning_budget = True)
+    assert model(model_path = "unsloth/x", reasoning_budget = 1).reasoning_budget == 1

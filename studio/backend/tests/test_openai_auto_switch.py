@@ -11753,3 +11753,10 @@ def test_speech_probe_refuses_remote_code(monkeypatch, audio_type, allowed):
     assert inference_route._target_speech_audio_type("/local/model", False) == (
         audio_type if allowed else None
     )
+
+
+def test_preset_reasoning_budget_rejects_booleans():
+    from routes.chat_history import ChatPresetLoadConfig
+    with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
+        ChatPresetLoadConfig(reasoningBudget = True)
+    assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0

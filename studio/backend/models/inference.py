@@ -324,7 +324,9 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", mode = "before")
+    @field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", "reasoning_budget", mode = "before"
+    )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
         # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
@@ -598,9 +600,9 @@ class ValidateModelRequest(BaseModel):
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", mode = "before")(
-        LoadRequest._no_booleans.__func__
-    )
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
 
 
 class TransformersUpgradeInfo(BaseModel):

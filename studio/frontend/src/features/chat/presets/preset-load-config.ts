@@ -139,12 +139,8 @@ export function normalizePresetLoadConfig(
   const gpuMemoryMode =
     partial.gpuMemoryMode === "manual" ? ("manual" as const) : undefined;
   let gpuLayers: number | undefined;
-  if (
-    typeof partial.gpuLayers === "number" &&
-    Number.isFinite(partial.gpuLayers)
-  ) {
-    gpuLayers =
-      partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
+  if (typeof partial.gpuLayers === "number" && Number.isFinite(partial.gpuLayers)) {
+    gpuLayers = partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
   }
   let nCpuMoe: number | undefined;
   if (typeof partial.nCpuMoe === "number" && Number.isFinite(partial.nCpuMoe)) {
@@ -225,7 +221,9 @@ export function normalizePresetLoadConfig(
   return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
-export function hasPresetLoadConfig(config?: PresetLoadConfig | null): boolean {
+export function hasPresetLoadConfig(
+  config?: PresetLoadConfig | null,
+): boolean {
   return !isSamePresetLoadConfig(config, EMPTY_PRESET_LOAD_CONFIG);
 }
 

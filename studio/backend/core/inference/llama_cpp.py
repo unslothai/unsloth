@@ -8029,18 +8029,11 @@ class LlamaCppBackend:
             # sits with its flag.
             current_flags: list[str] = []
             current_desc: list[str] = []
-            declaration_indents = [
-                len(line) - len(line.lstrip())
-                for line in help_text.splitlines()
-                if line.strip().startswith("-")
-            ]
-            declaration_indent = min(declaration_indents, default = 0)
             # Flag -> whether its declaration shows a value placeholder.
             current_takes_value = False
             for line in help_text.splitlines():
                 stripped = line.strip()
-                line_indent = len(line) - len(line.lstrip())
-                if stripped.startswith("-") and line_indent == declaration_indent:
+                if stripped.startswith("-") and not line.startswith(" "):
                     # New flag line; flush previous.
                     if current_flags:
                         desc = " ".join(current_desc)
@@ -8395,8 +8388,13 @@ class LlamaCppBackend:
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
                 probe_env = cls._llama_server_env_for_binary(binary)
-                probe_env.pop("LLAMA_ARG_THINK_BUDGET", None)
-                probe_env.pop("LLAMA_ARG_THINK_BUDGET_MESSAGE", None)
+                # Same shape as the --help probe: llama-server parses LLAMA_ARG_* before
+                # argv, so a stale inherited value would read as "rejects the budget".
+                for name in tuple(probe_env):
+                    if name.startswith("LLAMA_ARG_"):
+                        probe_env.pop(name, None)
+                if sys.platform == "darwin":
+                    probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
                     result = subprocess.run(
                         [binary, "--reasoning-budget", str(effective_budget), "--help"],

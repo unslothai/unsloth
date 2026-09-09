@@ -363,3 +363,56 @@ def test_the_disable_aliases_survive_override_normalization():
     assert "speculative_type" not in settings.normalize_model_override(
         {"speculative_type": "bogus"}
     )
+
+
+# The pair the route learned to forward one release after the four: the same replace-on-write
+# exposure, and a build that mirrors the tuning group can still predate it.
+REASONING_PAYLOAD = dict(reasoning_budget = 512, reasoning_budget_message = "Wrap up.")
+
+
+def test_a_client_that_does_not_know_the_reasoning_pair_cannot_erase_it(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    before = settings.get_model_override(MODEL)
+    for field, value in REASONING_PAYLOAD.items():
+        assert before[field] == value
+
+    # A build that mirrors the four but predates the pair: it cannot set the new flag.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    after = settings.get_model_override(MODEL)
+
+    for field, value in REASONING_PAYLOAD.items():
+        assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
+    assert after == before
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    for field, value in REASONING_PAYLOAD.items():
+        assert kwargs[field] == value
+
+
+def test_a_client_that_does_know_the_reasoning_pair_still_clears_by_omission(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    assert settings.get_model_override(MODEL)["reasoning_budget"] == 512
+
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    after = settings.get_model_override(MODEL)
+    for field in REASONING_PAYLOAD:
+        assert field not in after, f"{field} survived an explicit clear"
+
+
+def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL) == {}

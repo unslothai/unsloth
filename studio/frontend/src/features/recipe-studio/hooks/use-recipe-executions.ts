@@ -79,6 +79,10 @@ type LocalModelSelection = {
   requestedContextLength?: number | null;
   /** Whether MLX served it. Only there is a positive request above unambiguous. */
   isMlx?: boolean;
+  /** The reasoning budget that load ran with, captured the same way: a restore replays
+   *  it, while a recipe's own target runs at the defaults. */
+  reasoningBudget?: number;
+  reasoningBudgetMessage?: string;
 };
 
 type LocalModelLoadPlan =
@@ -273,7 +277,13 @@ async function isLocalModelAlreadyLoaded(
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
-  const { target, ggufVariant, requestedContextLength } = selection;
+  const {
+    target,
+    ggufVariant,
+    requestedContextLength,
+    reasoningBudget,
+    reasoningBudgetMessage,
+  } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
   let loadToastDismissed = false;
   const toastId = toast.message(`Loading ${modelLabel}...`, {
@@ -304,9 +314,9 @@ async function loadLocalModelSelection(
           DEFAULT_MAX_SEQ_LENGTH,
         ),
       // biome-ignore lint/style/useNamingConvention: api schema
-      reasoning_budget: -1,
+      reasoning_budget: reasoningBudget ?? -1,
       // biome-ignore lint/style/useNamingConvention: api schema
-      reasoning_budget_message: "",
+      reasoning_budget_message: reasoningBudgetMessage ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -366,6 +376,8 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       aliases: ["previous Chat model"],
       requestedContextLength: status.requested_context_length ?? null,
       isMlx: status.is_mlx ?? false,
+      reasoningBudget: status.reasoning_budget ?? -1,
+      reasoningBudgetMessage: status.reasoning_budget_message ?? "",
     };
   } catch {
     return null;
@@ -391,7 +403,9 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
         requestedContextLength: status.requested_context_length ?? null,
-      isMlx: status.is_mlx ?? false,
+        isMlx: status.is_mlx ?? false,
+        reasoningBudget: status.reasoning_budget ?? -1,
+        reasoningBudgetMessage: status.reasoning_budget_message ?? "",
       },
       unrestorableLabel: null,
     };
@@ -409,7 +423,9 @@ function isSameLocalModelSelection(
       left.target.toLowerCase() === right.target.toLowerCase() &&
       left.ggufVariant === right.ggufVariant &&
       contextIntent(left.requestedContextLength, left.isMlx) ===
-        contextIntent(right.requestedContextLength, right.isMlx),
+        contextIntent(right.requestedContextLength, right.isMlx) &&
+      (left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1) &&
+      (left.reasoningBudgetMessage ?? "") === (right.reasoningBudgetMessage ?? ""),
   );
 }
 

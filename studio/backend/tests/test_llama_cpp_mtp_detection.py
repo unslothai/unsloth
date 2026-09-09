@@ -1168,6 +1168,50 @@ def test_reasoning_budget_capability_gate_ignores_env_on_unprobeable_binary(monk
     )
 
 
+def test_positive_budget_probe_drops_inherited_llama_env(monkeypatch):
+    """llama-server reads LLAMA_ARG_* before argv, so a stale inherited value fails its own
+    parse and would be recorded as the binary rejecting positive budgets."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": True,
+                "supports_reasoning_budget_message": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(
+            lambda binary: {
+                "PATH": "/usr/bin",
+                "LLAMA_ARG_PORT": "junk",
+                "LLAMA_ARG_THINK_BUDGET": "512",
+            }
+        ),
+    )
+    seen = {}
+
+    def _run(cmd, **kwargs):
+        seen["env"] = dict(kwargs["env"])
+        return _types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = 512,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:512"] is True
+    assert not [name for name in seen["env"] if name.startswith("LLAMA_ARG_")]
+    assert seen["env"]["PATH"] == "/usr/bin"
+
+
 def test_reasoning_budget_capability_gate_rejects_inconclusive_probe(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend,

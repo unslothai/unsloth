@@ -132,10 +132,7 @@ test("every mirrored setting moves the instance key", () => {
 
 test("the model and its quant still key the editor", () => {
   const base = modelConfigInstanceKey(MODEL, VARIANT, LIVE);
-  assert.notEqual(
-    modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE),
-    base,
-  );
+  assert.notEqual(modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE), base);
   assert.notEqual(modelConfigInstanceKey(MODEL, "Q8_0", LIVE), base);
   // A loose .gguf carries no quant; null and undefined are the same absence.
   assert.equal(

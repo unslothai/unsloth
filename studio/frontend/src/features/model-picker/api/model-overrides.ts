@@ -506,6 +506,10 @@ async function sendModelOverride(
       // the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
+      // Same contract for the reasoning pair, which a build mirroring the tuning group
+      // can still predate.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_reasoning_budget: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema

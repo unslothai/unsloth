@@ -424,7 +424,7 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
-    reasoningBudget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
     reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
