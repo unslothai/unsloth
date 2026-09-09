@@ -2401,6 +2401,64 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
 
 @requires_sqlite_vec
+def test_a_project_recreated_before_the_purge_keeps_a_usable_rag_scope(rag_home, monkeypatch):
+    """A recreate between the last owner check and the purge must not lock RAG out.
+
+    The project is gone for every look until the purge itself, then it exists and
+    stays that way. A list popped per call would make it vanish again, which no
+    registry does, and would point the scenario at whichever probe happened to
+    be last.
+    """
+    from routes import chat_history
+    from storage import studio_db
+
+    project_id = "p1"
+    scope = store.project_scope(project_id)
+    source = rag_home / "before-delete"
+    source.mkdir()
+    folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(source))
+    owner = {"row": None}
+
+    def current_owner(pid):
+        return owner["row"]
+
+    real_purge = folder_sync.delete_retired_scope
+
+    def recreate_then_purge(purged_scope, **kwargs):
+        # the owner exists again before this transaction, not on a particular call index
+        owner["row"] = studio_db.upsert_chat_project(
+            {
+                "id": project_id,
+                "name": "Recreated",
+                "createdAt": 1,
+                "updatedAt": 1,
+            }
+        )
+        return real_purge(purged_scope, **kwargs)
+
+    monkeypatch.setattr(chat_history, "get_chat_project", current_owner)
+    monkeypatch.setattr(folder_sync, "delete_retired_scope", recreate_then_purge)
+
+    chat_history._delete_project_rag_sources(project_id)
+
+    assert owner["row"] is not None, "the project was never recreated, so this proves nothing"
+    assert folder_sync.scope_retired(scope) is False
+    with _connection() as conn:
+        tombstone = conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+        ).fetchone()
+    assert tombstone is None
+    replacement = rag_home / "after-recreate"
+    replacement.mkdir()
+    linked = folder_sync.create_folder(
+        scope_type = "project",
+        scope_id = project_id,
+        path = str(replacement),
+    )
+    assert linked["status"] == "pending"
+
+
+@requires_sqlite_vec
 def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
     scope = store.project_scope("p1")
     source = rag_home / "recreated-project"

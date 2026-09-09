@@ -2673,6 +2673,20 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+def _unretire_project_rag_scope(project_id: str) -> None:
+    """A recreated id must not keep the previous project's RAG tombstone.
+
+    delete_retired_scope only purges while the tombstone is still unpurged, so
+    clearing it here under the scope lock is what SQLite can serialize against
+    that write. The Studio row is already committed, so a delete still sitting
+    on its last owner check will see the project and skip the purge; one that
+    already passed that check races this on the RAG database instead of two.
+    """
+    from core.rag import folder_sync, store as rag_store
+
+    folder_sync.unretire_scope(rag_store.project_scope(project_id))
+
+
 def upsert_chat_project(project: dict) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
@@ -2705,9 +2719,12 @@ def upsert_chat_project(project: dict) -> dict:
             ),
         )
         conn.commit()
-        return get_chat_project(project["id"]) or project
+        saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
+    if existing is None:
+        _unretire_project_rag_scope(project["id"])
+    return saved
 
 
 def update_chat_project(id: str, patch: dict) -> Optional[dict]:

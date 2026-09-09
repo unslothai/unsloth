@@ -1155,7 +1155,9 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate after this check is not excluded by the
+        # Studio read: creation unretires under the scope lock so this RAG-database write
+        # either refuses or is cleared, rather than leaving purged_at set forever.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
