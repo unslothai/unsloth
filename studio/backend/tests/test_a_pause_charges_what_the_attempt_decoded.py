@@ -325,6 +325,91 @@ class TestOnlyOutputCountsTowardsTheSweep:
         )
         assert reports == [_TOKEN_REPORT_EVERY]
 
+    def test_the_tool_round_counts_only_output_too(self, monkeypatch):
+        from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+
+        def run(stream):
+            signal = preemption.PreemptSignal()
+            reports: list[int] = []
+            recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 10**6)
+            list(
+                recorder.backend.generate_chat_completion_with_tools(
+                    messages = [{"role": "user", "content": "hi"}],
+                    tools = [_TOOL],
+                    cancel_event = threading.Event(),
+                    preempt_event = signal,
+                    preempt_policy = _RecordingPolicy(),
+                    on_tokens = reports.append,
+                )
+            )
+            return reports
+
+        short = [_opener()] + [_delta("x")] * (_TOKEN_REPORT_EVERY - 1) + [_finish(), _done()]
+        assert run(short) == [], "the opener or the finish frame counted on the tool round"
+        full = [_opener()] + [_delta("x")] * _TOKEN_REPORT_EVERY + [_finish(), _done()]
+        assert run(full) == [_TOKEN_REPORT_EVERY]
+
+    def test_every_reader_shares_the_output_predicate(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend as _B
+
+        predicate = (
+            'delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls")'
+        )
+        plain = " ".join(inspect.getsource(_B.generate_chat_completion).split())
+        tools = " ".join(inspect.getsource(_B.generate_chat_completion_with_tools).split())
+        assert plain.count(predicate) == 1
+        # The tool round and the final pass.
+        assert tools.count(predicate) == 2
+
+
+def _timed_delta(content: str, *, prompt_n: int, predicted_n: int, predicted_ms: int) -> str:
+    chunk = {
+        "choices": [{"index": 0, "delta": {"content": content}}],
+        "timings": {"prompt_n": prompt_n, "predicted_n": predicted_n, "predicted_ms": predicted_ms},
+    }
+    return "data: " + json.dumps(chunk) + "\n"
+
+
+class TestARefusedResumeChargesTheAttemptOnce:
+    """The interrupted attempt's decode goes into the accumulators, and the refused ending
+    built its metadata from the same reading again: seven tokens reported as fourteen."""
+
+    def test_the_tool_round_reports_the_attempt_once(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy(resume = False)
+        stream = [
+            _timed_delta("x", prompt_n = 100, predicted_n = n, predicted_ms = 10 * n) for n in range(1, 8)
+        ] + [_finish(), _done()]
+        recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 7)
+        items = list(
+            recorder.backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "write me a poem"}],
+                tools = [_TOOL],
+                cancel_event = threading.Event(),
+                preempt_event = signal,
+                preempt_policy = policy,
+            )
+        )
+        assert len(recorder.payloads) == 1
+        metadata = [i for i in items if isinstance(i, dict) and i.get("type") == "metadata"][-1]
+        assert metadata["finish_reason"] == "length"
+        assert metadata["usage"]["completion_tokens"] == 7, metadata["usage"]
+        assert metadata["usage"]["total_tokens"] == 107, metadata["usage"]
+        assert metadata["timings"]["predicted_ms"] == 70, metadata["timings"]
+
+    def test_the_final_pass_folds_before_its_refused_ending(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend as _B
+
+        source = " ".join(inspect.getsource(_B.generate_chat_completion_with_tools).split())
+        fold = source.index("_accumulated_completion_tokens += _pre_charged_f")
+        assert "yield from _final_pause_gave_up(folded = True)" in source[fold:]
+        # The cap-spent ending before the fold reads the whole attempt.
+        assert "yield from _final_pause_gave_up()" in source[:fold]
+
 
 class TestASpentCapIsNotReopened:
     """A pause landing after the caller's cap was spent used to reopen upstream for the
