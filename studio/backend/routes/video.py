@@ -472,6 +472,7 @@ async def generate_video(
     from core.inference.video import get_video_backend
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_MODEL_CHANGED_MSG,
         VIDEO_NOT_LOADED_MSG,
         VideoShapeError,
     )
@@ -535,50 +536,66 @@ async def generate_video(
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
-    if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_media_generation_access, backend.status(), "video"
-        )
-    # The real rule is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
+    generate_kwargs = dict(
+        prompt = request.prompt,
+        negative_prompt = request.negative_prompt,
+        width = request.width,
+        height = request.height,
+        num_frames = request.num_frames,
+        fps = request.fps,
+        steps = request.steps,
+        guidance = request.guidance,
+        guidance_2 = request.guidance_2,
+        seed = request.seed,
+        first_frame = request.first_frame,
+        last_frame = request.last_frame,
+        reference_images = request.reference_images,
+        reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+        reference_audios = request.reference_audios,
+        reference_image_size = request.reference_image_size,
+        flow_shift = request.flow_shift,
+        audio_flow_shift = request.audio_flow_shift,
+    )
+    # The access check must cover the state the clip is actually denoised on. Authorize the exact
+    # resident token generation_snapshot hands back and pin it to the reservation, so a load
+    # committing in the gap cannot render another account's private weights into this gallery; on a
+    # mismatch, re-authorize the replacement once and retry, as /images/generate does.
+    # The real rule for shape is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
     # concurrent load cannot leave the shape judged against one family and denoised by another.
     # Unloaded still falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE
     # snapping, though frame_step is declared regardless.
-    try:
-        await asyncio.to_thread(
-            backend.begin_generate,
-            prompt = request.prompt,
-            negative_prompt = request.negative_prompt,
-            width = request.width,
-            height = request.height,
-            num_frames = request.num_frames,
-            fps = request.fps,
-            steps = request.steps,
-            guidance = request.guidance,
-            guidance_2 = request.guidance_2,
-            seed = request.seed,
-            first_frame = request.first_frame,
-            last_frame = request.last_frame,
-            reference_images = request.reference_images,
-            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
-            reference_audios = request.reference_audios,
-            reference_image_size = request.reference_image_size,
-            flow_shift = request.flow_shift,
-            audio_flow_shift = request.audio_flow_shift,
-        )
-    except VideoShapeError as exc:
-        # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError.
-        raise HTTPException(status_code = 422, detail = str(exc))
-    except ValueError as exc:
-        # Bad client input -- a 400 with the reason, not a generic 500.
-        raise HTTPException(status_code = 400, detail = str(exc))
-    except RuntimeError as exc:
-        # Only the not-loaded / busy sentinels are client-state (409); match exactly so an unrelated failure cannot leak
-        # its message.
-        msg = str(exc)
-        if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
-            raise HTTPException(status_code = 409, detail = msg)
-        logger.error("video.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+    for attempt in range(2):
+        expected_state = None
+        if account_access.managed_account():
+            status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+            await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
+        try:
+            await asyncio.to_thread(
+                backend.begin_generate,
+                **generate_kwargs,
+                **({"expected_state": expected_state} if expected_state is not None else {}),
+            )
+        except VideoShapeError as exc:
+            # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError.
+            raise HTTPException(status_code = 422, detail = str(exc))
+        except ValueError as exc:
+            # Bad client input -- a 400 with the reason, not a generic 500.
+            raise HTTPException(status_code = 400, detail = str(exc))
+        except RuntimeError as exc:
+            # Only the not-loaded / busy / replaced sentinels are client-state (409); match exactly so an unrelated
+            # failure cannot leak its message.
+            msg = str(exc)
+            if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
+                continue
+            if msg in (
+                VIDEO_NOT_LOADED_MSG,
+                VIDEO_GENERATION_BUSY_MSG,
+                VIDEO_MODEL_CHANGED_MSG,
+            ):
+                raise HTTPException(status_code = 409, detail = msg)
+            logger.error("video.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        break
 
     _note_generation_account()
     reset_media_generation_progress("video")

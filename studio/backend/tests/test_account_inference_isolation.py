@@ -462,7 +462,8 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
     from core.inference import diffusion_engine_router, media_auto_switch
     from core.inference import video as video_engine
 
-    backend = SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "org/private"})
+    _status = lambda: {"loaded": True, "repo_id": "org/private"}
+    backend = SimpleNamespace(status = _status, generation_snapshot = lambda: (_status(), object()))
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
     monkeypatch.setattr(video_engine, "get_video_backend", lambda: backend)
 

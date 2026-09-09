@@ -153,13 +153,15 @@ def test_video_generation_reauthorizes_a_private_base_repo(monkeypatch):
     from core.inference import video as video_module
 
     started = []
+    _status = lambda: {
+        "loaded": True,
+        "repo_id": "org/public-video",
+        "family": "wan",
+        "base_repo": "bob/private-base",
+    }
     backend = SimpleNamespace(
-        status = lambda: {
-            "loaded": True,
-            "repo_id": "org/public-video",
-            "family": "wan",
-            "base_repo": "bob/private-base",
-        },
+        status = _status,
+        generation_snapshot = lambda: (_status(), object()),
         begin_generate = lambda **kwargs: started.append("ran"),
     )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
@@ -171,6 +173,62 @@ def test_video_generation_reauthorizes_a_private_base_repo(monkeypatch):
         )
     assert response.status_code == 404
     assert started == []
+
+
+def test_a_video_resident_replaced_after_authorization_is_not_generated_on(monkeypatch):
+    """Another account's load commits between the authorized snapshot and the reservation."""
+    from core.inference import video as video_module
+    from core.inference.video_families import VIDEO_MODEL_CHANGED_MSG
+
+    resident = SimpleNamespace(repo_id = "org/public-video", family = "wan")
+    replacement = SimpleNamespace(repo_id = "bob/private-video", family = "wan")
+    box = {"state": resident, "reads": 0}
+    reserved = []
+
+    def _status_of(state):
+        return {
+            "loaded": True,
+            "repo_id": state.repo_id,
+            "family": state.family,
+            "base_repo": None,
+            "defaults": {
+                "num_frames": 17,
+                "fps": 16,
+                "frame_step": 4,
+                "frame_offset": 1,
+                "resolution_presets": [[320, 320]],
+            },
+        }
+
+    def generation_snapshot():
+        state = box["state"]
+        box["reads"] += 1
+        if box["reads"] == 1:
+            box["state"] = replacement
+        return _status_of(state), state
+
+    def begin_generate(**kwargs):
+        expected = kwargs.get("expected_state")
+        if expected is not None and expected is not box["state"]:
+            raise RuntimeError(VIDEO_MODEL_CHANGED_MSG)
+        reserved.append(box["state"].repo_id)
+        return {"width": 320, "height": 320, "num_frames": 17, "fps": 16}
+
+    backend = SimpleNamespace(
+        status = lambda: _status_of(box["state"]),
+        generation_snapshot = generation_snapshot,
+        begin_generate = begin_generate,
+        generate_progress = lambda: {"active": False},
+    )
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
+    monkeypatch.setattr(gpu_arbiter, "_owner", "video")
+    with client_for(ALICE) as client:
+        response = client.post(
+            "/api/inference/video/generate",
+            json = {"prompt": "a sloth", "width": 320, "height": 320, "num_frames": 17},
+        )
+    assert response.status_code == 404
+    assert reserved == []
 
 
 def test_a_resident_replaced_after_authorization_is_not_generated_on(monkeypatch):

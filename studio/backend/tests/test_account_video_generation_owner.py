@@ -47,6 +47,9 @@ class FakeVideoBackend:
             "defaults": {"fps": 24, "num_frames": 49, "frame_step": 4, "frame_offset": 1},
         }
 
+    def generation_snapshot(self):
+        return self.status(), self
+
     def begin_generate(self, **kwargs):
         from utils.account_context import current_account
         self.started.append(current_account().username)

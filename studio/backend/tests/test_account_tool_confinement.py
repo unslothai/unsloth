@@ -475,7 +475,7 @@ def test_hf_cache_under_a_granted_root_is_hidden(monkeypatch):
     cache = Path(sys.prefix) / f"mu-shared-hf-{os.getpid()}"
     secret = cache / "models--acme--private" / "snapshots" / "x" / "config.json"
     secret.parent.mkdir(parents = True)
-    secret.write_text("ACME_PRIVATE")
+    secret.write_text("ACME_PRIVATE", encoding = "utf-8")
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {"HF_HUB_CACHE": str(cache)})
     try:
         run_as(BOB, tools._get_workdir, "chat")

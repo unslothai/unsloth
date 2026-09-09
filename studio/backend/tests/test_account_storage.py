@@ -510,3 +510,54 @@ def test_a_symlinked_database_resolves_its_path_once(account_home, tmp_path):
         studio_db.get_connection().close()
     assert db_path not in resolves
     studio_db.reset_schema_state_for_tests()
+
+
+@pytest.mark.parametrize(
+    "module_name,connect_name",
+    [
+        ("mcp_servers_db", "get_connection"),
+        ("providers_db", "get_connection"),
+        ("credential_secrets", "get_connection"),
+        ("rag_db", "get_metadata_connection"),
+    ],
+)
+def test_no_account_database_recreates_a_retired_workspace(
+    account_home, monkeypatch, module_name, connect_name
+):
+    """A create or update that was in flight when the owner deleted the account must not
+    put the renamed-aside workspace back: the row, and the private headers in it, would
+    live in a directory no identity owns any more."""
+    from routes.accounts import retire_account_roots
+
+    monkeypatch.setattr("core.inference.mcp_client.close_mcp_sessions", lambda: None)
+    monkeypatch.setattr("core.inference.mcp_client.invalidate_tool_cache", lambda: None)
+    module = importlib.import_module(f"storage.{module_name}")
+    module.reset_schema_state_for_tests()
+    studio_db.reset_schema_state_for_tests()
+    root = run_as(ALICE, roots.workspace_root)
+    run_as(ALICE, studio_db.get_connection).close()
+    assert root.exists()
+    retire_account_roots(ALICE)
+    assert not root.exists()
+
+    with pytest.raises(roots.RetiredAccountError):
+        run_as(ALICE, getattr(module, connect_name)).close()
+    assert not root.exists(), f"storage.{module_name} recreated the retired workspace"
+
+
+def test_an_upload_directory_cannot_recreate_a_retired_workspace(account_home, monkeypatch):
+    """Same for the plain directory roots: uploads and outputs are created on demand too."""
+    from routes.accounts import retire_account_roots
+
+    monkeypatch.setattr("core.inference.mcp_client.close_mcp_sessions", lambda: None)
+    monkeypatch.setattr("core.inference.mcp_client.invalidate_tool_cache", lambda: None)
+    studio_db.reset_schema_state_for_tests()
+    root = run_as(ALICE, roots.workspace_root)
+    run_as(ALICE, studio_db.get_connection).close()
+    retire_account_roots(ALICE)
+    for root_fn in (roots.rag_uploads_root, roots.dataset_uploads_root, roots.outputs_root):
+        with pytest.raises(roots.RetiredAccountError):
+            run_as(ALICE, lambda: roots.ensure_dir(root_fn()))
+    assert not root.exists()
+    # The owner's own tree is not account-scoped and keeps creating directories as before.
+    assert run_as(OWNER, lambda: roots.ensure_dir(roots.outputs_root())).is_dir()

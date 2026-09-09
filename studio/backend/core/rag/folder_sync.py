@@ -1658,13 +1658,16 @@ def reconcile_folder(job_id: str) -> None:
     except _LeaseLost:
         lease_lost = True
     except _SyncStopped:
-        _pause_job(job_id)
+        # A retired account's database is closed; its rows moved with the roots.
+        if not account_is_retired():
+            _pause_job(job_id)
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-        _fail_job(job_id, exc)
+        if not account_is_retired():
+            _fail_job(job_id, exc)
     finally:
         try:
-            if not lease_lost:
+            if not lease_lost and not account_is_retired():
                 _queue_successor(job_id)
         finally:
             del _worker_state.job_id
@@ -1773,7 +1776,15 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         run_as(account, reconcile_folder, job_id)
                     except Exception as exc:
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-                        run_as(account, _fail_job, job_id, exc)
+                        try:
+                            run_as(account, _fail_job, job_id, exc)
+                        except Exception:
+                            # One account's bookkeeping must never stop the shared worker.
+                            logger.warning(
+                                "could not record the failure of linked-folder job %s",
+                                job_id,
+                                exc_info = True,
+                            )
                     continue
                 _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
                 _wake.clear()

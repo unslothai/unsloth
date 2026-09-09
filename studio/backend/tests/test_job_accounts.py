@@ -1627,7 +1627,7 @@ def test_a_creation_in_flight_cannot_outlive_the_rename_that_retires_the_roots(
     root.mkdir(parents = True)
 
     checked, release = threading.Event(), threading.Event()
-    real_ensure_dir = storage_roots.ensure_dir
+    real_ensure_dir = storage_roots._mkdir
 
     def slow_ensure_dir(path):
         # Past the existence gate of ensure_account_dir; hand the CPU to the deleting thread.
@@ -1635,7 +1635,7 @@ def test_a_creation_in_flight_cannot_outlive_the_rename_that_retires_the_roots(
         assert release.wait(10)
         return real_ensure_dir(path)
 
-    monkeypatch.setattr(storage_roots, "ensure_dir", slow_ensure_dir)
+    monkeypatch.setattr(storage_roots, "_mkdir", slow_ensure_dir)
     outcome, retirement = {}, {}
 
     def finalizer():
@@ -1669,3 +1669,123 @@ def test_a_creation_in_flight_cannot_outlive_the_rename_that_retires_the_roots(
     assert not root.exists(), f"the deleted private root was recreated: {outcome}"
     aside = [p for p in (tmp_path / "home" / "accounts").iterdir() if p.name != ALICE.account_id]
     assert aside and (aside[0] / "images").exists(), "the in-flight creation was not renamed aside"
+
+
+@pytest.mark.parametrize("engine", ["diffusers", "sd_cpp"])
+def test_deleting_an_account_cancels_its_image_generation_and_keeps_its_roots(
+    monkeypatch, tmp_path, engine
+):
+    """An image render holds the GPU and the account's uploads, and its gallery write would hit the
+    retired root as a 500; retirement must stop it and refuse until it has drained, like video."""
+    from core.inference import diffusion, sd_cpp_backend
+    from hub.services.models import account_access as access
+    from routes.accounts import retire_account_roots
+    from utils.account_context import current_account_id
+    from utils.paths import storage_roots
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet())
+    monkeypatch.setattr(access, "_generation_holders", {})
+    monkeypatch.setattr(access, "_generation_accounts", {})
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    cancel = threading.Event()
+
+    if engine == "diffusers":
+        backend = diffusion.DiffusionBackend()
+        monkeypatch.setattr(diffusion, "_diffusion_backend", backend)
+
+        def denoise():
+            # The real slot: it binds the cancel event and the acting account under the lock.
+            with backend._generation_slot(cancel):
+                entered.set()
+                release.wait(10)
+            done.set()
+    else:
+        backend = sd_cpp_backend.SdCppDiffusionBackend()
+        monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_backend", backend)
+
+        def denoise():
+            with backend._generate_lock, access.media_generation_slot("diffusion"):
+                with backend._lock:
+                    backend._active_generate_cancel = cancel
+                    backend._active_generate_account = current_account_id()
+                entered.set()
+                release.wait(10)
+                with backend._lock:
+                    backend._active_generate_cancel = None
+                    backend._active_generate_account = None
+            done.set()
+
+    root = run_as(ALICE, storage_roots.workspace_root)
+    root.mkdir(parents = True)
+    thread = threading.Thread(target = lambda: run_as(ALICE, denoise))
+    thread.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(jobs.AccountRetirementError):
+            retire_account_roots(ALICE)
+        assert root.exists(), "roots were retired under a live image generation"
+        assert cancel.is_set(), "the account's image generation was never cancelled"
+    finally:
+        release.set()
+        cancel.set()
+        assert done.wait(10)
+        thread.join(10)
+
+
+def test_retirement_leaves_another_accounts_image_generation_alone(monkeypatch, tmp_path):
+    """The cancel is account-scoped: BOB's render survives ALICE's deletion."""
+    from core.inference import diffusion
+    from hub.services.models import account_access as access
+    from routes.accounts import retire_account_roots
+    from utils.paths import storage_roots
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet())
+    monkeypatch.setattr(access, "_generation_holders", {})
+    monkeypatch.setattr(access, "_generation_accounts", {})
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+
+    backend = diffusion.DiffusionBackend()
+    monkeypatch.setattr(diffusion, "_diffusion_backend", backend)
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    cancel = threading.Event()
+
+    def denoise():
+        with backend._generation_slot(cancel):
+            entered.set()
+            release.wait(10)
+        done.set()
+
+    run_as(ALICE, storage_roots.workspace_root).mkdir(parents = True)
+    thread = threading.Thread(target = lambda: run_as(BOB, denoise))
+    thread.start()
+    try:
+        assert entered.wait(10)
+        retire_account_roots(ALICE)
+        assert not cancel.is_set(), "another account's image generation was cancelled"
+    finally:
+        release.set()
+        cancel.set()
+        assert done.wait(10)
+        thread.join(10)

@@ -51,9 +51,15 @@ def retire_account_roots(account: AccountContext) -> None:
     from core.inference.video import generation_account_in_flight, get_video_backend
     from core.training.account_jobs import AccountRetirementError
 
-    if generation_account_in_flight() == account.account_id:
+    from core.inference.diffusion_engine_router import cancel_generation_for_account
+
+    # Signal both media generations before raising, so one delete retry stops them all.
+    video_active = generation_account_in_flight() == account.account_id
+    if video_active:
         get_video_backend().cancel_generate(expected_account = account.account_id)
-        raise AccountRetirementError("Video generation is still active; retry deletion")
+    image_active = cancel_generation_for_account(account.account_id)
+    if video_active or image_active:
+        raise AccountRetirementError("Media generation is still active; retry deletion")
     run_as(account, close_mcp_sessions)
     run_as(account, invalidate_tool_cache)
     from storage.studio_db import close_wal_keeper_for

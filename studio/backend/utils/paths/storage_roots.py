@@ -255,7 +255,7 @@ def tensorboard_root() -> Path:
     return account_path("runs")
 
 
-def ensure_dir(path: Path) -> Path:
+def _mkdir(path: Path) -> Path:
     path.mkdir(parents = True, exist_ok = True)
     return path
 
@@ -266,6 +266,30 @@ class RetiredAccountError(RuntimeError):
 
 # Held across the rename-aside and every guarded directory creation.
 root_retirement_lock = threading.RLock()
+
+
+def _under_managed_workspace(path: Path) -> bool:
+    """Lexically, whether *path* is inside one of the three roots retirement renames aside."""
+    if is_owner_context():
+        return False
+    try:
+        absolute = Path(os.path.abspath(path))
+        for root in (workspace_root, project_workspaces_root, tmp_root):
+            try:
+                absolute.relative_to(os.path.abspath(root()))
+                return True
+            except ValueError:
+                continue
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def ensure_dir(path: Path) -> Path:
+    """Create *path*; inside a managed workspace this is retirement-aware for every caller."""
+    if _under_managed_workspace(path):
+        return ensure_account_dir(path)
+    return _mkdir(path)
 
 
 def ensure_account_dir(path: Path) -> Path:
@@ -279,7 +303,7 @@ def ensure_account_dir(path: Path) -> Path:
                 raise RetiredAccountError(
                     f"account has been deleted; refusing to recreate {path!s}"
                 )
-        return ensure_dir(path)
+        return _mkdir(path)
 
 
 def legacy_hf_cache_dir() -> Path:

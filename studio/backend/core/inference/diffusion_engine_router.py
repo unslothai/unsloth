@@ -21,6 +21,7 @@ Env knobs:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from typing import Any, Callable, Optional
 
@@ -89,6 +90,25 @@ def engine_for(name: str) -> Any:
 def get_active_diffusion_engine() -> Any:
     """The engine object the active selection points at (defaults to diffusers)."""
     return engine_for(_active_engine_name)
+
+
+def cancel_generation_for_account(account_id: str) -> bool:
+    """Stop an in-flight image generation owned by ``account_id``; True when one was signalled.
+    Engines are read from ``sys.modules`` (no import, no construction), and both are checked
+    because a deselected engine can still be draining a generation."""
+    cancelled = False
+    for module_name, attribute in (
+        ("core.inference.diffusion", "_diffusion_backend"),
+        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
+    ):
+        module = sys.modules.get(module_name)
+        engine = getattr(module, attribute, None) if module is not None else None
+        if engine is None or engine._active_generate_account != account_id:
+            continue
+        # cancel_generate rechecks the owner under its lock.
+        if engine.cancel_generate(expected_account = account_id):
+            cancelled = True
+    return cancelled
 
 
 def active_engine_name() -> str:

@@ -58,6 +58,9 @@ class ReservingVideoBackend:
     def generate_job_account(self):
         return self._job_account
 
+    def generation_snapshot(self):
+        return self.status(), self
+
     def begin_generate(self, **kwargs):
         from utils.account_context import current_account_id
 
