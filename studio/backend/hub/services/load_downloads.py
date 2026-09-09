@@ -52,8 +52,5 @@ def claim_load_downloads(
 def release_load_downloads(keys: Sequence[str]) -> None:
     registry = download_registry.get_models_registry()
     for key in keys:
-        if is_load_owned(registry, key):
-            registry.set_job(key, "idle")
-            registry.release_active_slot(key)
-        else:
+        if not registry.release_owned(key, LOAD_OWNER):
             registry.mark_load_attached(key, False)

@@ -1453,6 +1453,26 @@ class DownloadRegistry:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
 
+    def release_owned(self, key: str, owner: str) -> bool:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.owner != owner:
+                return False
+            if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
+                return False
+            self._jobs[key] = DownloadState("idle")
+            self._discard_active_locked(key)
+            return True
+
+    def _discard_active_locked(self, key: str) -> None:
+        repo = _repo_of_key(key)
+        active = self._repo_active.get(repo)
+        if active is not None:
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
+
     def mark_load_attached(self, key: str, attached: bool) -> None:
         key = normalize_job_key(key)
         with self._lock:
@@ -1972,6 +1992,7 @@ class DownloadRegistry:
                 placeholder = self._metadata.get(key)
                 if placeholder is not None and placeholder.owner is not None:
                     self._jobs[key] = DownloadState("idle")
+                    self._discard_active_locked(key)
                     continue
                 proc = self._processes.get(key)
                 if proc is not None:

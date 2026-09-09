@@ -45,7 +45,19 @@ def test_a_load_claims_running_jobs_the_active_list_reports(registry):
 
     assert _active(registry) == []
     assert registry.get_job(keys[0]).state == "idle"
+    assert registry._repo_active == {}
     assert registry.claim(keys[0], "http", repo_type = "model", repo_id = "owner/adapter")[0]
+
+
+def test_release_leaves_a_job_another_owner_took_over(registry):
+    keys = load_downloads.claim_load_downloads(["owner/base"])
+    assert registry.release_owned(keys[0], load_downloads.LOAD_OWNER)
+    assert registry.claim("owner/base::", "http", repo_type = "model", repo_id = "owner/base")[0]
+
+    load_downloads.release_load_downloads(keys)
+
+    assert registry.get_job("owner/base::").state == "running"
+    assert registry._repo_active == {"owner/base": {"owner/base::"}}
 
 
 def test_a_load_attaches_to_a_hub_download_of_the_same_repo(registry):
