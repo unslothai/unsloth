@@ -46,7 +46,7 @@ def _load(rel: str):
 
 @pytest.mark.parametrize("rel", MODULES)
 def test_no_heavy_imports_at_module_scope(rel: str) -> None:
-    tree = ast.parse((REPO / rel).read_text())
+    tree = ast.parse((REPO / rel).read_text(encoding = "utf-8"))
     imported = []
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -68,7 +68,7 @@ def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
     for var in ("USER", "USERNAME", "LOGNAME"):
         monkeypatch.delenv(var, raising = False)
     assert sc._ssh_user() == getpass.getuser()
-    source = (REPO / "studio/spark_cluster.py").read_text()
+    source = (REPO / "studio/spark_cluster.py").read_text(encoding = "utf-8")
     assert "nvidianew" not in source, "spark_cluster.py names a developer login"
 
 
@@ -576,7 +576,7 @@ def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:
 
 
 def test_merge_module_imports_nothing_heavy() -> None:
-    tree = ast.parse((REPO / "studio/spark_merge.py").read_text())
+    tree = ast.parse((REPO / "studio/spark_merge.py").read_text(encoding = "utf-8"))
     imported = []
     for node in tree.body:
         if isinstance(node, ast.Import):

@@ -15,6 +15,8 @@ the network unless this is a DGX Spark with a cabled peer.
 
 from __future__ import annotations
 
+import shlex
+
 import typer
 
 spark_app = typer.Typer(
@@ -852,8 +854,15 @@ def train(
         "GiB for the same work, against a 121.69 GiB node.",
     ),
     steps: int = typer.Option(20, "--steps"),
-    batch: int = typer.Option(8, "--batch", help = "Global batch per step."),
+    # Must stay a multiple of --microbatches: spark_pipeline rejects the pair after the load.
+    batch: int = typer.Option(32, "--batch", help = "Global batch per step."),
     seq: int = typer.Option(512, "--seq"),
+    data: str = typer.Option(
+        "", "--data", help = "jsonl with {q, a} rows. Without it the run trains on random ids."
+    ),
+    save: str = typer.Option(
+        "", "--save", help = "Directory for this stage's weights. Without it they are discarded."
+    ),
     full_finetune: bool = typer.Option(False, "--full-finetune"),
     master_port: int = typer.Option(29500, "--master-port"),
     run: bool = typer.Option(
@@ -879,6 +888,12 @@ def train(
         typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
+        if batch % microbatches:
+            typer.echo(
+                f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "
+                "the pipeline rejects the pair only after loading the model."
+            )
+            raise typer.Exit(2)
         extra = [
             f"--microbatches {microbatches}",
             f"--schedule {schedule}",
@@ -887,6 +902,10 @@ def train(
             f"--batch {batch}",
             f"--seq {seq}",
         ]
+        if data:
+            extra.append(f"--data {shlex.quote(data)}")
+        if save:
+            extra.append(f"--save {shlex.quote(save)}")
         if shard_load:
             extra.append("--shard-load")
         if full_finetune:
@@ -903,7 +922,11 @@ def train(
         if run:
             argv.append("--run")
         raise typer.Exit(sc.main(argv))
-    raise typer.Exit(sc.main(["train", "--script", script]))
+    if run:
+        # _cmd_train only prints; accepting --run here would report success and launch nothing.
+        typer.echo("--run works with --layer-split only. For --script, run the printed commands.")
+        raise typer.Exit(2)
+    raise typer.Exit(sc.main(["train", "--script", script, "--master-port", str(master_port)]))
 
 
 @spark_app.command("doctor")

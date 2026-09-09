@@ -1498,7 +1498,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     torch.manual_seed(3407)
     need = args.batch * args.steps
     if args.data:
-        rows = [json.loads(l) for l in open(args.data)]
+        rows = [json.loads(l) for l in open(args.data, encoding = "utf-8")]
         texts = [
             tok.apply_chat_template(
                 [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],

@@ -20,6 +20,7 @@ import os.path as osp
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -50,7 +51,7 @@ def is_dgx_spark() -> bool:
         for path in (_DGX_RELEASE, _DMI_PRODUCT):
             try:
                 # Capped so a bad mount cannot make the gate expensive.
-                with open(path, "r", errors = "replace") as handle:
+                with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
                     if _SPARK_RE.search(handle.read(4096)):
                         result = True
                         break
@@ -87,7 +88,7 @@ def _int_or_none(text: str) -> Optional[int]:
 
 def _read(path: Path, limit: int = 256) -> str:
     try:
-        with open(path, "r", errors = "replace") as handle:
+        with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
             return handle.read(limit).strip()
     except OSError:
         return ""
@@ -356,7 +357,7 @@ def config_path() -> Path:
 
 def load_config() -> Dict[str, Any]:
     try:
-        with open(config_path(), "r") as handle:
+        with open(config_path(), "r", encoding = "utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -368,7 +369,7 @@ def save_config(config: Dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as handle:
+        with open(tmp, "w", encoding = "utf-8") as handle:
             json.dump(config, handle, indent = 2, sort_keys = True)
         os.replace(tmp, path)
         os.chmod(path, 0o600)
@@ -534,7 +535,7 @@ def write_combining_broken() -> Optional[bool]:
     # kern.log survives dmesg_restrict.
     for log in ("/var/log/kern.log", "/var/log/dmesg"):
         try:
-            with open(log, "r", errors = "replace") as handle:
+            with open(log, "r", encoding = "utf-8", errors = "replace") as handle:
                 text = handle.read()
         except OSError:
             continue
@@ -780,7 +781,7 @@ if out["present"]:
     for parts in ((), ("build", "bin"), ("bin",)):
         p = os.path.join(root, *parts, "BUILD_INFO.txt")
         try:
-            with open(p, "r", errors="replace") as fh:
+            with open(p, "r", encoding = "utf-8", errors="replace") as fh:
                 text = fh.read(4096)
         except OSError:
             continue
@@ -2769,13 +2770,14 @@ def _serve_commands(
             f"--distributed-executor-backend ray",
         ]
     if axis == "replicas":
-        backends = ",".join(
+        # spark_lb takes backends as positional, space-separated tokens.
+        backends = " ".join(
             f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080" for i in range(n_nodes)
         )
         return [
             env,
             f"unsloth spark serve --model {model} --engines 1     # run on EACH Spark",
-            f"python -m studio.spark_lb --backends {backends}     # one front door",
+            f"python -m studio.spark_lb {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
         return [
@@ -2785,7 +2787,7 @@ def _serve_commands(
             f"--distributed-executor-backend ray",
         ]
     if axis == "single":
-        return [f"unsloth serve --model {model}"]
+        return [f"unsloth spark serve --model {model} --engines 1"]
     return []
 
 
@@ -3272,7 +3274,7 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
     # stdout is a terminal but stdin is not: `curl ... | sh`, where the script occupies
     # stdin. Read /dev/tty as install.sh does; if that fails it is a real "no terminal".
     try:
-        with open("/dev/tty", "r") as tty:
+        with open("/dev/tty", "r", encoding = "utf-8") as tty:
             print(f"{prompt} [y/N] ", end = "", flush = True)
             return (tty.readline() or "").strip().lower() in ("y", "yes")
     except (OSError, EOFError, KeyboardInterrupt):
@@ -3571,7 +3573,9 @@ def pipeline_launch_plan(
     if not peer or not local:
         return {"ok": False, "problems": ["no configured peer rail (run `unsloth spark setup`)"]}
     base = f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} " f"--master_port={port}"
-    target = f"-m studio.spark_pipeline --model {model}"
+    # Quoted: both commands are printed for a shell and `--run` feeds them to one, so a local
+    # checkpoint path with a space would otherwise split into several arguments.
+    target = f"-m studio.spark_pipeline --model {shlex.quote(model)}"
     if extra:
         target = f"{target} {extra}"
     return {
@@ -3585,6 +3589,16 @@ def pipeline_launch_plan(
     }
 
 
+def _local_launch(command: str) -> str:
+    """Run rank 0 out of the managed venv. `~/.local/bin/unsloth` is only a symlink to the
+    venv's console script, so it never puts the venv's `bin` on PATH and a bare `torchrun`
+    is usually not found; the peer command already sources `activate` for the same reason."""
+    torchrun = _studio_root() / "unsloth_studio" / "bin" / "torchrun"
+    if torchrun.exists() and command.startswith("torchrun "):
+        return f"{shlex.quote(str(torchrun))} {command[len('torchrun '):]}"
+    return command
+
+
 def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.log") -> int:
     """Actually launch a layer-split run on both Sparks. Without `ssh -f` the launcher is
     held open and the head rank never starts; without the peer log its errors are lost, since
@@ -3592,12 +3606,14 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     user = _ssh_user()
     activate = venv_activate()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
+    # `cd $HOME`, not the local cwd: provisioning copies the venv and the caches, never the
+    # project directory, so the same absolute path need not exist on the peer.
     remote = (
-        f"cd {os.getcwd()} && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
+        f"cd \"$HOME\" && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
         f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null &"
     )
     try:
-        subprocess.run(
+        peer = subprocess.run(
             [
                 "ssh",
                 "-f",
@@ -3614,13 +3630,17 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     except Exception as exc:
         print(f"  could not start the peer stage: {exc}")
         return 1
+    # `ssh -f` backgrounds only AFTER authentication, so auth/routing failures land here. Without
+    # this rank 1 never exists and rank 0 just waits out the rendezvous timeout.
+    if peer.returncode != 0:
+        print(f"  could not start the peer stage: ssh exited {peer.returncode}")
+        return 1
     print(f"  peer stage started; its log is {log_peer} on {plan['peer_ip']}")
-    import time
 
     time.sleep(6)  # let the peer reach the rendezvous first
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
-    return subprocess.run(plan["node0"], shell = True, env = child_env).returncode
+    return subprocess.run(_local_launch(plan["node0"]), shell = True, env = child_env).returncode
 
 
 def _cmd_pipeline(
@@ -3884,7 +3904,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.script:
             print("train needs --script <train.py>, or --layer-split <model>")
             return 2
-        return _cmd_train(args.script)
+        return _cmd_train(args.script, port = args.master_port)
     if args.command == "setup":
         return _cmd_setup(
             assume_yes = args.yes,

@@ -5945,7 +5945,8 @@ echo ""
 # causal-conv1d and two from flash-linear-attention, so BOTH are needed: installing only
 # the cheap one buys nothing. Off by default because causal-conv1d ships no wheels for any
 # platform and compiles for ~10 minutes on every machine.
-#   UNSLOTH_QWEN35_FAST_PATH=1 curl -fsSL https://unsloth.ai/install.sh | sh
+# The assignment goes on the `sh` side: on the curl side only curl gets it.
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_QWEN35_FAST_PATH=1 sh
 _unsloth_qwen35_fast_path() {
     case "${UNSLOTH_QWEN35_FAST_PATH:-}" in
         1|true|TRUE|yes|YES|on|ON) ;;
@@ -5957,7 +5958,7 @@ _unsloth_qwen35_fast_path() {
         *) substep "UNSLOTH_QWEN35_FAST_PATH ignored: needs an NVIDIA CUDA host" "$C_WARN"; return 0 ;;
     esac
     step "qwen3.5" "building the fused fast path (causal-conv1d compiles, ~10 min)..."
-    if run_install_cmd "$VENV_DIR/bin/python" -m pip install --no-build-isolation \
+    if run_install_cmd "qwen3.5 fast path" "$VENV_DIR/bin/python" -m pip install --no-build-isolation \
         flash-linear-attention causal-conv1d; then
         step "qwen3.5" "fast path installed" "$C_OK"
     else
@@ -6064,28 +6065,17 @@ _unsloth_spark_cluster_offer() {
     _unsloth_spark_perf_hint
 
 
+    # Opt-in by variable, never by question: a new installer prompt stalls `curl ... | sh`
+    # and persists an answer nobody can find again. That is what #7016 did and #8040 reverted.
     case "${UNSLOTH_SPARK_CLUSTER:-}" in
-        1|yes|YES|true|TRUE|on|ON) _sp_reply=y ;;
-        *)
-            if [ -t 1 ] && _can_read_tty; then
-                printf "  Set up the second Spark now? [y/N] "
-                # EOF is not consent.
-                read -r _sp_reply </dev/tty || _sp_reply=n
-            else
-                _sp_reply=n
-            fi
-            ;;
-    esac
-
-    case "${_sp_reply:-n}" in
-        [Yy]|[Yy][Ee][Ss])
-            # --yes because the prompt above already asked. Two consent gates are deliberate
-            # (the module must refuse on its own when invoked directly) but ask once. The
-            # module still refuses to overwrite a venv a running job may be using.
+        1|yes|YES|true|TRUE|on|ON)
+            # --yes because the variable IS the consent. The module still refuses to overwrite
+            # a venv a running job may be using.
             "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
             ;;
         *)
-            substep "Skipped. To do it later, run:  unsloth spark setup"
+            substep "To pair them:  unsloth spark setup"
+            substep "(or re-run this installer with UNSLOTH_SPARK_CLUSTER=1)"
             ;;
     esac
     echo ""
