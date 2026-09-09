@@ -380,9 +380,11 @@ def test_a_text_only_load_keeps_the_llama_cpp_batch_defaults(tmp_path):
         # Both above the floor: the emitted flags beat the environment in llama.cpp, so
         # writing 2048 here would downgrade the user and reinstate the assert.
         ({"LLAMA_ARG_BATCH": "4096", "LLAMA_ARG_UBATCH": "4096"}, "4096", "4096"),
-        # A micro-batch alone still carries the batch up with it: llama.cpp derives
-        # n_ubatch = min(n_batch, n_ubatch), so 2048/4096 would clamp straight back.
-        ({"LLAMA_ARG_UBATCH": "4096"}, "4096", "4096"),
+        # A micro-batch alone is NOT carried up. llama.cpp's own batch default is
+        # 2048 and it derives n_ubatch = min(n_batch, n_ubatch), so this launch was
+        # always going to run at 2048; raising the batch to honour the 4096 would
+        # change the setting rather than floor it.
+        ({"LLAMA_ARG_UBATCH": "4096"}, "2048", "2048"),
         # Below the floor is what the floor is for.
         ({"LLAMA_ARG_BATCH": "128", "LLAMA_ARG_UBATCH": "128"}, "2048", "2048"),
         # Unparseable is what llama.cpp itself ignores.
@@ -3941,3 +3943,69 @@ def test_an_explicit_field_beats_a_larger_environment_batch(tmp_path, monkeypatc
     # the environment would have contributed to a max().
     assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_an_inherited_micro_batch_is_clamped_to_the_batch_before_the_floor(tmp_path, monkeypatch):
+    """llama.cpp derives n_ubatch = min(n_batch, n_ubatch), so an explicit 2048 batch
+    beside an inherited 32768 micro-batch runs at 2048. Taking the raw 32768 into the
+    floor emitted 32768 for both: it overrides the batch the caller set and reserves
+    tens of GB of compute buffer for a micro-batch the launch never had."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+    monkeypatch.delenv("LLAMA_ARG_BATCH", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_UBATCH", "32768")
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        mmproj_path = str(mmproj),
+        n_batch = 2048,
+    )["cmd"]
+
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_a_remembered_mmproj_auto_gets_the_floor(tmp_path):
+    """--mmproj-auto asks llama-server to rediscover the adjacent projector by itself,
+    the same mechanism the vision switch has to counter with --no-mmproj-auto. With
+    vision on and nothing resolved, named or inherited, that child still gets a
+    non-causal encoder, and it was getting llama.cpp's 512 with it."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+
+    cmd = _launch(backend, gguf, is_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
+
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_mmproj_auto_turned_back_off_gets_no_floor(tmp_path):
+    """llama.cpp is last-wins on the enable/disable pair, so a trailing
+    --no-mmproj-auto means nothing is rediscovered and nothing needs sizing."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        extra_args = ["--mmproj-auto", "--no-mmproj-auto"],
+    )["cmd"]
+
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd

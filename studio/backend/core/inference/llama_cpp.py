@@ -5607,11 +5607,16 @@ def _mmproj_batch_floor(
     the field before the environment, because the field is emitted as a flag and
     arg.cpp lets a flag overwrite what it read from the environment.
 
-    Two llama.cpp normalizations have to happen BEFORE the floor, not after. A zero
-    micro-batch means "use batch", so a 4096/0 pair is really 4096/4096 and
-    flooring the literal zero would emit 4096/2048 -- a downgrade wearing a raise.
-    And ``cparams.n_ubatch = min(n_batch, n_ubatch)`` clamps a micro-batch above
-    its batch, so the batch is carried up with it or the raise buys nothing.
+    Resolve exactly as llama.cpp does before flooring, or the floor reads a number
+    the launch was never going to run at. Both of its normalizations come first: a
+    zero micro-batch means "use batch", so a 4096/0 pair is really 4096/4096 and
+    flooring the literal zero would emit 4096/2048, a downgrade wearing a raise;
+    and ``cparams.n_ubatch = min(n_batch, n_ubatch)`` clamps a micro-batch above
+    its batch, so an explicit 2048 batch beside an inherited 32768 micro-batch runs
+    at 2048, and taking the raw 32768 into the floor would emit 32768 for both --
+    overriding the batch the caller set and reserving tens of GB of compute buffer
+    for it. Only after that does the floor apply, and only then is the batch carried
+    up with the micro-batch, so the clamp cannot undo the raise.
     """
     source_env = os.environ if env is None else env
 
@@ -5631,10 +5636,13 @@ def _mmproj_batch_floor(
 
     batch = _requested(n_batch, "LLAMA_ARG_BATCH")
     ubatch = _requested(n_ubatch, "LLAMA_ARG_UBATCH")
+    if batch is None:
+        batch = _DEFAULT_LLAMA_N_BATCH
+    if ubatch is None:
+        ubatch = _DEFAULT_LLAMA_N_UBATCH
     if ubatch == 0:
         ubatch = batch
-    batch = max(floor, batch or 0)
-    ubatch = max(floor, ubatch or 0)
+    ubatch = max(floor, min(batch, ubatch))
     return max(batch, ubatch), ubatch
 
 
@@ -19556,10 +19564,21 @@ class LlamaCppBackend:
                     if not disable_vision
                     else _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
                 )
+                # And a remembered --mmproj-auto, which asks llama-server to rediscover
+                # the adjacent projector by itself -- the same mechanism the vision
+                # switch already has to counter with --no-mmproj-auto below. Nothing
+                # Studio resolved, nothing named, nothing inherited, and the child still
+                # ends up with a non-causal encoder.
+                _extras_mmproj_auto = bool(
+                    extra_args
+                    and any(_flag_name(str(a)) == "--mmproj-auto" for a in extra_args)
+                    and not extra_args_disable_mmproj(extra_args)
+                )
                 _launch_opens_projector = (
                     bool(effective_is_vision)
                     or bool(_extras_mmproj and os.path.isfile(_extras_mmproj))
                     or _env_mmproj_survives
+                    or _extras_mmproj_auto
                 )
                 # Before every sizing consumer and after the resolution that decides
                 # whether there is a projector at all, so the fit, the slot search and

@@ -11187,6 +11187,7 @@ def _launch_raises_projector_batch(
     """
     from core.inference.llama_cpp import (
         _extra_args_device,
+        _flag_name,
         _metal_device_is_paravirtual,
         _mmproj_env_is_audio_only,
         extra_args_disable_mmproj,
@@ -11196,6 +11197,14 @@ def _launch_raises_projector_batch(
     # resolve and the auto-download; server-context.cpp gates on a non-empty mmproj.path.
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
     if override and Path(override).is_file():
+        return True
+    # A remembered --mmproj-auto asks llama-server to find the adjacent projector on
+    # its own, so the launch opens one with nothing named anywhere.
+    if (
+        extras
+        and any(_flag_name(str(a)) == "--mmproj-auto" for a in extras)
+        and not extra_args_disable_mmproj(extras)
+    ):
         return True
     # An inherited one, under the loader's own two scrubs. The paravirtual guard takes
     # both variables off the child, so there is no projector left to floor; the vision
