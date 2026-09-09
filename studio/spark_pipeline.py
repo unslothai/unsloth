@@ -388,6 +388,25 @@ def tied_split_problem(
     )
 
 
+def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Optional[str]:
+    """Why `--full-finetune --save` cannot produce a usable model across ranks, or None.
+
+    Each rank saves a Transformers checkpoint of its OWN stage: the other layers were replaced
+    with `Identity`, so `model.safetensors` there is a base model missing half its decoder.
+    Loading one initialises the missing layers afresh and discards the other rank's training,
+    and `spark merge` cannot join them -- it reads `adapter_model.safetensors`, and a
+    full-weight union needs sharded output and an index this does not write. Refused before
+    the run rather than after it, because the run is the expensive part."""
+    if not full_finetune or not save or world < 2:
+        return None
+    return (
+        "--full-finetune with --save has no way to produce a loadable model across "
+        f"{world} ranks: each stage saves only the layers it owns, and `unsloth spark merge` "
+        "joins LoRA adapters, not base weights. Train with LoRA and merge the adapters, or "
+        "run --full-finetune on a single node where the checkpoint is complete."
+    )
+
+
 def _tied_aliases(model) -> dict:
     """`{parameter name saved under another name: the name it is saved under}`.
 
@@ -1685,13 +1704,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # needs no padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
 
+    # One read, used by the layout, the tied check and the stage metadata below.
+    from transformers import AutoConfig
+
+    base_config = AutoConfig.from_pretrained(args.model)
+    n_layers_total = config_num_layers(base_config)
+
     plan = my_plan = None
     if use_torch_pp:
         # Every rank runs the same pure function on the same arguments, so the layout agrees
         # across the cluster without a collective and nothing is negotiated on the wire.
-        from transformers import AutoConfig
-
-        n_layers = config_num_layers(AutoConfig.from_pretrained(args.model))
+        n_layers = n_layers_total
         try:
             plan = torch_pp_plan(
                 args.schedule, world, args.microbatches, args.virtual_stages, n_layers
@@ -1702,16 +1725,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Checked before the model is built, so a run that cannot be correct stops in seconds
     # rather than after a 70B load.
-    from transformers import AutoConfig as _AutoConfig
-
     tied_problem = tied_split_problem(
-        bool(getattr(_AutoConfig.from_pretrained(args.model), "tie_word_embeddings", False)),
+        bool(getattr(base_config, "tie_word_embeddings", False)),
         bool(args.full_finetune),
         world,
         plan["stage_to_rank"] if plan else None,
     )
     if tied_problem:
         raise SystemExit(tied_problem)
+    save_problem = full_finetune_save_problem(
+        bool(args.full_finetune), args.save or "", world
+    )
+    if save_problem:
+        raise SystemExit(save_problem)
 
     # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would
     # remove layers this rank needs; the legacy interleaved path has no such set and keeps
@@ -1969,6 +1995,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out = osp.join(args.save, f"stage{rank}")
         os.makedirs(out, exist_ok = True)
         model.save_pretrained(out)
+        # How many stages there were meant to be. Without it the merge could only check that
+        # the directories it found were contiguous from 0, which [stage0, stage1] satisfies
+        # for a three-rank run: the last rank's layers were simply absent and the merged
+        # adapter was untrained there, with nothing raised.
+        with open(osp.join(out, "unsloth_stage.json"), "w", encoding = "utf-8") as handle:
+            json.dump({"rank": rank, "world": world, "n_layers": n_layers_total}, handle)
         log(f"saved stage {rank} to {out}")
 
     dist.destroy_process_group()

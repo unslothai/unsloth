@@ -508,6 +508,9 @@ def _mk_stage(
     rank: int,
     layers,
     shared = ("lm_head",),
+    world: int = 2,
+    n_layers: int = 24,
+    meta: bool = True,
 ) -> None:
     import json as _json
     import torch
@@ -523,6 +526,12 @@ def _mk_stage(
         t[f"base_model.model.{name}.weight"] = torch.zeros(2, 2)
     save_file(t, str(d / "adapter_model.safetensors"))
     (d / "adapter_config.json").write_text(_json.dumps({"r": 16, "lora_alpha": 32}))
+    # What spark_pipeline writes beside the adapter: the merge cannot otherwise tell a
+    # complete two-stage run from a three-stage one whose last rank never saved.
+    if meta:
+        (d / "unsloth_stage.json").write_text(
+            _json.dumps({"rank": rank, "world": world, "n_layers": n_layers})
+        )
 
 
 def test_merge_layer_key_parsing() -> None:
@@ -565,6 +574,51 @@ def test_merge_refuses_missing_layers(tmp_path) -> None:
     plan = sm.plan_merge(str(tmp_path))
     assert plan["ok"] is False
     assert any("10" in p for p in plan["problems"])
+
+
+def test_merge_refuses_a_run_that_lost_its_last_stage(tmp_path) -> None:
+    """stage0 and stage1 of a THREE-rank run: the directories are contiguous from 0, their
+    layers are contiguous from 0, and every earlier check passes on two thirds of a model."""
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    sm = _load("studio/spark_merge.py")
+    _mk_stage(tmp_path, 0, range(0, 8), world = 3, n_layers = 24)
+    _mk_stage(tmp_path, 1, range(8, 16), world = 3, n_layers = 24)
+    plan = sm.plan_merge(str(tmp_path))
+    assert plan["ok"] is False
+    assert any("recorded 3" in p for p in plan["problems"]), plan["problems"]
+
+
+def test_merge_says_so_when_the_stage_count_was_never_recorded(tmp_path) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    sm = _load("studio/spark_merge.py")
+    _mk_stage(tmp_path, 0, range(0, 12), meta = False)
+    _mk_stage(tmp_path, 1, range(12, 24), meta = False)
+    plan = sm.plan_merge(str(tmp_path))
+    assert plan["ok"] is False
+    assert any("unsloth_stage.json" in p for p in plan["problems"]), plan["problems"]
+
+
+def test_a_config_fault_does_not_overwrite_a_good_output(tmp_path) -> None:
+    """It wrote the tensors first, so the command reported that it had refused the merge and
+    left the old config paired with the new weights."""
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    import json as _json
+
+    sm = _load("studio/spark_merge.py")
+    _mk_stage(tmp_path, 0, range(0, 12))
+    _mk_stage(tmp_path, 1, range(12, 24))
+    out = tmp_path / "merged"
+    sm.merge(str(tmp_path), str(out))
+    good = (out / "adapter_model.safetensors").read_bytes()
+
+    (tmp_path / "stage1" / "adapter_config.json").write_text(_json.dumps({"r": 8}))
+    with pytest.raises(RuntimeError):
+        sm.merge(str(tmp_path), str(out))
+    assert (out / "adapter_model.safetensors").read_bytes() == good
+    assert _json.loads((out / "adapter_config.json").read_text())["r"] == 16
 
 
 def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:

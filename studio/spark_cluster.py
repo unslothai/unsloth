@@ -3714,15 +3714,63 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     return 0
 
 
+def model_dimensions(target: str) -> Optional[Dict[str, int]]:
+    """`{"layers", "hidden", "vocab"}` for `target`, or None when they cannot be read.
+
+    The training estimate needs these and had defaults for them, so every model was sized as
+    an 80-layer, 8192-hidden, 128256-vocabulary one. The vocabulary is the term that decides
+    the answer: the last stage holds the fp32 logits, and `mb_rows * seq * vocab * 4` is
+    usually the largest single tensor in the step. A model with a bigger vocabulary got an
+    `OK` and then exhausted the node."""
+    path = osp.expanduser(target)
+    if osp.isfile(path) and path.endswith(".gguf"):
+        meta = gguf_metadata(path)
+        arch = meta.get("general.architecture")
+        if isinstance(arch, str):
+            layers = meta.get(f"{arch}.block_count")
+            hidden = meta.get(f"{arch}.embedding_length")
+            vocab = meta.get(f"{arch}.vocab_size")
+            if all(isinstance(v, int) and v > 0 for v in (layers, hidden, vocab)):
+                return {"layers": layers, "hidden": hidden, "vocab": vocab}
+        return None
+
+    root = path if osp.isdir(path) else None
+    if root is None:
+        cache = osp.expanduser("~/.cache/huggingface/hub")
+        repo = osp.join(cache, "models--" + target.replace("/", "--"))
+        root = _hf_snapshot_dir(repo) if osp.isdir(repo) else None
+    if root is None:
+        return None
+    try:
+        with open(osp.join(root, "config.json"), "r", encoding = "utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    # Multimodal configs put the decoder's own numbers under `text_config`, and it is the
+    # decoder that this estimate is about.
+    inner = config.get("text_config")
+    source = inner if isinstance(inner, dict) else config
+    layers = source.get("num_hidden_layers", config.get("num_hidden_layers"))
+    hidden = source.get("hidden_size", config.get("hidden_size"))
+    vocab = source.get("vocab_size", config.get("vocab_size"))
+    if not all(isinstance(v, int) and v > 0 for v in (layers, hidden, vocab)):
+        return None
+    return {"layers": layers, "hidden": hidden, "vocab": vocab}
+
+
 def training_memory_estimate(
     size_gib: float,
     world: int,
     batch: int,
     microbatches: int,
     seq: int,
-    hidden: int = 8192,
-    layers: int = 80,
-    vocab: int = 128256,
+    # No defaults. They were one 70B's shape, and a caller that forgot them got that shape
+    # for every model, silently; the only caller now reads them from the checkpoint.
+    hidden: int,
+    layers: int,
+    vocab: int,
     checkpointed: bool = True,
 ) -> Dict[str, Any]:
     """Per-node memory for a layer-split training step, before it is attempted. The failure
@@ -3772,17 +3820,44 @@ def _cmd_estimate(
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to estimate.")
         return 0
-    size = model_size_gib(model)
+    sized = model_size_report(model)
+    size = sized["gib"]
     if size is None:
-        print(f"Cannot size {model} (not cached locally); refusing to guess.")
+        print(f"Cannot size {model}: {sized['why']}. Refusing to guess.")
+        return 1
+    # No architecture, no verdict. The defaults are one 70B's shape, and applying them to
+    # every checkpoint is what let a larger vocabulary print OK and then run out of memory.
+    dims = model_dimensions(model)
+    if dims is None:
+        print(f"  model      : {model}  ({size:.1f} GiB)")
+        print("")
+        print("  CANNOT ESTIMATE: this model's layer count, hidden size and vocabulary could")
+        print("  not be read (no config.json, and no GGUF header that declares them). The")
+        print("  logits term alone is `batch/microbatches * seq * vocab * 4` bytes, so a")
+        print("  guessed vocabulary decides the answer. Point --model at the checkpoint")
+        print("  directory or the cached repo id instead of a bare name.")
         return 1
     world = 2 if peer_ip_for() else 1
-    est = training_memory_estimate(size, world, batch, microbatches, seq, checkpointed = checkpointed)
+    est = training_memory_estimate(
+        size,
+        world,
+        batch,
+        microbatches,
+        seq,
+        hidden = dims["hidden"],
+        layers = dims["layers"],
+        vocab = dims["vocab"],
+        checkpointed = checkpointed,
+    )
     fits = est["fits_full"] if full_finetune else est["fits_lora"]
     total = est["total_full_gib"] if full_finetune else est["total_lora_gib"]
     mode = "full finetune" if full_finetune else "LoRA"
 
     print(f"  model      : {model}  ({size:.1f} GiB)")
+    print(
+        f"  shape      : {dims['layers']} layers, hidden {dims['hidden']}, "
+        f"vocab {dims['vocab']}"
+    )
     print(f"  stages     : {world}")
     print(
         f"  per node   : weights {est['weights_gib']:.1f} + "
