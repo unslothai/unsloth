@@ -73,7 +73,8 @@ class TestASpentCapIsNotReopened:
         assert "awaited" not in policy.events, "a spent cap queued for room it cannot use"
         dicts = [e for e in events if isinstance(e, dict)]
         assert [e["finish_reason"] for e in dicts if e.get("type") == "metadata"][-1] == "length"
-        assert any(e.get("type") == "context_truncated" for e in dicts), "it stopped in silence"
+        # The caller's own cap ended it, which is not a give-up.
+        assert not any(e.get("type") == "context_truncated" for e in dicts)
 
 
 class TestThePassThroughBatchSizesTheReserve:

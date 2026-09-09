@@ -30118,10 +30118,15 @@ class LlamaCppBackend:
                 yield from _finish_after_giving_up()
                 return
             if isinstance(max_tokens, int) and max_tokens > 0:
-                if max_tokens - checkpoint.charged_tokens <= 0:
-                    # The caller's cap is spent: the partial is the answer, and a resume
-                    # would write past the cap by the floor below, once per pause.
-                    yield from _finish_after_giving_up()
+                _window_p = self._effective_context_length or 0
+                if max_tokens - checkpoint.charged_tokens <= 0 and not (
+                    _window_p and max_tokens >= _window_p
+                ):
+                    # Spent: reopening the stream for one floored token went past the cap by
+                    # that token, once per pause. The partial is on screen and the turn is
+                    # continuable, and it does not queue for room it cannot use.
+                    logger.info("Paused with the caller's output cap spent; ending the turn")
+                    yield from _finish_after_giving_up(notice = False)
                     return
             resumed_p = yield from _await_resume(preempt_policy, cancel_event)
             if not resumed_p:
@@ -30156,15 +30161,7 @@ class LlamaCppBackend:
             # ended the turn above, so the floor only guards zero.
             resume_max_tokens = max_tokens
             if isinstance(max_tokens, int) and max_tokens > 0:
-                resume_max_tokens = max_tokens - checkpoint.charged_tokens
-                _window_p = self._effective_context_length or 0
-                if resume_max_tokens <= 0 and not (_window_p and max_tokens >= _window_p):
-                    # Spent: reopening the stream for one floored token went past the cap by
-                    # that token. The partial is on screen and the turn is continuable.
-                    logger.info("Resumed with the caller's output cap spent; ending the turn")
-                    yield from _finish_after_giving_up(notice = False)
-                    return
-                resume_max_tokens = max(1, resume_max_tokens)
+                resume_max_tokens = max(1, max_tokens - checkpoint.charged_tokens)
             # `continues` false means the pause landed before anything was produced, so the
             # attempt is re-issued whole, though not as a fresh turn: dropping the flag on an
             # attempt that was itself a resume made the whole essay appear twice.
