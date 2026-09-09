@@ -26,8 +26,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+import core.inference.llama_cpp as llama_cpp_mod
 import routes.inference as inf_mod
 from core.inference.api_monitor import ApiMonitor
+from core.inference.context_window import tool_result_budget
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KV_BUDGET_ENV,
@@ -1644,3 +1646,102 @@ class TestBothPassthroughsPriceTheirRetry:
             )
         )
         self._assert_retry_stays_inside_the_lease(backend, client.posts)
+
+
+class TestTheLoopSizesAgainstTheAdmittedAllowance:
+    """The bound the wire gets is the bound the fit has to reserve for.
+
+    A tool round clamps its payload to the admitted share and then sized everything
+    else -- the fit, the recall budget, every tool-result budget -- against the caller's
+    whole cap. On eight slots that reserves eight times the room the request may ever
+    emit, so history is evicted and results are cut to pay for output the lease already
+    forbids. The final pass had it right with `_final_fit_max_tokens`; the rounds now
+    match.
+    """
+
+    _ALLOWANCE = 256
+
+    @staticmethod
+    def _budget_handed_to_the_tool(monkeypatch, allowance):
+        """The `result_budget_tokens` one round hands a tool, through the real loop."""
+        seen: list[int] = []
+
+        def _fake_execute_tool(name, arguments, *, result_budget_tokens = None, **_kwargs):
+            seen.append(result_budget_tokens)
+            return "Linux kernel 6.10."
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _fake_execute_tool)
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Which kernel?"}],
+                tools = [_TOOL],
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                max_tokens = _CTX,
+                admission_output_allowance = allowance,
+            )
+        )
+        assert seen, "the tool never ran, so nothing was priced"
+        return seen[0]
+
+    def test_a_result_is_priced_against_the_share_not_the_callers_cap(self, monkeypatch):
+        """`tool_result_budget(ctx, 256, spent)`, not `tool_result_budget(ctx, 4096, spent)`."""
+        capped = self._budget_handed_to_the_tool(monkeypatch, self._ALLOWANCE)
+        unbounded = self._budget_handed_to_the_tool(monkeypatch, None)
+
+        # Same conversation both runs, so the prompt spends the same; read that spend back
+        # off the unbounded figure rather than re-deriving the loop's exact count.
+        spent = tool_result_budget(_CTX, _CTX, 0) - unbounded
+        assert capped == tool_result_budget(_CTX, self._ALLOWANCE, spent)
+        assert unbounded == tool_result_budget(_CTX, _CTX, spent)
+        assert capped > unbounded, "reserving a cap the wire cannot use starves the result"
+
+    def test_an_allowance_at_or_above_the_cap_changes_nothing(self, monkeypatch):
+        """The clamp is a `min`, so a lease roomier than the request leaves it alone: an
+        unadmitted run and a generously admitted one price a result identically."""
+        assert self._budget_handed_to_the_tool(
+            monkeypatch, _CTX
+        ) == self._budget_handed_to_the_tool(monkeypatch, None)
+
+
+class TestTheSizingSitesReadTheClampedFigure:
+    """Source-level, because a seventh sizing site added against the unclamped name is
+    the same defect again and no single behaviour test sees all of them."""
+
+    _SOURCE = " ".join(
+        Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8").split()
+    )
+
+    def test_the_iteration_fit_receives_the_clamped_figure(self):
+        assert "max_tokens = _iteration_fit_max_tokens," in self._SOURCE
+
+    def test_no_fit_is_handed_the_unclamped_figure(self):
+        assert "max_tokens = _iteration_max_tokens," not in self._SOURCE
+
+    def test_the_clamp_is_the_share_and_falls_back_to_the_window(self):
+        assert (
+            "_iteration_fit_max_tokens = ( min( _iteration_max_tokens "
+            "if _iteration_max_tokens is not None "
+            "else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR), "
+            "admission_output_allowance, ) "
+            "if admission_output_allowance is not None else _iteration_max_tokens )"
+        ) in self._SOURCE
+
+    def test_the_final_pass_still_uses_its_own_clamp(self):
+        assert "max_tokens = _final_fit_max_tokens," in self._SOURCE
+
+    def test_the_wire_cap_is_still_clamped_on_its_own_path(self):
+        """Sizing borrows the figure; it does not take over `payload["max_tokens"]`."""
+        assert (
+            'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
+            in self._SOURCE
+        )
