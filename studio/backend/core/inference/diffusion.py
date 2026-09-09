@@ -6201,14 +6201,11 @@ class DiffusionBackend:
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                         oom = is_oom_error(exc)
                         if oom:
-                            # Drop the captured graphs on ANY OOM, before deciding whether this batch can be split.
-                            # They are shaped for the attempt that just failed and empty_cache() cannot reclaim them
-                            # (live statics and outputs, and a graph pool is segregated from the ordinary allocator),
-                            # so whatever runs next runs a step's worth of VRAM short of what the eager path would
-                            # have had: the halved retry below, and equally the smaller request the user makes after a
-                            # single-image OOM raises out of here. Measured: a 1.7 GB decode on the next generation
-                            # OOMs with the dead graph held and fits once it is dropped. The shape that finally
-                            # renders re-captures on its first step.
+                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                            # pool is segregated from the ordinary allocator), so the halved retry below and the
+                            # user's next smaller request would both run a step's worth of VRAM short. The shape
+                            # that finally renders re-captures on its first step.
                             cuda_graph.reset_all(state.cuda_graphs)
                         if len(chunk) < 2 or not oom:
                             raise

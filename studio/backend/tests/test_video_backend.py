@@ -9151,10 +9151,7 @@ class _GraphHandle:
 
 
 def test_h3_generate_oom_drops_the_graphs_before_raising(fake_runtime):
-    """H3 is the one video family that captures graphs, and a live graph pins its statics, its
-    outputs and its slice of the private pool, which ordinary allocations cannot reuse. Without a
-    reset on the way out, an OOM anywhere in pipe(**kwargs) would leave the graphs held until
-    unload and the user's next, smaller clip would run a step's worth of activations short."""
+    """H3 is the one video family that captures graphs; an OOM must not leave them pinned."""
     backend = VideoBackend()
     pipe = _load_h3_modular(backend)
     handle = _GraphHandle()

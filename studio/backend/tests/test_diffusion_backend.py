@@ -6570,11 +6570,7 @@ class _BoomPipe(_CountingPipe):
 
 
 def test_generate_single_image_oom_drops_the_graphs_before_raising(fake_runtime, tmp_path):
-    """A one-image OOM is re-raised rather than split, and the default request IS one image. The
-    captured graph is shaped for the attempt that just failed and empty_cache() cannot reclaim it,
-    so without a reset here the user's smaller re-request runs a step short of what the eager path
-    would have had. Measured: a 1.7 GB decode on that next generation OOMs with the dead graph held
-    and fits once it is dropped."""
+    """A one-image OOM raises instead of splitting, so the graphs must be dropped on the way out."""
     backend = _load_zimage_backend(tmp_path)
     pipe = _CountingPipe(max_images = 0)  # every forward OOMs, so a single image cannot be split
     object.__setattr__(backend._state, "pipe", pipe)

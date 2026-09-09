@@ -238,11 +238,10 @@ class GraphedForward:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
-        # ``__call__`` short-circuits to eager on ``poisoned`` before it ever reads the cache, so
-        # every entry is unreachable from here on and only pins its statics, its outputs and its
-        # slice of the pool for the life of the load -- against the eager fallback this poisoning
-        # exists to fall back TO. Freeing is left to the caller's ``_release``, which runs after the
-        # failed capture's own frames are dropped, so both go back in one pass.
+        # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
+        # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
+        # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
+        # capture's own frames are gone, so both go back in one pass.
         self.cache.clear()
         _drop_pool_if_unused()
         return self

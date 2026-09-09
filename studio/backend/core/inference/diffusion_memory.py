@@ -271,9 +271,8 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     generation can allocate into.
 
     A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
-    credited here, yet ordinary allocations cannot reuse it while a graph holds it (measured: a
-    decode-sized tensor OOMs with the graph live and fits once it is dropped), so the guard reads
-    quieter than the decode peak by about one step of activations on a graphed load.
+    credited here, yet ordinary allocations cannot reuse it while a graph holds it, so on a graphed
+    load the guard reads about one step of activations high.
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":

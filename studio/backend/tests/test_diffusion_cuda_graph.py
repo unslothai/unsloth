@@ -421,11 +421,7 @@ def test_a_failed_capture_is_released_before_the_eager_fallback(stub_torch):
 
 
 def test_poisoning_drops_the_graphs_it_can_no_longer_replay(stub_torch):
-    """``__call__`` short-circuits on ``poisoned`` before it reads the cache, so an entry captured
-    before the failure can never be replayed again: keeping it pins its statics, its outputs and its
-    slice of the pool for the life of the load, against the eager fallback the poisoning falls back
-    TO. Measured with the real wrapper: a 512-shape graph held through a failed larger capture is the
-    difference between that render OOMing and completing."""
+    """Once poisoned, ``__call__`` never reads the cache again, so its entries only pin memory."""
     module = _FakeDiT()
     handle = _armed(module)
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)

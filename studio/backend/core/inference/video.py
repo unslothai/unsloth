@@ -5788,13 +5788,10 @@ class VideoBackend:
             except Exception as exc:
                 self._gen = {"active": False}
                 if is_oom_error(exc):
-                    # Drop the captured graphs on ANY CUDA OOM, exactly as the image backend does. A live graph
-                    # pins its statics, its outputs and its slice of the private pool, and that pool is not
-                    # reusable by ordinary allocations while a graph lives, so empty_cache() cannot reclaim any of
-                    # it. An OOM raised past the denoise (a VAE decode at a larger frame count, say) would
-                    # otherwise leave the graphs held until unload and the user's next, smaller request would run
-                    # a step's worth of activations short of what the eager path would have had. The shape that
-                    # finally renders re-captures on its first step. A non-OOM failure leaves working graphs alone.
+                    # Drop the graphs on ANY CUDA OOM, as the image backend does: a live graph pins its
+                    # statics, outputs and slice of the private pool, which empty_cache() cannot reclaim, so
+                    # the user's next smaller request would run a step's worth of activations short. The shape
+                    # that finally renders re-captures on its first step; a non-OOM failure keeps its graphs.
                     try:
                         from . import diffusion_cuda_graph
                         diffusion_cuda_graph.reset_all(
