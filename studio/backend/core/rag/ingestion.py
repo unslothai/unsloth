@@ -182,6 +182,9 @@ def _ocr_scanned_pages(
     ]
     if not scanned:
         return pages, set()
+    required = {p.page_number for p in pages if p.needs_ocr}
+    # Optional short/blank pages must not displace actual scans from the budget.
+    scanned.sort(key = lambda number: number not in required)
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -333,20 +336,37 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
+                complete_captions: set[int] = set()
+                captioned_tiles: dict[int, set[int]] = {}
+
+                def record_caption(image):
+                    number = image.page_number
+                    if image.full_page:
+                        complete_captions.add(number)
+                    elif image.tile_index is not None and image.tile_count:
+                        indices = captioned_tiles.setdefault(number, set())
+                        indices.add(image.tile_index)
+                        if len(indices) == image.tile_count:
+                            complete_captions.add(number)
+
                 captions = captioner.merge_page_captions(
                     captioner.caption_images(
                         tiles,
+                        on_caption = record_caption,
                         on_progress = lambda done, total: _progress(
                             conn, job_id, "captioning", 0.4 + 0.2 * done / total
                         ),
                     )
                 )
                 pages = captioner.splice_captions(pages, captions)
-                ocred.update(number for number, values in captions.items() if values)
+                ocred.update(complete_captions)
 
         if scanned_pages - ocred:
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
             raise pdf_ocr.unreadable_pages_error(scanned_pages - ocred)
 
         _progress(conn, job_id, "chunking", 0.6)
@@ -360,6 +380,9 @@ def _run(
         if not chunks:
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
             raise ValueError(
                 "No extractable text found in file. Upload a document containing readable text."
             )

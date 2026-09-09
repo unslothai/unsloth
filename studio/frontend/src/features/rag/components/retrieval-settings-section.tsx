@@ -217,7 +217,8 @@ export function RetrievalSettingsSection() {
             <InfoHint>
               Read scanned or image-only PDF pages at upload time using the
               loaded vision model or local Tesseract OCR. Local OCR requires
-              installed language data. Pages with a text layer are unaffected.
+              installed language data. Selectable headers alone may not cover a
+              scanned page's body.
             </InfoHint>
           </span>
           <span className="text-ui-12 leading-[1.3] text-muted-foreground">

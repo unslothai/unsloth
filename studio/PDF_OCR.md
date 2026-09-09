@@ -2,12 +2,16 @@
 
 Studio can extract text from scanned PDFs in Chat, project sources, and Data Recipes.
 Existing selectable text is preserved. OCR runs on image-only pages, including scans
-with a separate digital header. It does not transcribe every illustration in an
-otherwise text-based PDF; Chat has a separate figure-captioning setting for that.
+with a selectable header or footer. Small logos do not require OCR when selectable
+text is present. Large images with little selectable body text are treated as
+possible scans, so illustrated pages can also require OCR. Chat has a separate
+figure-captioning setting.
 
 Chat first uses the loaded local vision GGUF model when available, then tries local
 Tesseract OCR for scanned pages that were not transcribed. Data Recipes uses local
 Tesseract OCR without requiring a loaded chat model.
+Recipe PDF extraction runs in separate worker processes so OCR does not block
+other requests.
 
 ## Local OCR setup
 

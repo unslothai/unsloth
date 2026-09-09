@@ -60,3 +60,24 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
             if text:
                 out[number] = text
     return out
+
+
+def extract_text(path: str, ocr: bool, max_pages: int) -> str:
+    """Extract a complete PDF in one process, preserving selectable text."""
+    from . import parsers
+
+    pages = parsers.parse(path)
+    scanned = [page.page_number for page in pages if page.needs_ocr]
+    texts = ocr_pages(path, scanned[:max_pages]) if ocr else {}
+    if set(scanned) - texts.keys():
+        raise unreadable_pages_error(set(scanned) - texts.keys())
+    parts = []
+    for page in pages:
+        original = page.text.strip()
+        text = texts.get(page.page_number, "")
+        parts.append(
+            text
+            if not original or original in text
+            else "\n\n".join(filter(None, [original, text]))
+        )
+    return "\n\n".join(parts)
