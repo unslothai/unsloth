@@ -23,6 +23,117 @@ _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
 
 
 @pytest.mark.parametrize(
+    "key",
+    ["secret_key", "signing_key", "encryption_key", "ssh_key", "secretKey", "providerSigningKey"],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        '{{"{key}": "{value}", "status": 401}}',
+        "('{key}', '{value}')",
+        "--{key} {value} --port 8080",
+    ],
+)
+def test_compound_secret_keys_are_masked(key, template):
+    line = template.format(key = key, value = "opaqueCredential123456789")
+    expected = template.format(key = key, value = REDACTED)
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize("key", ["secret_key", "signing_key", "encryption_key", "ssh_key"])
+def test_compound_secret_keys_track_blocks_and_preserve_paths(key):
+    redactor = StreamingLogRedactor()
+    assert redactor.redact_record(f"{key}: |\n") == f"{key}: |\n"
+    assert redactor.redact_record("  opaque-body\n") == "  <redacted>\n"
+    assert redactor.redact_record("ordinary: kept\n") == "ordinary: kept\n"
+    line = f"{key}_path=/tmp/key"
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "('https://example.com','alice@example.org')",
+        '{"url":"https://example.com","email":"alice@example.org"}',
+        '["https://example.com","alice@example.org"]',
+        "[https://example.com],alice@example.org",
+        "{https://example.com},alice@example.org",
+        "b'https://example.com',b'alice@example.org'",
+        '"https://example.com",email=alice@example.org',
+    ],
+)
+def test_url_redaction_preserves_adjacent_serialized_fields(line):
+    assert redact_log_text(line) == line
+    assert StreamingLogRedactor().redact_record(line) == line
+
+
+@pytest.mark.parametrize(
+    "userinfo",
+    [
+        "user:pa,ss",
+        "user:pa'ss",
+        "user:pa(ss)",
+        "opaque,token",
+        "user:p%40ss",
+        ":opaque-redis-key",
+        "user:p@ss",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "https://{userinfo}@example.com/path",
+        '"https://{userinfo}@example.com/path","alice@example.org"',
+    ],
+)
+def test_url_userinfo_punctuation_remains_masked(userinfo, template):
+    line = template.format(userinfo = userinfo)
+    expected = template.format(userinfo = REDACTED)
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+def test_quoted_url_credentials_do_not_consume_the_next_field():
+    line = "('https://user:pa,ss@example.com','alice@example.org')"
+    expected = "('https://<redacted>@example.com','alice@example.org')"
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize("key", ["Password", "password", "PASSWORD", "Pwd", "PWD"])
+@pytest.mark.parametrize("separator", [";", "; "])
+def test_connection_strings_preserve_multiword_fields(key, separator):
+    tail = separator + "Data Source=db.example;Initial Catalog=prod;User ID=app"
+    line = f"{key}=opaqueCredential123456789{tail}"
+    expected = f"{key}=<redacted>{tail}"
+    assert redact_log_text(line) == expected
+    assert StreamingLogRedactor().redact_record(line) == expected
+    assert redact_log_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            'Password="opaque;Data Source=still-secret";Initial Catalog=prod',
+            'Password="<redacted>";Initial Catalog=prod',
+        ),
+        (
+            "password=opaque;still-secret;Data Source=db.example",
+            "password=<redacted>;Data Source=db.example",
+        ),
+        (
+            "PASSWORD: opaque-secret;Data Source=db.example",
+            "PASSWORD: <redacted>;Data Source=db.example",
+        ),
+    ],
+)
+def test_connection_field_boundaries_preserve_only_separate_fields(line, expected):
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "openaiApiKey",

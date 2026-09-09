@@ -147,6 +147,40 @@ def test_viewer_masks_a_private_key_across_requests(client):
 
 
 @pytest.mark.parametrize(
+    "body,expected",
+    [
+        (
+            '{"secret_key":"opaqueCredential123456789","status":401}',
+            '{"secret_key":"<redacted>","status":401}',
+        ),
+        (
+            "('https://example.com','alice@example.org')",
+            "('https://example.com','alice@example.org')",
+        ),
+        (
+            "('https://user:opaqueCredential123456789@example.com','alice@example.org')",
+            "('https://<redacted>@example.com','alice@example.org')",
+        ),
+        (
+            "PASSWORD=opaqueCredential123456789;Data Source=db.example;Initial Catalog=prod",
+            "PASSWORD=<redacted>;Data Source=db.example;Initial Catalog=prod",
+        ),
+    ],
+)
+def test_viewer_and_export_preserve_credential_field_boundaries(client, body, expected):
+    path = _seed_server_log(body + "\nordinary: kept\n")
+    viewer = client.get("/api/settings/debug/logs")
+    response = client.get("/api/settings/debug/logs/export")
+    assert viewer.status_code == response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    for result in ("\n".join(viewer.json()["lines"]), exported):
+        assert "opaqueCredential123456789" not in result
+        assert expected in result
+        assert "ordinary: kept" in result
+
+
+@pytest.mark.parametrize(
     "body,secret",
     [
         ('password\x1b[31m=\x1b[0m"first\nopaque-quoted-body"\n', "opaque-quoted-body"),

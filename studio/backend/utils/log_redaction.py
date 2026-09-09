@@ -49,11 +49,12 @@ _SECRET_KEYS = (
     # prefix of its own for a shape rule to catch.
     "secret[-_]?access[-_]?key|shared[-_]?access[-_]?key|access[-_]?key|"
     "account[-_]?key|private[-_]?key(?:[-_]?data)?|pwd|"
+    "(?:secret|signing|encryption|ssh)[-_]?key|"
     "password|passwd|passphrase|secret|"
     # Provider prefixes may run into a camelCase credential suffix.
     r"[a-z][a-z0-9]*(?:api[-_]?key|access[-_]?key|access[-_]?token|auth[-_]?token|"
     r"bearer[-_]?token|client[-_]?secret|private[-_]?key(?:[-_]?data)?|"
-    r"refresh[-_]?token|session[-_]?token)"
+    r"refresh[-_]?token|session[-_]?token|(?:secret|signing|encryption|ssh)[-_]?key)"
 )
 # "credentials" groups a mapping as often as it holds a secret, so only a scalar value is masked and a mapping keeps
 # its field names for the keys above to handle one by one
@@ -98,7 +99,16 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
     # URL userinfo may be user:password, :password (Redis), or a token alone.
-    (re.compile(r"://[^/?#\s]+@"), "://" + REDACTED + "@"),
+    # Respect quoted fields without rejecting commas inside real userinfo.
+    (
+        re.compile(
+            r"(?P<quoted>(?P<quote>[\"'])[a-z][a-z0-9+.-]*://)"
+            r"(?:(?!(?P=quote))[^/?#\s])+@"
+            r"|(?<![a-z0-9+.\-\"'])(?P<bare>[a-z][a-z0-9+.-]*://)[^/?#\s\"<>\[\]{}]+@",
+            re.IGNORECASE,
+        ),
+        r"\g<quoted>\g<bare>" + REDACTED + "@",
+    ),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object
     # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
@@ -312,7 +322,7 @@ _COOKIE_RE = re.compile(
 # Exact secret keys mask every non-empty value. Preserve only explicit null
 # sentinels, which communicate that no credential was configured.
 _NON_SECRET_SENTINELS = frozenset({"none", "null"})
-_SEMICOLON_FIELD_BOUNDARY_RE = re.compile(r";(?=\s*[A-Za-z_][A-Za-z0-9_.-]*\s*[:=])")
+_SEMICOLON_FIELD_BOUNDARY_RE = re.compile(r";(?=[ \t]*[A-Za-z_][A-Za-z0-9_. \t-]*[:=])")
 _YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
 _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?"
@@ -377,6 +387,18 @@ def _redact_kv(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
+def _env_field_tail(match: re.Match[str]) -> str:
+    value = match.group("val")
+    if value is None:
+        return ""
+    for semicolon in re.finditer(";", value):
+        offset = match.start("val") + semicolon.start()
+        # A multiword field can extend past the env match's whitespace boundary.
+        if _SEMICOLON_FIELD_BOUNDARY_RE.match(match.string, offset):
+            return match.string[offset : match.end("val")]
+    return ""
+
+
 def _redact_env_assignment(match: re.Match[str]) -> str:
     """Mask Studio-recognized secret env vars without consuming a command."""
     key = match.group("key")
@@ -387,7 +409,8 @@ def _redact_env_assignment(match: re.Match[str]) -> str:
         return match.group(0)
     quote = match.group("quote") or ""
     value_bytes = match.group("value_bytes") or ""
-    return f"{key}{match.group('sep')}{value_bytes}{quote}{REDACTED}{quote}"
+    tail = _env_field_tail(match)
+    return f"{key}{match.group('sep')}{value_bytes}{quote}{REDACTED}{quote}{tail}"
 
 
 def _redact_structured_env_kv(match: re.Match[str]) -> str:
@@ -409,9 +432,7 @@ def _redact_structured_env_kv(match: re.Match[str]) -> str:
         # Keep block markers for streaming continuation tracking.
         if _YAML_BLOCK_MARKER_RE.fullmatch(value):
             return match.group(0)
-        boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
-        if boundary is not None:
-            tail = value[boundary.start() :]
+        tail = _env_field_tail(match)
     return (
         f"{match.group('key_text')}{match.group('sep')}"
         f"{value_bytes}{quote}{REDACTED}{quote}{tail}"
