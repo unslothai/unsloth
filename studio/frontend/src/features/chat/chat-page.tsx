@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
+  clearModelConfigHandoff,
   currentRuntimePerModelConfig,
   type DeletedModelRef,
   type ExternalConnectionRef,
@@ -14,9 +16,11 @@ import {
   type PerModelConfig,
   isServedByMlx,
   loadedContextFields,
-  resolveInitialConfig,
+  modelConfigHandoffForDestination,
+  resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
+  useModelConfigHandoffStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -747,6 +751,7 @@ function ComparePane({
 }
 
 function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const signalReady = useAppShellReadySignal();
   const stateRef = useRef({
     pairId,
     panes: new Set<string>(),
@@ -766,9 +771,9 @@ function useCompareReloadReadiness(pairId: string): (pane: string) => void {
         return;
       }
       state.sent = true;
-      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+      signalReady();
     },
-    [pairId],
+    [pairId, signalReady],
   );
 }
 
@@ -1329,6 +1334,7 @@ function ProjectLanding({
   // view switch now (#8908), so the owner of that one reports readiness down.
   runtimeReady: boolean;
 }): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
@@ -1689,8 +1695,8 @@ function ProjectLanding({
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [dataLoaded, items, previews, runtimeReady]);
+    signalReady();
+  }, [dataLoaded, items, previews, runtimeReady, signalReady]);
 
   return (
     <>
@@ -2255,6 +2261,24 @@ export function ChatPage({
   // Controlled, so the chord can open the switcher and not just its trigger.
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
+  const modelConfigRequest = useModelConfigHandoffStore((state) =>
+    modelConfigHandoffForDestination(state.request, {
+      active,
+      newChatId: search.new,
+      threadId: search.thread,
+      compareId: search.compare,
+      projectId: search.project,
+    }),
+  );
+  const handleModelConfigRequestAdopted = useCallback(
+    (requestId: string) => {
+      setSettingsOpen(false);
+      setModelSelectorLocked(false);
+      setModelSelectorOpen(true);
+      clearModelConfigHandoff(requestId);
+    },
+    [setSettingsOpen],
+  );
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when compare was opened from a
   // path that does not set viewBeforeCompareRef.
@@ -2412,7 +2436,10 @@ export function ChatPage({
       source?: string;
     }) => {
       if (selection.source === "external") return null;
-      const resolved = resolveInitialConfig(selection.id, selection.ggufVariant);
+      const resolved = resolveResidentInitialConfig(
+        selection.id,
+        selection.ggufVariant,
+      );
       return resolved.remembered ? resolved.config : null;
     },
     [],
@@ -3954,13 +3981,17 @@ export function ChatPage({
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
+                configRequest={modelConfigRequest}
+                onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
-                open={active && modelSelectorOpen}
+                open={
+                  active && (modelSelectorOpen || modelConfigRequest !== null)
+                }
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
@@ -4250,7 +4281,7 @@ export function ChatPage({
       </div>
 
       <ChatSettingsPanel
-        open={active && settingsOpen}
+        open={active && modelConfigRequest === null && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}

@@ -7,10 +7,9 @@
 // quietly drop a seed of 0 or a deliberate clear.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -42,10 +41,6 @@ const GGUF = "unsloth/Qwen3.5-9B-GGUF";
 
 function params(overrides: Partial<InferenceParams> = {}): InferenceParams {
   return { ...DEFAULT_INFERENCE_PARAMS, checkpoint: GGUF, ...overrides };
-}
-
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
 }
 
 function slice(source: string, from: string, to: string): string {
@@ -119,7 +114,7 @@ test("a row written before the seed existed keeps what is on screen", () => {
 // graph, so pin their source the way the sibling settings tests do.
 
 test("the settings sanitizer lets a cleared seed through", () => {
-  const storage = read("../src/features/chat/utils/chat-settings-storage.ts");
+  const storage = readText("../src/features/chat/utils/chat-settings-storage.ts");
   const body = slice(
     storage,
     "function sanitizeInferenceParams(",
@@ -132,7 +127,7 @@ test("the settings sanitizer lets a cleared seed through", () => {
 });
 
 test("the request omits the seed when it is unset", () => {
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /params\.seed == null \|\|/);
   assert.match(adapter, /\{ seed: params\.seed \}/);
 });
@@ -182,7 +177,7 @@ test("a seed reaches only the backends that read one", () => {
 });
 
 test("the panel offers the seed only where the backend reads it", () => {
-  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /const showSeed = modelReadsSamplingSeed\(/);
   // type="number" reports an entry the engine cannot parse as "", which would clear
   // the pin with no error. chat-providers-dialog documents the same trap.
@@ -207,17 +202,17 @@ test("the panel and the request body gate on the same argument", () => {
       match[1].replace(/\s+/g, " ").trim(),
     );
   assert.deepEqual(
-    gateArguments(read("../src/features/chat/chat-settings-sheet.tsx")),
+    gateArguments(readText("../src/features/chat/chat-settings-sheet.tsx")),
     ["activeModel"],
   );
   assert.deepEqual(
-    gateArguments(read("../src/features/chat/api/chat-adapter.ts")),
+    gateArguments(readText("../src/features/chat/api/chat-adapter.ts")),
     ["activeModel"],
   );
 });
 
 test("an over-long entry clamps rather than becoming another number", () => {
-  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   // The clamp lives in committedSeed now, so a click on Save reads the same value blur
   // would have written rather than the one from before the entry.
   const handler = slice(sheet, "const committedSeed = useMemo", "const paramsWithCommittedSeed");
@@ -230,7 +225,7 @@ test("an over-long entry clamps rather than becoming another number", () => {
 });
 
 test("typing is not rewritten before the entry is finished", () => {
-  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   const field = slice(sheet, "{showSeed ? (", "placeholder=\"Random\"");
   // The box shows the raw draft while it is being typed into, so a clamp cannot
   // rewrite it mid-entry. NumericValueInput keeps a draft for the same reason.
@@ -246,7 +241,7 @@ test("an abandoned entry does not outlive the box it was typed into", () => {
   // Blur is the only commit and removing a focused element fires none, so both keys
   // matter: a model switch and the field going away each strand a draft in committedSeed.
   // Shape only: there is no DOM here, so the no-blur premise was measured in a browser.
-  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   const reset = slice(sheet, "useEffect(() => {\n    setSeedDraft(null);", ");");
   assert.match(reset, /\[currentCheckpoint, showSeed\]/);
 });
@@ -275,7 +270,7 @@ test("moving the seed marks the preset modified", () => {
 });
 
 test("the stored seed is range-checked, not just the keystroke", () => {
-  const storage = read("../src/features/chat/utils/chat-settings-storage.ts");
+  const storage = readText("../src/features/chat/utils/chat-settings-storage.ts");
   const body = slice(
     storage,
     "function sanitizeInferenceParams(",
@@ -288,7 +283,7 @@ test("the stored seed is range-checked, not just the keystroke", () => {
 });
 
 test("the request drops a seed the loaded model cannot use", () => {
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   // A pin set on a GGUF outlives a switch to transformers, where the panel hides the
   // field: without this the user would keep sending a seed they can no longer see.
   assert.match(adapter, /!modelReadsSamplingSeed\(/);
@@ -320,7 +315,7 @@ test("a chat stores a cleared seed rather than dropping the key", () => {
 });
 
 test("a cleared seed is not read as a missing key", () => {
-  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+  const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
   const helper = slice(store, "function firstSetThreadScopedValue", "\n}");
   // `??` would fall through a cleared seed's null to the installation default, putting
   // the pin back on the one chat that dropped it. Only undefined means "not set".
@@ -359,7 +354,7 @@ test("a models[] row states every flag the seed gate reads", () => {
 });
 
 test("saving a preset takes the seed being typed, not the one before it", () => {
-  const panel = read("../src/features/chat/chat-settings-sheet.tsx");
+  const panel = readText("../src/features/chat/chat-settings-sheet.tsx");
   // Clicking Save blurs the box during mousedown, but React has not re-rendered by the
   // time onClick runs, so a save reading `params` writes the pre-entry seed and, over an
   // otherwise-unmodified preset, the button is still disabled and the click does nothing.

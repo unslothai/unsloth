@@ -64,6 +64,18 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
 
+    fresh_device = {**vulkan_device, "vram_free_gb": 3.0}
+    monkeypatch.setattr(
+        hardware,
+        "get_vulkan_inference_gpu_info",
+        lambda: {**inference_gpu, "devices": [fresh_device]},
+    )
+    logger = SimpleNamespace(debug = lambda *args: None)
+    assert main._get_cached_system_gpu_info(logger)[1]["devices"] == [vulkan_device]
+    refreshed = main._get_cached_system_gpu_info(logger, refresh_memory = True)
+    assert refreshed[1]["devices"] == [fresh_device]
+    assert main._get_cached_system_gpu_info(logger) is refreshed
+
 
 def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
     """A Vulkan build whose probe returns no ordinals has nothing valid to pin,

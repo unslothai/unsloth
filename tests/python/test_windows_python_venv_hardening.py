@@ -52,15 +52,74 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
     # half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
+    # encoding, not the default: `text = True` alone decodes with the locale codec, which is
+    # cp1252 on a Windows runner, while both shells write their stdout as UTF-8. A non-ASCII
+    # path therefore came back as mojibake ("kaffee" with the a-umlaut arriving as A-tilde
+    # plus currency sign) and failed an assertion about a file that was in fact written
+    # correctly, so this decoded the transport wrongly rather than catching a real defect.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        # strict, so the next mismatch raises here rather than turning into U+FFFD and
+        # failing an assertion somewhere downstream about a value that was written fine.
+        errors = "strict",
         env = env,
         timeout = 30,
     )
     return result.stdout.strip()
+
+
+def _assert_same_text(actual: str, expected: str, note: str) -> None:
+    """`actual == expected`, but a mismatch names the codepoints that differ.
+
+    A bare `==` between two paths that differ in one accented character is unreadable in
+    CI: pytest renders its diff through the same stdout that mangled the string, so on a
+    non-UTF-8 console one side comes back as U+FFFD and the report accuses the half that
+    was right. Codepoints survive any code page, so they are what gets printed.
+    """
+    if actual == expected:
+        return
+    head = len(os.path.commonprefix([actual, expected]))
+
+    def describe(text: str) -> str:
+        shown = text[:24]
+        codepoints = " ".join(f"U+{ord(ch):04X}" for ch in shown)
+        return f"{shown!r}  [{codepoints}{' ...' if len(text) > len(shown) else ''}]"
+
+    lines = [
+        note,
+        f"  first {head} characters match, then:",
+        f"    actual   {describe(actual[head:])}",
+        f"    expected {describe(expected[head:])}",
+    ]
+    # Only claim a cause when the bytes show one, and only the cause that is still possible.
+    # _run_powershell decodes stdout as strict UTF-8, so a transport mis-decode raises there
+    # rather than arriving here: mojibake that reaches this point was produced inside the
+    # script, which is the product defect these cases exist to catch. Saying "the script did
+    # not lose the path" would be exactly backwards, and a wrong explanation on a real
+    # restore bug costs more than none.
+    if _looks_like_a_mis_decode(actual[head:], expected[head:]):
+        lines.append(
+            "  actual is expected's UTF-8 bytes read back through a single-byte code page. "
+            "Stdout is decoded strictly as UTF-8 here, so the shell handed us these "
+            "characters: the mis-decode happened inside the script, not in transport. Check "
+            "the marker read/write path for a missing -Encoding utf8."
+        )
+    raise AssertionError("\n".join(lines))
+
+
+def _looks_like_a_mis_decode(actual: str, expected: str) -> bool:
+    """True when `actual` is `expected` encoded UTF-8 and decoded through a legacy code page."""
+    for codec in ("cp1252", "latin-1", "cp437", "cp850"):
+        try:
+            if expected.encode("utf-8").decode(codec) == actual:
+                return True
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+    return False
 
 
 def _uv_cache_functions(source: str) -> str:
@@ -78,23 +137,46 @@ def _uv_cache_functions(source: str) -> str:
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
+@pytest.mark.parametrize(
+    "reported_version,accepted",
+    [
+        ("3.9.0", False),
+        ("3.10.0", False),
+        ("3.11.0", True),
+        ("3.12.0", True),
+        ("3.13.0", True),
+        ("3.13.8", False),
+        ("3.14.0", False),
+    ],
+)
+def test_path_python_wrapper_resolves_to_real_executable(
+    tmp_path: Path, shell: str, reported_version: str, accepted: bool
+):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
     if os.name == "nt":
         wrapper = tmp_path / "python.bat"
-        wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
+        wrapper.write_text(
+            f'@echo off\nif "%~1"=="--version" (\n'
+            f"echo Python {reported_version}\nexit /b 0\n)\n"
+            f'@"{sys.executable}" %*\n',
+            encoding = "utf-8",
+        )
     else:
         wrapper = tmp_path / "python-wrapper"
         wrapper.write_text(
-            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding = "utf-8"
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
+            f"printf 'Python {reported_version}\\n'\nexit 0\nfi\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+            encoding = "utf-8",
         )
         wrapper.chmod(0o755)
 
     script = f"""
 $ErrorActionPreference = "Stop"
 $PythonVersion = "3.13"
+$PythonSkip = @("3.13.8")
 $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda)'
 function Get-HostMachineArch {{ return "x86_64" }}
 function Test-IsCondaPython {{ param([string]$Exe) return $false }}
@@ -114,7 +196,12 @@ Write-Output $found.Path
     env = os.environ.copy()
     env["TEST_PYTHON_WRAPPER"] = str(wrapper)
     env["PYTHONPATH"] = str(tmp_path)
-    assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
+    found = _run_powershell(shell, script, env)
+    if accepted:
+        assert found
+        assert Path(found).resolve() == Path(sys.executable).resolve()
+    else:
+        assert not found
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -856,7 +943,7 @@ Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
     env["TEST_MARKER"] = str(marker)
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
-    assert result["After"] == expected, result
+    _assert_same_text(result["After"], expected, "the rollback did not restore the marker it saved")
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

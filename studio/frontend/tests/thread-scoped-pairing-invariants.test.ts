@@ -12,16 +12,13 @@
 // graph, so it cannot be loaded in a bare node test. The sibling store tests do the same.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const store = read("../src/features/chat/stores/chat-runtime-store.ts");
-const provider = read("../src/features/chat/runtime-provider.tsx");
-const composer = read("../src/components/assistant-ui/thread.tsx");
+const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
+const provider = readText("../src/features/chat/runtime-provider.tsx");
+const composer = readText("../src/components/assistant-ui/thread.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -80,7 +77,7 @@ test("the pairing wait still outlasts the worst case read chain", () => {
     assert.ok(match, `${name} not found`);
     return Number(match[1].replace(/_/g, ""));
   };
-  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+  const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
 
   const attempts = constant(provider, "THREAD_READ_RETRIES") + 1;
   const worstCase =
@@ -318,7 +315,7 @@ test("the read that gates sends cannot hang forever", () => {
 test("every run waits for the chat's settings, not just the composer", () => {
   // Reload, Continue and send-from-edit never touch handleSubmit; they all reach the
   // adapter, so the wait belongs there.
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const run = slice(adapter, "await useChatRuntimeStore.getState().hydratePersistedSettings();", "let runtime =");
   assert.match(run, /await awaitThreadScopedPairing\(runThreadId\)/);
 });
@@ -358,7 +355,7 @@ test("the run's wait is bound to the run's own chat", () => {
   const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
   assert.match(wait, /threadId: string \| null \| undefined/);
   assert.match(wait, /pairingSettledByThreadId\.get\(threadId\)/);
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /await awaitThreadScopedPairing\(runThreadId\)/);
 });
 
@@ -419,7 +416,7 @@ test("the thread read that gates sends aborts when it times out", () => {
 test("a read nobody is waiting for any more is cancelled", () => {
   const effect = slice(provider, "const reads = new Set<AbortController>();", "\n  }, [activeThreadId");
   assert.match(effect, /abortReads\(\);/);
-  const api = read("../src/features/chat/api/chat-api.ts");
+  const api = readText("../src/features/chat/api/chat-api.ts");
   const get = slice(api, "export async function getChatThread", "\n}");
   assert.match(get, /options\.timeoutMs !== undefined/);
   assert.match(get, /combineAbortSignals\(\[timeout\.signal, options\.signal\]\)/);
@@ -428,7 +425,7 @@ test("a read nobody is waiting for any more is cancelled", () => {
 test("the ensure step in front of a settings write is bounded too", () => {
   // It runs BEFORE the write, so neither the caller's signal nor the write timeout
   // reaches it, and a stall there leaves the whole per-thread chain pending.
-  const storage = read("../src/features/chat/utils/chat-history-storage.ts");
+  const storage = readText("../src/features/chat/utils/chat-history-storage.ts");
   const update = slice(storage, "export async function updateStoredChatThread", "\n}");
   assert.match(update, /ensureStoredChatThread\(threadId, undefined, \{/);
   assert.match(update, /bounded: true/);
@@ -542,7 +539,7 @@ test("a run whose pairing never settled is refused, not run on another chat's se
   const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
   assert.match(wait, /Promise<boolean>/);
   assert.match(wait, /resolve\(false\)/);
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /if \(!\(await awaitThreadScopedPairing\(runThreadId\)\)\) \{/);
   assert.match(adapter, /the message was not sent/);
 });
@@ -648,8 +645,8 @@ test("only a user edit to a sampling param lands on the chat", () => {
   );
 
   // Both paths that apply a model's own params say so.
-  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
-  const status = read("../src/features/chat/lib/apply-inference-status-to-store.ts");
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const status = readText("../src/features/chat/lib/apply-inference-status-to-store.ts");
   for (const source of [runtime, status]) {
     assert.match(
       source,
@@ -699,7 +696,7 @@ test("a model's recommendation does not overwrite the chat's sampling", () => {
 // user just asked for arrives with the previous mode's temperature and top-p. The
 // load-time path applies the same table unasked, so it stays marked.
 test("toggling Think applies its params even in a chat that pins sampling", () => {
-  const qwen = read("../src/features/chat/utils/qwen-params.ts");
+  const qwen = readText("../src/features/chat/utils/qwen-params.ts");
   assert.match(qwen, /store\.setParams\(\{ \.\.\.store\.params, \.\.\.params \}\);/);
   assert.doesNotMatch(
     qwen,
@@ -707,7 +704,7 @@ test("toggling Think applies its params even in a chat that pins sampling", () =
     "the toggle is treated as a model default, so a pinned chat never changes mode params",
   );
   // The post-load application of the same table stays marked.
-  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const post = slice(runtime, "store.setParams({ ...store.params, ...p }", "\n              }");
   assert.match(post, /fromModelDefaults: true/);
 });

@@ -986,6 +986,10 @@ jobs:
                   headers = {
                       "Authorization": f"Bearer {KEY}",
                       "Content-Type": "application/json",
+                      # The tool loop's frames, and the confirm gate's prompt, only
+                      # go to a caller that asks, as the Studio UI does. Ask, so this
+                      # probe exercises the same path a user takes.
+                      "X-Unsloth-Events": "1",
                   },
               )
               for attempt in range(retries + 1):

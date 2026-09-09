@@ -13,8 +13,8 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
-import { toolArgText } from "./tool-arg-text";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
@@ -36,7 +36,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const command = toolArgText((args as { command?: unknown })?.command);
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";

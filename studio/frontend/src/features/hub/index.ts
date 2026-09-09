@@ -78,7 +78,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
   partialSetFromRows,
   removeScanFolder,

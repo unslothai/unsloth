@@ -148,3 +148,217 @@ def test_eval_steps_zero_disables_evaluation(audio_trainer):
 def test_no_eval_dataset_disables_evaluation(audio_trainer):
     args, eval_dataset = audio_trainer._audio_eval_config({"eval_dataset": None, "eval_steps": 0.1})
     assert (args, eval_dataset) == ({}, None)
+
+
+@pytest.mark.parametrize("eval_steps", [True, float("inf"), float("nan"), "abc"])
+def test_hostile_eval_steps_disable_evaluation(audio_trainer, eval_steps):
+    """`eval_steps <= 0` lets these through: True is every step, inf raises, NaN never fires."""
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a", "b"], "eval_steps": eval_steps, "batch_size": 2}
+    )
+    assert (args, eval_dataset) == ({}, None)
+
+
+def test_audio_eval_config_agrees_with_the_shared_validator(audio_trainer):
+    from core.training.eval_dataset import evaluation_enabled
+    for value in (0.1, 0.25, 1, 2, 0, 0.0, -1, None, True, False, float("inf"), float("nan")):
+        _args, eval_dataset = audio_trainer._audio_eval_config(
+            {"eval_dataset": ["a"], "eval_steps": value, "batch_size": 2}
+        )
+        assert (eval_dataset is not None) == evaluation_enabled(value), value
+
+
+def test_empty_eval_split_disables_evaluation_with_a_warning(audio_trainer):
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": [], "eval_steps": 0.1, "batch_size": 2}
+    )
+    assert (args, eval_dataset) == ({}, None)
+    assert any("empty" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_missing_batch_size_falls_back_instead_of_passing_none(audio_trainer):
+    args, _ = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a"], "eval_steps": 0.1, "batch_size": None}
+    )
+    assert args["per_device_eval_batch_size"] == 2
+
+
+def test_a_stop_during_eval_preprocessing_is_not_reported_as_a_bad_eval_file(audio_trainer):
+    """A stop is reported as "no valid examples"; that is the cancel, not the user's upload."""
+    audio_trainer.should_stop = True
+
+    def stopped(dataset, custom_format_mapping = None):
+        raise ValueError("No valid examples after CSM preprocessing (skipped 4)")
+
+    assert audio_trainer._preprocess_audio_eval_split(object(), stopped, None) is None
+    assert not audio_trainer.training_progress.warnings
+
+
+def test_a_real_failure_still_warns_when_not_stopping(audio_trainer):
+    def explode(dataset, custom_format_mapping = None):
+        raise ValueError("no audio column found in dataset")
+
+    assert audio_trainer._preprocess_audio_eval_split(object(), explode, None) is None
+    assert any("no evaluation" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_numeric_string_eval_steps_is_normalised(audio_trainer):
+    """A numeric string is a valid cadence, but TrainingArguments compares it against an int."""
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a"], "eval_steps": "0.1", "batch_size": 2}
+    )
+    assert eval_dataset is not None
+    assert isinstance(args["eval_steps"], float) and args["eval_steps"] == 0.1
+
+
+def test_a_length_less_eval_split_still_enables_evaluation(audio_trainer):
+    """A streaming split has no row count and must not be mistaken for an empty one."""
+
+    class _NoLen:
+        pass
+
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": _NoLen(), "eval_steps": 0.1, "batch_size": 2}
+    )
+    assert eval_dataset is not None
+    assert args["eval_strategy"] == "steps"
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 8])
+def test_explicit_batch_sizes_are_preserved(audio_trainer, batch_size):
+    args, _ = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a"], "eval_steps": 0.1, "batch_size": batch_size}
+    )
+    assert args["per_device_eval_batch_size"] == batch_size
+
+
+@pytest.mark.parametrize("eval_steps,expected", [(0.1, 0.1), (0.25, 0.25), (1, 1), (2, 2)])
+def test_transformers_accepts_the_produced_config(audio_trainer, tmp_path, eval_steps, expected):
+    """Normalising eval_steps to float must not change the cadence transformers ends up with."""
+    transformers = pytest.importorskip("transformers")
+
+    training_args = {
+        "eval_dataset": ["a", "b"],
+        "eval_steps": eval_steps,
+        "batch_size": 2,
+        "max_steps": 8,
+        "optim": "adamw_torch",
+    }
+    eval_args, eval_dataset = audio_trainer._audio_eval_config(training_args)
+    assert eval_dataset is not None
+    config = audio_trainer._build_audio_training_args(
+        training_args, str(tmp_path), extra_args = {"remove_unused_columns": False, **eval_args}
+    )
+    config.update(bf16 = False, fp16 = False, use_cpu = True, report_to = [])
+    args = transformers.TrainingArguments(**config)
+    assert args.eval_strategy == "steps"
+    assert args.eval_steps == expected
+    assert args.per_device_eval_batch_size == 2
+
+
+def test_a_stop_skips_the_eval_preprocessor_entirely(audio_trainer):
+    """A stopped train pass returns partial rows, so eval would reload a codec model to abort."""
+    audio_trainer.should_stop = True
+    calls = []
+
+    def preprocess(dataset, custom_format_mapping = None):
+        calls.append(dataset)
+        return dataset
+
+    assert audio_trainer._preprocess_audio_eval_split(object(), preprocess, None) is None
+    assert calls == [], "the codec preprocessor ran after the run was stopped"
+    assert not audio_trainer.training_progress.warnings
+
+
+@pytest.mark.parametrize("eval_steps", [float("inf"), float("nan"), 0, -1])
+@pytest.mark.parametrize("audio_type", CODEC_TYPES)
+def test_an_invalid_cadence_never_preprocesses_the_eval_split(
+    audio_trainer, tmp_path, monkeypatch, audio_type, eval_steps
+):
+    """Gating on `eval_steps > 0` let inf and NaN codec-encode a split _audio_eval_config drops."""
+    audio_trainer._audio_type = audio_type
+    monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True)
+    seen = []
+    monkeypatch.setattr(
+        audio_trainer,
+        f"_preprocess_{audio_type}_dataset",
+        lambda ds, m = None: (seen.append(len(ds)), ds)[1],
+        raising = True,
+    )
+
+    _train, evaluation = audio_trainer.load_and_format_dataset(
+        None,
+        local_datasets = [_rows(tmp_path / "train.jsonl", "train")],
+        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", "eval")],
+        eval_steps = eval_steps,
+    )
+
+    assert evaluation is None
+    assert len(seen) == 1, f"eval_steps={eval_steps} still preprocessed the eval split"
+
+
+@pytest.mark.parametrize(
+    "eval_steps,expect_enabled",
+    [(0.25, True), (2, True), (float("inf"), False), (float("nan"), False), (0, False)],
+)
+def test_the_generic_sft_path_uses_the_same_cadence_gate(
+    audio_trainer, tmp_path, monkeypatch, eval_steps, expect_enabled
+):
+    """BiCodec and DAC fall through here, so this gate must match the one in _audio_eval_config."""
+    captured = {}
+
+    class _FakeSFTConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeSFTTrainer:
+        def __init__(self, **kwargs):
+            captured["trainer_kwargs"] = kwargs
+
+        def add_callback(self, cb):
+            pass
+
+        def train(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(tmod, "SFTConfig", _FakeSFTConfig, raising = False)
+    monkeypatch.setattr(tmod, "SFTTrainer", _FakeSFTTrainer, raising = False)
+    monkeypatch.setattr(tmod, "resolve_output_dir", lambda p: tmp_path, raising = True)
+    monkeypatch.setattr(tmod, "ensure_dir", lambda p: p, raising = True)
+    monkeypatch.setattr(tmod, "_drop_hf_stdout_callbacks", lambda trainer: None, raising = True)
+    monkeypatch.setattr(
+        tmod.UnslothTrainer, "_finalize_training", lambda self, *a, **k: None, raising = True
+    )
+    monkeypatch.setattr(
+        tmod.UnslothTrainer, "_preflight_first_batch", lambda self: None, raising = True
+    )
+
+    audio_trainer._audio_type = "bicodec"
+    audio_trainer.model = object()
+    audio_trainer.tokenizer = object()
+    audio_trainer.model_name = "unsloth/spark-tts"
+
+    rows = [{"text": "a"}, {"text": "b"}]
+    try:
+        audio_trainer._train_worker(
+            {"dataset": rows, "final_format": "audio_bicodec"},
+            eval_dataset = rows,
+            eval_steps = eval_steps,
+            batch_size = 2,
+            gradient_accumulation_steps = 1,
+            max_steps = 8,
+            warmup_steps = 0,
+            output_dir = str(tmp_path),
+        )
+    except Exception:
+        # The generic path needs a real model; the eval decision happens before that, so only
+        # the captured config matters.
+        pass
+
+    if expect_enabled:
+        assert captured.get("eval_strategy") == "steps", f"eval_steps={eval_steps} was not enabled"
+    else:
+        assert captured, "the config was never built, so this asserts nothing"
+        assert (
+            "eval_strategy" not in captured
+        ), f"eval_steps={eval_steps} reached TrainingArguments as a cadence"
