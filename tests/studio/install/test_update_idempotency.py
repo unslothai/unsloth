@@ -156,7 +156,11 @@ def install() -> pathlib.Path:
         pytest.skip("opt-in end to end; set UNSLOTH_IDEMPOTENCY_E2E=1")
     venv_python = _venv_python()
     if not venv_python.is_file():
-        pytest.skip(f"no Studio install at {venv_python}; run install.sh first")
+        # Opted in, and nothing to measure: a skip here would let every product-facing
+        # case report itself skipped while the proxy self test keeps the job green.
+        pytest.fail(
+            f"UNSLOTH_IDEMPOTENCY_E2E is set but there is no Studio install at {venv_python}"
+        )
     return venv_python
 
 
@@ -620,6 +624,10 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     try:
         run = run_update(directory, "fault-sidecar", local = True)
         assert run.rc == 0, run.log[-8000:]
+        # Judged before the cleanup below, which would otherwise restore the bytes
+        # itself and advance the mtime the rebuild assertion reads.
+        repaired = victim.is_file() and victim.read_bytes() != b""
+        assert repaired, "the update exited 0 and left the truncated sidecar file as it was"
     finally:
         if victim.is_file() and victim.read_bytes() == b"":
             victim.write_bytes(saved)
@@ -645,6 +653,9 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     try:
         run = run_update(directory, "fault-manifest", local = True)
         assert run.rc == 0, run.log[-8000:]
+        # Judged before the cleanup below, which would otherwise put the saved copy back
+        # and let the assertion after the snapshot pass on the test's own file.
+        assert manifest.is_file(), "the pass exited 0 without rewriting the manifest"
     finally:
         if not manifest.is_file():
             manifest.write_bytes(saved)
@@ -803,7 +814,10 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
     prebuilt regression regardless of whether the version check short-circuited. Only
     what genuinely depends on that short-circuit is relaxed below, each with its reason.
     """
-    directory, before = settled
+    directory, _ = settled
+    # Its own baseline, taken now: this is the last case, and the fault-injection cases
+    # before it legitimately rebuilt a sidecar and advanced a binary's mtime.
+    before = snapshot(install)
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
     # files.pythonhosted.org is the ONE payload host the version check governs: with a
@@ -830,6 +844,10 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
     )
     for marker in markers:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
+    # Each component, not the generic line once: one prebuilt re-validating while the
+    # other answers from its marker would otherwise pass here.
+    assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
+    assert run.log.count("sidecar current") == 3, run.log[-8000:]
     # One version check, and one "what is the latest release" HEAD per prebuilt. The
     # bound is what stops this quietly becoming a full release listing again. Only the
     # pypi.org one is relaxed: a real dependency pass resolves against the index, and
