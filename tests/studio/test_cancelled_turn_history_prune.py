@@ -183,7 +183,19 @@ CANCELLED = (
     '{ role: "assistant", content: [], status: { type: "incomplete" },'
     ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
 )
+# A Stop before any output yields nothing, so no marker is persisted and assistant-ui's
+# status is the only record of why the turn ended. A generation that died instead gets the
+# same empty shape under `reason: "error"`.
+STOPPED_UNMARKED = (
+    '{ role: "assistant", content: [],'
+    ' status: { type: "incomplete", reason: "cancelled" } }'
+)
+FAILED_UNMARKED = (
+    '{ role: "assistant", content: [],'
+    ' status: { type: "incomplete", reason: "error" } }'
+)
 STOPPED = "Response stopped"
+INTERRUPTED = "Response interrupted"
 
 
 def _script(history: str, include_reasoning: str = "true") -> str:
@@ -451,6 +463,31 @@ def test_the_send_path_builds_its_payload_out_of_pruned_history():
         out = _run(_send_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]", is_external))
         assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
         assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_stop_with_no_persisted_marker_still_reads_as_a_stop():
+    """The real shape: nothing is yielded before the first token, so only the status is left."""
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {STOPPED_UNMARKED}, {_user('second')}]", is_external)
+        )
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_generation_that_failed_is_not_replayed_as_a_stop():
+    """A failed turn has the same empty shape, and assistant-ui marks it ``reason: "error"``.
+
+    Its prompt was never answered either, so it stays on the wire for the same reason a
+    Stop's does. Filling it with the cancelled label would tell the model the user stopped
+    a response the backend actually dropped.
+    """
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {FAILED_UNMARKED}, {_user('second')}]", is_external)
+        )
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", INTERRUPTED, "second"]
 
 
 def test_the_send_path_still_carries_an_answered_exchange():

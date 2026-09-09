@@ -65,7 +65,16 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
     /return fillStoppedAssistantReplay\(\s*message,\s*serializeAssistantReplayMessages\(/,
   );
   assert.match(adapter, /function stoppedAssistantReplayText\(/);
-  assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? "cancelled"\)/);
+  assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? fromStatus\)/);
+});
+
+test("only a deliberate Stop is replayed as one", () => {
+  // No yield means no persisted marker, so the label comes off assistant-ui's status; a
+  // failed generation reaching the model as "Response stopped" would be a lie.
+  assert.match(
+    adapter,
+    /status\?\.type !== "incomplete" \|\| status\.reason === "cancelled"/,
+  );
 });
 
 test("a trailing abandoned turn keeps the prompt it followed", () => {

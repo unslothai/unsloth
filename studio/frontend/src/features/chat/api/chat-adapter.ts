@@ -1473,12 +1473,23 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
 }
 
 /** A Stop with no output would otherwise serialise empty, so pruneOutboundHistory would
- *  drop the user prompt once a later turn follows it (#10428 after #10445). */
+ *  drop the user prompt once a later turn follows it (#10428 after #10445).
+ *
+ *  Nothing was yielded, so there is no persisted marker and assistant-ui's `status` is the
+ *  only record of why the turn ended. Only `cancelled` is a deliberate Stop: a generation
+ *  that failed must not be replayed to the model as one. */
 function stoppedAssistantReplayText(message: RunMessage): string {
   const info = readIncompleteInfo(
     (message as { metadata?: unknown }).metadata,
   );
-  return incompleteLabel(info?.reason ?? "cancelled");
+  const status = message.status;
+  const fromStatus: IncompleteReason =
+    status?.type !== "incomplete" || status.reason === "cancelled"
+      ? "cancelled"
+      : status.reason === "length"
+        ? "length"
+        : "interrupted";
+  return incompleteLabel(info?.reason ?? fromStatus);
 }
 
 function fillStoppedAssistantReplay(
