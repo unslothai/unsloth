@@ -6474,6 +6474,13 @@ def _uv_config_index_policy() -> "dict[str, object]":
             for entry in indexes:
                 if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
                     continue
+                if entry.get("explicit") is True:
+                    # uv: an explicit index serves only packages pinned to it via [tool.uv.sources],
+                    # so it is neither the default nor an extra. With default = true it also
+                    # removes PyPI as the default, which is not modelled: doubt.
+                    if entry.get("default") is True:
+                        policy["unreadable"] = True
+                    continue
                 if entry.get("default") is True:
                     if file_default is None:
                         file_default = entry["url"]

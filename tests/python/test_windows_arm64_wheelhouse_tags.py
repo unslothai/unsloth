@@ -1013,6 +1013,9 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     PYPI_ADDED = f'[[index]]\nurl = "{PYPI}"\n'
     PYPI_EXTRA = f'extra-index-url = ["{PYPI}"]\n'
     MIRROR_EXTRA = 'extra-index-url = ["https://mirror.test/simple"]\n'
+    CORP_EXPLICIT = f'[[index]]\nurl = "{CORP}"\nexplicit = true\n'
+    PYPI_EXPLICIT = f'[[index]]\nurl = "{PYPI}"\nexplicit = true\n'
+    CORP_EXPLICIT_DEFAULT = f'[[index]]\nurl = "{CORP}"\nexplicit = true\ndefault = true\n'
 
     @pytest.mark.parametrize(
         "rel, body, reachable, why",
@@ -1052,11 +1055,21 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
             (UV, CORP_DEFAULT + "\n" + PYPI_ADDED, True, "a second [[index]], not the default"),
             (UV, NO_IDX + PYPI_EXTRA, False, "no-index disables extras too"),
             (UV, CORP_IDX + MIRROR_EXTRA, False, "an extra that is not PyPI"),
+            # uv: explicit = true serves only packages pinned via [tool.uv.sources].
+            (UV, CORP_EXPLICIT, True, "an explicit corporate index leaves PyPI the default"),
+            (UV, CORP_IDX + PYPI_EXPLICIT, False, "an explicit PyPI does not put PyPI back"),
+            (UV, CORP_EXPLICIT_DEFAULT, False, "explicit and default: PyPI removed, not modelled"),
         ],
     )
     def test_what_the_uv_files_set(self, ips, rel, body, reachable, why):
         self._write(rel, body)
         assert ips._public_pypi_is_reachable() is reachable, why
+
+    def test_an_explicit_index_is_not_an_extra(self, ips):
+        self._write(self.UV, self.CORP_EXPLICIT + self.PYPI_ADDED)
+        policy = ips._uv_config_index_policy()
+        assert policy["extra_indexes"] == [PYPI], policy
+        assert policy["unreadable"] is False
 
     def test_project_outranks_user_for_a_scalar(self, ips):
         self._write("proj/uv.toml", "no-index = false\n")

@@ -2747,6 +2747,91 @@ class TestAnUnrecordableIndexInheritsNothing:
         assert not (tmp_path / "woa" / "torch-index.txt").exists()
 
 
+class TestWheelsAnEarlierWheelhouseLeftArePruned:
+    """The managed woa\\wheels directory persists across runs, so after UNSLOTH_WOA_WHEELHOUSE
+    changed a wheel the earlier wheelhouse staged (tiktoken, say) stayed in it, the scan below
+    read it as hosted now, and UV_FIND_LINKS installed it from a source no longer configured.
+    Reconciled against the current listing; kept when the listing could not be read (offline
+    reuse). The managed directory as its own wheelhouse lists exactly what it holds."""
+
+    STALE = "tiktoken-0.9.0-cp313-cp313-win_arm64.whl"
+    HOSTED = "hf_transfer-0.1.9-cp313-cp313-win_arm64.whl"
+    PYARROW = "pyarrow-25.0.1-cp313-cp313-win_arm64.whl"
+
+    @classmethod
+    def _run(
+        cls,
+        tmp_path,
+        wheelhouse,
+        extra_stubs = (),
+    ):
+        managed = tmp_path / "woa" / "wheels"
+        managed.mkdir(parents = True)
+        (managed / cls.STALE).write_text("")
+        (managed / cls.PYARROW).write_text("")
+        script = _script(
+            substep_collector(),
+            functions(INSTALL_SRC, "Test-WoaWheelhouseIsLocal", "Test-WoaSamePath", "Join-UrlPath"),
+            "function Get-WoaAbiTag { param($PythonMinor, $FreeThreaded) 'cp313' }",
+            "function Test-WoaWheelhouseWheelIsRedundant { param($Name, $PyTag, $AbiTag) $false }",
+            "function Test-ZipArchiveReadable { param($Path) $true }",
+            "function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction) Set-Content -Path $OutFile -Value 'x' }",
+            *extra_stubs,
+            "$WoaVenvMinor = '3.13'",
+            "$script:WoaVenvFreeThreaded = $false",
+            "$script:WoaPyPIProvided = @{}",
+            "$script:WoaPyPIMatchedVersion = $null",
+            f"$script:WoaPyarrowWheelName = '{cls.PYARROW}'",
+            f"$WoaWheelDir = '{managed}'",
+            f"$script:WoaWheelhouse = '{wheelhouse}'",
+            slice_between(
+                INSTALL_SRC, "$WoaExtraStaged = 0", "        if ($WoaExtraStaged -gt 0) {"
+            ),
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        out = _ps_ok(script).stdout
+        return sorted(p.name for p in managed.glob("*.whl")), out
+
+    @requires_pwsh
+    def test_a_local_wheelhouse_prunes_what_it_no_longer_hosts(self, tmp_path):
+        house = tmp_path / "house"
+        house.mkdir()
+        (house / self.HOSTED).write_text("")
+        names, out = self._run(tmp_path, house)
+        assert names == sorted([self.HOSTED, self.PYARROW]), names
+        assert "removed 1 wheel(s) an earlier wheelhouse left" in out
+
+    @requires_pwsh
+    def test_a_url_wheelhouse_prunes_against_its_index(self, tmp_path):
+        names, out = self._run(
+            tmp_path,
+            "https://wheels.test/woa",
+            [invoke_restmethod(f"{self.HOSTED}\n{self.PYARROW}\n")],
+        )
+        assert names == sorted([self.HOSTED, self.PYARROW]), names
+
+    @requires_pwsh
+    def test_the_selected_pyarrow_is_kept_even_when_the_listing_lacks_it(self, tmp_path):
+        """UNSLOTH_PYARROW_WHEEL supplies a wheel no wheelhouse lists."""
+        names, _ = self._run(
+            tmp_path, "https://wheels.test/woa", [invoke_restmethod(f"{self.HOSTED}\n")]
+        )
+        assert self.PYARROW in names, names
+        assert self.STALE not in names, names
+
+    @requires_pwsh
+    def test_an_unreadable_listing_keeps_the_offline_copies(self, tmp_path):
+        names, out = self._run(tmp_path, "https://wheels.test/woa", [INVOKE_RESTMETHOD_OFFLINE])
+        assert self.STALE in names, "offline, the staged copies are the only source"
+        assert "earlier wheelhouse" not in out
+
+    @requires_pwsh
+    def test_the_managed_directory_as_its_own_wheelhouse_is_left_alone(self, tmp_path):
+        names, out = self._run(tmp_path, tmp_path / "woa" / "wheels")
+        assert self.STALE in names, "self-sourced: every wheel there is the wheelhouse"
+        assert "earlier wheelhouse" not in out
+
+
 class TestALocalWheelIsOpenedBeforeItCounts:
     """The wheelhouse mirror trusted a filename; the resolver then trusted the mirror.
     _find_links_wheel_versions reads names, so a truncated wheel copied into the managed directory
@@ -4998,6 +5083,25 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
 
     @requires_pwsh
     @pytest.mark.parametrize(
+        "body, expected, why",
+        [
+            (
+                f'[[index]]\nurl = "{CORP_INDEX}"\nexplicit = true\n',
+                "--extra-index-url|https://pypi.org/simple",
+                "an explicit index is not handed to the trio resolve; PyPI stays the default",
+            ),
+            (
+                f'[[index]]\nurl = "{CORP_INDEX}"\nexplicit = true\ndefault = true\n',
+                "",
+                "explicit and default is doubt, and doubt names nothing",
+            ),
+        ],
+    )
+    def test_an_explicit_index_is_never_an_extra_index_url(self, tmp_path, body, expected, why):
+        assert self._args(tmp_path, {"proj/uv.toml": body}, {}) == expected, why
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
         "files, env, expected, why",
         [
             ({}, {}, PYPI, "nothing configured: public PyPI"),
@@ -5599,19 +5703,89 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
         assert "if ($_woaDriver -and $_woaTorchVersion -match '\\+cu(\\d+)')" in body
 
 
+class TestAnExplicitBlockIndexIsNotAGeneralExtra:
+    """The block form `[[index]]` read url and default only, so `explicit = true` was flushed as a
+    general extra and Get-WoaDependencyIndexArgs handed the trio resolve an --extra-index-url
+    the user had restricted to explicitly pinned packages. Both readers, both scripts."""
+
+    A = "https://a.corp.test/simple"
+    B = "https://b.corp.test/simple"
+
+    @staticmethod
+    def _read(src, tmp_path, body, top):
+        cfg = tmp_path / ("pyproject.toml" if top else "uv.toml")
+        cfg.write_text(body, encoding = "utf-8")
+        script = _script(
+            functions(
+                src,
+                "Remove-WoaTomlComment",
+                "Split-WoaTomlKey",
+                "Read-WoaUvInlineIndexArray",
+                "Read-WoaUvTomlIndexKeys",
+            ),
+            f"$p = Read-WoaUvTomlIndexKeys -Path '{cfg}' -Top '{top}'",
+            "if ($null -eq $p) { Write-Output 'NULL' } else { "
+            "Write-Output (([string]$p.DefaultIndex) + '|' + (@($p.ExtraIndexes) -join ',')) }",
+        )
+        return _ps_last(script)
+
+    @requires_pwsh
+    @pytest.mark.parametrize("src", [INSTALL_SRC, SETUP_SRC], ids = ["install.ps1", "setup.ps1"])
+    @pytest.mark.parametrize(
+        "body, top, expected, why",
+        [
+            (f'[[index]]\nurl = "{A}"\nexplicit = true\n', "", "|", "explicit alone: nothing"),
+            (
+                f'[[index]]\nurl = "{A}"\nexplicit = true\n\n[[index]]\nurl = "{B}"\n',
+                "",
+                f"|{B}",
+                "the other entry is still an extra",
+            ),
+            (
+                f'[[index]]\nurl = "{A}"\ndefault = true\n\n[[index]]\nurl = "{B}"\nexplicit = true\n',
+                "",
+                f"{A}|",
+                "an explicit entry beside the default",
+            ),
+            (
+                f'[[index]]\nurl = "{A}"\nexplicit = false\n',
+                "",
+                f"|{A}",
+                "explicit = false is an extra",
+            ),
+            (
+                f'[[tool.uv.index]]\nurl = "{A}"\nexplicit = true\n',
+                "tool.uv",
+                "|",
+                "pyproject [[tool.uv.index]]",
+            ),
+            (
+                f'[[index]]\nurl = "{A}"\nexplicit = true\ndefault = true\n',
+                "",
+                "NULL",
+                "explicit AND default removes PyPI as the default: not modelled, so doubt",
+            ),
+        ],
+    )
+    def test_the_block_form(self, tmp_path, src, body, top, expected, why):
+        assert self._read(src, tmp_path, body, top) == expected, why
+
+
 class TestTheInlineIndexSpellingIsRead:
     """`index = [{ url = "...", default = true }]` is valid, documented uv config, and the parser
     refused it outright with `return $null`. Every downstream disagreement about Unreadable was a
     symptom: a corporate mirror written this way read as "cannot know", and
     Get-WoaDependencyIndexArgs then substituted public PyPI for it."""
 
-    INLINE_FUNCS = functions(
-        INSTALL_SRC,
-        "Remove-WoaTomlComment",
-        "Split-WoaTomlKey",
-        "Read-WoaUvInlineIndexArray",
-        "Read-WoaUvTomlIndexKeys",
-    )
+    @staticmethod
+    def _funcs(src):
+        return functions(
+            src,
+            "Remove-WoaTomlComment",
+            "Split-WoaTomlKey",
+            "Read-WoaUvInlineIndexArray",
+            "Read-WoaUvTomlIndexKeys",
+        )
 
     @pytest.mark.parametrize(
         "value, want_default, want_extras",
@@ -5629,14 +5803,24 @@ class TestTheInlineIndexSpellingIsRead:
                 [],
             ),
             ("[]", None, []),
+            # uv: explicit = true serves only packages pinned via [tool.uv.sources], so it is
+            # neither the default nor an extra for the trio's dependencies.
+            ('[{ url = "https://a/simple", explicit = true }]', None, []),
+            (
+                '[{ url = "https://a/simple", explicit = true }, { url = "https://b/simple" }]',
+                None,
+                ["https://b/simple"],
+            ),
+            ('[{ url = "https://a/simple", explicit = false }]', None, ["https://a/simple"]),
         ],
     )
+    @pytest.mark.parametrize("src", [INSTALL_SRC, SETUP_SRC], ids = ["install.ps1", "setup.ps1"])
     @requires_pwsh
-    def test_a_flat_inline_array_is_read(self, tmp_path, value, want_default, want_extras):
+    def test_a_flat_inline_array_is_read(self, tmp_path, src, value, want_default, want_extras):
         cfg = tmp_path / "uv.toml"
         cfg.write_text(f"index = {value}\n", encoding = "utf-8")
         script = _script(
-            self.INLINE_FUNCS,
+            self._funcs(src),
             f"$p = Read-WoaUvTomlIndexKeys -Path '{cfg}' -Top ''",
             "if ($null -eq $p) { Write-Output 'NULL' } else { "
             "Write-Output (([string]$p.DefaultIndex) + '|' + (@($p.ExtraIndexes) -join ',')) }",
@@ -5647,7 +5831,9 @@ class TestTheInlineIndexSpellingIsRead:
         "value",
         [
             # Ambiguity that must stay Unreadable rather than be guessed at.
-            '[{ url = "https://a/simple", explicit = true }]',  # serves only pinned packages
+            # explicit AND default also removes PyPI as the default (uv docs): not modelled.
+            '[{ url = "https://a/simple", explicit = true, default = true }]',
+            '[{ url = "https://a/simple", explicit = "yes" }]',  # not a bool
             "[{ default = true }]",  # no url at all
             '[{ url = "https://a/simple", default = "yes" }]',  # not a bool
             '[{ url = { host = "a" } }]',  # nested table
@@ -5655,12 +5841,13 @@ class TestTheInlineIndexSpellingIsRead:
             '[{ url = "https://a/simple" }',  # unbalanced / continues next line
         ],
     )
+    @pytest.mark.parametrize("src", [INSTALL_SRC, SETUP_SRC], ids = ["install.ps1", "setup.ps1"])
     @requires_pwsh
-    def test_anything_ambiguous_stays_unreadable(self, tmp_path, value):
+    def test_anything_ambiguous_stays_unreadable(self, tmp_path, src, value):
         cfg = tmp_path / "uv.toml"
         cfg.write_text(f"index = {value}\n", encoding = "utf-8")
         script = _script(
-            self.INLINE_FUNCS,
+            self._funcs(src),
             f"$p = Read-WoaUvTomlIndexKeys -Path '{cfg}' -Top ''",
             "Write-Output $(if ($null -eq $p) { 'NULL' } else { 'READ' })",
         )

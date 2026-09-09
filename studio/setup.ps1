@@ -4320,7 +4320,7 @@ function Read-WoaUvInlineIndexArray {
     if ($depth -ne 0 -or $inD -or $inS -or -not $groups.Count) { return $null }
     foreach ($g in $groups) {
         if ($g.IndexOf($lb) -ge 0 -or $g.IndexOf('[') -ge 0) { return $null }
-        $url = $null; $isDefault = $false
+        $url = $null; $isDefault = $false; $isExplicit = $false
         foreach ($pair in ($g -split ',')) {
             $pair = $pair.Trim()
             if (-not $pair) { continue }
@@ -4332,10 +4332,12 @@ function Read-WoaUvInlineIndexArray {
             $bool = if ($raw -match '^(true|false)$') { $raw -eq 'true' } else { $null }
             if ($k -eq 'url') { if (-not $str) { return $null }; $url = $str }
             elseif ($k -eq 'default') { if ($null -eq $bool) { return $null }; $isDefault = $bool }
-            # An explicit index serves only packages pinned to it, so it is neither the default nor a general extra: not modelled, so it is doubt, so $null.
-            elseif ($k -eq 'explicit') { if ($null -eq $bool -or $bool) { return $null } }
+            # uv: an explicit index serves only packages pinned to it via [tool.uv.sources], so it is neither the default nor an extra.
+            elseif ($k -eq 'explicit') { if ($null -eq $bool) { return $null }; $isExplicit = $bool }
         }
         if (-not $url) { return $null }
+        # explicit AND default also removes PyPI as the default (uv docs): not modelled, so doubt.
+        if ($isExplicit) { if ($isDefault) { return $null }; continue }
         if ($isDefault) { if (-not $result.DefaultUrl) { $result.DefaultUrl = $url } }
         else { $result.Extras += $url }
     }
@@ -4350,12 +4352,14 @@ function Read-WoaUvTomlIndexKeys {
     $pipScope = @{ NoIndex = $null; IndexUrl = $null; Extras = @() }
     $section = ""
     # A hashtable, because an assignment inside the $flush script block would be local to it.
-    $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $entry = @{ DefaultUrl = $null; Extras = @() }
+    $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $idxExplicit = $false; $entry = @{ DefaultUrl = $null; Extras = @(); Doubt = $false }
     $indexTable = if ($Top) { "$Top.index" } else { "index" }
     $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
     $flush = {
         if ($inIndex -and $idxUrl) {
-            if ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
+            # An explicit index serves only pinned packages: skipped; explicit AND default is not modelled, so doubt.
+            if ($idxExplicit) { if ($idxDefault) { $entry.Doubt = $true } }
+            elseif ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
             else { $entry.Extras += $idxUrl }
         }
     }
@@ -4364,7 +4368,7 @@ function Read-WoaUvTomlIndexKeys {
         if (-not $line) { continue }
         if ($line -match '^\[\[(.+?)\]\]$') {
             & $flush
-            $section = $Matches[1].Trim(); $inIndex = ($section -eq $indexTable); $idxUrl = $null; $idxDefault = $false
+            $section = $Matches[1].Trim(); $inIndex = ($section -eq $indexTable); $idxUrl = $null; $idxDefault = $false; $idxExplicit = $false
             continue
         }
         if ($line -match '^\[(.+?)\]$') { & $flush; $section = $Matches[1].Trim(); $inIndex = $false; continue }
@@ -4390,6 +4394,7 @@ function Read-WoaUvTomlIndexKeys {
             if (-not $prefix) {
                 if ($key -eq 'url' -and $str) { $idxUrl = $str }
                 if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
+                if ($key -eq 'explicit' -and $null -ne $bool) { $idxExplicit = $bool }
             }
             continue
         }
@@ -4413,6 +4418,7 @@ function Read-WoaUvTomlIndexKeys {
         }
     }
     & $flush
+    if ($entry.Doubt) { return $null }
     $noIndex = if ($null -ne $pipScope.NoIndex) { $pipScope.NoIndex } else { $topScope.NoIndex }
     $defaultIndex = if ($entry.DefaultUrl) { $entry.DefaultUrl } elseif ($pipScope.IndexUrl) { $pipScope.IndexUrl } else { $topScope.IndexUrl }
     $extras = @($entry.Extras) + @($pipScope.Extras) + @($topScope.Extras)
