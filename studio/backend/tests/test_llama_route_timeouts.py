@@ -14,6 +14,11 @@ sys.path.insert(0, _backend)
 import routes.inference as inf_mod  # noqa: E402
 
 
+class _Request:
+    async def is_disconnected(self):
+        return False
+
+
 def test_non_streaming_generation_timeout_has_read_deadline():
     timeout = inf_mod._llama_non_streaming_generation_timeout()
     assert timeout.read == inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -134,10 +139,6 @@ def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         seen_read_timeouts = []
 
-        class _Request:
-            async def is_disconnected(self):
-                return False
-
         class _NoItem:
             async def __anext__(self):
                 seen_read_timeouts.append(response.request.extensions["timeout"]["read"])
@@ -214,10 +215,6 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
         values = iter([100.0, 2.0])
         seen = []
 
-        class _Request:
-            async def is_disconnected(self):
-                return False
-
         class _Items:
             def __init__(self):
                 self.count = 0
@@ -257,10 +254,6 @@ def test_stream_stall_timeout_disabled_clears_read_timeout():
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         seen = []
-
-        class _Request:
-            async def is_disconnected(self):
-                return False
 
         class _Items:
             def __init__(self):

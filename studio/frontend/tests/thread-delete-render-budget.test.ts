@@ -12,14 +12,11 @@
 // delete is linear in thread length again.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
-const thread = source("components/assistant-ui/thread.tsx");
+const thread = readSrc("components/assistant-ui/thread.tsx");
 
 function block(start: string): string {
   const [, rest] = thread.split(start, 2);

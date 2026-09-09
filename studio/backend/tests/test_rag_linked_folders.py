@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +58,16 @@ def _row(sql: str, params = ()) -> dict | None:
 
 def _mapping(folder: dict) -> dict | None:
     return _row("SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],))
+
+
+def _identity_mismatch(loaded: tuple, expected: tuple, stored: tuple) -> str:
+    """Name the half that diverged: a bare tuple comparison hides which id is wrong."""
+    parts = [
+        f"{label}: loaded {got!r} != expected {want!r} (column held {raw!r})"
+        for label, got, want, raw in zip(("device", "inode"), loaded, expected, stored)
+        if got != want
+    ]
+    return "; ".join(parts) or f"identity {loaded!r} != {expected!r}"
 
 
 class _CommitFails:
@@ -722,9 +733,13 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     source_stat = source.stat()
     assert reauthorized.is_set()
     assert refreshed["id"] == folder["id"]
-    assert (refreshed["root_device"], refreshed["root_inode"]) == (
-        source_stat.st_dev,
-        source_stat.st_ino,
+    # Read back through the loader: an identity above SQLite's signed maximum is stored as
+    # a hex string, which is the ordinary case for a Windows device id.
+    loaded = folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"])
+    assert loaded == (source_stat.st_dev, source_stat.st_ino), _identity_mismatch(
+        loaded,
+        (source_stat.st_dev, source_stat.st_ino),
+        (refreshed["root_device"], refreshed["root_inode"]),
     )
     with _connection() as conn:
         mapping_after = dict(
@@ -835,9 +850,65 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
 
     assert _run(folder["id"])["status"] == "completed"
     row = _mapping(folder)
-    assert folder_sync._load_identity(row["device"], row["inode"]) == identity
+    loaded = folder_sync._load_identity(row["device"], row["inode"])
+    assert loaded == identity, _identity_mismatch(loaded, identity, (row["device"], row["inode"]))
     # The same identity must still compare equal, so nothing re-embeds every sync.
     assert _run(folder["id"])["changed"] == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, 1, (1 << 63) - 2, (1 << 63) - 1, 1 << 63, (1 << 63) + 1, (1 << 64) - 1, 1 << 127],
+    ids = ["zero", "one", "below-max", "at-max", "at-2-63", "above-2-63", "uint64-max", "refs-128"],
+)
+def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
+    """os.stat ids are unsigned, SQLite INTEGER is signed, and the encoding straddles that edge."""
+    stored = folder_sync._store_identity((value, value))
+    with closing(sqlite3.connect(":memory:")) as conn:
+        # Same declared affinity as linked_folders and linked_folder_files.
+        conn.execute("CREATE TABLE ids(device INTEGER, inode INTEGER)")
+        conn.execute("INSERT INTO ids VALUES(?,?)", stored)
+        read = tuple(conn.execute("SELECT device, inode FROM ids").fetchone())
+
+    loaded = folder_sync._load_identity(*read)
+    assert loaded == (value, value), _identity_mismatch(loaded, (value, value), read)
+    # Anything SQLite can hold stays an integer, so rows written by older builds still load.
+    fits = value <= folder_sync._SQLITE_INTEGER_MAX
+    assert isinstance(read[0], int) is fits, (
+        f"{value} was stored as {read[0]!r}; a value that {'fits' if fits else 'overflows'} "
+        f"SQLite's signed range must be written as {'an integer' if fits else 'text'}"
+    )
+
+
+@requires_sqlite_vec
+def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A Windows volume serial fills all 64 bits, so half of them overflow SQLite INTEGER.
+
+    The reauthorize path writes root_device with its own UPDATE, so it needs its own case: a
+    real st_dev on this host is far too small to reach the encoding at all.
+    """
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("kept across the remount", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    identity = (0xAC8C2FEF8C2FB32E, 1 << 127)
+
+    monkeypatch.setattr(folder_sync, "_root_identity", lambda path: identity)
+
+    refreshed = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "scope-1",
+        path = str(source),
+    )
+
+    assert refreshed["id"] == folder["id"]
+    stored = (refreshed["root_device"], refreshed["root_inode"])
+    loaded = folder_sync._load_identity(*stored)
+    assert loaded == identity, _identity_mismatch(loaded, identity, stored)
+    # Reconciliation reloads the row as the identity to expect, so an undecoded column would
+    # fail the whole sync rather than round-trip.
+    assert _run(folder["id"])["status"] == "completed"
 
 
 def test_validate_folder_rejects_symlink_root(rag_home):
@@ -1815,7 +1886,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
         nonlocal retired
         saved_path.write_text("saved", encoding = "utf-8")
         retired = True
-        return str(saved_path), "race.txt"
+        return str(saved_path), "race.txt", "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
@@ -1832,7 +1903,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_project_document(project_id, subject = "test"))
+        rag_routes.upload_project_document(project_id, subject = "test")
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert not saved_path.exists()
@@ -1853,7 +1924,7 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
         nonlocal owner_exists
         saved_path.write_text("saved", encoding = "utf-8")
         owner_exists = False
-        return str(saved_path), saved_path.name
+        return str(saved_path), saved_path.name, "0" * 64
 
     monkeypatch.setattr(rag_routes.rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(rag_routes.folder_sync, "scope_retired", lambda scope: False)
@@ -1869,17 +1940,17 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
             "get_kb",
             lambda conn, value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_kb_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_kb_document, owner_id, subject = "test")
     else:
         monkeypatch.setattr(
             studio_db,
             "get_chat_project",
             lambda value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_project_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_project_document, owner_id, subject = "test")
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(upload)
+        upload()
 
     assert getattr(exc_info.value, "status_code", None) == 404
     assert not saved_path.exists()
@@ -2113,7 +2184,7 @@ def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_kb_document("knowledge", subject = "test"))
+        rag_routes.upload_kb_document("knowledge", subject = "test")
     assert getattr(exc_info.value, "status_code", None) == 409
 
 
