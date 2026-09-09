@@ -85,6 +85,7 @@ function mountForm(
         effects.push(effect);
       },
     },
+    "@/components/app-readiness": { useAppShellReadySignal: () => () => {} },
     "@/lib/api-base": base,
     "@/lib/account-transition": {
       normalizeAccountUsername: transition.normalizeAccountUsername,
