@@ -756,14 +756,11 @@ TOPO_BRIDGED_4X = (
 )
 
 
-
 def test_bridged_pair_keeps_p2p_on_a_partially_bridged_box(monkeypatch):
     """A genuinely NVLinked pair on a partially bridged box keeps P2P: gpu_indices
     are nvidia-smi indices already, so the matrix is read directly and the pair
     that is checked is the pair that was selected."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4))
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
     assert LlamaCppBackend._p2p_veto_reason([2, 3]) is None
@@ -780,9 +777,7 @@ def test_selection_is_not_remapped_out_of_the_nvidia_smi_index_space(monkeypatch
     under the default FASTEST_FIRST ordering on a bridged box, turn a
     PCIe-crossing selection into an NVLinked-looking one and enable the flag this
     gate exists to withhold. Pinned for every pair on the fixture."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 4))
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     for pair in ([0, 1], [2, 3]):
         assert LlamaCppBackend._p2p_veto_reason(pair) is None, pair
@@ -844,7 +839,8 @@ def _capture_warnings(monkeypatch):
     seen: list[str] = []
     real = _mod.logger.warning
     monkeypatch.setattr(
-        _mod.logger, "warning",
+        _mod.logger,
+        "warning",
         lambda msg, *a, **k: (seen.append(str(msg)), real(msg, *a, **k))[0],
     )
     return seen
@@ -866,9 +862,7 @@ def test_no_pcie_warning_when_the_user_opts_in_on_a_verified_fabric(monkeypatch)
 
 def test_pcie_warning_still_fires_on_an_unverified_fabric(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     seen = _capture_warnings(monkeypatch)
     env = {"GGML_CUDA_P2P": "1"}
