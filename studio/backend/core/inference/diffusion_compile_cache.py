@@ -117,7 +117,15 @@ def legacy_cache_root() -> Optional[Path]:
     if os.environ.get(_ENV_DIR) or _portable_mode():
         return None
     # Equal when storage_roots is unavailable and the default IS the legacy root.
-    if _LEGACY_ROOT == _default_root() or not _LEGACY_ROOT.exists():
+    if _LEGACY_ROOT == _default_root():
+        return None
+    # This root is the HOST's home, not the install, so it is the one that may be on a mount the
+    # new cache does not depend on. Path.exists raises for EACCES and EIO before 3.14, and an
+    # optional migration source we cannot inspect is a miss, never a failed generation.
+    try:
+        if not _LEGACY_ROOT.exists():
+            return None
+    except OSError:
         return None
     return _LEGACY_ROOT
 
@@ -317,7 +325,11 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         return False
     ldir = root / ctx.key
     bundle, manifest_path = ldir / _BUNDLE_NAME, ldir / _MANIFEST_NAME
-    if not (bundle.exists() and manifest_path.exists()):
+    try:
+        if not (bundle.exists() and manifest_path.exists()):
+            return False
+    except OSError:
+        # Same reason as legacy_cache_root: a pair we cannot even stat is a miss.
         return False
     if not _try_load(ctx, logger, bundle = bundle, manifest_path = manifest_path):
         return False

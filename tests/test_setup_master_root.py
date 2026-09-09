@@ -36,7 +36,7 @@ def _runtime_parent(env: dict[str, str]) -> tuple[str, str]:
     words and changes the order still fails here.
     """
     src = SETUP_SH.read_text(encoding = "utf-8")
-    master = _slice(src, "_MASTER_ROOT=\"\"\n", "# Directory-local evidence")
+    master = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
     node = _slice(src, "# Mirror the llama.cpp UNSLOTH_HOME derivation", "NODE_DIR=")
     llama = _slice(src, "if [ -n \"$STAGE_ROOT\" ]; then\n    UNSLOTH_HOME=", "LLAMA_CPP_DIR=")
     script = "\n".join((
@@ -140,3 +140,77 @@ def test_setup_ps1_derives_both_runtimes_from_the_master_root():
     node = _slice(src, "    $_masterRoot = Get-MasterRootOverride", "    $NodeDir = Join-Path")
     assert "$NodeParent = $_masterRoot" in node
     assert node.index("$StageRoot") < node.index("$NodeParent = $_masterRoot")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_padded_master_root_names_the_same_directory(tmp_path):
+    """storage_roots.unsloth_home() and the CLI both .strip(), so setup has to as well: an
+    unstripped value installs under a directory whose name carries the whitespace."""
+    root = tmp_path / "portable"
+    (root / "studio").mkdir(parents = True)
+    env = _env(
+        tmp_path / "home",
+        UNSLOTH_HOME = f"  {root}  ",
+        STUDIO_HOME = str(root / "studio"),
+        _STUDIO_HOME_IS_CUSTOM = "true",
+    )
+    node_parent, llama_parent = _runtime_parent(env)
+    assert Path(node_parent) == root
+    assert Path(llama_parent) == root
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_blank_master_root_counts_as_unset(tmp_path):
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    node_parent, llama_parent = _runtime_parent(_env(home, UNSLOTH_HOME = "   "))
+    assert Path(node_parent) == home / ".unsloth"
+    assert Path(llama_parent) == home / ".unsloth"
+
+
+BUILD_WHISPER = REPO_ROOT / "scripts" / "build_whisper_cpp.sh"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
+    """setup.sh runs this with UNSLOTH_STUDIO_HOME=<root>/studio still inherited, so a builder
+    that preferred it would install a level below _managed_whisper_cpp_dir()."""
+    root = tmp_path / "portable"
+    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    block = _slice(src, "STUDIO_HOME=\"${UNSLOTH_HOME", "STUDIO_OWNED_MARKER=")
+    script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env = {
+            "HOME": str(tmp_path / "home"),
+            "PATH": "/usr/bin:/bin",
+            "UNSLOTH_HOME": str(root),
+            "UNSLOTH_STUDIO_HOME": str(root / "studio"),
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == root / "whisper.cpp"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
+    studio = tmp_path / "elsewhere" / "studio"
+    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    block = _slice(src, "STUDIO_HOME=\"${UNSLOTH_HOME", "STUDIO_OWNED_MARKER=")
+    script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env = {
+            "HOME": str(tmp_path / "home"),
+            "PATH": "/usr/bin:/bin",
+            "UNSLOTH_STUDIO_HOME": str(studio),
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == studio / "whisper.cpp"

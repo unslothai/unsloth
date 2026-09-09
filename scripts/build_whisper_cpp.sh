@@ -3,6 +3,7 @@
 #
 # Installs into the managed Unsloth home so the backend's binary discovery
 # (core/inference/stt_ggml_sidecar.py::find_whisper_server_binary) picks it up:
+#   <UNSLOTH_HOME>/whisper.cpp/build/bin/whisper-server          (master root)
 #   <UNSLOTH_STUDIO_HOME>/whisper.cpp/build/bin/whisper-server   (custom home)
 #   ~/.unsloth/whisper.cpp/build/bin/whisper-server              (default)
 #
@@ -19,7 +20,10 @@ set -eu
 WHISPER_CPP_SOURCE="${WHISPER_CPP_SOURCE:-https://github.com/ggml-org/whisper.cpp}"
 WHISPER_CPP_TAG="${WHISPER_CPP_TAG:-v1.9.1}"
 
-STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-${UNSLOTH_HOME:-}}}"
+# UNSLOTH_HOME first: whisper.cpp is a SIBLING of studio/ under the master root, and the CLI
+# exports UNSLOTH_STUDIO_HOME=<root>/studio beside it, so taking that one would install a level
+# below where stt_ggml_sidecar._managed_whisper_cpp_dir() looks.
+STUDIO_HOME="${UNSLOTH_HOME:-${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}}"
 CUSTOM_STUDIO_HOME=false
 if [ -n "$STUDIO_HOME" ]; then
     CUSTOM_STUDIO_HOME=true

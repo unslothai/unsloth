@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 import pytest
 
@@ -444,3 +445,43 @@ def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
 
     assert cc.cache_root() == tmp_path / "chosen"
     assert cc.legacy_cache_root() is None
+
+
+def test_an_unreadable_legacy_root_is_a_miss_not_a_failure(monkeypatch, tmp_path):
+    # The legacy root is the HOST's home, so it can be on a mount the new cache does not need.
+    # Path.exists raises for EACCES and EIO before 3.14, and begin() does not catch around here.
+    monkeypatch.delenv(cc._ENV_DIR, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
+
+    def _raise(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+
+    assert cc.legacy_cache_root() is None
+
+
+def test_an_unreadable_legacy_bundle_pair_is_a_miss_not_a_failure(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy" / "diffusion_compile_cache"
+    legacy.mkdir(parents = True)
+    monkeypatch.setattr(cc, "legacy_cache_root", lambda: legacy)
+    ctx = cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "new" / "abc",
+        bundle = tmp_path / "new" / "abc" / "cache.bin",
+        manifest_path = tmp_path / "new" / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+
+    def _raise(self, *a, **k):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Path, "exists", _raise)
+
+    assert cc._load_from_legacy(ctx, None) is False

@@ -1011,16 +1011,20 @@ fi
 # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit BESIDE
 # studio/ under it, so installing them under $STUDIO_HOME would put them one level below where
 # every runtime resolver looks. Captured here because section 7 assigns over UNSLOTH_HOME.
-_MASTER_ROOT=""
-if [ -n "${UNSLOTH_HOME:-}" ]; then
-    _MASTER_ROOT="$UNSLOTH_HOME"
+# Stripped before anything else, as _studio_override is above: " " counts as unset and
+# " /opt/uns " names /opt/uns, which is what the Python resolver and the CLI both see.
+_MASTER_ROOT=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -n "$_MASTER_ROOT" ]; then
     case "$_MASTER_ROOT" in
         "~") _MASTER_ROOT="$HOME" ;;
-        "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#\~/}" ;;
+        "~/"*) _MASTER_ROOT="$HOME/${_MASTER_ROOT#'~/'}" ;;
     esac
     if [ -d "$_MASTER_ROOT" ]; then
-        _MASTER_ROOT=$(CDPATH= cd -P -- "$_MASTER_ROOT" 2>/dev/null && pwd -P) \
-            || _MASTER_ROOT="$UNSLOTH_HOME"
+        # Keep the expanded value when it cannot be canonicalized, as the Python resolver does:
+        # dropping it here would send the runtimes to a root nothing else agrees on.
+        _master_root_canon=$(CDPATH= cd -P -- "$_MASTER_ROOT" 2>/dev/null && pwd -P) || _master_root_canon=""
+        [ -z "$_master_root_canon" ] || _MASTER_ROOT="$_master_root_canon"
+        unset _master_root_canon
     fi
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
