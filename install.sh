@@ -2719,7 +2719,7 @@ _PREV_TORCH_VER=""
 
 # Replace occupied venvs even when bin/python is missing or dangling, as in the repair loop reported in #9479.
 if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
-    # why: matching guard to the .venv branch below -- in env-mode $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels. Accept the in-VENV ownership marker so partial-install retries are not blocked. Sentinels must be regular files: -f follows symlinks to files (the legitimate ln -s shim shape) but rejects directories and broken or dir-targeted symlinks. The root marker goes through _claim_sentinel, not -f: the claim refuses to write one through a link, so reading one through a link here would undo that decision. The older sentinels keep -f, since bin/unsloth is legitimately a symlink into the venv.
+    # why: matching guard to the .venv branch below -- in env-mode $STUDIO_HOME is user-chosen, so refuse to nuke an existing unsloth_studio that lacks Unsloth sentinels; accept the in-VENV marker so partial-install retries are not blocked. The root marker goes through _claim_sentinel, not -f: the claim refuses to write one through a link, so reading one through a link here would undo that. The older sentinels keep -f, since bin/unsloth is legitimately a symlink into the venv.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
        && ! _claim_sentinel "$STUDIO_HOME/.unsloth-studio-owned" \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
