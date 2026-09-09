@@ -5986,11 +5986,9 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
 
-    # Created once the delete has looked and never removed again. A list popped per call says
-    # the project comes back and then vanishes, which no registry does, and it silently
-    # re-points the scenario at whichever probe happens to be second: adding one ownership
-    # read anywhere upstream moved the recreation onto a check that had already passed, and
-    # the workspace was deleted with the new project's files in it.
+    # Created once the delete has looked, and never removed again. A list popped per call has
+    # it come back and then vanish, which no registry does, and points the scenario at whichever
+    # probe is second: one added ownership read upstream moved it past every surviving check.
     looked = {"once": False}
 
     def created_after_the_first_look(pid):
@@ -6019,9 +6017,9 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
 def test_a_project_created_inside_the_record_write_itself_keeps_its_files(tmp_path, monkeypatch):
     """The same rescue, pinned to the window the name describes rather than to a call count.
 
-    The test above is satisfied by the `recreated` probe, which runs well before the record
-    write, so it never reached the last check standing next to the delete. Here the project
-    appears during `record_orphaned_project` itself, so only that check can save the files.
+    The test above is satisfied by the `recreated` probe, well before the record write, so it
+    never reached the last check. Here the project appears during `record_orphaned_project`
+    itself, so only that check can save the files.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
