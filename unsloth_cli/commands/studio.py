@@ -148,6 +148,8 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
+# Prefix for the per-name cached raw CLI API key, e.g. ".cli_api_key_cli_<digest>".
+CLI_API_KEY_FILE_PREFIX = ".cli_api_key_"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
@@ -930,10 +932,20 @@ def _wait_for_server(
 
 
 def _cli_api_key_secret_path(name: str) -> Path:
+    """Cache path for the raw API key named *name*.
+
+    The readable stem is lossy on purpose (it only exists so a human can tell the
+    files apart), so the full name is pinned by a digest suffix. Without it,
+    `foo/bar` and `foo?bar` share a file, as do names agreeing on their first 64
+    characters and -- on case-insensitive filesystems (APFS, NTFS) -- `cli` and
+    `CLI`. Sharing a file means a run asking for one label silently reuses the
+    credential minted under another, which also couples their revocation.
+    """
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name).strip("_")
     if not safe:
         safe = "cli"
-    return STUDIO_HOME / "auth" / f".cli_api_key_{safe[:64]}"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return STUDIO_HOME / "auth" / f"{CLI_API_KEY_FILE_PREFIX}{safe[:64]}_{digest}"
 
 
 def _read_cli_api_key_secret(name: str) -> str:
@@ -959,7 +971,22 @@ def _create_api_key_inprocess(name: str) -> str:
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,
     )
-    _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
+    # Best-effort: create_api_key has already COMMITTED a usable key, and this
+    # call site (step 4 of `run`) sits under `except BaseException:
+    # _graceful_shutdown(...); raise`. Letting a cache write abort the launch
+    # would take down a healthy server over a file, and every retry would commit
+    # another key -- the pile-up this cache exists to stop. Reachable: the cache
+    # path is a directory, a read-only mount, ENOSPC, or a Windows AV/indexer
+    # holding a handle across os.replace. Worst case is a re-mint next launch,
+    # matching the same trade-off in start.py's _write_private_json cache.
+    try:
+        _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
+    except OSError as exc:
+        typer.echo(
+            f"Warning: could not cache the {name} API key ({exc}); this launch is "
+            "unaffected, but the next one will create another key.",
+            err = True,
+        )
     return raw_key
 
 
@@ -1384,7 +1411,19 @@ def _cli_update_password(
         )
         if revoke_api_keys:
             conn.execute("DELETE FROM api_keys")
-    for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
+    stale_files = [BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE]
+    if revoke_api_keys:
+        # The rows are gone, so every cached raw CLI key is now plaintext for a
+        # credential that no longer exists. Only on a reset: an ordinary password
+        # change keeps the api_keys rows, so its cached keys stay valid. Glob
+        # because --api-key-name makes the filename user-chosen.
+        try:
+            stale_files += sorted(
+                p.name for p in (STUDIO_HOME / "auth").glob(f"{CLI_API_KEY_FILE_PREFIX}*")
+            )
+        except OSError:
+            pass
+    for stale in stale_files:
         stale_path = STUDIO_HOME / "auth" / stale
         try:
             stale_path.unlink(missing_ok = True)
