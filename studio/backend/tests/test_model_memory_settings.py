@@ -2328,7 +2328,10 @@ class TestFitOffRetryClearsPolicyActivity:
         # later mmap shadows changes nothing the child can observe, so it does not
         # count as activity either. The non-managed half is what the retry reuses.
         flat = "".join(src.split())
-        assert "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras" in flat
+        assert (
+            "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras"
+            in flat
+        )
         assert "self._memory_policy_extras_touched=_mem_policy_touched_extras" in flat
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1
