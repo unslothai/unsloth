@@ -1262,6 +1262,7 @@ export const hi = {
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
       commandBuilder: "कमांड बिल्डर",
+      commandShell: "सभी कमांड के लिए शेल",
       agent: "कोडिंग एजेंट",
       model: "मॉडल",
       searchModels: "GGUF मॉडल खोजें...",

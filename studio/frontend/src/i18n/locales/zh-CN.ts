@@ -1231,6 +1231,7 @@ export const zhCN = {
       copy: "复制",
       copied: "已复制",
       commandBuilder: "命令生成器",
+      commandShell: "所有命令使用的 Shell",
       agent: "编程智能体",
       model: "模型",
       searchModels: "搜索 GGUF 模型...",
