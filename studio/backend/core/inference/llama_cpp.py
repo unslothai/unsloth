@@ -31610,10 +31610,18 @@ class LlamaCppBackend:
 
                                 # One chunk is about one token, so this is the live n_i the
                                 # preemptor needs. Batched because the sweep takes a lock and
-                                # this runs per token; the slack is well under the buffer.
-                                _tokens_this_stream += 1
+                                # this runs per token; the slack is well under the buffer. Only a
+                                # frame carrying output, as on the plain path.
+                                _output_frame = bool(
+                                    delta.get("content")
+                                    or delta.get("reasoning_content")
+                                    or delta.get("tool_calls")
+                                )
+                                if _output_frame:
+                                    _tokens_this_stream += 1
                                 if (
-                                    on_tokens is not None
+                                    _output_frame
+                                    and on_tokens is not None
                                     and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
                                 ):
                                     try:
@@ -34025,7 +34033,10 @@ class LlamaCppBackend:
                     # instead decoded on cells the planner had handed out, the lease having gone
                     # back with on_preempted.
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
-                    _gave_up_meta = _build_metadata_event(_iter_usage, _iter_timings, "length")
+                    # The attempt's decode is in the accumulators already: its prompt side only.
+                    _gave_up_meta = _build_metadata_event(
+                        *_folded_attempt(_iter_usage, _iter_timings), "length"
+                    )
                     if _gave_up_meta is not None:
                         yield _gave_up_meta
                     return
@@ -34641,10 +34652,17 @@ class LlamaCppBackend:
                                         _metadata_finish_reason = _fr
 
                                     # One chunk is about one token. Batched by
-                                    # _TOKEN_REPORT_EVERY and never allowed to raise.
-                                    _final_tokens_this_stream += 1
+                                    # _TOKEN_REPORT_EVERY and never allowed to raise. Output frames only.
+                                    _final_output_frame = bool(
+                                        delta.get("content")
+                                        or delta.get("reasoning_content")
+                                        or delta.get("tool_calls")
+                                    )
+                                    if _final_output_frame:
+                                        _final_tokens_this_stream += 1
                                     if (
-                                        on_tokens is not None
+                                        _final_output_frame
+                                        and on_tokens is not None
                                         and _final_tokens_this_stream % _TOKEN_REPORT_EVERY == 0
                                     ):
                                         try:

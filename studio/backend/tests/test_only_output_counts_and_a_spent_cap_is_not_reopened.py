@@ -17,6 +17,8 @@ from .preempt_fakes import (
     done,
     finish,
     run_plain,
+    run_tool_loop,
+    web_search_tool,
 )
 
 # pytest finds these by name; named here so the import reads as a use.
@@ -51,6 +53,68 @@ class TestOnlyOutputCountsTowardsTheSweep:
             recorder.backend, signal = signal, policy = RecordingPolicy(), on_tokens = reports.append
         )
         assert reports == [_TOKEN_REPORT_EVERY]
+
+    def test_the_tool_round_counts_only_output_too(self, monkeypatch):
+        def run(stream):
+            signal = preemption.PreemptSignal()
+            reports: list[int] = []
+            recorder = PreemptRecorder(monkeypatch, [stream], signal = signal)
+            run_tool_loop(
+                recorder.backend,
+                signal = signal,
+                policy = RecordingPolicy(),
+                tools = [web_search_tool()],
+                on_tokens = reports.append,
+            )
+            return reports
+
+        short = [_opener()] + [delta("x")] * (_TOKEN_REPORT_EVERY - 1) + [finish(), done()]
+        assert run(short) == [], "the opener or the finish frame counted on the tool round"
+        full = [_opener()] + [delta("x")] * _TOKEN_REPORT_EVERY + [finish(), done()]
+        assert run(full) == [_TOKEN_REPORT_EVERY]
+
+    def test_every_reader_shares_the_output_predicate(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        predicate = (
+            'delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls")'
+        )
+        plain = " ".join(inspect.getsource(LlamaCppBackend.generate_chat_completion).split())
+        tools = " ".join(
+            inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools).split()
+        )
+        assert plain.count(predicate) == 1
+        # The tool round and the final pass.
+        assert tools.count(predicate) == 2
+
+
+class TestARefusedResumeChargesTheAttemptOnce:
+    """The interrupted attempt's decode goes into the accumulators, and the refused ending
+    built its metadata from the same reading again: seven tokens reported as fourteen."""
+
+    def test_the_tool_round_reports_the_attempt_once(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        stream = [
+            delta("x", timings = {"prompt_n": 100, "predicted_n": n, "predicted_ms": 10 * n})
+            for n in range(1, 8)
+        ] + [finish(), done()]
+        recorder = PreemptRecorder(
+            monkeypatch, [stream], signal = signal, pause_attempts = (0,), pause_after = 7
+        )
+        items = run_tool_loop(
+            recorder.backend,
+            signal = signal,
+            policy = RecordingPolicy(resume = False),
+            tools = [web_search_tool()],
+        )
+        assert len(recorder.payloads) == 1
+        metadata = [i for i in items if isinstance(i, dict) and i.get("type") == "metadata"][-1]
+        assert metadata["finish_reason"] == "length"
+        assert metadata["usage"]["completion_tokens"] == 7, metadata["usage"]
+        assert metadata["usage"]["total_tokens"] == 107, metadata["usage"]
+        assert metadata["timings"]["predicted_ms"] == 70, metadata["timings"]
 
 
 class TestASpentCapIsNotReopened:
