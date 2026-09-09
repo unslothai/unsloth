@@ -22578,13 +22578,24 @@ class LlamaCppBackend:
                         # value when one was typed, else llama-server's own default.
                         # A build too old for --cache-ram has no prompt cache to
                         # charge, and an explicit 0 disables it, so both come out 0.
-                        prompt_cache_bytes = self._effective_prompt_cache_bytes(
-                            _cache_ram_in_force
-                            if _auto_cache_ram_mib is None
-                            else _auto_cache_ram_mib,
-                            server_caps,
+                        #
+                        # Charged ONLY under the planner. This term does not exist on
+                        # main, so charging it unconditionally moved a flag-off load
+                        # that got --load-mode none there to mmap here -- a 10 GiB
+                        # spill on a 16 GiB-free host is exactly that cell. Flag off
+                        # is byte-identical to main, so the clamp that pays for the
+                        # cache and the charge for it arrive together or not at all.
+                        prompt_cache_bytes = (
+                            self._effective_prompt_cache_bytes(
+                                _cache_ram_in_force
+                                if _auto_cache_ram_mib is None
+                                else _auto_cache_ram_mib,
+                                server_caps,
+                            )
+                            if _planner_owns_fit
+                            else 0
                         ),
-                        prompt_cache_unbounded = _cache_ram_unbounded,
+                        prompt_cache_unbounded = _cache_ram_unbounded and _planner_owns_fit,
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a

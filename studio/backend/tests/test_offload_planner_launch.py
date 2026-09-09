@@ -52,6 +52,9 @@ def _launch_with(
     n_parallel = 4,
     caps = None,
     avail_mib = 64 * 1024,
+    # 30 GiB on the 12 GiB card is the default shape here: nothing fits, so the fit
+    # arm is reached. Named so a case can state its own spill instead.
+    model_mib = 30 * 1024,
     speculative_type = "off",
     **load_kwargs,
 ):
@@ -68,8 +71,7 @@ def _launch_with(
             setattr(backend, key, value)
 
     backend._read_gguf_metadata = read
-    # 30 GiB of weights on a 12 GiB card: nothing fits, the fit arm is reached.
-    backend._get_gguf_size_bytes = lambda _path: 30 * 1024 * MIB
+    backend._get_gguf_size_bytes = lambda _path: model_mib * MIB
     del backend._can_estimate_kv
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_kv_unified": True,
@@ -635,6 +637,66 @@ def test_the_fit_footprint_prices_the_cache_ram_the_extras_carry(tmp_path, monke
     plan = Plan(changed = False, n_ctx = 8192)
     _launch_with(tmp_path, monkeypatch, plan, extra_args = ["--cache-ram", "16384"])
     assert seen_kw.get("prompt_cache_bytes") == 16384 * MIB
+
+
+def test_the_flag_off_fit_footprint_carries_no_prompt_cache_term(tmp_path, monkeypatch):
+    """origin/main has no prompt_cache_bytes term at all, and the PR states flag-off
+    is byte-identical to it. The term arrives with the clamp that pays for it, so it
+    is charged on the planner's path and nowhere else."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen_kw = {}
+    real = LlamaCppBackend._fit_derived_load_mode
+    orig = _backend
+
+    def hooked(*a, **k):
+        backend, gguf = orig(*a, **k)
+
+        def wrapped(**kw):
+            seen_kw.update(kw)
+            return real(backend, **kw)
+
+        backend._fit_derived_load_mode = wrapped
+        return backend, gguf
+
+    monkeypatch.setitem(globals(), "_backend", hooked)
+    _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"), owns = False)
+    assert seen_kw.get("prompt_cache_bytes") == 0
+    assert seen_kw.get("prompt_cache_unbounded") is False
+
+    seen_kw.clear()
+    _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"), owns = True)
+    assert seen_kw.get("prompt_cache_bytes") > 0, "not vacuous: the planner still charges it"
+
+
+def test_the_flag_off_load_mode_matches_main_on_a_spill_the_host_holds(tmp_path, monkeypatch):
+    """A 22 GiB model on the 12 GiB card is a 10 GiB spill, and 18 GiB of free RAM
+    holds it: main proved that fit and emitted --load-mode none. Charging the 8 GiB
+    default prompt cache on top pushed the same load back to mmap, an unannounced
+    flag-off change. The planner's own path still charges it, so it needs the RAM the
+    cache will really take before it takes the loader that cannot page."""
+    caps = {"supports_load_mode": True}
+    off, _backend_off, _s = _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(reason = "declined"),
+        owns = False,
+        avail_mib = 18 * 1024,
+        model_mib = 22 * 1024,
+        caps = caps,
+    )
+    assert _flag(off, "--load-mode") == "none", off
+
+    on, _backend_on, _s = _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(reason = "declined"),
+        owns = True,
+        avail_mib = 18 * 1024,
+        model_mib = 22 * 1024,
+        caps = caps,
+    )
+    assert "--load-mode" not in on, on
 
 
 def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
