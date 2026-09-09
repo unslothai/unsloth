@@ -28,6 +28,7 @@ from run_ruff_format import (  # noqa: E402
     CONFIG,
     installed_ruff_version,
     main,
+    parse_files,
     pinned_ruff_version,
     version_mismatch,
 )
@@ -137,15 +138,95 @@ class TestRefusing:
         # And it really ran: the post-pass is what puts the spaces in.
         assert target.read_text(encoding = "utf-8") == "x = f(a = 1)\n"
 
-    def test_no_files_is_still_a_no_op(self, monkeypatch):
-        # pre-commit calls with the changed files; an unrelated commit passes none,
-        # and must not be failed for a version it never used.
+    def test_no_files_is_rejected_before_the_version_is_consulted(self, monkeypatch):
+        # This used to assert `main([]) == 0`, on the premise that an unrelated
+        # commit calls the hook with no files. It does not: the hook is
+        # `types: [python]` without `pass_filenames: false`, so pre-commit skips
+        # it outright when nothing matches rather than running it empty. The
+        # silent success only ever reached humans, and told them the formatter
+        # was a fixed point when it had not run.
         monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
-        assert main([]) == 0
+        assert main([]) == 2
+
+
+class TestArgumentsAreTakenSeriously:
+    """Every argument is a file to rewrite, so anything else has to be an error.
+
+    The old handling kept `[arg for arg in argv if Path(arg).exists()]` and
+    dropped the rest without a word, which had three faces: no arguments exited
+    0 having formatted nothing, a typo'd path formatted nothing just as quietly,
+    and `--check FILE` lost the flag, kept the file, and wrote to it.
+    """
+
+    def test_an_unknown_flag_is_refused_and_nothing_is_written(self, tmp_path, monkeypatch):
+        # The one that did damage: the flag was dropped, the file behind it was
+        # not, and a run asked to check rewrote the file instead.
+        target = tmp_path / "sample.py"
+        original = "x = f(a=1)\n"
+        target.write_text(original, encoding = "utf-8")
+        monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
+        assert main(["--check", str(target)]) == 2
+        assert target.read_text(encoding = "utf-8") == original
+
+    def test_check_says_what_the_script_actually_does(self):
+        # "unsupported option" alone invites a retry without the flag, which is
+        # the write the caller was trying to avoid.
+        _, error = parse_files(["--check", "any.py"])
+        assert error is not None
+        assert "--check" in error
+        assert "always rewrites" in error
+
+    def test_it_does_not_offer_ruff_as_a_read_only_equivalent(self):
+        # This script is enforce_kwargs_spacing --pre, then ruff, then
+        # enforce_kwargs_spacing again. `ruff format --check` covers the middle
+        # pass only, so a file can pass it cleanly and still be rewritten here.
+        # Sending people there would rebuild, in the error message, the same
+        # false green the argument handling above was fixed to stop producing.
+        _, error = parse_files(["--check", "any.py"])
+        assert error is not None
+        lowered = error.lower()
+        # Naming ruff is fine. Presenting it as the substitute is not, so if it
+        # is named it has to be disclaimed in the same breath.
+        if "ruff" in lowered:
+            assert "not an equivalent" in lowered
+        # And an honest alternative is offered rather than a partial one.
+        assert "diff" in lowered
+
+    @pytest.mark.parametrize("flag", ["-q", "--diff", "--fix", "--unknown"])
+    def test_options_are_refused_by_shape_not_by_a_list(self, flag):
+        _, error = parse_files([flag])
+        assert error is not None and flag in error
+
+    def test_a_missing_path_is_named(self, tmp_path):
+        # Previously this formatted nothing and exited 0, so a typo looked like a
+        # successful run over the file you meant.
+        missing = tmp_path / "typo.py"
+        files, error = parse_files([str(missing)])
+        assert files == []
+        assert error is not None and str(missing) in error
+
+    def test_a_missing_path_fails_even_beside_a_real_one(self, tmp_path, monkeypatch):
+        # Partial credit is the whole bug: formatting the file that exists and
+        # ignoring the one that does not still reports success.
+        real = tmp_path / "real.py"
+        real.write_text("x = 1\n", encoding = "utf-8")
+        missing = tmp_path / "nope.py"
+        monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
+        assert main([str(real), str(missing)]) == 2
+
+    def test_real_files_still_go_through_untouched_by_the_new_check(self, tmp_path):
+        files, error = parse_files([str(tmp_path)])
+        assert error is None
+        assert files == [str(tmp_path)]
 
 
 class TestTheScriptStaysRunnable:
-    """It is invoked as a program, so the mode bit matters, and a wholesale rewrite drops it invisibly."""
+    """The shebang and the mode bit are kept so it still runs as a program.
+
+    The hook no longer depends on them -- its entry is `python scripts/...` now,
+    because an autofix commit dropping the bit broke main twice -- but people do
+    run it directly, and a wholesale rewrite drops the bit invisibly.
+    """
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
     def test_the_formatter_is_executable(self):

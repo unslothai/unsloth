@@ -61,8 +61,10 @@ except ImportError:
 # test_native_tls_entrypoints.py asserts the paste still matches, by AST.
 _TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
 _flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+_owned = os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri"
 if _flag in ("1", "true", "yes") or (
-    _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")
+    _flag not in ("0", "false", "no")
+    and (sys.platform in ("darwin", "win32") or (sys.platform.startswith("linux") and _owned))
 ):
     try:
         if _TRUSTSTORE_VENDOR not in sys.path:
@@ -71,7 +73,7 @@ if _flag in ("1", "true", "yes") or (
         truststore.inject_into_ssl()
     except Exception:
         pass
-del _flag
+del _flag, _owned
 
 
 class PrebuiltFallback(RuntimeError):

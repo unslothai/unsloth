@@ -39,6 +39,11 @@ except Exception:  # noqa: BLE001 - still collect degraded-path tests when unslo
     shared = None
 
 import utils.hf_xet_fallback as xf
+import importlib
+import os
+import threading
+import types
+import utils.hf_xet_fallback as shim
 
 
 DL_REPO, FILE = "ztest/xet-dl", "model-Q4_K_XL.gguf"
@@ -180,7 +185,6 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
 def test_degrades_gracefully_without_shared_helper(monkeypatch):
     """On an older unsloth_zoo lacking the shared helper, the shim still imports (Unsloth
     boots) and exposes stub API doing plain HF downloads with the watchdog disabled."""
-    import importlib
 
     class _BlockShared:
         def find_spec(
@@ -258,7 +262,6 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
     """When unsloth_zoo is absent entirely, the import raises
     ModuleNotFoundError(name='unsloth_zoo') (top-level package). Guard that the shim still
     degrades and does not re-raise, breaking every Unsloth import that pulls it in."""
-    import importlib
 
     class _BlockZoo:
         def find_spec(
@@ -300,7 +303,6 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
 def test_degrades_when_shared_helper_import_raises_importerror():
     """unsloth_zoo can be installed yet fail to import when torch is missing (llama.cpp/GGUF-only
     Unsloth), raising ImportError not ModuleNotFoundError. The shim must degrade for that too."""
-    import importlib
 
     class _BlockWithImportError:
         def find_spec(
@@ -343,9 +345,6 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
     stubs raise "called on Apple Silicon / MLX" from the first CUDA-only kernel a later GGUF or
     compiled diffusion generation touches, so a healthy GPU starts 500ing. The shim must degrade
     instead of retrying there."""
-    import importlib
-    import os
-
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     attempts = []
 
@@ -391,9 +390,6 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.
     The backend loads lazily (first use of a heavy helper), so this triggers the load explicitly
     before asserting the retry/degrade behavior."""
-    import importlib
-    import os
-
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     seen_env = []
 
@@ -448,9 +444,6 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     """The shim sets UNSLOTH_ZOO_DISABLE_GPU_INIT=1 process-wide while it retries an optional
     import, and unsloth_zoo answers that flag with STUB triton and bitsandbytes, so a child that
     inherited it would run for life against no-ops and never clear it."""
-    import importlib
-    import os
-
     from utils.child_stdio import utf8_child_env
 
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
@@ -505,8 +498,6 @@ def test_a_spawn_cannot_overlap_the_loader_env_override_window():
     spawn cannot start while a loader holds it; a child that inherits it silently trains against
     unsloth_zoo's stub triton and bitsandbytes. Structural on purpose: it asserts the two share one
     lock rather than trying to hit a microsecond window by timing."""
-    import threading
-
     from utils.hf_cache_settings import child_environment_for_spawn
 
     loader_holds = threading.Event()
@@ -544,8 +535,6 @@ def test_the_spawn_barrier_is_reentrant():
     """child_environment_for_spawn nests (an inference respawn inside a training start), which its
     RLock _spawn_env_lock allows, so the barrier it now takes alongside must be reentrant too or the
     inner enter deadlocks. Bounded on purpose: a plain Lock hangs the suite rather than failing."""
-    import threading
-
     from utils.hf_cache_settings import child_environment_for_spawn
 
     done = threading.Event()
@@ -578,8 +567,6 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     this at startup to decide the Xet env flip BEFORE activating the sidecar; an eager import here
     would cache the default transformers 4.57.x in sys.modules, defeating the sidecar sys.path prepend
     and breaking 5.x models (Qwen3.5/GLM/gemma-4)."""
-    import importlib
-
     for name in [
         m
         for m in list(sys.modules)
@@ -602,8 +589,6 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
 
 def test_first_download_dispatch_loads_zoo_once(monkeypatch):
     """Import stays light, but a real download dispatch activates the shared Zoo helper."""
-    import utils.hf_xet_fallback as shim
-
     calls: list[str] = []
 
     class _FakeShared:
@@ -627,10 +612,6 @@ def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
     **kwargs and no connect_timeout, so passing one raises TypeError into the caller's
     `except Exception` and the watchdog silently never starts. That is the feature entirely off.
     """
-    import threading
-
-    import utils.hf_xet_fallback as shim
-
     seen = {}
 
     def _old_signature_watchdog(
@@ -670,10 +651,6 @@ def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
 
 def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
     """A newer zoo must still receive the newer knobs."""
-    import threading
-
-    import utils.hf_xet_fallback as shim
-
     seen = {}
 
     def _new_signature_watchdog(**kwargs):
@@ -692,10 +669,6 @@ def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
 
 def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
     """One rule, in one place: Unsloth asks the zoo to size the worker rather than sizing it too."""
-    import types
-
-    import utils.hf_xet_fallback as shim
-
     seen = {}
 
     def _apply(env, **kwargs):
@@ -718,10 +691,6 @@ def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
 def test_apply_xet_env_returns_none_when_the_zoo_cannot_size(monkeypatch):
     """None, not {}: an empty write is a legitimate result, so the caller needs the two apart to
     know whether to fall back to clearing the high-performance flag itself."""
-    import types
-
-    import utils.hf_xet_fallback as shim
-
     monkeypatch.setattr(shim, "_load_optional", lambda _name: None)
     assert shim.apply_xet_env({}) is None
 
@@ -742,10 +711,6 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     setdefault apply would keep. A zoo that can resize gets the worker's cache instead, so a backend
     whose cache moved after startup does not size the worker for the volume it left behind. An older
     zoo, with no resize to call, keeps the previous behaviour."""
-    import types
-
-    import utils.hf_xet_fallback as shim
-
     seen = {}
 
     def _resize(env, cache_dir, **kwargs):
@@ -814,8 +779,6 @@ def _fake_tuning(
 ):
     """Stand-in zoo sized like the real one (an eighth of total RAM), recording the profile it was
     asked about so a test can prove the clamp re-asks rather than editing numbers itself."""
-    import types
-
     profile_cls = _fake_profile_cls()
 
     def _overrides(profile, **kwargs):
@@ -842,8 +805,6 @@ def _fake_tuning(
 def test_clamp_is_a_no_op_when_the_machine_has_room(monkeypatch):
     """The design rests on this: an eighth of TOTAL cannot exceed a quarter of AVAILABLE unless RAM
     is already held, so an idle machine keeps the zoo's numbers and no download gets slower."""
-    import utils.hf_xet_fallback as shim
-
     calls = []
     module = _fake_tuning(32 * _GB, 30 * _GB, calls = calls)
     sized = module.xet_env_overrides(module.system_profile())
@@ -860,8 +821,6 @@ def test_clamp_is_a_no_op_when_the_machine_has_room(monkeypatch):
 def test_clamp_shrinks_a_budget_free_ram_cannot_afford(monkeypatch):
     """Issue #9032: 32GB box, 27B GGUF resident, 8GB free. The zoo still hands out a 4GB buffer
     because total RAM has not changed, and that on top of the loaded weights is the swap."""
-    import utils.hf_xet_fallback as shim
-
     calls = []
     module = _fake_tuning(32 * _GB, 8 * _GB, calls = calls)
     unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
@@ -886,8 +845,6 @@ def test_clamp_shrinks_a_budget_free_ram_cannot_afford(monkeypatch):
 def test_clamp_bottoms_out_at_the_zoos_own_floor(monkeypatch):
     """Below the floor the answer is a different transport, not a tinier buffer: Xet has a minimum
     it can work in, and ``_memory_pressure_reason`` routes a machine this tight to HTTP."""
-    import utils.hf_xet_fallback as shim
-
     module = _fake_tuning(32 * _GB, 1 * _GB)
     unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 1 * _GB))
 
@@ -900,8 +857,6 @@ def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
     """The zoo's apply is setdefault, so a user-set variable never reaches ``sized`` and must not be
     reintroduced here. Same mechanism covers HF_XET_HIGH_PERFORMANCE: the zoo drops its caps, no
     budget key arrives, and the clamp stands down with it."""
-    import utils.hf_xet_fallback as shim
-
     calls = []
     module = _fake_tuning(32 * _GB, 1 * _GB, calls = calls)
 
@@ -923,10 +878,6 @@ def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
 def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
     """No psutil, no cgroup, or a zoo too old to expose a profile: absence of evidence is not
     evidence of pressure, so the download runs as before."""
-    import types
-
-    import utils.hf_xet_fallback as shim
-
     sized = {_LIMIT: str(8 * _GB)}
 
     unmeasurable = _fake_tuning(0, 0)
@@ -962,10 +913,6 @@ def test_clamp_holds_against_the_real_zoo_formulas():
 
     loaded = dataclasses.replace(idle, available_ram_bytes = 8 * _GB)
 
-    import types
-
-    import utils.hf_xet_fallback as shim
-
     sized = dict(tuning.xet_env_overrides(idle, fail_fast = True))
 
     def _module_for(profile):
@@ -988,8 +935,6 @@ def test_clamp_holds_against_the_real_zoo_formulas():
 def test_clamp_never_raises_a_value_the_zoo_had_lowered():
     """The recompute runs without the throttled flag that a 429 backoff sets, so the clamp must take
     the smaller of the two per key. Otherwise shrinking buffers would restore the stream ceiling."""
-    import utils.hf_xet_fallback as shim
-
     module = _fake_tuning(32 * _GB, 8 * _GB)
     unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
     # As if a 429 had halved the ceiling on the way in.
@@ -1004,8 +949,6 @@ def test_clamp_never_raises_a_value_the_zoo_had_lowered():
 
 def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
     """The threshold logic itself, now that both transport callers share this one helper."""
-    import utils.hf_xet_fallback as shim
-
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (2 * _GB, 4 * _GB))
     reason = shim.free_ram_pressure_reason()
     assert reason is not None and "2.0GB RAM free" in reason
@@ -1035,8 +978,6 @@ def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
 def clean_ledger():
     """Autouse: sizing reserves RAM, so any clamp test leaves a reservation that would otherwise
     follow the process into the next test and shrink its budget."""
-    import utils.hf_xet_fallback as shim
-
     shim._budget_reservations.clear()
     shim._pending_reservation.token = None
     yield shim
@@ -1047,8 +988,6 @@ def clean_ledger():
 def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledger):
     """Four downloads queued at once each used to take a quarter of the same snapshot, promising the
     whole machine before any of them had allocated a byte."""
-    import os
-
     shim = clean_ledger
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
@@ -1121,8 +1060,6 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
     fourth; three that have finished allocating are already missing from `available`, which stops it
     without the ledger. `os.getpid()` stands in for all three, so its own RSS is stubbed out rather
     than credited three times against promises it has nothing to do with."""
-    import os
-
     shim = clean_ledger
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB, 4 * _GB))
     assert shim.free_ram_pressure_reason() is None, "8GB free is not pressure on its own"
@@ -1156,8 +1093,6 @@ def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, 
     promise on top of a reading that already reflects it counts the same bytes twice for the
     worker's entire lifetime. On an 8GB-free host that is the difference between the next Auto
     download getting Xet and being told "only 2.0GB RAM free" while 4GB genuinely is."""
-    import os
-
     shim = clean_ledger
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
@@ -1218,8 +1153,6 @@ def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
     The barrier is in system_profile, which the clamp reads OUTSIDE the lock, so all four arrive at
     the decision at once; the sleep in xet_env_overrides widens the read-to-reserve window that a
     split critical section would leave open."""
-    import os
-    import threading
     import time
 
     shim = clean_ledger
