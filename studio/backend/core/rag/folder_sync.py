@@ -72,11 +72,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def now_iso() -> str:
-    """The timestamp format linked-folder rows are written and compared with."""
-    return _now()
-
-
 def _hash_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as source:
@@ -564,42 +559,82 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
+# SQLite's default host-parameter cap is 999, so a bound id list is applied in chunks.
+_ID_CHUNK = 500
+
+
+def _id_chunks(folder_ids: list[str]) -> list[list[str]]:
+    unique = list(dict.fromkeys(folder_ids))
+    return [unique[start : start + _ID_CHUNK] for start in range(0, len(unique), _ID_CHUNK)]
+
+
+def linked_folder_ids(scope: str) -> list[str]:
+    """The folders a scope owns right now, for bounding a later retirement to them.
+
+    Metadata connection, like retirement itself: the delete path has to finish even when the
+    vector extension cannot load.
+    """
+    with closing(rag_db.get_metadata_connection()) as conn:
+        if not _metadata_table_exists(conn, "linked_folders"):
+            return []
+        return [
+            row["id"]
+            for row in conn.execute("SELECT id FROM linked_folders WHERE scope=?", (scope,))
+        ]
+
+
 def _retire_scope_rows(
     conn,
     scope: str,
-    linked_before: str | None = None,
+    folder_ids: list[str] | None = None,
+    rows: bool = True,
 ) -> None:
-    folders_exist = _metadata_table_exists(conn, "linked_folders")
+    folders_exist = rows and _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
     conn.execute(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
         (scope, _now()),
     )
-    # the ownership check and this write cannot share a transaction across two databases
-    bound = "" if linked_before is None else " AND created_at<=?"
-    params = () if linked_before is None else (linked_before,)
-    if folders_exist:
-        conn.execute(
-            "UPDATE linked_folders SET auto_sync=0, status='retired', "
-            f"last_error='Owning scope was removed', updated_at=? WHERE scope=?{bound}",
-            (_now(), scope, *params),
-        )
-    if jobs_exist:
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-            "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
-            "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?"
-            f"{bound}) AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
-            (_now(), scope, *params),
-        )
+    # The ownership check and this write cannot share a transaction across two databases, so the
+    # caller bounds the write to the folders it saw. Identity, not created_at: Windows reads its
+    # clock in ~15.6ms steps, so a folder linked just after the check carries the check's own
+    # timestamp, and retiring it disables RAG for a project recreated with the same id, for good.
+    # None means no bound at all; an empty list means the caller saw no folders.
+    batches = [None] if folder_ids is None else _id_chunks(folder_ids)
+    for batch in batches:
+        bound = "" if batch is None else f" AND id IN ({','.join('?' * len(batch))})"
+        params = () if batch is None else tuple(batch)
+        if folders_exist:
+            conn.execute(
+                "UPDATE linked_folders SET auto_sync=0, status='retired', "
+                f"last_error='Owning scope was removed', updated_at=? WHERE scope=?{bound}",
+                (_now(), scope, *params),
+            )
+        if jobs_exist:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+                "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
+                "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?"
+                f"{bound}) AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
+                (_now(), scope, *params),
+            )
 
 
-def retire_scope(scope: str, linked_before: str | None = None) -> None:
-    """Stop all future work, even when the vector extension cannot load."""
+def retire_scope(
+    scope: str,
+    folder_ids: list[str] | None = None,
+    rows: bool = True,
+) -> None:
+    """Stop all future work, even when the vector extension cannot load.
+
+    `rows = False` writes only the tombstone: enough on its own to stop new links and uploads,
+    and the only half a caller can take back, since the folder and job updates overwrite state
+    nobody recorded. A caller whose ownership check can still go stale takes it first.
+    """
     conn = _retirement_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _retire_scope_rows(conn, scope, linked_before)
+        _retire_scope_rows(conn, scope, folder_ids, rows)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -741,10 +776,10 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             # rechecked inside the lock create_folder takes: a project recreated with the same id must not have
             # its new folders retired
             with _scope_lock(scope):
-                checked_at = _now()
+                owned = linked_folder_ids(scope)
                 if project_exists(project_id):
                     continue
-                retire_scope(scope, checked_at)
+                retire_scope(scope, owned)
             retired_scopes.add(scope)
             retired.append(scope)
         except Exception:

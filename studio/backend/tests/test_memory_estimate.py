@@ -961,7 +961,6 @@ class TestEstimateMemoryRoute:
         # function the interpreter can switch out of: a concurrent pop makes it raise
         # KeyError, a concurrent insert RuntimeError, and neither is caught between
         # there and the worker, so it surfaces as a 500 on a slider drag.
-        import inspect
         for source in (
             inspect.getsource(ri._gguf_resident_file_gb),
             inspect.getsource(ri._cached_estimate_config),
@@ -987,7 +986,6 @@ class TestEstimateMemoryRoute:
         # so 50 estimates were 250 /proc scans and 250 retained atexit handlers at
         # 120 ms each. Pricing a load must not be able to kill a server.
         import atexit
-        import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1026,7 +1024,6 @@ class TestEstimateMemoryRoute:
     def test_the_inert_probe_mode_is_opt_in(self):
         # Default True, so every existing caller -- above all the real backend that
         # owns the llama-server child -- keeps exactly the behaviour it has today.
-        import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
 

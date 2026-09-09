@@ -287,16 +287,18 @@ def test_snapshot_is_loadable_with_a_complete_indexed_weight_family(hf_cache):
 
 
 def test_cancel_marker_keeps_a_snapshot_pending(monkeypatch, hf_cache):
-    _make_cache(hf_cache, "org/cancelled", {"config.json": "{}", "model.safetensors": "x"})
     from hub.utils import download_manifest
+
+    _make_cache(hf_cache, "org/cancelled", {"config.json": "{}", "model.safetensors": "x"})
 
     monkeypatch.setattr(download_manifest, "has_cancel_marker", lambda *a, **k: True)
     assert hf_cache_snapshot_is_loadable("org/cancelled") is False
 
 
 def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
-    _make_cache(hf_cache, "org/manifest-partial", {"config.json": "{}", "model.safetensors": "x"})
     from hub.utils import download_manifest
+
+    _make_cache(hf_cache, "org/manifest-partial", {"config.json": "{}", "model.safetensors": "x"})
 
     manifest = download_manifest.Manifest(
         repo_type = "model",
@@ -315,12 +317,13 @@ def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
 
 
 def test_verified_snapshot_manifest_ignores_unrelated_incomplete_blob(monkeypatch, hf_cache):
+    from hub.utils import download_manifest
+
     _make_cache(
         hf_cache,
         "org/manifest-complete",
         {"config.json": "{}", "model.safetensors": "weights"},
     )
-    from hub.utils import download_manifest
 
     manifest = download_manifest.Manifest(
         repo_type = "model",
@@ -781,10 +784,10 @@ def test_gate_blocks_on_index_path_traversal(hf_cache):
 def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
     # Real HF caches store snapshot files as symlinks into blobs/. A resolve()-based containment
     # check would escape the snapshot and false-block every sharded model; the lexical gate must not.
+    from huggingface_hub.file_download import repo_folder_name
+
     import hashlib
     import os
-
-    from huggingface_hub.file_download import repo_folder_name
 
     root = tmp_path / "hub"
     root.mkdir()
@@ -1132,6 +1135,8 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
 def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch, tmp_path):
     """Only module roots already carrying weights were validated, so a snapshot
     missing 0_Transformer entirely passed on a complete 2_Dense."""
+    import utils.utils as utils
+
     from utils import utils
 
     snapshot = tmp_path / "snap"

@@ -14,13 +14,11 @@
 // the way gpu-torch-mismatch.test.ts and system-status-verdict.test.ts do beside it.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const src = await readFile(
-  new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const src = await readSrcAsync("hooks/use-tauri-backend.ts");
 
 function lift(pattern: RegExp, what: string): string {
   const found = pattern.exec(src);
