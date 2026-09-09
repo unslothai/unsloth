@@ -36119,6 +36119,7 @@ async def tool_isolation_capability(
     from dataclasses import asdict
     from starlette.concurrency import run_in_threadpool
     from core.inference.os_sandbox import capability_snapshot
+
     return asdict(await run_in_threadpool(capability_snapshot, force = force))
 
 
@@ -36132,4 +36133,5 @@ async def setup_windows_tool_isolation(
         )
     from core.inference.srt_setup import install_windows_sandbox
     from starlette.concurrency import run_in_threadpool
+
     return await run_in_threadpool(install_windows_sandbox, repair_existing = repair_existing)
