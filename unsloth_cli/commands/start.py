@@ -873,9 +873,12 @@ def _http_json(
 # failure paths and the atexit backstop can tear it down without threading a handle
 # through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
-# Model download + load can be slow; give the auto-started server room before giving up.
+# Model download + load can be slow, so this caps time since the download last
+# advanced, not total elapsed time (see `_start_studio_server`).
 _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
+# Ceiling on the doubling back-off the progress reader uses after a polling error.
+_DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1004,6 +1007,9 @@ class _ModelDownloadProgress:
         self._model = model
         self._variant = variant or ""
         self._expected_bytes = 0
+        self._downloaded_bytes = 0
+        self._failures = 0
+        self._retry_at = 0.0
         self._display = _DownloadProgressDisplay()
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
@@ -1054,6 +1060,8 @@ class _ModelDownloadProgress:
             self._configure()
         if self._disabled:
             return
+        if time.monotonic() < self._retry_at:
+            return
         try:
             if self._variant or "gguf" in self._model.lower():
                 params = urlencode(
@@ -1077,10 +1085,34 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
+            # The liveness baseline only ever rises. A reading falls for reasons that are
+            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
+            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
+            # measured absence, not an error), an XET run purging its partial. Following a
+            # reading down would make the recovery back to the same figure look like fresh
+            # growth and renew the deadline for a server that is downloading nothing, and a
+            # flapping mount could do that forever. The cost is that a transfer which truly
+            # restarts is not counted again until it passes its own high mark; that failure
+            # is bounded and says so, where a false renewal is an unbounded wait.
+            self._downloaded_bytes = max(
+                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
+            )
+            self._failures = 0
+            self._retry_at = 0.0
             self._display.update(reading)
         except Exception:
-            # Progress is best-effort; never fail the load over a polling error.
-            self._disabled = True
+            # Progress is best-effort and never fails the load, but `_start_studio_server`
+            # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
+            # off keeps a broken endpoint cheap; giving up for good would kill the very
+            # download this exists to protect, so it never stops probing.
+            self._failures += 1
+            self._retry_at = time.monotonic() + min(
+                2.0**self._failures, _DOWNLOAD_POLL_MAX_BACKOFF_S
+            )
+
+    @property
+    def downloaded_bytes(self) -> int:
+        return self._downloaded_bytes
 
     def close(self) -> None:
         self._display.close()
@@ -1323,6 +1355,7 @@ def _start_studio_server(
 
     deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
     progress: Optional[_ModelDownloadProgress] = None
+    downloaded_bytes = 0
     early_key_seen = False
     try:
         while time.monotonic() < deadline:
@@ -1348,6 +1381,15 @@ def _start_studio_server(
                     )
             if progress is not None:
                 progress.poll()
+            # Fresh bytes are the one unambiguous sign the child is moving, so the cap
+            # measures time since the transfer last advanced rather than total elapsed.
+            # Server log growth deliberately does NOT count: the loop's own health poll,
+            # echoed tracebacks and the loader's watchdog heartbeat all keep the log
+            # growing while nothing loads, which would make this deadline unreachable.
+            bytes_now = progress.downloaded_bytes if progress is not None else 0
+            if bytes_now > downloaded_bytes:
+                deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+            downloaded_bytes = bytes_now
             # New children emit an early key marker, so wait for the final model banner;
             # older children only print the key after load, so fall back to that.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
@@ -1363,7 +1405,8 @@ def _start_studio_server(
             progress.close()
     _shutdown_auto_served()
     _fail(
-        f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
+        "The Unsloth server didn't become ready and made no progress for "
+        f"{_SERVER_START_TIMEOUT_S}s. See {log_path}."
     )
 
 

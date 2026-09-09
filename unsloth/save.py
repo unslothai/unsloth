@@ -2877,31 +2877,24 @@ def upload_to_huggingface(
 
 
 def fix_tokenizer_bos_token(tokenizer):
+    from .tokenizer_utils import (
+        _chat_template_emits_bos,
+        _dedupe_bos_chat_template,
+        _tokenizer_auto_adds_bos,
+    )
+
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
 
-    if tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None):
-        if chat_template is not None and (
-            tokenizer.bos_token in chat_template
-            or "{bos_token}" in chat_template.replace(" ", "")
-            or "{bos_token+" in chat_template.replace(" ", "")
-        ):
+    # A processor cannot be called without an image, so ask its inner tokenizer instead.
+    if _tokenizer_auto_adds_bos(getattr(tokenizer, "tokenizer", tokenizer)):
+        if _chat_template_emits_bos(tokenizer):
             fix_bos_token = True
             logger.warning(
                 "Unsloth: ##### The current model auto adds a BOS token.\n"
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
-
-            new_chat_template = re.sub(
-                r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template
-            )
-            new_chat_template = re.sub(
-                r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}",
-                "",
-                new_chat_template,
-            )
-
-            tokenizer.chat_template = new_chat_template
+            _dedupe_bos_chat_template(tokenizer)
 
     return fix_bos_token, chat_template
 
@@ -4635,10 +4628,13 @@ def unsloth_save_pretrained_gguf(
     # preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
 
-    if is_processor:
-        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer.tokenizer)
-    else:
-        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+    # save_pretrained writes the processor's own chat_template.jinja, so dedupe and restore both.
+    from .tokenizer_utils import _tokenizer_objects
+
+    old_chat_templates = [
+        (obj, getattr(obj, "chat_template", None)) for obj in _tokenizer_objects(tokenizer)
+    ]
+    fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
     # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable
     # upstream fails before the expensive merge and never reaches the IQ-quant gate.
@@ -4704,11 +4700,12 @@ def unsloth_save_pretrained_gguf(
                     f"{_offloaded_parameter_hint(self)}"
                 ) from e
 
+    if fix_bos_token:
+        for _template_owner, _old_template in old_chat_templates:
+            _template_owner.chat_template = _old_template
+
     if is_processor:
         tokenizer = tokenizer.tokenizer
-
-    if fix_bos_token:
-        tokenizer.chat_template = old_chat_template
 
     for _ in range(3):
         import gc

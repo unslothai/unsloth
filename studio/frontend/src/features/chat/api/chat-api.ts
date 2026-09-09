@@ -13,6 +13,7 @@ import {
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
@@ -292,7 +293,13 @@ export async function loadModel(
         }),
         signal: options?.signal,
       });
-      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      // Unconditional: absent on nearly every load, anything malformed is ignored,
+      // and the model is already resident by the time this runs. Both identities are
+      // passed -- a cached Hub candidate is requested by its loadId while the runtime
+      // keeps `loaded.model`, and the unload is issued with the second.
+      showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
+      return loaded;
     },
   );
 }
@@ -435,6 +442,9 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response, "Model unload");
+  // Only after the unload is known to have happened: a rejected one leaves the model
+  // resident and the notice true. A different model's unload leaves it standing.
+  dismissCarveoutAdviceForModel(payload.model_path);
 }
 
 /** Allow or deny a tool call paused awaiting user confirmation, identified by the backend
