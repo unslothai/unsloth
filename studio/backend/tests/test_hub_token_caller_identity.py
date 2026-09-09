@@ -2588,7 +2588,13 @@ def test_the_scan_predicate_covers_every_config_the_scanner_reads(monkeypatch, c
         "utils.hf_cache_settings.active_hf_hub_cache", lambda: Path("/studio/cache")
     )
 
-    def _lookup(*, repo_id, filename, cache_dir = None, **_k):
+    def _lookup(
+        *,
+        repo_id,
+        filename,
+        cache_dir = None,
+        **_k,
+    ):
         seen.append((filename, str(cache_dir)))
         return "/studio/cache/hit" if filename == cached_name else None
 
@@ -2621,7 +2627,13 @@ def test_the_template_predicate_asks_the_active_cache(monkeypatch):
     )
     monkeypatch.setattr(picker_service, "active_hf_hub_cache", lambda: Path("/studio/cache"))
 
-    def _lookup(*, repo_id, filename, cache_dir = None, **_k):
+    def _lookup(
+        *,
+        repo_id,
+        filename,
+        cache_dir = None,
+        **_k,
+    ):
         roots.append(str(cache_dir))
         return "/studio/cache/template.jinja"
 
@@ -2653,12 +2665,8 @@ def test_a_tokenless_api_caller_keeps_a_public_cached_embedder(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
-    monkeypatch.setattr(
-        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
-    )
-    monkeypatch.setattr(
-        settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap"))
-    )
+    monkeypatch.setattr(settings_routes, "_local_sentence_transformer_is_present", lambda _m: False)
+    monkeypatch.setattr(settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap")))
     monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
 
     plan = settings_routes._resolve_embedding_model_plan("acme/public-embed", False)
@@ -2676,8 +2684,6 @@ def test_a_local_only_config_read_stays_off_the_wire(monkeypatch):
     monkeypatch.setattr(model_config, "_config_json_already_cached", lambda *_a, **_k: True)
 
     with pytest.raises(OSError):
-        model_config.load_model_config(
-            "acme/private", token = "hf_dummy", local_files_only = True
-        )
+        model_config.load_model_config("acme/private", token = "hf_dummy", local_files_only = True)
 
     assert probes["n"] == 0

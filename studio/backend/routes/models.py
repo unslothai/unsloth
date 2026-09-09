@@ -2616,9 +2616,7 @@ async def scan_model_remote_code(
                 cache_dir = active_hf_hub_cache()
                 return any(
                     isinstance(
-                        try_to_load_from_cache(
-                            repo_id = repo, filename = name, cache_dir = cache_dir
-                        ),
+                        try_to_load_from_cache(repo_id = repo, filename = name, cache_dir = cache_dir),
                         str,
                     )
                     for name in remote_code_config_paths()

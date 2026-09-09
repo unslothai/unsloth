@@ -2431,6 +2431,7 @@ def _resolve_embedding_model_plan(
     ``sentence-transformers/`` alias or a derived ``-GGUF`` conversion rather than
     ``resolved``, and /auth-check answers 200 for any string on a public base.
     """
+
     def _authorized(repo: Optional[str]) -> bool:
         """The repo a cache lookup actually matched, asked about in its own right.
 
