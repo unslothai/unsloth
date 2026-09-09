@@ -51,6 +51,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _has_answer_artifact,
 )
 from core.inference.tool_call_parser import INTENT_SIGNAL as _INTENT_SIGNAL  # noqa: E402
+import time
 
 
 # ── _INTENT_SIGNAL still matches plan-only stalls ──────────────────
@@ -653,8 +654,6 @@ def test_no_backtrack_on_crlf_spam():
     O(n^2)-backtracked through embedded `\\r\\n` characters (~630 ms on
     10 KB). The current `[ \\t]*` indent restriction plus length-bounded
     `[\\s\\S]{...}?` runs keep every alternative linear."""
-    import time
-
     payload = "\r\n" * 5000
     t0 = time.time()
     _has_answer_artifact(payload)
@@ -666,8 +665,6 @@ def test_no_backtrack_on_open_html_spam():
     """Many `<html ` openings without `</html>` close must still complete
     quickly. Bounded `[\\s\\S]{0,4000}?` between the open and close caps
     the scan per occurrence."""
-    import time
-
     payload = "<html " * 200  # ~1200 chars, under _REPROMPT_MAX_CHARS
     t0 = time.time()
     _has_answer_artifact(payload)
@@ -682,8 +679,6 @@ def test_no_backtrack_on_doctype_html_alternation_worst_case():
     gate the worst observed measurement was about 7 ms; assert a
     generous budget so future quantifier changes that drop the inner
     ``{0,4000}`` bound fail loudly."""
-    import time
-
     payload = ("<!doctype html><html foo " * 60)[:1999]
     t0 = time.time()
     _has_answer_artifact(payload)
@@ -693,8 +688,6 @@ def test_no_backtrack_on_doctype_html_alternation_worst_case():
 
 def test_no_backtrack_on_tilde_fence_spam():
     """Open ``~~~`` fences without close must terminate quickly."""
-    import time
-
     payload = "~~~a\n" * 400  # ~2000 chars, near _REPROMPT_MAX_CHARS
     t0 = time.time()
     _has_answer_artifact(payload)

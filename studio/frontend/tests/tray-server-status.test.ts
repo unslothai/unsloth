@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrc, readText } from "./helpers/kit.ts";
 
 // The tray label is settled across two languages: the hook pushes a BackendStatus over the
 // IPC and main.rs turns it into a label and an enabled flag. Neither half can be rendered
@@ -11,19 +12,8 @@ import test from "node:test";
 // tray_toggle_label's own table is covered by the Rust unit tests in main.rs; only a test
 // spanning both files can hold that the two halves still agree on the set of statuses.
 
-function hookSource(): Promise<string> {
-  return readFile(
-    new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
-    "utf8",
-  );
-}
-
-function tauriSource(): Promise<string> {
-  return readFile(
-    new URL("../../src-tauri/src/main.rs", import.meta.url),
-    "utf8",
-  );
-}
+const USE_TAURI_BACKEND = readSrc("hooks/use-tauri-backend.ts");
+const MAIN = readText("../../src-tauri/src/main.rs");
 
 /**
  * The body of a `function name(...)` in the hook, to its closing brace. syncTrayStatus
@@ -78,7 +68,7 @@ function actionableStatuses(hook: string): string[] {
 }
 
 test("every status the hook commits is also pushed to the tray", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
 
   // setStatus is reached through these three and nowhere else, so covering them
   // covers every transition the tray can be told about.
@@ -100,7 +90,7 @@ test("every status the hook commits is also pushed to the tray", async () => {
 });
 
 test("a tray sync never surfaces on the web build or on a binary without the command", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
   const sync = hookFunction(hook, "syncTrayStatus");
 
   // The browser build has no IPC at all, so the import must not even be attempted.
@@ -119,7 +109,8 @@ test("a tray sync never surfaces on the web build or on a binary without the com
 });
 
 test("the tray offers a click exactly when the listener would act on it", async () => {
-  const [hook, rust] = await Promise.all([hookSource(), tauriSource()]);
+  const hook = USE_TAURI_BACKEND;
+  const rust = MAIN;
 
   assert.deepEqual(
     enabledStatuses(rust),
@@ -129,7 +120,7 @@ test("the tray offers a click exactly when the listener would act on it", async 
 });
 
 test("an unlisted status falls through rather than going unhandled", async () => {
-  const rust = await tauriSource();
+  const rust = MAIN;
   const table = trayToggleLabel(rust);
 
   // BackendStatus grows; the command takes a bare String. A wildcard arm keeps a new
@@ -140,7 +131,7 @@ test("an unlisted status falls through rather than going unhandled", async () =>
     "tray_toggle_label has no wildcard arm for an unknown status",
   );
 
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
   const union = hook.slice(
     hook.indexOf("export type BackendStatus ="),
     hook.indexOf(";", hook.indexOf("export type BackendStatus =")),
@@ -156,7 +147,7 @@ test("an unlisted status falls through rather than going unhandled", async () =>
 });
 
 test("set_tray_server_status is registered, so the invoke can be answered", async () => {
-  const rust = await tauriSource();
+  const rust = MAIN;
   const handler = rust.slice(
     rust.indexOf("invoke_handler(tauri::generate_handler!["),
     rust.indexOf("])", rust.indexOf("invoke_handler(tauri::generate_handler![")),
@@ -169,7 +160,7 @@ test("set_tray_server_status is registered, so the invoke can be answered", asyn
 });
 
 test("the tray toggle starts clickable, for a frontend older than this binary", async () => {
-  const rust = await tauriSource();
+  const rust = MAIN;
   const built = rust.match(
     /MenuItemBuilder::with_id\("toggle", "([^"]*)"\)([\s\S]{0,40}?)\.build\(app\)/,
   );

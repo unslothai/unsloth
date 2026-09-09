@@ -1309,6 +1309,7 @@ export const it = {
       copy: "Copia",
       copied: "Copiato",
       commandBuilder: "Generatore di comandi",
+      commandShell: "Shell per tutti i comandi",
       agent: "Agente di programmazione",
       model: "Modello",
       searchModels: "Cerca modelli GGUF...",
@@ -1326,9 +1327,8 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1779,7 +1779,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
+          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1790,20 +1790,11 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
-        desktopPreparingDescription:
-          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
-        desktopReadyToRestartDescription:
-          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
-        desktopReadyToInstallDescription:
-          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
-        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
-        restartToUpdate: "Riavvia per aggiornare",
-        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",
@@ -2003,6 +1994,7 @@ export const it = {
       sourceHfCache: "Cache HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Cartella personalizzata",
       sourceLocalModel: "Modello locale",
       vramOomBadge: "OOM",

@@ -13,16 +13,11 @@
 // the load finally settled hours later. Last issued has to win.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const SOURCE = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SOURCE = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 
 const SYNC = SOURCE.slice(
   SOURCE.indexOf("async function syncInferenceStatusToStore("),

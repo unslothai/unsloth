@@ -82,14 +82,14 @@ def _assert_xformers_035(xformers: list[Requirement], cuda: str, extra: str) -> 
         windows = [r for r in urls if r.url.endswith("win_amd64.whl")]
         assert len(linux) == 1 and len(windows) == 1, f"{extra}: unexpected wheels {xformers}"
         for r in linux + windows:
-            assert f"/whl/{cuda}/xformers-0.0.35-" in r.url, (
-                f"{extra}: xformers not on the {cuda} index: {r.url}"
-            )
+            assert (
+                f"/whl/{cuda}/xformers-0.0.35-" in r.url
+            ), f"{extra}: xformers not on the {cuda} index: {r.url}"
     else:
         (req,) = xformers
-        assert str(req.specifier) == "==0.0.35", (
-            f"{extra}: xformers pinned as '{req.specifier}', expected ==0.0.35"
-        )
+        assert (
+            str(req.specifier) == "==0.0.35"
+        ), f"{extra}: xformers pinned as '{req.specifier}', expected ==0.0.35"
         linux = windows = xformers
 
     for r in xformers:
