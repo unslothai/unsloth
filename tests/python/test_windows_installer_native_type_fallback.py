@@ -1130,17 +1130,28 @@ def test_a_native_resolver_that_throws_says_so_once(tmp_path: Path):
         _script(
             f"""
 # The helper is "available" and throws anyway, which is what a rename between
-# the Test-Path walk and CreateFileW looks like.
+# the Test-Path walk and CreateFileW looks like. The stub has to be the type the
+# resolver actually calls, and it has to count its calls: a stub the resolver
+# never reaches produces the same outward fallback as one that threw, so without
+# the counter this test passes while proving nothing. Add-Type here is the test's
+# own scaffolding; install.ps1 does not call it.
 function Initialize-StudioFinalPathNativeType {{ return $true }}
 Add-Type -TypeDefinition @'
-public class UnslothStudioFinalPathV2 {{
-    public static string Resolve(string path) {{ throw new System.Exception("access is denied"); }}
+public class UnslothStudioFinalPathV3 {{
+    public static int Calls = 0;
+    public static System.IntPtr CreateFileW(
+        string path, uint access, uint share, System.IntPtr security,
+        uint disposition, uint flags, System.IntPtr template) {{
+        Calls++;
+        throw new System.Exception("access is denied");
+    }}
 }}
 '@
 foreach ($i in 1..3) {{ $null = Resolve-StudioFinalPathInfo -Path '{studio}' }}
 $info = Resolve-StudioFinalPathInfo -Path '{studio}'
 Write-Output "EXACT:$($info.Exact)"
 Write-Output "PATH:$($info.Path)"
+Write-Output "CALLS:$([UnslothStudioFinalPathV3]::Calls)"
 """,
             sabotage = False,
         )
@@ -1150,6 +1161,9 @@ Write-Output "PATH:$($info.Path)"
     assert _lines(result, "PATH:")[0].endswith("studio")
     warnings = [line for line in result.stdout.splitlines() if "native helper; continuing" in line]
     assert len(warnings) == 1, warnings
+    # The throwing resolver was really reached, four times, rather than the whole thing
+    # falling back because the type was absent.
+    assert _lines(result, "CALLS:") == ["CALLS:4"]
 
 
 @requires_pwsh

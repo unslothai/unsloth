@@ -16,6 +16,17 @@
 # cover the case where the call itself succeeds.
 
 $ErrorActionPreference = "Stop"
+
+# Refuse rather than assert nonsense. Half the checks below require the native calls to
+# FAIL, which on a healthy Windows host they do not, so a Windows lane running this file
+# would report a pile of failures that say nothing about the code. It was scheduled on a
+# windows-latest job once; exiting here means the next time it happens the message names
+# the reason instead.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Write-Host "SKIP: this file describes a host where kernel32 does not resolve, which Windows is not."
+    exit 0
+}
+
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 # The parser, not tests/studio_setup_ps1/Get-FunctionSource.ps1, which counts braces
