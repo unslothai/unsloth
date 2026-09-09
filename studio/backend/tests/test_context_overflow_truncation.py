@@ -855,10 +855,7 @@ def test_apply_overflow_truncation_leaves_an_unbounded_body_alone():
     """None is "no reservation applies here", not "cap it at nothing"."""
     body = {"messages": _conversation(), "max_tokens": 32000}
 
-    assert (
-        _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: None)
-        is True
-    )
+    assert _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: None) is True
     assert body["max_tokens"] <= max(1024, int(67584 * 0.25))
 
 
@@ -867,8 +864,7 @@ def test_a_repriced_bound_still_takes_the_generation_headroom():
     body = {"messages": _conversation(), "max_tokens": 1}
 
     assert (
-        _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: 60000)
-        is True
+        _apply_overflow_truncation(body, _NICK_ERROR, reprice_max_tokens = lambda _f: 60000) is True
     )
     assert body["max_tokens"] == max(1024, int(67584 * 0.25))
 
