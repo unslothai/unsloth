@@ -17,9 +17,17 @@ export {
 } from "../../../lib/memory/verdict.ts";
 export { MEMORY_FIT_TIGHT_RATIO } from "../../../lib/memory/thresholds.ts";
 
-import { classifyMemoryFit, worseMemoryFit } from "../../../lib/memory/verdict.ts";
+import {
+  classifyMemoryFit,
+  worseMemoryFit,
+} from "../../../lib/memory/verdict.ts";
 import type { MemoryFitVerdict } from "../../../lib/memory/verdict.ts";
 import { formatBytesGiB } from "../../../lib/memory/format.ts";
+import type {
+  ReconciledGpuSelection,
+  SystemGpuDevice,
+} from "../../../hooks/gpu-selection.ts";
+import { gpuMemoryTotalsGb, sharesHostMemory } from "../../../hooks/gpu-vram.ts";
 
 /** A memory figure in bytes, to two decimals. @deprecated Prefer `formatBytesGiB` from
  *  `@/lib/memory/format`, whose name says which unit it takes. This alias exists because a
@@ -59,12 +67,118 @@ export interface MemoryFitCapacity {
   /** Host RAM alone. Bytes pinned OUTSIDE the GPU have to fit in this, and unused VRAM cannot
    *  help them, so it is a separate question from the total. */
   systemRamCapacityGb: number;
-  /** VRAM free on the usable cards right now. Warns only. 0 when nothing was probed. */
+  /** VRAM free on the usable cards right now. Warns only. */
   freeGpuCapacityGb: number;
-  /** Host RAM the machine can hand out right now, less the loader's reserve. Warns only. 0 when unknown. */
+  /** Distinguishes an exhausted GPU budget from an unknown reading. */
+  freeGpuCapacityKnown?: boolean;
+  /** Reserve hidden by clamping the current usable VRAM to zero. */
+  freeGpuReserveDeficitGb?: number;
+  /** Available host RAM after the loader's reserve. Warns only. */
   usableSystemRamGb: number;
+  /** Distinguishes exhausted RAM from an unknown reading. */
+  usableSystemRamKnown?: boolean;
+  /** Host reserve hidden by clamping current usable RAM to zero. */
+  systemRamReserveDeficitGb?: number;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
+  /** Resident bytes returned to the requested pools on unload. Free-memory verdicts only. */
+  reclaimableTotalBytes?: number;
+  /** The GPU share of the above. */
+  reclaimableGpuBytes?: number;
+}
+
+/** Ignore invalid or negative credits. */
+function reclaimableBytes(value: number | undefined): number {
+  return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 0;
+}
+
+/** Keep known host credit; require modelled placement in the requested pool for VRAM. */
+export function resolveReclaimableMemoryCredit(
+	estimate:
+		| (Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> & {
+				weightsBytes: number;
+				moeOffloadUnmodelled?: boolean;
+		  })
+		| null,
+	residentPool: ReconciledGpuSelection,
+	requestedPool: ReconciledGpuSelection,
+	{
+		cpuFallback = false,
+		devices = [],
+		gpuPlacementKnown = false,
+		appleUnifiedMemory = false,
+	}: {
+		cpuFallback?: boolean;
+		devices?: SystemGpuDevice[];
+		gpuPlacementKnown?: boolean;
+		appleUnifiedMemory?: boolean;
+	} = {},
+): { totalBytes: number; gpuBytes: number } {
+	const total = reclaimableBytes(estimate?.totalBytes);
+	const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
+	if (
+		!estimate ||
+		!Number.isFinite(estimate.weightsBytes) ||
+		estimate.weightsBytes < 0
+	)
+		return { totalBytes: 0, gpuBytes: 0 };
+	const files = Math.min(estimate.weightsBytes, total);
+	const includesResidentPool =
+		!requestedPool.ids?.length ||
+		(residentPool.ids != null &&
+			residentPool.ids.length > 0 &&
+			residentPool.indexKind != null &&
+			residentPool.indexKind === requestedPool.indexKind &&
+			residentPool.ids.every((id) => requestedPool.ids!.includes(id)));
+	const residentDevices = residentPool.ids?.length
+		? devices.filter(
+				(device) =>
+					device.indexKind === residentPool.indexKind &&
+					residentPool.ids!.includes(device.index),
+			)
+		: devices;
+	const topologyKnown =
+		residentDevices.length > 0 &&
+		(!residentPool.ids?.length ||
+			(residentPool.indexKind != null &&
+				residentPool.ids.every((id) =>
+					residentDevices.some((device) => device.index === id),
+				))) &&
+		residentDevices.every(
+			(device) =>
+				(sharesHostMemory(device) && device.sharedMemoryHostBackedGb == null) ||
+				(Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0),
+		);
+	const independentGb = appleUnifiedMemory
+		? 0
+		: gpuMemoryTotalsGb(
+				residentDevices.map((device) => ({
+					memory_total_gb: device.memoryTotalGb,
+					shared_memory: sharesHostMemory(device),
+					shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
+				})),
+			).dedicated;
+	// File-backed pages may already count as available RAM. Their pool split is unknown.
+	const gpuMayUseHost =
+		appleUnifiedMemory ||
+		!topologyKnown ||
+		residentDevices.some(sharesHostMemory);
+	const gpuCredit =
+		includesResidentPool &&
+		gpuPlacementKnown &&
+		!cpuFallback &&
+		!estimate.moeOffloadUnmodelled
+			? Math.max(0, gpu - (gpuMayUseHost ? files : 0))
+			: 0;
+	// Only bytes beyond all independent capacity are certainly backed by host RAM.
+	const sharedHostCredit =
+		gpuCredit === 0 && (appleUnifiedMemory || topologyKnown)
+			? Math.max(0, gpu - independentGb * 1024 ** 3 - files)
+			: 0;
+	return {
+		totalBytes: Math.max(0, total - gpu - files) + gpuCredit + sharedHostCredit,
+		gpuBytes: gpuCredit,
+	};
 }
 
 export interface MemoryFitResult {
@@ -101,12 +215,19 @@ export function resolveMemoryFit(
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
   const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
+  const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
+  const reclaimableGpu = Math.min(
+    reclaimableBytes(capacity.reclaimableGpuBytes), reclaimableTotal,
+  );
   // One pool means the WHOLE load draws on that memory, so the pressure question goes to the
   // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
   // alone let a partly CPU-offloaded load on a Vulkan iGPU look comfortable.
-  const freeGpuFit = classifyMemoryFit(
+  const freeGpuFit = classifyAvailableMemory(
     singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
     capacity.freeGpuCapacityGb,
+    capacity.freeGpuCapacityKnown,
+    singleMemoryPool ? reclaimableTotal : reclaimableGpu,
+    capacity.freeGpuReserveDeficitGb,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
   // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
@@ -116,9 +237,12 @@ export function resolveMemoryFit(
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
       : 0;
   // Same question for the other pool. See the note above on why this warns.
-  const usableHostFit = classifyMemoryFit(
+  const usableHostFit = classifyAvailableMemory(
     singleMemoryPool ? estimate.totalBytes : hostShareBytes,
     capacity.usableSystemRamGb,
+    capacity.usableSystemRamKnown,
+    singleMemoryPool ? reclaimableTotal : reclaimableTotal - reclaimableGpu,
+    capacity.systemRamReserveDeficitGb,
   );
   const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
@@ -169,6 +293,30 @@ interface AdvisoryVerdicts {
   rawGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
   hostPressured: boolean;
+}
+
+function classifyAvailableMemory(
+  bytes: number,
+  availableGb: number,
+  known = false,
+  reclaimedBytes = 0,
+  reserveDeficitGb = 0,
+): MemoryFitVerdict {
+  if (
+    !Number.isFinite(availableGb) ||
+    availableGb < 0 ||
+    (availableGb === 0 && !known)
+  ) {
+    return "unknown";
+  }
+  // Pressure is a fraction of post-unload availability, not just allocation growth.
+  const afterUnloadGb = availableGb + Math.max(
+    0,
+    reclaimedBytes / 1024 ** 3 - reclaimableBytes(reserveDeficitGb),
+  );
+  if (known && afterUnloadGb === 0 && Number.isFinite(bytes) && bytes > 0)
+    return "exceeds";
+  return classifyMemoryFit(bytes, afterUnloadGb);
 }
 
 /** At most one note, most actionable first. An unsizable cache outranks any verdict drawn from

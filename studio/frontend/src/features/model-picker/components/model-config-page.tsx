@@ -48,6 +48,7 @@ import {
 import {
   DEFAULT_VRAM_FRACTION,
   aggregateUsableFreeVramGb,
+  aggregateVramReserveDeficitGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -83,6 +84,7 @@ import {
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
+  resolveReclaimableMemoryCredit,
 } from "../model-config/memory-fit";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
@@ -981,6 +983,12 @@ function MemoryEstimateRow({
   usableSystemRamGb,
   isUnifiedMemory,
   singleMemoryPool,
+  freeGpuCapacityKnown,
+  freeGpuReserveDeficitGb,
+  usableSystemRamKnown,
+  systemRamReserveDeficitGb,
+  reclaimableTotalBytes,
+  reclaimableGpuBytes,
   expanded,
   onExpandedChange,
 }: {
@@ -1001,6 +1009,12 @@ function MemoryEstimateRow({
   isUnifiedMemory: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
+  freeGpuCapacityKnown?: boolean;
+  freeGpuReserveDeficitGb: number;
+  usableSystemRamKnown?: boolean;
+  systemRamReserveDeficitGb: number;
+  reclaimableTotalBytes: number;
+  reclaimableGpuBytes: number;
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
 }) {
@@ -1019,6 +1033,12 @@ function MemoryEstimateRow({
     freeGpuCapacityGb,
     usableSystemRamGb,
     singleMemoryPool,
+    freeGpuCapacityKnown,
+    freeGpuReserveDeficitGb,
+    usableSystemRamKnown,
+    systemRamReserveDeficitGb,
+    reclaimableTotalBytes,
+    reclaimableGpuBytes,
   });
   const kvNote = resolveKvNote(estimate);
   const draftCacheNote = resolveDraftCacheNote(
@@ -1980,6 +2000,12 @@ export function ModelConfigPage({
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore((s) => s.loadedLlamaExtraArgs);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
+  const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const mmprojFallbackReason = useChatRuntimeStore((s) => s.mmprojFallbackReason);
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2720,6 +2746,70 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // No resident credit without a reported context; pending settings cannot price it.
+  const residentContext = servedWindow(activeLoadedContext);
+  const residentEstimateRequest =
+    memoryEstimateRequest &&
+    isActiveModel &&
+    loadedConfig &&
+    // Requested settings cannot reconstruct a fallback's actual allocations.
+    !loadedCpuFallback &&
+    !specFallbackReason &&
+    !mmprojFallbackReason &&
+    residentContext != null
+      ? {
+          ...memoryEstimateRequest,
+          nCtx: residentContext,
+          cacheTypeKv: loadedConfig.kvCacheDtype,
+          nParallel: loadedConfig.nParallel,
+          nBatch: loadedConfig.nBatch,
+          nUbatch: loadedConfig.nUbatch,
+          ctxCheckpoints: loadedConfig.ctxCheckpoints ?? null,
+          speculativeType:
+            loadedConfig.speculativeType ?? speculativeFallback ?? null,
+          specDraftNMax: loadedConfig.specDraftNMax,
+          specDraftCacheType: loadedConfig.specDraftCacheDtype ?? null,
+          tensorParallel: loadedConfig.tensorParallel,
+          disableVision: loadedConfig.disableVision,
+          gpuMemoryMode: loadedConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+          gpuLayers:
+            loadedConfig.gpuLayers != null &&
+            loadedConfig.gpuLayers !== GPU_LAYERS_AUTO
+              ? loadedConfig.gpuLayers
+              : null,
+          nCpuMoe: loadedConfig.nCpuMoe ?? null,
+          selectedGpuIds: loadedGpuIds,
+          llamaExtraArgs: loadedLlamaExtraArgs,
+        }
+      : null;
+  const residentEstimate = useMemoryEstimate(residentEstimateRequest);
+  // Only settled estimates can establish resident credit.
+  const reclaimableEstimate =
+    residentEstimateRequest &&
+    residentEstimate.estimate?.available &&
+    !residentEstimate.loading &&
+    !residentEstimate.stale
+      ? residentEstimate.estimate
+      : null;
+  const reclaimableCredit = resolveReclaimableMemoryCredit(
+    reclaimableEstimate,
+    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+    {
+      ids: runtimeConfig.selectedGpuIds ?? null,
+      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+    },
+    {
+      cpuFallback: loadedCpuFallback,
+      devices: gpuDevices,
+      // Fitted placement does not report its final layer count.
+      gpuPlacementKnown:
+        residentEstimateRequest?.gpuMemoryMode === "manual" &&
+        residentEstimateRequest.gpuLayers != null &&
+        residentEstimateRequest.gpuLayers >= 0 &&
+        !loadedLlamaExtraArgs?.length,
+      appleUnifiedMemory: isAppleUnifiedMemory,
+    },
+  );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
@@ -2786,7 +2876,15 @@ export function ModelConfigPage({
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
   );
-  const memoryFreeGpuCapacityGb = useMemo(() => {
+  const memorySystemRamReserveDeficitGb = Math.max(
+    0,
+    2 - (inferenceGpu.systemRamAvailableHostGb || 0),
+  );
+  const {
+    gb: memoryFreeGpuCapacityGb,
+    known: memoryFreeGpuCapacityKnown,
+    reserveDeficitGb: memoryFreeGpuReserveDeficitGb,
+  } = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
         ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
@@ -2799,6 +2897,9 @@ export function ModelConfigPage({
       pinned,
       memoryEffectiveBudgetFraction,
     );
+    const freeVramKnown =
+      pinned.length > 0 &&
+      pinned.every((device) => device.memoryFreeKnown === true);
     // On a ROCm APU this figure is the free space inside a BIOS-carved window, and resolveMemoryFit
     // asks it the WHOLE-LOAD question as soon as the pool is single, so together they warned
     // that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free. The pool's real free
@@ -2806,9 +2907,25 @@ export function ModelConfigPage({
     // Those two together warned that a 60 GiB load does not fit a 96 GiB machine with 60+ GiB free,
     // purely because it exceeds a 48 GiB window.
     if (hasUnifiedMemory && !isAppleUnifiedMemory) {
-      return Math.max(freeVram, memoryUsableSystemRamGb);
+      return {
+        gb: inferenceGpu.systemRamAvailableKnown ? memoryUsableSystemRamGb : 0,
+        known: inferenceGpu.systemRamAvailableKnown === true,
+        reserveDeficitGb: memorySystemRamReserveDeficitGb,
+      };
     }
-    return freeVram;
+    const residentDevices = loadedGpuIds?.length
+      ? pinned.filter((device) =>
+          device.indexKind === loadedGpuIndexKind &&
+          loadedGpuIds.includes(device.index))
+      : pinned;
+    return {
+      gb: freeVram,
+      known: freeVramKnown,
+      reserveDeficitGb: aggregateVramReserveDeficitGb(
+        residentDevices,
+        memoryEffectiveBudgetFraction,
+      ),
+    };
   }, [
     gpuDevices,
     pinnedGpuIds,
@@ -2816,6 +2933,10 @@ export function ModelConfigPage({
     hasUnifiedMemory,
     isAppleUnifiedMemory,
     memoryUsableSystemRamGb,
+    memorySystemRamReserveDeficitGb,
+    inferenceGpu.systemRamAvailableKnown,
+    loadedGpuIds,
+    loadedGpuIndexKind,
   ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
@@ -3065,6 +3186,12 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
+              freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
+              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
+              systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
+              reclaimableTotalBytes={reclaimableCredit.totalBytes}
+              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
               usableSystemRamGb={memoryUsableSystemRamGb}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
