@@ -93,6 +93,7 @@ def _nodes(
     openable: set[str],
     amd_owned: bool = True,
     vendor_readable: bool = True,
+    topology: "bool | None | str" = "as-owned",
 ):
     """A host whose ``present`` nodes exist and whose ``openable`` subset can be opened.
 
@@ -125,7 +126,12 @@ def _nodes(
         "_render_node_vendor",
         lambda p: None if not vendor_readable else ("0x1002" if amd_owned else "0x10de"),
     )
-    monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: amd_owned)
+    # None is a topology that could not be READ, which the closed-node walk answers
+    # differently from one that read and named another vendor. Defaults to the hardware so
+    # every arm written before the distinction existed is unaffected.
+    _topology = amd_owned if topology == "as-owned" else topology
+    monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: _topology is True)
+    monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: _topology)
     # These paths are patched rather than created, so stat cannot name their groups; say
     # so explicitly instead of leaving it to whether the runner happens to have a node at
     # the same path. The derivation itself is exercised in its own tests below.
@@ -970,9 +976,12 @@ def _run_scope_defs(lines: "list[str]", *, nvidia: bool = False) -> "list[str]":
     every interpolated name comes back EMPTY and the arm reads as a command naming nobody.
     _has_usable_nvidia_gpu is the exception, stubbed because the real one runs nvidia-smi
     and would answer from the runner's own hardware -- false by default, so each arm reads
-    as the AMD-only host it was written for.
+    as the AMD-only host it was written for. _requested_llama_backend is what all three
+    predicates read the backend request through, so lifting it is what makes the legacy
+    UNSLOTH_FORCE_VULKAN reach them here as it does in a real run.
     """
     return [
+        _shell_fn(lines, "_requested_llama_backend"),
         _shell_fn(lines, "_torch_index_url_leaf"),
         _shell_fn(lines, "_is_pip_rocm_family_leaf"),
         _shell_fn(lines, "_torch_opens_amd_nodes"),
@@ -1089,6 +1098,9 @@ def _install_sh_hint(
             # _torch_opens_amd_nodes classifies a ROCm index through this,
             # so lifting one without the other measures a missing function.
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            # Every scope predicate reads the backend request through this, so a
+            # harness that omits it measures a missing function rather than a rule.
+            _shell_fn(lines, "_requested_llama_backend"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             # The block quotes every name it interpolates into a pasted command through
@@ -1481,6 +1493,7 @@ def _reason_with_masks(
         "HIP_VISIBLE_DEVICES",
         "ROCR_VISIBLE_DEVICES",
         "GPU_DEVICE_ORDINAL",
+        "GGML_VK_VISIBLE_DEVICES",
     ):
         monkeypatch.delenv(var, raising = False)
     for var, value in env.items():
@@ -1622,6 +1635,9 @@ def _diag_route(
             # these tests are about, so a stub would have them assert about the stub.
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            # Every scope predicate reads the backend request through this, so a
+            # harness that omits it measures a missing function rather than a rule.
+            _shell_fn(lines, "_requested_llama_backend"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
             # live one would answer from the runner's own hardware. False by default, so
@@ -4192,6 +4208,9 @@ def _nvidia_probe_calls(backend = None):
             # _torch_opens_amd_nodes classifies a ROCm index through this,
             # so lifting one without the other measures a missing function.
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            # Every scope predicate reads the backend request through this, so a
+            # harness that omits it measures a missing function rather than a rule.
+            _shell_fn(lines, "_requested_llama_backend"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
@@ -5301,3 +5320,169 @@ def test_the_installer_names_the_userspace_when_the_node_is_already_there():
     assert "Install the ROCm kernel stack" not in out
     assert "kernel stack is already loaded" in out
     assert "rocminfo" in out
+
+
+def _resolved_backend(**env: str) -> str:
+    """What install.sh resolves the backend request to, for one environment."""
+    script = "\n".join(
+        [
+            _shell_fn(_install_sh_lines(), "_requested_llama_backend"),
+            "_requested_llama_backend",
+        ]
+    )
+    _base = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
+    }
+    return _install_sh_run(script, env = {**_base, **env}).strip()
+
+
+def _gpu_node_scope(**env: str) -> str:
+    """Whether _run_may_open_a_gpu_node fires, on an NVIDIA host with --no-torch.
+
+    That host is the one the automatic route answers NO for, so anything that says yes here
+    says it because the run named a backend.
+    """
+    lines = _install_sh_lines()
+    script = "\n".join(
+        [
+            "SKIP_TORCH=true",
+            "TORCH_INDEX_URL=''",
+            "_has_usable_nvidia_gpu() { return 0; }",
+            _shell_fn(lines, "_requested_llama_backend"),
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
+            "_run_may_open_a_gpu_node && echo yes || echo no",
+        ]
+    )
+    _base = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
+    }
+    return _install_sh_run(script, env = {**_base, **env}).strip()
+
+
+def test_the_legacy_vulkan_flag_still_names_a_backend():
+    """effective_backend_request resolves UNSLOTH_FORCE_VULKAN through
+    environment_backend_override, so a run that sets only the legacy flag installs the
+    Vulkan bundle. Reading the new variable alone left that run on the automatic route
+    here, where an NVIDIA card answers no and every render-node diagnosis is suppressed for
+    an install that opens exactly those nodes."""
+    assert _resolved_backend(UNSLOTH_FORCE_VULKAN = "1") == "vulkan"
+    assert _gpu_node_scope(UNSLOTH_FORCE_VULKAN = "1") == "yes"
+
+
+def test_a_recognised_backend_still_outranks_the_legacy_flag():
+    """The precedence environment_backend_override documents: a recognised public value is
+    authoritative, so the legacy boolean cannot pull a cuda install back to Vulkan."""
+    assert (
+        _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1")
+        == "cuda"
+    )
+    assert (
+        _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "cuda", UNSLOTH_FORCE_VULKAN = "1") == "no"
+    )
+
+
+def test_auto_outranks_the_legacy_flag_too():
+    """"auto" is a recognised value and a request to DETECT, which is why
+    environment_backend_override returns it rather than falling through. Without this the
+    fix could read as "the legacy flag always wins", which would take a host that asked for
+    detection off the automatic route."""
+    assert (
+        _resolved_backend(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1")
+        == "auto"
+    )
+    assert (
+        _gpu_node_scope(UNSLOTH_LLAMA_CPP_BACKEND = "auto", UNSLOTH_FORCE_VULKAN = "1") == "no"
+    )
+
+
+def test_the_legacy_flag_set_to_zero_is_not_a_request():
+    """The other control: only the four truthy spellings count, exactly as the Python side
+    lists them, so UNSLOTH_FORCE_VULKAN=0 leaves the automatic route alone."""
+    assert _resolved_backend(UNSLOTH_FORCE_VULKAN = "0") == ""
+    assert _gpu_node_scope(UNSLOTH_FORCE_VULKAN = "0") == "no"
+
+
+def test_a_vulkan_mask_that_selects_nothing_is_named_beside_the_node(monkeypatch, linux):
+    """A Vulkan build reads none of the four HIP/CUDA selectors, so the loop above skips
+    them all and the node repair was returned as the complete explanation. ggml reads
+    GGML_VK_VISIBLE_DEVICES itself and _run_vulkan_probe passes it through, and an empty
+    value extracts no ordinal at all, so the probe stays empty however the node is owned."""
+    reason = _reason_with_masks(monkeypatch, {"GGML_VK_VISIBLE_DEVICES": ""}, {"vulkan"})
+    assert "visibility mask is also in force" in reason
+    assert "GGML_VK_VISIBLE_DEVICES is empty" in reason
+
+
+def test_a_vulkan_mask_this_cannot_bound_is_reported_as_unresolved(monkeypatch, linux):
+    """Its ordinals index the RAW vkEnumeratePhysicalDevices list, before CPU devices are
+    dropped and ICDs deduplicated, so this process does not have the bound -- and an
+    ordinal past the raw end throws rather than hiding. Reported to check rather than
+    called a blocker, since naming it one would invent a fault."""
+    reason = _reason_with_masks(monkeypatch, {"GGML_VK_VISIBLE_DEVICES": "3"}, {"vulkan"})
+    assert "names a device this cannot resolve" in reason
+    assert "GGML_VK_VISIBLE_DEVICES='3'" in reason
+
+
+def test_a_hip_build_is_not_told_about_the_vulkan_selector(monkeypatch, linux):
+    """The control, and the reason the four are skipped for Vulkan in the first place: a
+    build reads its own selectors and no others, so naming this one to a HIP install sends
+    the user after a variable its runtime never reads."""
+    reason = _reason_with_masks(monkeypatch, {"GGML_VK_VISIBLE_DEVICES": ""}, {"hip"})
+    assert "GGML_VK_VISIBLE_DEVICES" not in reason
+
+
+def test_a_vulkan_build_with_no_such_mask_says_nothing_about_it(monkeypatch, linux):
+    """The other control: unset is not empty. Without it the fix could be "always mention
+    it", which annotates every Vulkan diagnosis with a variable nobody set."""
+    reason = _reason_with_masks(monkeypatch, {}, {"vulkan"})
+    assert "GGML_VK_VISIBLE_DEVICES" not in reason
+
+
+def test_a_hidden_kfd_topology_still_reports_the_node_when_drm_names_amd(monkeypatch, linux):
+    """A container can map /dev/kfd and hide /sys/class/kfd, and the guard read that
+    unreadable sysfs the same as "this is not an AMD GPU". DRM says otherwise and says it
+    independently, so /dev/kfd was dropped from a list the render node stayed in -- and
+    where the two carry different owning groups the hint then named a membership that
+    leaves KFD shut and ROCm with nothing to open."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        topology = None,
+    )
+    assert amd.amd_nodes_closed_to_this_user() == ["/dev/kfd", "/dev/dri/renderD128"]
+
+
+def test_a_readable_topology_naming_no_amd_gpu_still_drops_the_node(monkeypatch, linux):
+    """The control that keeps an NVIDIA-only host silent. A topology that READS and names
+    no AMD GPU is positive evidence rather than the absence of it, so the DRM fallback must
+    not fire there however the render nodes read."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        amd_owned = False,
+        topology = False,
+    )
+    assert "/dev/kfd" not in amd.amd_nodes_closed_to_this_user()
+
+
+def test_a_hidden_topology_with_no_confirmed_amd_node_drops_it_too(monkeypatch, linux):
+    """The other control: unreadable everywhere is not evidence either. The fallback is
+    vendor-CONFIRMED, never assumed, so an unreadable render vendor cannot stand in for
+    the topology this already could not read."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        vendor_readable = False,
+        topology = None,
+    )
+    assert "/dev/kfd" not in amd.amd_nodes_closed_to_this_user()

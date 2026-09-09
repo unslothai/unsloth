@@ -643,6 +643,46 @@ def _render_node_is_amd(path: str) -> bool:
     return _render_node_vendor(path) == _AMD_PCI_VENDOR_ID
 
 
+def _kfd_topology_amd_state() -> "bool | None":
+    """Whether KFD's topology names an AMD GPU, or ``None`` when it cannot be read.
+
+    _kfd_topology_has_an_amd_gpu collapses those two, which is right wherever the question
+    is "is there evidence". Deciding whether /dev/kfd belongs in the CLOSED list needs them
+    apart: a topology that reads and reports only NVIDIA (vendor 4318) or the CPU node is
+    positive evidence the node is not AMD's to repair, while one that cannot be read is no
+    evidence either way and is exactly what a container hiding the sysfs while mapping the
+    node produces.
+    """
+    nodes = "/sys/class/kfd/kfd/topology/nodes"
+    try:
+        entries = os.listdir(nodes)
+    except OSError:
+        return None
+    _read_one = False
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        _read_one = True
+        if re.search(r"\bvendor_id\s+4098\b", properties):
+            return True
+    # A directory that lists but whose properties will not open says nothing either.
+    return False if _read_one else None
+
+
+def _a_confirmed_amd_render_node_exists() -> bool:
+    """Whether DRM names an AMD render node outright, with its vendor actually read.
+
+    The strict counterpart to _amd_render_node_exists, which reads an unreadable vendor as
+    present on purpose. Nothing here may be assumed: this is used as INDEPENDENT evidence
+    of AMD silicon where KFD's topology cannot be read, so an unknown vendor would let an
+    NVIDIA-only host claim an AMD node.
+    """
+    return any(_render_node_is_amd(path) for path in glob.glob(_DRI_RENDER_GLOB))
+
+
 def _kfd_topology_has_an_amd_gpu() -> bool:
     """Whether KFD enumerates an AMD GPU node, so ``/dev/kfd`` is one worth opening.
 
@@ -650,20 +690,7 @@ def _kfd_topology_has_an_amd_gpu() -> bool:
     NVIDIA's open kernel module registers KFD nodes of its own under vendor_id 4318,
     so AMD ownership is confirmed rather than assumed.
     """
-    nodes = "/sys/class/kfd/kfd/topology/nodes"
-    try:
-        entries = os.listdir(nodes)
-    except OSError:
-        return False
-    for entry in entries:
-        try:
-            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
-                properties = fh.read()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if re.search(r"\bvendor_id\s+4098\b", properties):
-            return True
-    return False
+    return _kfd_topology_amd_state() is True
 
 
 def amd_kfd_gpu_node_count() -> Optional[int]:
@@ -1279,7 +1306,17 @@ def amd_nodes_closed_to_this_user() -> list[str]:
         if _amd_in_topology is None:
             _amd_in_topology = _kfd_topology_has_an_amd_gpu()
         if path == _KFD_NODE:
-            if _amd_in_topology:
+            # DRM is independent evidence of the same silicon, and it is only consulted
+            # where KFD's own topology could not be read at all -- a readable topology
+            # naming no AMD GPU still excludes the node, which is what keeps an NVIDIA-only
+            # host silent. Without the fallback a host whose sysfs is hidden reported only
+            # the render node, and where the two carry different owning groups (video
+            # against render) the hint named a membership that leaves KFD shut and ROCm
+            # with nothing to open. Vendor-confirmed, never assumed: an unreadable render
+            # vendor is not evidence of AMD either.
+            if _amd_in_topology or (
+                _kfd_topology_amd_state() is None and _a_confirmed_amd_render_node_exists()
+            ):
                 closed.append(path)
             continue
         _vendor = _render_node_vendor(path)

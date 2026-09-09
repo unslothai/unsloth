@@ -9961,6 +9961,19 @@ class LlamaCppBackend:
                 first = value.split(",")[0].strip()
                 return first.lower().startswith("gpu-")
 
+            def _vk_selects_no_device(value: str) -> bool:
+                # ggml stops reading at the first token that has no integer prefix, so if
+                # the FIRST one does not, device_indices stays empty and the Vulkan backend
+                # enumerates nothing. A leading sign counts as a prefix: size_t extraction
+                # accepts "-1" and wraps it, which then throws as out of range rather than
+                # selecting nothing.
+                _first = value.replace(",", " ").split()
+                if not _first:
+                    return True
+                _token = _first[0]
+                _digits = _token[1:] if _token[:1] in ("+", "-") else _token
+                return not _digits[:1].isdigit()
+
             def _is_an_illegal_rocr_selector(value: str) -> bool:
                 # ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) calls a token
                 # Illegal when it "can't be evaluated into an instance of Device UUID or
@@ -10039,6 +10052,34 @@ class LlamaCppBackend:
                     blocking.append(phrase)
                 elif _cannot_be_resolved(raw):
                     unresolved.append(phrase)
+            # The four above are the HIP/CUDA selectors, which a Vulkan build reads none
+            # of. GGML_VK_VISIBLE_DEVICES is the one it DOES read, and _run_vulkan_probe
+            # passes it through to ggml deliberately, so it is the only selector that can
+            # empty a Vulkan probe -- and reporting the node repair without it named a
+            # complete explanation that reopening the node does not deliver.
+            #
+            # Only the two ends are decidable here. ggml_vk_instance_init replaces commas
+            # with spaces and reads ordinals with `ss >> tmp` against the RAW
+            # vkEnumeratePhysicalDevices list, before CPU devices are dropped and ICDs
+            # deduplicated, so this process does not have the bound: a value whose first
+            # token has no integer prefix -- the empty string included -- extracts nothing
+            # and selects no device at all, while an ordinal past the raw end throws
+            # "Invalid device index" rather than hiding. Anything else is reported as
+            # unresolved, since naming it a blocker would invent a fault.
+            if _is_vulkan:
+                _vk_raw = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+                if _vk_raw is not None:
+                    _vk_phrase = (
+                        f"GGML_VK_VISIBLE_DEVICES={_vk_raw!r}"
+                        if _vk_raw.strip()
+                        else "GGML_VK_VISIBLE_DEVICES is empty"
+                    )
+                    masks.append(_vk_phrase)
+                    if _vk_selects_no_device(_vk_raw):
+                        blocking.append(_vk_phrase)
+                    else:
+                        unresolved.append(_vk_phrase)
+
             mask_note = f" ({', '.join(masks)})" if masks else ""
 
             node_hint = None

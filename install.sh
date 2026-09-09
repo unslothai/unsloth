@@ -5657,8 +5657,7 @@ _torch_opens_amd_nodes() {
 # "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside this set and normalises it
 # away (is_requestable_backend -> None -> auto), so a typo lands on the automatic route.
 _auto_bundle_opens_amd_nodes() {
-    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-            | awk '{$1=$1; print tolower($0)}')" in
+    case "$(_requested_llama_backend)" in
         cpu|cuda|rocm|hip|vulkan) return 0 ;;
     esac
     # Memoized: _has_usable_nvidia_gpu shells out to `nvidia-smi -L` and the two scope
@@ -5675,10 +5674,29 @@ _auto_bundle_opens_amd_nodes() {
     return 0
 }
 
+# The effective llama.cpp backend request, resolved the way
+# utils/prebuilt/llama_backend.py::environment_backend_override resolves it: a RECOGNISED
+# UNSLOTH_LLAMA_CPP_BACKEND wins outright ("auto" included, being a request to detect), and
+# only an absent or unrecognised one leaves the legacy UNSLOTH_FORCE_VULKAN in effect.
+# Reading the new variable alone put UNSLOTH_FORCE_VULKAN=1 on the automatic route here while
+# effective_backend_request built a Vulkan bundle, so on a CUDA-indexed or hybrid host the
+# render-node diagnoses were suppressed for a run that opens exactly those nodes.
+_requested_llama_backend() {
+    _rlb=$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')
+    case "$_rlb" in
+        cpu|cuda|rocm|hip|vulkan|auto) printf '%s\n' "$_rlb"; return 0 ;;
+    esac
+    case "$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')" in
+        1|true|yes|on) printf '%s\n' vulkan; return 0 ;;
+    esac
+    # An unrecognised value falls through unchanged, so the callers' cases miss it and the
+    # automatic route decides, exactly as setup.sh normalises a typo away to auto.
+    printf '%s\n' "$_rlb"
+}
+
 _run_may_open_kfd() {
     _torch_opens_amd_nodes && return 0
-    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-            | awk '{$1=$1; print tolower($0)}')" in
+    case "$(_requested_llama_backend)" in
         vulkan|cpu|cuda) return 1 ;;
     esac
     _auto_bundle_opens_amd_nodes || return 1
@@ -5691,8 +5709,7 @@ _run_may_open_kfd() {
 # nothing in the run was going to touch.
 _run_may_open_a_gpu_node() {
     _torch_opens_amd_nodes && return 0
-    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-            | awk '{$1=$1; print tolower($0)}')" in
+    case "$(_requested_llama_backend)" in
         cpu|cuda) return 1 ;;
     esac
     _auto_bundle_opens_amd_nodes || return 1
@@ -5741,8 +5758,7 @@ fi
 # the rocm or vulkan bundle read as false, and the SKIP_TORCH override could not catch it
 # because that only runs when no wheel is installed. This only ever turns the route ON: a
 # cpu or cuda request is still settled by the two scope predicates below.
-case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-        | awk '{$1=$1; print tolower($0)}')" in
+case "$(_requested_llama_backend)" in
     rocm|hip|vulkan) _amd_node_diag_route=true ;;
 esac
 # Separate branches, not one branch with an inner test, because they need DIFFERENT
