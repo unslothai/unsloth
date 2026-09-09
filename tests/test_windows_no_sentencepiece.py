@@ -49,7 +49,9 @@ def _clean(monkeypatch):
     yield
 
 
-@pytest.mark.parametrize("platform,expected", [("win32", True), ("linux", False), ("darwin", False)])
+@pytest.mark.parametrize(
+    "platform,expected", [("win32", True), ("linux", False), ("darwin", False)]
+)
 def test_the_default_is_windows_only(platform, expected, monkeypatch):
     """WSL reports linux and is deliberately in the second group: App Control does not enforce
     over ELF binaries in the guest, so there is no extension for it to refuse there."""
@@ -146,12 +148,15 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     )
 
 
-@pytest.mark.parametrize("platform,env,expect_disabled", [
-    ("win32", None, True),
-    ("win32", "0", False),
-    ("linux", None, False),
-    ("linux", "1", True),
-])
+@pytest.mark.parametrize(
+    "platform,env,expect_disabled",
+    [
+        ("win32", None, True),
+        ("win32", "0", False),
+        ("linux", None, False),
+        ("linux", "1", True),
+    ],
+)
 def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
     """The package helper and the inlined Studio condition, driven through the same cases.
     Compared by behaviour rather than by source text, which would pass on two implementations
@@ -206,9 +211,14 @@ def test_transformers_reports_it_absent_and_never_loads_the_extension():
         """
     )
     out = subprocess.run(
-        [sys.executable, "-c", program], capture_output = True, text = True, timeout = 600,
+        [sys.executable, "-c", program],
+        capture_output = True,
+        text = True,
+        timeout = 600,
     )
     assert "AVAILABLE False" in out.stdout, (out.stdout, out.stderr[-2000:])
     assert "ALIVE []" in out.stdout, (
-        "the compiled extension must never be loaded", out.stdout, out.stderr[-2000:],
+        "the compiled extension must never be loaded",
+        out.stdout,
+        out.stderr[-2000:],
     )
