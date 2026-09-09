@@ -1252,7 +1252,7 @@ class TestInstallUvCacheRootParity:
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
             # The call form: the comment above the gate names the cmdlet too.
             window = ps1_marker[
-                start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
+                start : ps1_marker.index("[System.IO.File]::WriteAllText($markerFile", start)
             ]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
