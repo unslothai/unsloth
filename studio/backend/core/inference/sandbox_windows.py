@@ -90,6 +90,8 @@ def prepare(plan, capability):
         try:
             proc = srt_adapter.spawn(request, cancel_event = plan.cancel_event, **kwargs)
         except Exception as exc:
+            # Recheck native state on the next request; never replay this launch.
+            srt_probe.invalidate_cache()
             raise SandboxBuildError(f"Windows sandbox launch failed: {exc}") from exc
         prepared.cleanup_callbacks.append(lambda: srt_adapter.release_control(proc))
         return proc

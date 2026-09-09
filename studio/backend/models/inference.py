@@ -1983,6 +1983,11 @@ def _normalize_permission_mode(value: Any) -> Any:
 
 
 class ChatCompletionRequest(BaseModel):
+    """OpenAI-compatible chat completion request.
+
+    Non-OpenAI extension fields are marked with 'x-unsloth'.
+    """
+
     tool_execution_mode: Literal["auto", "required"] = "auto"
 
     @field_validator("tool_execution_mode", mode = "before")
@@ -1993,11 +1998,6 @@ class ChatCompletionRequest(BaseModel):
                 "Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode."
             )
         return value
-
-    """OpenAI-compatible chat completion request.
-
-    Non-OpenAI extension fields are marked with 'x-unsloth'.
-    """
 
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
@@ -3096,6 +3096,8 @@ class ResponsesFunctionTool(BaseModel):
 
 
 class ResponsesRequest(BaseModel):
+    """OpenAI Responses API request."""
+
     tool_execution_mode: Literal["auto", "required"] = "auto"
 
     @field_validator("tool_execution_mode", mode = "before")
@@ -3106,8 +3108,6 @@ class ResponsesRequest(BaseModel):
                 "Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode."
             )
         return value
-
-    """OpenAI Responses API request."""
 
     model: str = Field("default", description = "Model identifier")
     input: Union[str, list[ResponsesInputItem]] = Field(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { createStore } from "zustand/vanilla";
 
 test("new profiles use Auto and obsolete selections retain Required while clearing grants", () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -54,7 +55,37 @@ test("serialized tool mode is refreshed after waits and an actual 401 refresh", 
   try {
     const payload: Record<string, unknown> = { model: "test", messages: [] };
     await Promise.resolve(); // The first-save/admission owner has yielded.
-    for await (const _ of api.streamChatCompletions(payload, new AbortController().signal, null, () => { payload.tool_execution_mode = mode; })) { /* Drain SSE. */ }
+    for await (const event of api.streamChatCompletions(payload, new AbortController().signal, null, () => { payload.tool_execution_mode = mode; })) { void event; }
     assert.deepEqual(requests.map(r => r.tool_execution_mode), ["auto", "required"]);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("post-setup forced checks share one fresh request after an older check settles", async () => {
+  type State = { checking: boolean; capability: { available: boolean } | null; check: (force?: boolean) => Promise<void> };
+  let finishOld!: (response: Response) => void;
+  const oldResponse = new Promise<Response>(resolve => { finishOld = resolve; });
+  const requests: string[] = [];
+  const module = loadWithStubs<{ useIsolationStore: { getState: () => State } }>(
+    new URL("../src/features/chat/tool-isolation.ts", import.meta.url), {
+      zustand: { create: (factory: () => State) => createStore(factory) },
+      "@/features/auth": { authFetch: async (url: string) => {
+        requests.push(url);
+        return requests.length === 1 ? oldResponse : Response.json({ available: true });
+      } },
+    },
+  );
+  const store = module.useIsolationStore;
+  const old = store.getState().check();
+  assert.equal(store.getState().check(), old);
+  const afterSetup = store.getState().check(true);
+  assert.equal(store.getState().check(true), afterSetup);
+  assert.equal(requests.length, 1);
+  finishOld(Response.json({ available: false }));
+  await Promise.all([old, afterSetup]);
+  assert.deepEqual(requests, [
+    "/api/inference/tool-isolation/capability?force=false",
+    "/api/inference/tool-isolation/capability?force=true",
+  ]);
+  assert.equal(store.getState().capability?.available, true);
+  assert.equal(store.getState().checking, false);
 });

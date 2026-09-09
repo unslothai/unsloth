@@ -20,6 +20,7 @@ function initialMode() {
   } catch { return { mode: "auto" as const, reselect: false }; }
 }
 let flight: Promise<void> | undefined;
+let forcedRefresh: Promise<void> | undefined;
 export const useIsolationStore = create<{
   mode: IsolationMode; reselect: boolean; capability: IsolationCapability | null;
   checking: boolean; error: string | null; setMode: (mode: IsolationMode) => void;
@@ -30,8 +31,14 @@ export const useIsolationStore = create<{
     try { localStorage.setItem(storageKey, mode); } catch { /* Keep the current selection in memory. */ }
     useIsolationStore.setState({ mode, reselect: false });
   },
-  check(force = false) {
-    if (flight) return flight;
+  check(force = false): Promise<void> {
+    if (flight) {
+      if (!force) return flight;
+      forcedRefresh ??= flight
+        .then(() => useIsolationStore.getState().check(true))
+        .finally(() => { forcedRefresh = undefined; });
+      return forcedRefresh;
+    }
     useIsolationStore.setState({ checking: true, error: null });
     flight = (async () => {
       try {

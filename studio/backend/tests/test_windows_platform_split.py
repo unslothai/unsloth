@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 import builtins
 import concurrent.futures
 import subprocess
@@ -157,3 +158,61 @@ def test_isolation_failure_stops_model_retries():
     assert controller.force_final_answer
     assert controller.active_tools() == []
     assert controller.prepare_call(call).action == "disabled"
+
+
+@pytest.mark.parametrize("mode", ["auto", "required"])
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_failed_windows_admission_rechecks_next_request_without_replay(
+    monkeypatch, tmp_path, mode, kind
+):
+    from core.inference import sandbox_windows, srt_adapter, srt_probe
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(srt_adapter, "installation_identity", lambda: "unchanged-runtime")
+    monkeypatch.setattr(srt_probe, "runtime_inputs", lambda: ())
+    monkeypatch.setattr(srt_probe, "_windows_probe_shell", lambda: sys.executable)
+    available = [True]
+    probes = []
+
+    def probe(**kwargs):
+        probes.append(available[0])
+        return available[0], "controlled native readiness"
+
+    monkeypatch.setattr(srt_probe, "_native_probe", probe)
+    monkeypatch.setattr(srt_adapter, "request_for", lambda *args: {})
+    launches = []
+
+    def fail(*args, **kwargs):
+        launches.append(1)
+        raise srt_adapter.SrtError("native setup is no longer available")
+
+    monkeypatch.setattr(srt_adapter, "spawn", fail)
+    host_starts = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: host_starts.append(1))
+    srt_probe.invalidate_cache()
+    try:
+        assert sandbox_windows.capability_snapshot().available
+        assert sandbox_windows.capability_snapshot().available
+        assert probes == [True]
+        available[0] = False
+        plan = os_sandbox.ToolLaunchPlan(
+            (sys.executable,), str(tmp_path), {}, requested_mode = mode, execution_kind = kind
+        )
+        with pytest.raises(os_sandbox.SandboxBuildError, match = "launch failed"):
+            os_sandbox.spawn_prepared_launch(os_sandbox.prepare_tool_launch(plan))
+        assert launches == [1]
+        assert host_starts == []
+        assert probes == [True]
+        if mode == "required":
+            with pytest.raises(os_sandbox.SandboxUnavailableError):
+                os_sandbox.prepare_tool_launch(plan)
+            assert host_starts == []
+        else:
+            next_launch = os_sandbox.prepare_tool_launch(plan)
+            assert not next_launch.execution_record.os_isolation
+            os_sandbox.spawn_prepared_launch(next_launch)
+            assert host_starts == [1]
+        assert probes == [True, False]
+        assert launches == [1]
+    finally:
+        srt_probe.invalidate_cache()
