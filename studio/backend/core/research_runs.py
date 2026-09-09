@@ -119,8 +119,6 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
-# routes.inference's refusal for a backend with no grammar engine, the one guided-decoding
-# refusal a prompt-only re-send can answer. Two other refusals carry the same code and param.
 _NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
@@ -597,10 +595,7 @@ async def _response_format_unsupported(response: httpx.Response) -> bool:
         isinstance(error, dict)
         and error.get("code") == "unsupported_parameter"
         and error.get("param") == "response_format"
-        # The code/param pair alone is not this refusal: routes.inference sends the same pair
-        # when the contract cannot be honored for a reason a prompt-only re-send does not
-        # address -- an audio reply, or Unsloth's own tool loop. Re-sending those drops the
-        # contract and still gets refused, or worse reaches a route that answers with speech.
+        # Code and param alone also match the audio and tool-loop refusals, which no re-send fixes.
         and _NO_GRAMMAR_ENGINE_DETAIL in str(error.get("message") or "")
     )
 
@@ -1722,9 +1717,8 @@ class ResearchSupervisor:
                                 and isinstance(exc, httpx.HTTPStatusError)
                                 and await _response_format_unsupported(exc.response)
                             ):
-                                # MLX/transformers cannot enforce a grammar. Research already
-                                # prompts for JSON and validates it; retry once without guided
-                                # decoding. Negotiate after routing, including any model switch.
+                                # No grammar engine here, but the prompts ask for JSON and the
+                                # output is validated. Retry once without it, after routing.
                                 del payload["response_format"]
                                 await exc.response.aclose()
                                 response = None

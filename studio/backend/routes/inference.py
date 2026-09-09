@@ -21321,9 +21321,7 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
-# Research asks for JSON it then parses, so a spoken reply is not a degraded answer, it is no
-# answer. The model that serves a request is whichever one is loaded when it arrives, so the
-# caller cannot rule speech out by naming a model: it says so per request instead.
+# The loaded model serves the request, so a caller that cannot use speech says so per request.
 REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
 
 

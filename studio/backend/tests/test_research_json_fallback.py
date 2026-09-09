@@ -22,14 +22,10 @@ from utils.api_errors import install_api_error_handlers
 from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
 
-# The whole refusal routes.inference sends for a backend with no grammar engine, message
-# included: the code and param alone do not identify it, so a fixture without the message
-# would assert a retry the worker no longer performs.
 _NO_GRAMMAR_ENGINE = (
     "response_format needs the llama.cpp grammar engine; load a GGUF model to use it."
 )
-# The two refusals that share the code and param but not the cause. Both are quoted from
-# routes.inference; the real-route cases above keep these strings honest.
+# Same code and param, different cause. The real-route cases keep these strings honest.
 _AUDIO_REFUSAL_MESSAGE = (
     "response_format cannot be honored by an audio reply; send the request to a text model "
     "to use guided decoding."
@@ -186,9 +182,6 @@ def test_supported_json_mode_keeps_the_format(research_call, provider):
         (422, _REFUSAL, False, True),
         (400, _REFUSAL, True, True),
         (400, _REFUSAL, False, False),
-        # Same code and param, a cause a prompt-only re-send does not address. Dropping the
-        # contract here would re-send into an audio reply or Unsloth's tool loop instead of
-        # surfacing the refusal that names the real problem.
         (400, _refusal(_AUDIO_REFUSAL_MESSAGE), False, True),
         (400, _refusal(_TOOL_LOOP_REFUSAL_MESSAGE), False, True),
         (400, _refusal(""), False, True),
@@ -365,10 +358,8 @@ def test_ordinary_audio_request_retains_audio_dispatch(monkeypatch):
 
 @pytest.mark.parametrize("gguf", [True, False], ids = ["gguf", "non-gguf"])
 def test_a_request_without_headers_still_reaches_audio(monkeypatch, gguf):
-    """Not every caller of this route carries headers: the durable-run producer builds its
-    own request, and the audio monitor cases stand one in without them. Reading the opt-out
-    unguarded turned an audio reply into an AttributeError for all of them, so it goes
-    through the same guarded reader the UI-events header uses."""
+    """The durable-run producer builds its own request without headers, so reading the
+    opt-out off request.headers turned every audio reply there into an AttributeError."""
     backend = _ScriptedBackend(_fixed("unused"))
     backend.models["sf-model"].update(is_audio = True, audio_type = "tts")
     audio_calls = []
@@ -496,10 +487,7 @@ def test_planning_after_fallback_still_validates_before_saving(monkeypatch, rese
 
 
 def test_json_fallback_does_not_restart_the_total_timeout(research_call):
-    # Real time, so the numbers carry the margin rather than the minimum. The refusal lands at
-    # 1.0s, the retry is dispatched there and would answer at 2.0s, and the 1.6s wall clock cuts
-    # it off in between: 600ms of slack for scheduling, against the 150ms a 0.4s/0.25s pairing
-    # leaves. Under `-n 4` on a loaded runner that difference is the whole flake.
+    # 600ms of scheduling slack: a 0.4s/0.25s pairing leaves 150ms, which flakes under -n 4.
     research_call.run["config"]["budgets"]["modelTimeoutSeconds"] = 1.6
     sent = []
 
