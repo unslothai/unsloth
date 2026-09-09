@@ -675,8 +675,11 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
         assert run.rc == 0, run.log[-8000:]
         # Judged before the cleanup below, which would otherwise restore the bytes
         # itself and advance the mtime the rebuild assertion reads.
-        repaired = victim.is_file() and victim.read_bytes() != b""
-        assert repaired, "the update exited 0 and left the truncated sidecar file as it was"
+        restored = victim.read_bytes() if victim.is_file() else b""
+        assert restored != b"", "the update exited 0 and left the truncated sidecar file as it was"
+        assert restored == saved, (
+            "the rebuilt sidecar file differs from the bytes the settled install had"
+        )
     finally:
         if victim.is_file() and victim.read_bytes() == b"":
             victim.write_bytes(saved)
@@ -695,9 +698,12 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     """The manifest is the only record of what the last pass did. Without it every step
     must run -- and every step must then find its work already done, so the venv comes
     out identical."""
-    directory, before = settled
+    directory, _ = settled
     manifest = install.parent.parent / "unsloth_install_manifest.json"
     saved = manifest.read_bytes()
+    # Baseline taken here, not from the fixture: the fault tests before this one repair
+    # what they broke, and a repair may legitimately move a record or an mtime.
+    before = snapshot(install)
     manifest.unlink()
     try:
         run = run_update(directory, "fault-manifest", local = True)
