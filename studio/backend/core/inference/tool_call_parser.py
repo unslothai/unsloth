@@ -3057,6 +3057,13 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not probe.startswith("{"):
         return False
+    # Same quadratic shape as the Gemma sibling: the loops call this per cumulative snapshot
+    # while the object is still arriving, and the walk restarts at ``{`` each time. Without a
+    # ``}`` anywhere the leading object cannot have closed, which ``in`` settles in C. Counting
+    # braces instead would be wrong here: a CLOSED leading object followed by a still-open peer
+    # is unbalanced too, and that chain may yet produce a call.
+    if "}" not in probe:
+        return False
     end = _balanced_brace_end(probe, 0)
     if end is None:
         return False
@@ -3206,6 +3213,14 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     m = _GEMMA_BARE_TC_RE.match(probe)
     if m is None or not _markerless_blocked_execution(m.group(1), enabled_tool_names):
         return False
+    # The streaming loops call this on every cumulative snapshot while the body is still
+    # arriving, and the scan below walks it from the opening brace each time, which is
+    # quadratic in the body the model streams (measured 2.6s at 8KB, and the buffer allows
+    # 16KB). Without a ``}`` at or after the opening brace the body cannot have closed, which
+    # ``find`` settles in C. Counting braces instead was wrong: a CLOSED body followed by an
+    # open peer is unbalanced too, and answering True there withheld a settled chain.
+    if probe.find("}", m.end() - 1) < 0:
+        return True
     end = _gemma_body_brace_end(probe, m.end() - 1)
     if end is None:
         return True  # body still arriving

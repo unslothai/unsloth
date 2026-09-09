@@ -208,40 +208,62 @@ def _earliest_tool_signal(
     Non-``[ARGS]`` markup wins on first occurrence. An ``[ARGS]`` hit is a rehearsal
     only when an active tool name (any name in unrestricted mode) precedes it, so a
     literal ``foo[ARGS]`` in prose is skipped rather than draining the turn; for a
-    real ``NAME[ARGS]`` the boundary is pulled back to NAME."""
-    best = -1
-    for sig in signals:
-        if sig != "[ARGS]":
-            p = candidate.find(sig, start)
-            if p >= 0 and (best < 0 or p < best):
-                best = p
-            continue
-        from_idx = start
-        while True:
-            p = candidate.find("[ARGS]", from_idx)
-            if p < 0:
-                break
-            name_start = _rehearsal_name_start(
-                candidate, p, active_tools, unrestricted = unrestricted
-            )
-            if name_start < p:
-                # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
-                if best < 0 or name_start < best:
-                    best = name_start
-                break
-            # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
-            from_idx = p + len("[ARGS]")
-    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
-    # mid-prose one is a boundary too. The catalogue is passed lazily: this runs per streamed
-    # delta, and materializing a large MCP tool list per token dominated ordinary completions.
-    gemma = promotable_gemma_call_pos(
-        candidate,
-        None if unrestricted else (lambda: _active_tool_names(active_tools)),
-        start,
-    )
-    if gemma >= 0 and (best < 0 or gemma < best):
-        best = gemma
-    return best
+    real ``NAME[ARGS]`` the boundary is pulled back to NAME.
+
+    A marker inside a ``<think>`` / ``[THINK]`` block is NOT a boundary: the parser masks
+    reasoning spans, so draining on one stopped the stream at the marker and a cancel then
+    lost every token after it, including the visible answer past the block. The scan resumes
+    past such a span, with ``floor`` rejecting the look-behind that would re-find it."""
+    think_spans = None
+    floor = 0
+    while True:
+        best = -1
+        for sig in signals:
+            if sig != "[ARGS]":
+                p = candidate.find(sig, start)
+                if p >= 0 and (best < 0 or p < best):
+                    best = p
+                continue
+            from_idx = start
+            while True:
+                p = candidate.find("[ARGS]", from_idx)
+                if p < 0:
+                    break
+                name_start = _rehearsal_name_start(
+                    candidate, p, active_tools, unrestricted = unrestricted
+                )
+                if name_start < p:
+                    # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
+                    if name_start >= floor and (best < 0 or name_start < best):
+                        best = name_start
+                    break
+                # Bare/prose [ARGS]: skip it so a later real call in the same chunk is
+                # still found.
+                from_idx = p + len("[ARGS]")
+        # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+        # mid-prose one is a boundary too. The catalogue is passed lazily: this runs per
+        # streamed delta, and materializing a large MCP tool list per token dominated
+        # ordinary completions.
+        gemma = promotable_gemma_call_pos(
+            candidate,
+            None if unrestricted else (lambda: _active_tool_names(active_tools)),
+            start,
+        )
+        if gemma >= floor and (best < 0 or gemma < best):
+            best = gemma
+        if best < 0:
+            return -1
+        if "<think" not in candidate and "[THINK" not in candidate:
+            return best
+        if think_spans is None:
+            think_spans = _think_spans_outside_tool_markup(candidate)
+        span_end = next((end for begin, end in think_spans if begin <= best < end), None)
+        if span_end is None:
+            return best
+        if span_end <= floor:
+            # Already scanning past this span and it still wins: nothing else is a boundary.
+            return -1
+        start = floor = span_end
 
 
 def _has_genuine_tool_signal(

@@ -1538,3 +1538,92 @@ def test_a_real_bare_json_call_still_runs_with_the_structural_lookup():
         '{"name":"web_search","arguments":{"q":"x"}}', enabled_tool_names = {"web_search"}
     )
     assert [call["function"]["name"] for call in calls] == ["web_search"]
+
+
+def _stream_then_cancel(text, tool = "web_search"):
+    """Feed ``text`` one character per cumulative snapshot, cancelling at the last one."""
+    import threading
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    snapshots = [text[:i] for i in range(1, len(text) + 1)]
+    cancel = threading.Event()
+
+    def _single_turn(_messages, **_kwargs):
+        for index, snapshot in enumerate(snapshots):
+            if index == len(snapshots) - 1:
+                cancel.set()
+            yield snapshot
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": tool}}],
+            execute_tool = lambda *a, **k: "ok",
+            nudge_tool_calls = False,
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            cancel_event = cancel,
+        )
+    )
+    texts = [event["text"] for event in events if event.get("type") == "content"]
+    return (texts[-1] if texts else ""), events
+
+
+@pytest.mark.parametrize("rehearsed", [
+    "call:web_search{q:x}",
+    "<function=web_search><parameter=q>x</parameter></function>",
+    '<tool_call>{"name":"web_search"}</tool_call>',
+    'web_search[ARGS]{"q":"x"}',
+])
+def test_a_call_rehearsed_in_reasoning_does_not_stall_the_stream(rehearsed):
+    """The parser masks reasoning spans, so the detector must not treat a marker inside one as
+    a boundary. It did, so the loop drained at the marker, stopped streaming, and a cancel then
+    dropped every token after it, including the visible answer past ``</think>``."""
+    text = f"<think>{rehearsed}</think>answer here"
+    shown, events = _stream_then_cancel(text)
+
+    # Everything except the token that arrived after the cancel was set.
+    assert shown == text[:-1]
+    assert not any(event.get("type") == "tool_start" for event in events)
+
+
+@pytest.mark.parametrize("text", [
+    "<think>plan</think>call:web_search{q:x}",
+    "<think>plan</think><function=web_search><parameter=q>x</parameter></function>",
+    "call:web_search{q:x}",
+])
+def test_a_real_call_outside_reasoning_is_still_a_boundary(text):
+    """The skip must not swallow a genuine call that merely follows a reasoning block."""
+    from core.inference.safetensors_agentic import _earliest_tool_signal
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
+    signal = _earliest_tool_signal(
+        text, TOOL_XML_SIGNALS, [{"function": {"name": "web_search"}}]
+    )
+    assert signal >= 0
+
+
+@pytest.mark.parametrize("predicate,text", [
+    ("gemma", 'call:terminal{command:"' + "x" * 16000),
+    ("bare_json", '{"name":"terminal","arguments":{"command":"' + "x" * 16000),
+])
+def test_an_open_blocked_body_is_not_rescanned_per_token(predicate, text):
+    """Both loops call these per cumulative snapshot while the body streams, and each call
+    restarted the walk at the opening brace: quadratic in the body, seconds at the 16 KiB the
+    buffer allows. Budgeted well above the observed cost, so only a return to the walk trips
+    it."""
+    import time
+    from core.inference.tool_call_parser import (
+        blocked_bare_json_chain_may_continue, blocked_gemma_chain_may_continue,
+    )
+
+    check = blocked_gemma_chain_may_continue if predicate == "gemma" else (
+        blocked_bare_json_chain_may_continue
+    )
+    # Every snapshot, not a sample: at a coarse stride the quadratic cost is divided away and
+    # the unfixed walk passes too.
+    started = time.monotonic()
+    for i in range(len(text)):
+        check(text[: i + 1], EXEC_ENABLED)
+    assert time.monotonic() - started < 3.0
