@@ -7,9 +7,7 @@
 // not a change of name: the reported stream calls one tool three times.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -25,6 +23,8 @@ import {
   mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../src/features/chat/tool-call-id.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("a slot holding one object is left as one object", () => {
   assert.deepEqual(splitTopLevelJsonObjects('{"url":"a"}'), {
@@ -141,12 +141,7 @@ test("arguments that are not one JSON object fall back rather than replay", () =
 // tests/pr9057-video-simulation.test.ts does: a re-implementation passes while
 // the adapter stays broken, which is how this defect survived
 // tool-call-delta-index.test.ts.
-const adapterSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftBetween(what: string, from: string, to: string): string {
   const start = adapterSource.indexOf(from);

@@ -2,19 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const CARD = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/components/assistant-ui/tool-ui-web-search.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const CARD = readSrc("components/assistant-ui/tool-ui-web-search.tsx");
 
 test("the card tells the three action types apart", () => {
   // Reading only `action.query` rendered open_page and find_in_page as an empty
