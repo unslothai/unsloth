@@ -6099,6 +6099,16 @@ def _prepend_loader_dir(existing: str, lib_dir: str) -> str:
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
+# Vulkan probe rows for the current load, keyed by binary. See _run_vulkan_probe.
+_VULKAN_PROBE_MEMO: dict = {}
+
+
+def _reset_vulkan_probe_memo() -> None:
+    """Drop the memo. Called once per load, so a driver or device change between
+    loads is re-probed rather than answered from cache."""
+    _VULKAN_PROBE_MEMO.clear()
+
+
 _GGML_GPU_BACKEND_RE = re.compile(
     r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
 )
@@ -8439,7 +8449,9 @@ class LlamaCppBackend:
         return bool(selected) and not any(r["is_igpu"] for r in selected)
 
     @staticmethod
-    def _build_offers_gpu_backend(binary: Optional[str] = None) -> bool:
+    def _build_offers_gpu_backend(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
         """Whether the installed prebuilt ships a GPU backend at all.
 
         llama.cpp accepts ``-ngl`` on a CPU-only build and quietly keeps the
@@ -8457,7 +8469,22 @@ class LlamaCppBackend:
         # actually keeps on the CPU and turns its pageable mapping into an
         # allocated buffer, which is the reservation this setting exists to avoid;
         # guessing "no GPU" only declines an optimisation on an unusual install.
-        return bool(LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"})
+        # Recognition is _binary_ships_no_gpu_backend's, not a second list: that one
+        # reads _GGML_GPU_BACKEND_RE, so a SYCL, MUSA, CANN or OpenCL build counts
+        # too, and it already knows GGML_BACKEND_PATH points the child at plugins
+        # elsewhere. A private cuda/hip/vulkan set answered "no GPU" for all of those.
+        if LlamaCppBackend._binary_ships_no_gpu_backend(binary, env):
+            return False
+        source = os.environ if env is None else env
+        if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
+            return True
+        try:
+            files = tuple(
+                path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file()
+            )
+        except OSError:
+            return False
+        return any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -10232,8 +10259,17 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return []
+        # Memoised for the current load. The probe spawns a subprocess that loads the
+        # Vulkan backend and carries a 15s timeout, and one load now asks for the rows
+        # from several places: the host-residency verdict, the DirectIO confirmation,
+        # and again per rung that narrows the device set. Cleared by
+        # _reset_vulkan_probe_memo at the top of every load, so a driver or device
+        # change is never answered from cache.
+        if binary in _VULKAN_PROBE_MEMO:
+            return _VULKAN_PROBE_MEMO[binary]
         binary_dir = _llama_lib_dir(binary)
         if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
+            _VULKAN_PROBE_MEMO[binary] = []
             return []
 
         env = child_env_without_native_path_secret()
@@ -10264,6 +10300,7 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
+                _VULKAN_PROBE_MEMO[binary] = []
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
@@ -10288,6 +10325,7 @@ class LlamaCppBackend:
             except ValueError:
                 continue
         rows.sort(key = lambda r: r["index"])
+        _VULKAN_PROBE_MEMO[binary] = rows
         return rows
 
     @staticmethod
@@ -18904,6 +18942,10 @@ class LlamaCppBackend:
         intent: GgufLoadIntent,
         load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
+        # One Vulkan probe per load: several decisions below want its rows, and the
+        # probe is a subprocess behind a 15s timeout. Cleared here rather than
+        # cached across loads so a driver or device change is re-probed.
+        _reset_vulkan_probe_memo()
         """Start llama-server from one immutable load intent."""
 
         def _load_cancelled() -> bool:
@@ -23444,7 +23486,7 @@ class LlamaCppBackend:
                 # weights that DO respond to it.
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
-                    and self._build_offers_gpu_backend(binary)
+                    and self._build_offers_gpu_backend(binary, _mem_env)
                     and (_detected_gpus or gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
@@ -23577,7 +23619,7 @@ class LlamaCppBackend:
                     )
                     confirmed = bool(
                         not host_resident
-                        and self._build_offers_gpu_backend(binary)
+                        and self._build_offers_gpu_backend(binary, _mem_env)
                         and (_detected_gpus or devices)
                         and (
                             not is_vulkan_backend

@@ -2827,26 +2827,6 @@ class TestThePlacementProbes:
         assert "_mem_probe_for_dio=_mem_dio_possible" in flat
         assert "_mem_probe_for_dio=_mem_dio_possibleand_mem_no_reserve" not in flat
 
-    @pytest.mark.parametrize(
-        "backends,offers",
-        [
-            (frozenset(), False),  # cannot enumerate: fail closed
-            (frozenset({"base", "cpu"}), False),  # a managed CPU-only bundle
-            (frozenset({"base", "cpu", "vulkan"}), True),
-        ],
-    )
-    def test_an_unenumerable_build_fails_closed(self, monkeypatch, backends, offers):
-        """llama.cpp accepts -ngl on a CPU-only build and ignores it. A static custom
-        build ships no sidecars either way, and the device list comes from host tools
-        that answer for the MACHINE, not this binary. The mistakes are not symmetric:
-        guessing GPU hands DirectIO to a CPU-resident model and turns its mapping into
-        an allocated buffer; guessing no GPU only declines an optimisation."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda binary = None: backends)
-        )
-        assert LlamaCppBackend._build_offers_gpu_backend("llama-server") is offers
 
 
 class TestEveryDeviceSetChangeReAsks:
@@ -2911,3 +2891,91 @@ class TestEveryDeviceSetChangeReAsks:
         # asserting True. (A fourth such OR belongs to the pre-existing mlock re-arm.)
         for marker in ("_gate_active", "_retry_active", "_arch_active"):
             assert f"{marker} or self._memory_policy_active" in src, marker
+
+
+class TestTheVulkanProbeRunsOncePerLoad:
+    """The probe spawns a subprocess that loads the Vulkan backend behind a 15s
+    timeout, and one load now needs its rows from the host-residency verdict, the
+    DirectIO confirmation, and again per rung that narrows the device set. Left
+    unmemoised that was a second full probe delay on every Windows Vulkan load,
+    including with the toggle off, since the probe is deliberately
+    toggle-independent."""
+
+    def test_repeated_asks_spawn_one_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        m._reset_vulkan_probe_memo()
+        calls = []
+        rows = [{"index": 0, "is_igpu": False}]
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
+        monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
+        monkeypatch.setattr(
+            m.subprocess, "run",
+            lambda *a, **k: calls.append(1)
+            or type("R", (), {"returncode": 0, "stdout": "0 1 2 0 dGPU", "stderr": ""})(),
+        )
+        for _ in range(3):
+            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+        assert len(calls) == 1
+
+    def test_a_new_load_re_probes(self, monkeypatch):
+        """A driver or device change between loads must not be answered from cache."""
+        import core.inference.llama_cpp as m
+        import inspect
+
+        m._reset_vulkan_probe_memo()
+        m._VULKAN_PROBE_MEMO["llama-server"] = [{"index": 9, "is_igpu": True}]
+        assert m.LlamaCppBackend._run_vulkan_probe("llama-server")[0]["index"] == 9
+        m._reset_vulkan_probe_memo()
+        assert "llama-server" not in m._VULKAN_PROBE_MEMO
+        # and the load path clears it
+        assert "_reset_vulkan_probe_memo()" in inspect.getsource(m.LlamaCppBackend.load_model)
+
+
+class TestTheBackendCheckReusesTheRepoRecognition:
+    """A private cuda/hip/vulkan set answered "no GPU" for a SYCL, MUSA, CANN or
+    OpenCL build, and for a custom runtime loading its plugin from
+    GGML_BACKEND_PATH. _binary_ships_no_gpu_backend already knows both."""
+
+    def test_it_defers_to_the_existing_helper(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._build_offers_gpu_backend)
+        assert "_binary_ships_no_gpu_backend(binary, env)" in src
+        assert "_GGML_GPU_BACKEND_RE" in src
+        assert '{"cuda", "hip", "vulkan"}' not in src
+
+    def test_an_external_backend_path_counts_as_gpu_capable(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            staticmethod(lambda binary = None, env = None: False),
+        )
+        assert LlamaCppBackend._build_offers_gpu_backend(
+            "llama-server", {"GGML_BACKEND_PATH": r"C:\plugins"}
+        )
+
+    def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            staticmethod(lambda binary = None, env = None: True),
+        )
+        assert not LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
+
+    def test_an_unreadable_install_still_fails_closed(self, monkeypatch):
+        """Guessing GPU hands DirectIO to a CPU-resident model; guessing no GPU
+        only declines an optimisation."""
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            staticmethod(lambda binary = None, env = None: False),
+        )
+        def boom(_b):
+            raise OSError("unreadable")
+        monkeypatch.setattr(m, "_llama_lib_dir", boom)
+        assert not m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
