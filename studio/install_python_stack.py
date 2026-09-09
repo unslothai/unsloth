@@ -731,6 +731,23 @@ def _torchcodec_spec_is_installable(spec: str) -> bool:
     return True
 
 
+def _codec_spec_is_satisfied(spec: str, installed: str) -> bool:
+    """Whether the resident torchcodec already sits inside the pin's window.
+
+    The local tag is deliberately ignored here -- the caller has already decided the
+    provenance question through _codec_rebuild, and a `+cu130` suffix makes the version
+    fall outside a PyPI-shaped specifier that it in fact satisfies.
+    """
+    if not installed:
+        return False
+    base = installed.partition("+")[0]
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(spec).specifier.contains(base, prereleases = True)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 def _select_torchcodec_spec(torch_version: "str | None") -> "str | None":
     """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
     against it, or None below the oldest known torch minor. Falls back to
@@ -4364,6 +4381,7 @@ def _uninstall_distribution(name: str) -> bool:
         cmd.extend(["--python", sys.executable, name])
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", name]
+    _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
 
@@ -4404,8 +4422,16 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
-    if _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else ""):
-        args.insert(0, "--force-reinstall")
+    if not _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else ""):
+        # The resident wheel is this exact version AND came from this exact index -- the
+        # two things the pin exists to assert. Running the install anyway resolved the
+        # pin against the index on every update to arrive back where it started, and on
+        # the second caller (right after the torch repair) it did so twice.
+        _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
+        _record_step("torchao", "skipped")
+        return
+    args.insert(0, "--force-reinstall")
+    _record_step("torchao", "ran")
     _note(
         f"torch {torch_version or 'unknown'} detected -- installing {spec}"
         # Redacted for display only; the installer below still gets the exact URL.
@@ -6132,29 +6158,61 @@ UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
 
 
 def _bootstrap_uv() -> bool:
-    """Check if uv is available and probe whether --system is needed."""
+    """Check if uv is available and probe whether --system is needed.
+
+    `pip freeze`, not `pip install --dry-run pip`: the question is only whether this uv
+    can address this interpreter, and a dry-run install answers it by RESOLVING pip
+    against the index. That is one PyPI round-trip on every run of the installer,
+    measured at most of the 12 s the "pip bootstrap" step costs, and it fails on an
+    offline host that uv could still have served entirely from its cache. freeze reads
+    the venv's own metadata: no resolution, no network, same answer.
+    """
     global UV_NEEDS_SYSTEM
     if not shutil.which("uv"):
         return False
     # Explicit --python: uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
-        ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
+        ["uv", "pip", "freeze", "--python", sys.executable],
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
         **_windows_hidden_subprocess_kwargs(),
     )
     if probe.returncode != 0:
         # Retry with --system (some envs need it when uv can't find a venv)
         probe_sys = subprocess.run(
-            ["uv", "pip", "install", "--dry-run", "--system", "pip"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
+            ["uv", "pip", "freeze", "--system"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
             **_windows_hidden_subprocess_kwargs(),
         )
         if probe_sys.returncode != 0:
             return False  # uv is broken, fall back to pip
         UV_NEEDS_SYSTEM = True
     return True
+
+
+def _venv_pip_is_usable() -> bool:
+    """Whether this interpreter already has a pip new enough for the pass.
+
+    Read from metadata rather than by spawning it: the bootstrap below reinstalls pip
+    from the index on every single run, and on an install that already has one that is
+    a download and a resolve for a package nothing changed. 23.0 is the floor because
+    the constraint and override handling the pass relies on predates it comfortably; a
+    fresh uv venv has no pip at all and still bootstraps.
+    """
+    try:
+        if importlib.util.find_spec("pip") is None:
+            return False
+    except (ImportError, ValueError):
+        return False
+    installed = _installed_distribution_version("pip")
+    if not installed:
+        return False
+    try:
+        major = int(re.match(r"\d+", installed).group(0))
+    except (AttributeError, ValueError):
+        return False
+    return major >= 23
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
@@ -6944,9 +7002,24 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         cmd.append(arg)
     if upgrade:
         cmd += ["--upgrade", "--upgrade-strategy", "only-if-needed"]
+
         # Every current caller also names these as positionals or via -r, but a
         # future one might not, and pip would then upgrade nothing.
-        cmd += [name for name in upgrade if name not in cmd]
+        #
+        # Compared by canonical project name, not by string. `--upgrade-package mlx`
+        # beside the positional `mlx==0.32.1` is one project spelled two ways, and
+        # appending the bare name is not a no-op there: pip refuses the command outright
+        # with "Double requirement given". uv has no such problem, which is why only the
+        # pip translation has to know.
+        def _project(requirement: str) -> str:
+            # _requirement_name stops at "==" and "@", which covers what uv emits; a
+            # requirements-style range (mlx-vlm>=0.4.4,<0.7.0) needs the rest too.
+            return _canonical_package_name(
+                re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
+            )
+
+        named = {_project(arg) for arg in cmd if arg and not arg.startswith("-")}
+        cmd += [name for name in upgrade if _project(name) not in named]
     return cmd
 
 
@@ -7350,6 +7423,9 @@ def pip_install_try(
     # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
     # so the memoized classification must not survive it.
     _invalidate_torch_runtime_probe()
+    # Counted before the command runs: a failed install can still have moved metadata,
+    # and `pip check` has to see that.
+    _count_install_action()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():
@@ -7390,29 +7466,22 @@ def pip_install(
     # Any pip operation can change which torch is installed, so the memoized
     # classification must not outlive it.
     _invalidate_torch_runtime_probe()
+    _count_install_action()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
+    # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec wheel, and
+    # `unsloth studio update --local` does not pass --no-torch, so that filter alone
+    # does not cover them. _effective_requirements does all three, and the skip gate
+    # audits the same file this installs from -- auditing the raw one would report a
+    # filtered package missing on every such host and never skip anything again.
     actual_req = req
     temp_reqs: list[Path] = []
-    if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
-        actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
-        temp_reqs.append(actual_req)
-    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
-        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
-        temp_reqs.append(actual_req)
-    if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
-        # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
-        # wheel. `unsloth studio update --local` does not pass
-        # --no-torch, so the NO_TORCH filter above does not fire; do
-        # the targeted skip independently so the audio extras step
-        # does not take down the whole update. Nothing feeds torchcodec
-        # now; this stays for any file that reintroduces it.
-        actual_req = _filter_requirements(actual_req, {"torchcodec"})
-        temp_reqs.append(actual_req)
+    if req is not None:
+        actual_req, temp_reqs = _effective_requirements(req)
     req_args_pip: list[str] = []
     req_args_uv: list[str] = []
     if actual_req is not None:
@@ -7522,6 +7591,33 @@ def _has_working_git() -> bool:
         return False
 
 
+# The MLX stack, one place. Kept in step with utils/mlx_repair.py's _MLX_INSTALL_SPECS
+# (tests/studio/install/test_mlx_install.py compares the two), and with the mlx-metal
+# pin, which mlx_repair does not carry because it repairs by package name.
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.1", "mlx-metal==0.32.1", "mlx-lm==0.31.3")
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<0.7.0"
+_MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+
+
+def _mlx_stack_is_current() -> bool:
+    """Whether the three exact pins and mlx-vlm's range are all already satisfied.
+
+    Without this the step ran `--upgrade` on every update and fetched ~60 MB of wheels
+    it then discarded, because the pins were already exact and the upgrade only moved
+    mlx-vlm inside a range it was already in.
+    """
+    if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_PINS):
+        return False
+    installed = _installed_distribution_version("mlx-vlm")
+    if not installed:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 _MLX_HEALTH_PROBE = (
     "import json, sys;"
     "sys.path.insert(0, sys.argv[1]);"
@@ -7530,7 +7626,16 @@ _MLX_HEALTH_PROBE = (
 )
 
 
-def _report_mlx_stack_health() -> None:
+def _mlx_health_fingerprint() -> dict:
+    """What a recorded MLX verdict is only valid for."""
+    return {
+        "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
+        "python": _installer_python_tag(),
+        "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
+    }
+
+
+def _report_mlx_stack_health(skipped: bool = False) -> None:
     """Name what would keep Train off on this Apple Silicon host, if anything.
 
     Advisory only: the install has already succeeded, chat still works, and the
@@ -7538,8 +7643,26 @@ def _report_mlx_stack_health() -> None:
     which is the whole of the reported "Train is blacked out after an update".
 
     Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
-    installed one of those can abort rather than raise.
+    installed one of those can abort rather than raise. That costs a full torch and
+    mlx import, so when the MLX step itself was skipped and the last run recorded a
+    healthy stack for these exact pins and this exact interpreter, the recorded answer
+    stands. Anything else -- a rebuild, a moved pin, a moved interpreter, a previous
+    verdict that was not clean -- runs the probe.
     """
+    fingerprint = _mlx_health_fingerprint()
+    recorded = (_PASS_EVIDENCE or {}).get("mlx_health")
+    if (
+        skipped
+        and isinstance(recorded, dict)
+        and recorded.get("ok") is True
+        and recorded.get("pins") == fingerprint["pins"]
+        and recorded.get("python") == fingerprint["python"]
+        and recorded.get("mlx_vlm") == fingerprint["mlx_vlm"]
+    ):
+        _step("mlx", "training stack ready")
+        # Written back so the record does not age out of the manifest this pass wrote.
+        install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": True})
+        return
     backend = str(SCRIPT_DIR / "backend")
     try:
         probe = subprocess.run(
@@ -7558,6 +7681,10 @@ def _report_mlx_stack_health() -> None:
     if blockers is None:
         _step("mlx", "could not verify the MLX stack", _dim)
         return
+    # After the probe, and never through write_manifest: this runs AFTER the manifest is
+    # written, precisely so a kill during the probe's 180 s timeout cannot lose a
+    # finished install. update_manifest never raises and never creates one.
+    install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": not blockers})
     if not blockers:
         _step("mlx", "training stack ready")
         return
@@ -7566,9 +7693,426 @@ def _report_mlx_stack_health() -> None:
         _step("", blocker, _cyan)
 
 
+# -- The idempotent dependency pass ---------------------------------------------
+#
+# Principle for every skip: legal only when (a) the previous run recorded that it did
+# this exact work, (b) the inputs are byte-identical, and (c) a cheap on-disk check of
+# the OUTPUT still passes. Anything that drops (a) -- a repair, a damaged install, a
+# version / python / platform / torch-flavour change, a missing or foreign manifest,
+# UNSLOTH_STUDIO_FULL_DEPS -- forces the whole pass.
+#
+# When in doubt, do the work. A needless install costs seconds; a wrong skip ships a
+# venv that answers `-h` and dies on `import structlog`, which is the exact failure the
+# manifest exists to catch.
+
+_FULL_DEPS_ENV = "UNSLOTH_STUDIO_FULL_DEPS"
+
+# Real install/uninstall commands this pass ran. `pip check` and the metadata patch are
+# gated on it: with nothing installed there is nothing new for either to find.
+_INSTALL_ACTIONS = 0
+# Last run's evidence, or None when this pass must do everything.
+_PASS_EVIDENCE: "dict | None" = None
+# What this pass did, per step, for the manifest. Only "ran" and "skipped" let the NEXT
+# run skip; a step that never reached its slot records nothing and so is never skipped.
+_STEP_RESULTS: "dict[str, str]" = {}
+_CONSTRAINTS_CACHE: "tuple[int, list[str]] | None" = None
+
+
+def _count_install_action() -> None:
+    """Called by every command that can change what is installed."""
+    global _INSTALL_ACTIONS
+    _INSTALL_ACTIONS += 1
+
+
+def _full_deps_requested() -> bool:
+    """The escape hatch. A skip nobody can turn off is a bug nobody can work around."""
+    return os.environ.get(_FULL_DEPS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _record_step(key: str, result: str) -> None:
+    _STEP_RESULTS[key] = result
+
+
+def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "dict | None":
+    """Last run's evidence, or None when nothing may be skipped.
+
+    Must run BEFORE remove_manifest: the manifest is the only copy, and it is dropped
+    up front precisely so a run killed mid-pass cannot leave a valid one behind.
+    """
+    if _full_deps_requested():
+        return None
+    # Dev shapes: an editable overlay or a different package name means the tree on disk
+    # is not the tree the manifest describes, and its digests describe neither.
+    if local_repo or ci_source_overlay or package_name != "unsloth":
+        return None
+    try:
+        manifest = install_manifest.read_manifest()
+    except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
+        return None
+    if not manifest or manifest.get("schema") != install_manifest.MANIFEST_SCHEMA:
+        return None
+    inputs = manifest.get("pass_inputs")
+    results = manifest.get("step_results")
+    # Written by a build that predates this, so it can answer for nothing.
+    if not isinstance(inputs, dict) or not isinstance(results, dict):
+        return None
+    if manifest.get("python") != platform.python_version():
+        return None
+    if manifest.get("platform") != f"{sys.platform}-{platform.machine()}":
+        return None
+    # Absent is unknown, not False: an install that never recorded the mode cannot prove
+    # it was built the way this run is building.
+    if manifest.get("no_torch") is not bool(NO_TORCH):
+        return None
+    if not NO_TORCH:
+        # The flavour tag, not the index URL: a wheel family change re-resolves
+        # everything torch-coupled, and only the tag is safe to keep on disk.
+        try:
+            expected = _recordable_torch_flavor_tag(_expected_torch_flavor_tag())
+        except Exception:  # noqa: BLE001 - a probe that did not answer buys a full pass
+            return None
+        if (manifest.get("expected_torch_tag") or "") != expected:
+            return None
+    # Last, because it is the only check that walks the filesystem: the install this
+    # evidence describes has to still be there and still be complete.
+    try:
+        if not install_manifest.verify_install(deep = True)["ok"]:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return {
+        "pass_inputs": inputs,
+        "step_results": results,
+        "pip_check_ok": manifest.get("pip_check_ok"),
+        "mlx_health": manifest.get("mlx_health"),
+    }
+
+
+def _effective_requirements(req: Path) -> "tuple[Path, list[Path]]":
+    """The file pip_install will really install from, plus temp copies to unlink.
+
+    Shared with pip_install so the skip gate audits exactly what the install would do.
+    extras.txt names torchcodec and three platforms filter it out; auditing the raw file
+    would report it missing on every one of them and never skip anything again.
+    """
+    temps: list[Path] = []
+    actual = req
+    if IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
+        actual = _filter_requirements(actual, WINDOWS_SKIP_PACKAGES)
+        temps.append(actual)
+    if NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual = _filter_requirements(actual, NO_TORCH_SKIP_PACKAGES)
+        temps.append(actual)
+    if PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec wheel.
+        actual = _filter_requirements(actual, {"torchcodec"})
+        temps.append(actual)
+    return actual, temps
+
+
+def _pass_input_key(path: Path) -> "str | None":
+    """A requirements file as the manifest names it: relative to REQ_ROOT, posix."""
+    try:
+        return Path(path).resolve().relative_to(REQ_ROOT.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _violated_constraints() -> "list[str]":
+    """Constrained distributions currently outside their pin.
+
+    Recomputed whenever something was installed: a constraint the last step satisfied
+    must not keep the next one running, and one it broke must not be missed. Cached
+    otherwise, because every gated step asks.
+    """
+    global _CONSTRAINTS_CACHE
+    if _CONSTRAINTS_CACHE is None or _CONSTRAINTS_CACHE[0] != _INSTALL_ACTIONS:
+        try:
+            found = install_manifest.violated_constraints(CONSTRAINTS)
+        except Exception:  # noqa: BLE001 - unreadable is a reason to install, not to crash
+            found = ["<unreadable>"]
+        _CONSTRAINTS_CACHE = (_INSTALL_ACTIONS, found)
+    return _CONSTRAINTS_CACHE[1]
+
+
+def _inputs_unchanged(keys: "list[str]") -> bool:
+    recorded = (_PASS_EVIDENCE or {}).get("pass_inputs") or {}
+    for key in keys:
+        # digest_file returns None for a file that is gone or unreadable, and None never
+        # equals a recorded digest, so an input nobody can read forces the work.
+        if recorded.get(key) != install_manifest.digest_file(REQ_ROOT / key):
+            return False
+    return True
+
+
+def _requirements_satisfied(
+    req: Path,
+    *,
+    label: str = "",
+    constrain: bool = True,
+) -> bool:
+    """Whether one requirements step can be skipped, on this run's evidence.
+
+    *label* is only for the caller's own bookkeeping; the manifest key is the file's
+    path under REQ_ROOT, so two steps can never collide and a renamed file can never
+    inherit another's record.
+    """
+    if _PASS_EVIDENCE is None:
+        return False
+    key = _pass_input_key(req)
+    if key is None:
+        return False
+    # (a) the previous run recorded that it did this exact work
+    if (_PASS_EVIDENCE.get("step_results") or {}).get(key) not in ("ran", "skipped"):
+        return False
+    # (b) the inputs are byte-identical. The constraints file is passed to every
+    # constrained step, so a constraint that moved under an unchanged requirements file
+    # is the one input digest equality on the file alone cannot see. Same for the macOS
+    # arm64 overrides, which reach uv through UV_OVERRIDE rather than the command line.
+    keys = [key]
+    if constrain:
+        keys.append("single-env/constraints.txt")
+    if IS_MAC_ARM:
+        keys.append("single-env/overrides-darwin-arm64.txt")
+    if not _inputs_unchanged(keys):
+        return False
+    # (c) the output is still on disk. A step's own install may have landed and then
+    # been removed by hand, a later resolve, or a partial uninstall.
+    importlib.invalidate_caches()
+    effective, temps = _effective_requirements(req)
+    try:
+        if install_manifest.missing_requirements(effective):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        for temp in temps:
+            temp.unlink(missing_ok = True)
+    if constrain and _violated_constraints():
+        return False
+    return True
+
+
+def _skip_step(
+    req: Path,
+    progress_label: str,
+    *,
+    constrain: bool = True,
+    extra_check = None,
+) -> bool:
+    """Announce one requirements step and say whether it is already satisfied.
+
+    The progress slot is spent either way, so the denominator does not depend on how
+    much of the install was already there.
+
+    *extra_check* is an additional on-disk predicate for a file whose requirements
+    importlib.metadata cannot fully answer -- today only the git direct reference in
+    triton-kernels.txt, where the version says nothing about which ref landed.
+    """
+    key = _pass_input_key(req) or str(req)
+    satisfied = _requirements_satisfied(req, constrain = constrain)
+    if satisfied and extra_check is not None:
+        satisfied = bool(extra_check())
+    _progress(f"{progress_label} (satisfied, skipped)" if satisfied else progress_label)
+    _record_step(key, "skipped" if satisfied else "ran")
+    return satisfied
+
+
+def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None":
+    """``(url, requested revision, subdirectory)`` for a git requirement, or None.
+
+    The fragment is NOT an inline comment here: ``#subdirectory=`` is part of the URL,
+    and a different subdirectory is a different package.
+    """
+    try:
+        lines = req.read_text(encoding = "utf-8-sig").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "git+" not in stripped:
+            continue
+        rest = stripped.partition("git+")[2]
+        base, _, fragment = rest.partition("#")
+        # The revision is whatever follows the last "@" IN THE PATH. Splitting on the
+        # last "@" of the whole URL takes the userinfo of git+ssh://git@host/repo for
+        # one; splitting on the last "@" before the last "/" misses a branch that
+        # itself contains a slash, which release/3.6.x -- the ref actually shipped --
+        # does.
+        scheme, separator, remainder = base.partition("://")
+        netloc, slash, path = remainder.partition("/") if separator else ("", "", base)
+        cut = path.rfind("@")
+        if cut == -1:
+            revision = ""
+        else:
+            revision = path[cut + 1 :]
+            path = path[:cut]
+        url = f"{scheme}://{netloc}{slash}{path}" if separator else path
+        subdirectory = ""
+        for part in fragment.split("&"):
+            key, sep, value = part.partition("=")
+            if sep and key.strip() == "subdirectory":
+                subdirectory = value.strip()
+        return url, revision, subdirectory
+    return None
+
+
+def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
+    """Whether the resident *dist_name* came from the ref *req* names.
+
+    A version comparison says nothing about a git requirement: the same version is
+    published from every branch, so a release/3.6.x pin is satisfied, on paper, by a
+    build from main. pip and uv record what actually landed in direct_url.json, which is
+    the only place the ref survives the install.
+    """
+    wanted = _direct_reference_in_requirements(req)
+    if wanted is None:
+        return False
+    url, revision, subdirectory = wanted
+    try:
+        from importlib.metadata import distribution
+        recorded = distribution(dist_name).read_text("direct_url.json")
+    except Exception:  # noqa: BLE001 - absent metadata is a reason to install
+        return False
+    if not recorded:
+        return False
+    try:
+        payload = json.loads(recorded)
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    vcs = payload.get("vcs_info")
+    if not isinstance(vcs, dict):
+        return False
+    return (
+        str(payload.get("url") or "").rstrip("/") == url.rstrip("/")
+        and str(vcs.get("requested_revision") or "") == revision
+        and str(payload.get("subdirectory") or "") == subdirectory
+    )
+
+
+def _uv_version() -> "str | None":
+    """The uv this pass used, for the record. None when pip did the work."""
+    if not USE_UV:
+        return None
+    try:
+        probe = subprocess.run(
+            ["uv", "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 30,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:  # noqa: BLE001 - advisory
+        return None
+    return probe.stdout.strip() or None if probe.returncode == 0 else None
+
+
+def _installer_python_tag() -> str:
+    """The interpreter's ABI tag, free-threaded builds included.
+
+    Recorded beside `python`, which carries only the version: a GIL and a free-threaded
+    3.14 install the same version string and cannot load each other's extensions.
+    """
+    return "{}{}{}".format(
+        sys.version_info.major,
+        sys.version_info.minor,
+        "t" if sysconfig.get_config_var("Py_GIL_DISABLED") else "",
+    )
+
+
+def _patch_metadata_is_pending() -> bool:
+    """Whether any METADATA the single-env patch owns still matches a pattern it rewrites.
+
+    The patch is idempotent, so running it again on a settled install rewrites nothing
+    and only costs a subprocess plus a full metadata walk on every update. Asking first
+    is the same walk without the interpreter start; on a fresh venv, where the
+    data-designer steps just ran, the caller does not even ask.
+    """
+    try:
+        sys.path.insert(0, str(SINGLE_ENV))
+        try:
+            import patch_metadata  # noqa: PLC0415
+        finally:
+            if sys.path and sys.path[0] == str(SINGLE_ENV):
+                sys.path.pop(0)
+        for name in patch_metadata.TARGETS:
+            path = patch_metadata.metadata_path(name)
+            if path is None:
+                continue
+            text = path.read_text(encoding = "utf-8")
+            if any(pattern.search(text) for pattern, _replacement in patch_metadata.PATCHES):
+                return True
+    except Exception:  # noqa: BLE001 - unknown means run it, which is what it did before
+        return True
+    return False
+
+
+def _run_patch_metadata() -> None:
+    """Apply the single-env metadata patch, in process where that works.
+
+    A subprocess here is a whole interpreter start for a stdlib script that edits at
+    most three files. It stays as the fallback, because the script is also a supported
+    standalone entry point and an import failure must not fail the install.
+    """
+    try:
+        sys.path.insert(0, str(SINGLE_ENV))
+        try:
+            import patch_metadata  # noqa: PLC0415
+        finally:
+            if sys.path and sys.path[0] == str(SINGLE_ENV):
+                sys.path.pop(0)
+        patch_metadata.main()
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    run(
+        "Patching single-env metadata",
+        [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
+    )
+
+
+def _local_plugin_digest(plugin_dir: Path) -> "str | None":
+    """One sha256 over a local plugin tree, so an edited seed plugin reinstalls.
+
+    Sorted (relpath, bytes): a directory listing has no order, and a digest that
+    depended on one would differ between two byte-identical trees.
+    """
+    import hashlib
+
+    if not plugin_dir.is_dir():
+        # None never equals a recorded digest, so a plugin nothing can read reinstalls.
+        return None
+    digest = hashlib.sha256()
+    try:
+        paths = sorted(
+            path
+            for path in plugin_dir.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+        for path in paths:
+            digest.update(path.relative_to(plugin_dir).as_posix().encode("utf-8"))
+            digest.update(b"\x00")
+            digest.update(path.read_bytes())
+            digest.update(b"\x00")
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
+    global _INSTALL_ACTIONS, _PASS_EVIDENCE, _CONSTRAINTS_CACHE
     _STEP = 0
+    # Module state, so a second call in one process (the test suites do this) starts
+    # from the same place a fresh interpreter would.
+    _INSTALL_ACTIONS = 0
+    _PASS_EVIDENCE = None
+    _CONSTRAINTS_CACHE = None
+    _STEP_RESULTS.clear()
     # An aborted earlier run leaves it set, and every _safe_print() consumes it --
     # the first message would get a stray newline.
     _PROGRESS_LINE_ACTIVE = False
@@ -7603,6 +8147,12 @@ def install_python_stack() -> int:
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
 
+    # Before the manifest goes: it is the only copy of what the last run did, and the
+    # line below deletes it. None here means every step runs, which is what a repair, a
+    # damaged install, a moved python/platform/torch flavour and UNSLOTH_STUDIO_FULL_DEPS
+    # all reduce to.
+    _PASS_EVIDENCE = _plan_pass(package_name, local_repo, ci_source_overlay)
+
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
@@ -7623,8 +8173,14 @@ def install_python_stack() -> int:
     USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
-    _progress("pip bootstrap")
-    if USE_UV:
+    if _venv_pip_is_usable():
+        # Nothing to do, and saying so is the point: this step used to reinstall pip
+        # from the index on every update of an install that already had one.
+        _progress("pip bootstrap (satisfied, skipped)")
+        _record_step("pip", "skipped")
+    elif USE_UV:
+        _progress("pip bootstrap")
+        _record_step("pip", "ran")
         run(
             "Bootstrapping pip via uv",
             [
@@ -7637,6 +8193,8 @@ def install_python_stack() -> int:
             ],
         )
     else:
+        _progress("pip bootstrap")
+        _record_step("pip", "ran")
         # uv-created venvs omit pip: ensurepip, else direct upgrade.
         _has_pip = (
             subprocess.run(
@@ -7681,16 +8239,24 @@ def install_python_stack() -> int:
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
-            _progress("MLX stack (Apple Silicon)")
-            pip_install(
-                "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
-                "--no-cache-dir",
-                "--upgrade",
-                "mlx==0.32.1",
-                "mlx-metal==0.32.1",
-                "mlx-lm==0.31.3",
-                "mlx-vlm>=0.4.4,<0.7.0",
-            )
+            if _mlx_stack_is_current():
+                _progress("MLX stack (satisfied, skipped)")
+                _record_step("mlx", "skipped")
+            else:
+                _progress("MLX stack (Apple Silicon)")
+                _record_step("mlx", "ran")
+                pip_install(
+                    "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
+                    "--no-cache-dir",
+                    # --upgrade-package per name, never a bare --upgrade: the bare flag
+                    # re-resolves every transitive dependency of the four against the
+                    # index, which on macOS meant refetching wheels nothing had asked to
+                    # move. _build_pip_cmd translates these back to --upgrade for the pip
+                    # fallback, which has no per-package spelling.
+                    *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
+                    *_MLX_PINS,
+                    _MLX_VLM_SPEC,
+                )
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -7738,12 +8304,13 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             "pydantic",
         )
-        pip_install(
-            "Installing no-torch runtime deps",
-            "--no-cache-dir",
-            "--no-deps",
-            req = REQ_ROOT / "no-torch-runtime.txt",
-        )
+        if not _skip_step(REQ_ROOT / "no-torch-runtime.txt", "no-torch runtime deps"):
+            pip_install(
+                "Installing no-torch runtime deps",
+                "--no-cache-dir",
+                "--no-deps",
+                req = REQ_ROOT / "no-torch-runtime.txt",
+            )
         if local_repo:
             _overlay_local_core_packages(local_repo)
     elif local_repo:
@@ -7794,15 +8361,22 @@ def install_python_stack() -> int:
     # Independent of the core phase: the shell installers skip that after
     # installing the two distributions inline, but still apply this file.
     if base_requirements is not None:
+        satisfied = _requirements_satisfied(base_requirements)
+        _record_step("base.txt", "skipped" if satisfied else "ran")
         if skip_base:
-            _progress("base requirements")
+            _progress(
+                "base requirements (satisfied, skipped)" if satisfied else "base requirements"
+            )
+        elif satisfied:
+            _step(_LABEL, "shared base requirements are current")
         else:
             _step(_LABEL, "applying shared base requirements")
-        pip_install(
-            "Applying shared base requirements",
-            "--no-cache-dir",
-            req = base_requirements,
-        )
+        if not satisfied:
+            pip_install(
+                "Applying shared base requirements",
+                "--no-cache-dir",
+                req = base_requirements,
+            )
 
     # 2b. Torch repair (wrong-family / CPU-only); must follow base packages so torch is present.
     if not IS_MACOS and not NO_TORCH:
@@ -7857,24 +8431,24 @@ def install_python_stack() -> int:
             )
 
     # 3. Extra dependencies
-    _progress("unsloth extras")
-    pip_install(
-        "Installing additional unsloth dependencies",
-        "--no-cache-dir",
-        # extras.txt is where the wheel-less requirements live, so a user-level
-        # no-build/only-binary policy fails this step first (#8530).
-        *_sdist_only_build_args(*_extras_sdist_only_packages()),
-        req = REQ_ROOT / "extras.txt",
-    )
+    if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras"):
+        pip_install(
+            "Installing additional unsloth dependencies",
+            "--no-cache-dir",
+            # extras.txt is where the wheel-less requirements live, so a user-level
+            # no-build/only-binary policy fails this step first (#8530).
+            *_sdist_only_build_args(*_extras_sdist_only_packages()),
+            req = REQ_ROOT / "extras.txt",
+        )
 
     # 3b. Extra dependencies (no-deps) -- audio model support etc.
-    _progress("extra codecs")
-    pip_install(
-        "Installing extras (no-deps)",
-        "--no-deps",
-        "--no-cache-dir",
-        req = REQ_ROOT / "extras-no-deps.txt",
-    )
+    if not _skip_step(REQ_ROOT / "extras-no-deps.txt", "extra codecs"):
+        pip_install(
+            "Installing extras (no-deps)",
+            "--no-deps",
+            "--no-cache-dir",
+            req = REQ_ROOT / "extras-no-deps.txt",
+        )
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
     #    changes, since Windows can remove shared files during replacement.
@@ -7896,8 +8470,14 @@ def install_python_stack() -> int:
         if not _has_working_git():
             _progress("triton kernels (skipped, no git)")
             _note("no working git -- skipping triton kernels (training speedup only)")
-        else:
-            _progress("triton kernels")
+        elif not _skip_step(
+            REQ_ROOT / "triton-kernels.txt",
+            "triton kernels",
+            constrain = False,
+            extra_check = lambda: _direct_reference_is_installed(
+                REQ_ROOT / "triton-kernels.txt", "triton_kernels"
+            ),
+        ):
             pip_install(
                 "Installing triton kernels",
                 "--no-deps",
@@ -7932,33 +8512,35 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    _progress("studio deps")
-    pip_install(
-        "Installing studio dependencies",
-        "--no-cache-dir",
-        req = REQ_ROOT / "studio.txt",
-    )
+    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps"):
+        pip_install(
+            "Installing studio dependencies",
+            "--no-cache-dir",
+            req = REQ_ROOT / "studio.txt",
+        )
 
     # 8b. anyio repair (#6483)
     _progress("anyio check")
     _repair_bad_anyio()
 
     # 9. Data-designer dependencies
-    _progress("data designer deps")
-    pip_install(
-        "Installing data-designer base dependencies",
-        "--no-cache-dir",
-        req = SINGLE_ENV / "data-designer-deps.txt",
-    )
+    _dd_deps_ran = not _skip_step(SINGLE_ENV / "data-designer-deps.txt", "data designer deps")
+    if _dd_deps_ran:
+        pip_install(
+            "Installing data-designer base dependencies",
+            "--no-cache-dir",
+            req = SINGLE_ENV / "data-designer-deps.txt",
+        )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
-    _progress("data designer")
-    pip_install(
-        "Installing data-designer",
-        "--no-cache-dir",
-        "--no-deps",
-        req = SINGLE_ENV / "data-designer.txt",
-    )
+    _dd_ran = not _skip_step(SINGLE_ENV / "data-designer.txt", "data designer")
+    if _dd_ran:
+        pip_install(
+            "Installing data-designer",
+            "--no-cache-dir",
+            "--no-deps",
+            req = SINGLE_ENV / "data-designer.txt",
+        )
 
     # 11. Local Data Designer seed plugins
     local_dd_plugins = [
@@ -7969,8 +8551,29 @@ def install_python_stack() -> int:
         if not plugin_dir.is_dir():
             _note(f"❌ Missing local plugin directory: {plugin_dir}", _red)
             return 1
-    _progress("local plugin")
-    for plugin_name, plugin_dir in local_dd_plugins:
+    # Digested rather than version-compared: a seed plugin is installed from a path, so
+    # its version never moves and an edit inside it would otherwise never reinstall.
+    _plugin_digests: dict[str, str] = {}
+    _plugin_work: list[tuple[str, Path]] = []
+    _recorded_plugins = (_PASS_EVIDENCE or {}).get("pass_inputs") or {}
+    for _plugin_name, plugin_dir in local_dd_plugins:
+        _plugin_key = f"plugins/{plugin_dir.name}"
+        _plugin_digest = _local_plugin_digest(plugin_dir)
+        if _plugin_digest is not None:
+            _plugin_digests[_plugin_key] = _plugin_digest
+        _plugin_current = (
+            _PASS_EVIDENCE is not None
+            and _plugin_digest is not None
+            and _recorded_plugins.get(_plugin_key) == _plugin_digest
+            # The directory name IS the distribution name (see each plugin's
+            # pyproject.toml), so a plugin uninstalled by hand still reinstalls.
+            and bool(_installed_distribution_version(plugin_dir.name))
+        )
+        if not _plugin_current:
+            _plugin_work.append((_plugin_name, plugin_dir))
+    _progress("local plugin" if _plugin_work else "local plugin (satisfied, skipped)")
+    _record_step("plugins", "ran" if _plugin_work else "skipped")
+    for plugin_name, plugin_dir in _plugin_work:
         pip_install(
             f"Installing local data-designer {plugin_name} plugin",
             "--no-cache-dir",
@@ -7984,19 +8587,19 @@ def install_python_stack() -> int:
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
-    _progress("diffusers pin")
-    pip_install(
-        "Installing the pinned Diffusers release",
-        "--no-cache-dir",
-        req = REQ_ROOT / "diffusers-pin.txt",
-    )
+    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin"):
+        pip_install(
+            "Installing the pinned Diffusers release",
+            "--no-cache-dir",
+            req = REQ_ROOT / "diffusers-pin.txt",
+        )
 
     # 12. Patch metadata for single-env compatibility
-    _progress("finalizing")
-    run(
-        "Patching single-env metadata",
-        [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
-    )
+    _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()
+    _progress("finalizing" if _finalize_ran else "finalizing (satisfied, skipped)")
+    _record_step("patch-metadata", "ran" if _finalize_ran else "skipped")
+    if _finalize_ran:
+        _run_patch_metadata()
 
     # 13. Final torch repair. Steps above can pull CUDA torch from PyPI, so repair last.
     torch_flavor_tag = ""
@@ -8079,6 +8682,8 @@ def install_python_stack() -> int:
         _codec_index = _torchcodec_index_url(_codec_torch_ver, _codec_spec)
         _codec_args = ("--no-deps", "--no-cache-dir")
         _codec_rebuild = False
+        _codec_have = _installed_distribution_version("torchcodec") or ""
+        _codec_want = None
         if _codec_index:
             _codec_args += ("--index-url", _codec_index)
             # A codec already inside the window satisfies the requirement, so pip and uv
@@ -8086,7 +8691,6 @@ def install_python_stack() -> int:
             # wrong-accelerator wheel this pin exists to replace. Provenance is readable
             # from the version: the torch indexes carry a +cuNNN / +cpu local tag and PyPI
             # forbids one, so a local tag that is missing or different means another build.
-            _codec_have = _installed_distribution_version("torchcodec") or ""
             # The tag the PIN will fetch, not the resident torch's: an xpu torch is served
             # the cpu wheel, so comparing against "xpu" would force-reinstall every run.
             _codec_want = _torchcodec_index_tag(_codec_torch_ver)
@@ -8096,7 +8700,12 @@ def install_python_stack() -> int:
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
         _safe_print(
-            f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}"
+            f"   torch {_codec_torch_ver} detected -- "
+            + (
+                f"{_codec_spec} is already installed"
+                if (not _codec_rebuild and _codec_spec_is_satisfied(_codec_spec, _codec_have))
+                else f"installing {_codec_spec}"
+            )
             # Redacted for display only; the installer below still gets the exact URL.
             # An authenticated mirror puts its credentials in the userinfo or a query
             # token, and this line is printed straight to the terminal and CI log rather
@@ -8109,9 +8718,18 @@ def install_python_stack() -> int:
         # install inverts the rule the extras-no-deps filter above exists to enforce, and
         # the index can refuse for reasons no local table predicts -- a yanked release, an
         # offline mirror, a platform tag added or dropped upstream after this shipped.
-        _codec_ok = pip_install_try("Installing torchcodec", *_codec_args, _codec_spec)
-        _codec_fellback = False
-        if not _codec_ok and _codec_index:
+        if not _codec_rebuild and _codec_spec_is_satisfied(_codec_spec, _codec_have):
+            # Right version, right index. Both are what the pin asserts, so there is
+            # nothing left for it to do -- and it is not free: pip and uv resolve the
+            # specifier against the accelerator index before deciding the same thing.
+            _record_step("torchcodec", "skipped")
+            _codec_ok = True
+            _codec_fellback = False
+        else:
+            _record_step("torchcodec", "ran")
+            _codec_ok = pip_install_try("Installing torchcodec", *_codec_args, _codec_spec)
+            _codec_fellback = False
+        if not _codec_ok and _codec_index and _STEP_RESULTS.get("torchcodec") == "ran":
             # The leaf may not carry this window at all: cu129 serves torch 2.8-2.13 but
             # publishes no 0.8 or 0.9. Retry unpinned rather than table what each index
             # holds, which is what goes stale. _torchcodec_provenance_hint explains at
@@ -8136,7 +8754,7 @@ def install_python_stack() -> int:
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
                 "the rest of the install is unaffected"
             )
-        elif _codec_index:
+        elif _codec_index and _STEP_RESULTS.get("torchcodec") == "ran":
             # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
             # dependency set, so an older cuNNN wheel installs fine under --no-deps and then
             # fails to import. 0.12+ no longer links NPP, so this only guards the older pins.
@@ -8165,13 +8783,21 @@ def install_python_stack() -> int:
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 
-    # 14. Final check (silent; third-party conflicts are expected)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "check"],
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.DEVNULL,
-        **_windows_hidden_subprocess_kwargs(),
-    )
+    # 14. Final check (silent; third-party conflicts are expected). Its result is
+    # discarded, so the only thing it can do is cost a full metadata resolve of the
+    # venv -- worth paying when this pass installed something, and worth paying once
+    # more when the last recorded run did not get a clean answer.
+    _pip_check_ok = (_PASS_EVIDENCE or {}).get("pip_check_ok")
+    if _INSTALL_ACTIONS > 0 or _pip_check_ok is not True:
+        _pip_check_ok = (
+            subprocess.run(
+                [sys.executable, "-m", "pip", "check"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                **_windows_hidden_subprocess_kwargs(),
+            ).returncode
+            == 0
+        )
 
     # 14b. Repair again before the manifest is written. The pass above runs
     # before the core packages are installed, so an upgrade that itself leaves a
@@ -8210,6 +8836,20 @@ def install_python_stack() -> int:
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
             and _expected_torch_flavor_was_pinned(_recordable_torch_flavor_tag(torch_flavor_tag)),
+            # What the NEXT run may skip, and on what evidence. Digested from the
+            # CURRENT REQ_ROOT, which the core step above may have replaced with the new
+            # wheel's copy -- that is the point: a requirements file that moved during
+            # this pass must not read as unchanged on the next one.
+            extra = {
+                "pass_inputs": {
+                    **install_manifest.pass_input_digests(REQ_ROOT),
+                    **_plugin_digests,
+                },
+                "step_results": dict(_STEP_RESULTS),
+                "pip_check_ok": _pip_check_ok,
+                "uv_version": _uv_version(),
+                "installer_python_tag": _installer_python_tag(),
+            },
         )
         is None
     ):
@@ -8233,7 +8873,7 @@ def install_python_stack() -> int:
     # step done and no record of it, and verify-install, the desktop preflight and the
     # setup fast path all then call a complete install incomplete.
     if IS_MAC_ARM and not NO_TORCH:
-        _report_mlx_stack_health()
+        _report_mlx_stack_health(skipped = _STEP_RESULTS.get("mlx") == "skipped")
 
     _step(_LABEL, "installed")
     return 0

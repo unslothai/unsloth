@@ -120,7 +120,15 @@ def test_mlx_install_respects_platform_mode_and_pins(
     if platform.startswith("macos"):
         assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + int(enabled)
     if enabled:
-        requirements = [Requirement(arg) for arg in calls[0].args[1:] if not arg.startswith("-")]
+        # --upgrade-package takes a bare NAME as its value, which is not a pin; skip the
+        # argument after each one so the pins below are the only requirements read.
+        args = list(calls[0].args[1:])
+        pins = [
+            arg
+            for index, arg in enumerate(args)
+            if not arg.startswith("-") and (index == 0 or args[index - 1] != "--upgrade-package")
+        ]
+        requirements = [Requirement(arg) for arg in pins]
         actual = {req.name: str(req.specifier) for req in requirements}
         expected = _repair_specs()
         expected["mlx-metal"] = expected["mlx"]
@@ -171,10 +179,37 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     assert commands[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
     if len(commands) > 1:
         assert commands[1][:4] == [sys.executable, "-m", "pip", "install"]
+    args = list(call.args[1:])
+    upgraded = {
+        arg for index, arg in enumerate(args) if index and args[index - 1] == "--upgrade-package"
+    }
+    pins = {
+        arg for index, arg in enumerate(args) if not arg.startswith("-") and arg not in upgraded
+    }
+    assert upgraded == {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
     for command in commands:
-        assert {arg for arg in call.args[1:] if not arg.startswith("-")} <= set(command)
-        assert "--upgrade" in command
+        assert pins <= set(command)
         assert "-c" in command
+    # The upgrade INTENT has to survive both spellings, which is the whole reason this
+    # test exists: uv takes the flag per package, pip has no such flag and _build_pip_cmd
+    # translates it to the environment-wide one. A dropped translation made the fallback
+    # a silent no-op -- pip called every pin satisfied and the update still reported
+    # success. A bare --upgrade on the uv side is the opposite failure: it re-resolves
+    # every transitive dependency against the index and refetches ~60 MB per update.
+    assert "--upgrade" not in commands[0]
+    for name in upgraded:
+        assert commands[0][commands[0].index("--upgrade-package") :].count(name) == 1
+    if len(commands) > 1:
+        assert "--upgrade" in commands[1]
+        assert "--upgrade-package" not in commands[1]
+        # ...and no project may be named twice: pip refuses "mlx==0.32.1 mlx" outright
+        # with "Double requirement given", which would fail the step it was rescuing.
+        projects = [
+            arg.split(";")[0].split("[")[0].split("=")[0].split("<")[0].split(">")[0].strip()
+            for arg in commands[1]
+            if arg and not arg.startswith("-") and arg != sys.executable
+        ]
+        assert len(projects) == len(set(projects)), projects
 
 
 @pytest.mark.parametrize(
