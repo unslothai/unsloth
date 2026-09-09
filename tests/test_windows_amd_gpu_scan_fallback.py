@@ -558,21 +558,35 @@ assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sent
 # flag holds the same value and a restore consulting the wrong variable's flag still lands on the
 # right branch by luck. Separating the flags is the only way that shows.
 #
-# The masks are a binary encoding: pattern k keeps the names whose index has bit k set. Any two
-# distinct indices differ in at least one bit, so for every PAIR of variables there is a mask with
-# one present and the other absent, which is exactly the condition under which a restore reading
-# the wrong variable's flag takes the wrong branch. Fifteen names reach index 14, so four masks
-# cover it, and a sixteenth name is the first that would need a fifth.
+# The masks are a binary encoding: pattern k keeps the names whose index has bit k set. That
+# separates every unordered pair, which is not the property this needs. Substituting a flag is a
+# DIRECTED edit -- `if ($hadPreviousSkipStudioBase)` becoming `if ($hadPreviousTauriMode)` still
+# assigns $previousSkipStudioBase in the then-arm -- and only ONE of the two directions is
+# observable. With A present and B absent the mutant takes the else arm and REMOVES a variable the
+# caller had, which every assertion below catches. With A absent and B present it takes the then
+# arm and assigns A's saved $null, and assigning $null removes the variable, which is exactly what
+# the correct code does: nothing changed, nothing to see. So detecting a wrong flag in A's restore
+# requires a pattern where A is PRESENT and B is ABSENT, for that ordered pair specifically.
 #
-# This replaces an earlier pair of complementary even/odd patterns, which was not enough: two
-# variables of the same parity were present together in one and absent together in the other, so
-# cross-wiring between, say, indices 0 and 2 stayed invisible. Six patterns, not 2**15: exhaustive
-# over PAIRS, which is the failure mode, rather than over subsets, which is not.
+# The binary masks alone cannot supply that for every ordered pair. Index 0 is the extreme case: it
+# has no bit set, so it is absent from every mask and present only in "all", where everything else
+# is present too -- no pattern has SKIP_STUDIO_BASE present and any other name absent, and all 13
+# substitutions into its restore were invisible. More generally a mask supplies "A present, B
+# absent" only when index(A) is not a submask of index(B), and 43 of the 14*13 ordered pairs failed
+# that.
+#
+# Adding the COMPLEMENT of each mask fixes it exactly. Two distinct indices differ in some bit k:
+# whichever of them has bit k set is present in mask k with the other absent, and the ordering is
+# reversed in its complement. So both directions of every pair are covered, index 0 included, and
+# test_the_presence_masks_separate_every_ordered_pair asserts it rather than trusting this comment.
+# Ten patterns, not 2**14: exhaustive over ORDERED PAIRS, which is the failure mode, rather than
+# over subsets, which is not.
 _PRESENCE_MASK_BITS = max((len(_CALLER_ENV_NAMES) - 1).bit_length(), 1)
 _PRESENCE_PATTERNS = {
     "all": lambda i: True,
     "none": lambda i: False,
     **{f"mask{k}": (lambda i, k = k: bool((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
+    **{f"cmask{k}": (lambda i, k = k: not ((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
 }
 
 
@@ -581,18 +595,31 @@ def _present_names(pattern: str) -> tuple[str, ...]:
     return tuple(name for i, name in enumerate(_CALLER_ENV_NAMES) if keep(i))
 
 
-def test_the_presence_masks_separate_every_pair():
-    """The property the masks are chosen for, asserted rather than claimed in a comment.
+def test_the_presence_masks_separate_every_ordered_pair():
+    """The property the patterns are chosen for, asserted rather than claimed in a comment.
 
-    A restore that consults another variable's $hadPrevious flag only misbehaves when the two
-    disagree, so every pair must be split by at least one pattern. If a name is added and the mask
-    count no longer suffices, this says so instead of the coverage quietly thinning."""
-    masks = [_present_names(p) for p in _PRESENCE_PATTERNS if p.startswith("mask")]
-    for i, a in enumerate(_CALLER_ENV_NAMES):
-        for b in _CALLER_ENV_NAMES[i + 1 :]:
+    ORDERED, not unordered, and that is the whole correction. A restore of A that consults B's
+    $hadPrevious flag is only observable in the direction where A is present and B is absent: the
+    mutant then takes the else arm and removes a variable the caller had. The other direction
+    assigns A's saved $null, which removes the variable just as the correct code does, so it leaves
+    nothing to assert on. Requiring only that SOME pattern tells A apart from B accepted the half of
+    that which proves nothing, and 43 of the 182 directed substitutions between these names survived
+    under it -- every one of them into the restore of a variable no pattern made present while the
+    substituted flag's variable was absent.
+
+    If a name is added and the mask count no longer suffices, this names the pair instead of the
+    coverage quietly thinning."""
+    patterns = [_present_names(p) for p in _PRESENCE_PATTERNS]
+    for a in _CALLER_ENV_NAMES:
+        for b in _CALLER_ENV_NAMES:
+            if a == b:
+                continue
             assert any(
-                (a in m) != (b in m) for m in masks
-            ), f"no pattern tells {a} apart from {b}, so cross-wiring between them is invisible"
+                a in p and b not in p for p in patterns
+            ), (
+                f"no pattern has {a} present while {b} is absent, so a restore of {a} reading "
+                f"{b}'s $hadPrevious flag is invisible"
+            )
 
 
 def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) -> None:
