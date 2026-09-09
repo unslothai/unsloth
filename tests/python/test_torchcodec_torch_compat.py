@@ -1248,6 +1248,10 @@ def test_cuda_13_asks_for_the_unsuffixed_npp():
         _npp_requirement(str(major)).startswith("nvidia-npp-cu13") for major in range(11, 20)
     )
 
+    # Resolving an optional audio dependency must not be able to kill the install, so a major
+    # that is not a number degrades to the old spelling instead of raising out of int().
+    assert _npp_requirement("not-a-major") == "nvidia-npp-cunot-a-major"
+
 
 def test_the_npp_rename_is_per_package_not_a_rule_about_13():
     """NCCL kept its suffix at 13 while the math libraries dropped theirs, so this cannot be

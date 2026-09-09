@@ -534,7 +534,15 @@ def _npp_requirement(cuda_major: str) -> str:
 
     Bounded to the major on the unsuffixed side, because that name keeps moving: it is 13.x
     today, and a cu14 host must not silently take a 13 runtime or vice versa.
+
+    Both callers derive the major from a `\\d+` match, so the digit check never fires today.
+    It is here because the old spelling was an f-string that could not raise, and an installer
+    that dies resolving an optional audio dependency would be a worse bug than the one this
+    fixes: an unrecognised major keeps the previous behaviour rather than taking the process
+    down.
     """
+    if not cuda_major.isdigit():
+        return f"nvidia-npp-cu{cuda_major}"
     if int(cuda_major) <= _NPP_SUFFIXED_THROUGH_CUDA_MAJOR:
         return f"nvidia-npp-cu{cuda_major}"
     return f"nvidia-npp>={cuda_major},<{int(cuda_major) + 1}"
