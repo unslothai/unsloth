@@ -799,6 +799,27 @@ def _inference_wrapper_spans(text: str) -> list:
     return spans
 
 
+def _has_gemma_bare_trigger(text: str) -> bool:
+    """Whether ``_GEMMA_BARE_TC_RE`` could match, settled with C-level finds.
+
+    ``_GEMMA_BARE_SENTINEL`` alone is the word ``call``, which every ``<tool_call>`` and
+    every "called" satisfies, so gating on it swept the whole buffer per token to find
+    nothing: 500 of the 521 us this function cost on 32k of wrapped-call text.
+    Requiring the colon the regex needs is a NECESSARY condition for it, deliberately
+    weaker (no ``(?<!\\w)`` recheck, ``isspace`` covers ``\\s``), so only sweeps that
+    would find nothing are skipped."""
+    n = len(text)
+    at = text.find(_GEMMA_BARE_SENTINEL)
+    while at >= 0:
+        i = at + len(_GEMMA_BARE_SENTINEL)
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] == ":":
+            return True
+        at = text.find(_GEMMA_BARE_SENTINEL, at + 1)
+    return False
+
+
 def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     """``(start, end)`` of the argument body of every blocked markerless call, ordered.
 
@@ -809,7 +830,7 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     execute. Both are why this walks candidates in order instead of per pattern."""
     spans: list = []
     candidates: list = []
-    if _GEMMA_BARE_SENTINEL in text:
+    if _has_gemma_bare_trigger(text):
         candidates += [("gemma", m) for m in _GEMMA_BARE_TC_RE.finditer(text)]
     if "[ARGS]" in text:
         candidates += [("rehearsal", m) for m in _tool_healing._REHEARSAL_RE.finditer(text)]

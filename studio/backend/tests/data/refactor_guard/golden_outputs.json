@@ -16,6 +16,7 @@
     "_gemma_parse_stripped_body": "b9ae7baf34cbff7fdbf0bb883417d77785d8246a703b160029e7297c0ecc0631",
     "_gemma_parse_value": "480b71f46fd177c2fe4edeb8442ddc90c23cdf5188931e00cedbe81f63be2420",
     "_glm_value_close": "1946084f6d174988db2ca06611bb07943d9c32cfa9c7323fbefcb1b02aa9a101",
+    "_has_gemma_bare_trigger": "6c073a56a486f2df2b88d4c9f28aebd5739d47842f3ad5822f07c721e483d8dc",
     "_inference_wrapper_spans": "b6714b0b52db239aba36fcb72d3c8a2c34af5d031ea4a571236ce950e3da34b3",
     "_inside_open_parameter": "a0b25a3185a60cefe98162b3ccfd0872f53481beacc4c99571c2c04a3d3c09d4",
     "_is_provisional_call": "b56e53c8d51ea6dce204465f6b53d7d0a6b8e9b6d4d859888b3da9795892e6fa",

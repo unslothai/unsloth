@@ -1773,3 +1773,36 @@ def test_a_wrapped_calls_arguments_are_never_masked(wrapper):
     # By reference: a literal U+E000 does not survive every round-trip, and an empty
     # string silently satisfies ``not in``.
     assert _BLOCKED_BODY_MASK not in calls[0]["function"]["arguments"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Every one of these carries the bare word ``call``, which used to be the whole gate
+        # and so bought a full regex sweep of the buffer on every streamed token.
+        "The helper is called once per token and recalls the previous span.",
+        '<tool_call>{"name": "web_search", "arguments": {"q": "x"}}</tool_call>',
+        "See `recall()` and the tool_call wrapper.",
+    ],
+)
+def test_text_without_a_bare_call_colon_skips_the_gemma_sweep(text):
+    from core.inference.tool_call_parser import _has_gemma_bare_trigger
+
+    assert _has_gemma_bare_trigger(text) is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["call:python{\"code\": \"x\"}", "call :python{\"code\": \"x\"}",
+     "call: python{\"code\": \"x\"}", "call\t:\npython{\"code\": \"x\"}"],
+)
+def test_the_gemma_trigger_admits_every_spacing_the_regex_accepts(body):
+    """The gate must fire wherever ``_GEMMA_BARE_TC_RE`` can, or a blocked call slips
+    through unmasked; the regex allows whitespace on both sides of the colon."""
+    from core.inference.tool_call_parser import _GEMMA_BARE_TC_RE, _has_gemma_bare_trigger
+
+    text = "Quoting a README: " + body
+    assert _GEMMA_BARE_TC_RE.search(text) is not None
+    assert _has_gemma_bare_trigger(text) is True
+    assert parse_tool_calls_from_text(text, enabled_tool_names = {"python"}) == []
+    assert body in strip_tool_markup(text, final = True, enabled_tool_names = {"python"})

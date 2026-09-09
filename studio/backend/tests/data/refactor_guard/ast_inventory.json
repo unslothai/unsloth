@@ -1627,6 +1627,11 @@
         "kind": "def",
         "signature": "text: str, vs: int, *, strict: bool=False"
       },
+      "_has_gemma_bare_trigger": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_inference_wrapper_spans": {
         "decorators": [],
         "kind": "def",
