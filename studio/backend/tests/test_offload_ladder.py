@@ -1286,9 +1286,10 @@ def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
     """A slot the cache does not shrink for is concurrency given up for nothing.
 
     Two shapes reach that: a floor map that is flat across the slot count, and
-    --kv-unified, where one cache serves every slot whatever the count. The rung
-    stepped 4 slots down to 1 in both, and the spill it emitted afterwards was
-    byte-identical to the plan pinned at 4.
+    --kv-unified with no recurrent state, where the attention cache is held at
+    the caller's count whatever the map says. The rung stepped 4 slots down to 1
+    in both, and the spill it emitted afterwards was byte-identical to the plan
+    pinned at 4.
     """
     from core.inference.offload_planner import all_resident_bytes
 
@@ -1346,3 +1347,33 @@ def test_the_slot_rung_still_fires_where_a_slot_really_is_a_cache():
         ),
     )
     assert plan.n_parallel == 3 and not plan.ot_patterns, plan.reason
+
+
+def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
+    """--kv-unified makes the attention cache flat in the slot count; the recurrent
+    state is still one copy per sequence (llama-memory-recurrent sizes on
+    n_seq_max and has no unified form). Skipping rung 1 outright under the flag
+    spilled 2.4 GiB of FFN on a hybrid where one slot fewer fitted resident."""
+    from dataclasses import replace
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = replace(graded_moe(), recurrent_bytes = GIB)
+    ctx, floor = 4096, GIB
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - GIB // 2  # one slot's state short
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_unified = True,
+        kv_bytes_floor_by_parallel = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4},
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert plan.n_parallel == 3 and not plan.spills_anything, plan.reason
+    # The attention cache is not re-priced per slot under the flag: with no state
+    # to give back the rung keeps every slot and the weights spill instead.
+    plain = graded_moe()
+    short = all_resident_bytes(plain, ctx, kv_bytes_floor = floor, n_seq = 4) + GIB - GIB // 2
+    flat = plan_placement(plain, [short], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert flat.n_parallel in (0, 4) and flat.spills_anything, flat.reason
