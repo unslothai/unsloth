@@ -42,8 +42,8 @@ export type ExternalReasoningCapabilities = {
   )[];
 };
 
-/** Weakest -> strongest. Mirrors _REASONING_EFFORT_SCALE in backend
- *  core/inference/llama_cpp.py; keep the two in sync. */
+/** Weakest -> strongest. Must stay in sync with _REASONING_EFFORT_SCALE in
+ *  backend core/inference/llama_cpp.py. */
 const REASONING_EFFORT_SCALE = [
   "none",
   "minimal",
@@ -57,19 +57,13 @@ const REASONING_EFFORT_SCALE = [
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
  *  when only the latter is exposed (Claude 4.6).
  *
- *  A level the model does not offer lands on the nearest level BELOW it on the scale, not on
- *  `effortLevels[0]`. That fallback was the weakest rung: Qwen3.8-27B ships low | medium |
- *  xhigh, so a chat on High came back as Low. Searching downwards means the clamp never
- *  spends more compute than was asked for; only a level under everything on offer climbs to
- *  the weakest rung, which is where it already went.
+ *  An unavailable level searches DOWNWARD to the nearest offered level, so the clamp never
+ *  spends more compute than was asked for; only a level under everything on offer falls up to
+ *  the weakest rung.
  *
- *  "none" is excluded from that search unless it is what was asked for. It sorts weakest, but
- *  it is the off switch rather than a rung, so treating it as one clamps a thinking request
- *  onto thinking disabled: on Mistral's none | high a stored Medium resolved to none, and on
- *  every ladder that skips "minimal" a stored Minimal did the same. That is the failure this
- *  function exists to prevent, and llama_cpp.py strips "none" from a local ladder for the
- *  same reason. Falling UP to the weakest real rung is the smaller surprise: the user still
- *  gets thinking, and the off switch stays where they left it. */
+ *  "none" is the off switch, not a rung, so it is skipped unless it is what was asked for:
+ *  otherwise a thinking request clamps onto thinking disabled (Mistral's none | high turned a
+ *  stored Medium into none). llama_cpp.py strips "none" from local ladders for the same reason. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -93,7 +87,6 @@ export function clampReasoningEffortToLevels(
     const offered = REASONING_EFFORT_SCALE.filter((level) =>
       effortLevels.includes(level),
     );
-    // Only a request for "none" may land on "none"; see the note above.
     const rungs =
       candidate === "none" ? offered : offered.filter((level) => level !== "none");
     const searchable = rungs.length > 0 ? rungs : offered;

@@ -95,12 +95,10 @@ test("Astra exposes mandatory reasoning with its full effort ladder", () => {
   assert.equal(clampReasoningEffortToLevels("max", caps.reasoningEffortLevels), "max");
 });
 
-// A local GGUF's ladder is whatever its template branches on, so it can skip rungs the scale
-// has. Qwen3.8-27B ships low | medium | xhigh, and High and Max are both real stored settings.
+// A local GGUF's ladder is whatever its template branches on, so it can skip scale rungs.
 test("a narrower local ladder clamps to the nearest rung, not to the weakest", () => {
   const qwen38 = ["low", "medium", "xhigh"] as const;
 
-  // One rung off the top must not come back as the floor.
   assert.equal(clampReasoningEffortToLevels("high", qwen38), "medium");
   assert.equal(clampReasoningEffortToLevels("max", qwen38), "xhigh");
   for (const effort of qwen38) {
@@ -120,25 +118,19 @@ test("the xhigh -> max alias still wins over the neighbour search", () => {
 });
 
 test("clamping down never lands on thinking-off", () => {
-  // "none" sorts weakest but is the off switch, so the downward search skips it. Mistral
-  // small is the shipped ladder where that bites: none | high has no rung under High.
   for (const effort of ["minimal", "low", "medium"] as const) {
     assert.equal(clampReasoningEffortToLevels(effort, ["none", "high"]), "high", effort);
   }
-  // Every ladder that skips "minimal" hit the same wall one rung up.
   assert.equal(
     clampReasoningEffortToLevels("minimal", ["none", "low", "medium", "high"]),
     "low",
   );
-  // Asking for off still gets off.
   assert.equal(clampReasoningEffortToLevels("none", ["none", "high"]), "none");
-  // A ladder with nothing but the off switch has nowhere else to go.
   assert.equal(clampReasoningEffortToLevels("high", ["none"]), "none");
 });
 
 test("the ladder order a caller passes does not change the clamp", () => {
-  // A local ladder is assembled from a chat-template scan, so nothing type-level keeps it
-  // ascending; the clamp reads scale order rather than array order.
+  // A local ladder comes from a chat-template scan, so nothing keeps it ascending.
   const ascending = ["low", "medium", "xhigh"] as const;
   const descending = ["xhigh", "medium", "low"] as const;
   for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
@@ -151,9 +143,8 @@ test("the ladder order a caller passes does not change the clamp", () => {
 });
 
 test("every shipped effort ladder is ordered weakest first", () => {
-  // The Think menu renders levels in the order the table lists them, and
-  // `fallbackExternalEffort` in chat-adapter reads `reasoningEffortLevels[0]` as the weakest
-  // rung. A table written out of order would quietly break both.
+  // The Think menu renders table order, and `fallbackExternalEffort` in chat-adapter reads
+  // `reasoningEffortLevels[0]` as the weakest rung; out-of-order tables break both.
   const models: Array<[string, string]> = [
     ["anthropic", "claude-opus-5"],
     ["anthropic", "claude-opus-4-6"],
@@ -192,9 +183,8 @@ test("every shipped effort ladder is ordered weakest first", () => {
 });
 
 test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
-  // provider-capabilities.ts says the two are mirrors; nothing enforced it. The clamp reads
-  // the frontend copy while detect_reasoning_flags builds every local ladder from the backend
-  // one, so a drift would hand the clamp a level it cannot rank.
+  // The clamp ranks against the frontend copy while detect_reasoning_flags builds local
+  // ladders from the backend one, so drift hands the clamp a level it cannot rank.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const frontend = readFileSync(
     path.join(here, "../src/features/chat/provider-capabilities.ts"),
