@@ -4382,6 +4382,9 @@ export function createOpenAIStreamAdapter(
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
+      // Tool part IDs are unique to this run; thread IDs can change during first-save.
+      const executionRecordKey = (id: string) =>
+        toolOutputKey(toolPaneScope(options.modelType, options.pairId), id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       // Which conversation was on screen when this run started; a first turn has no id yet.
@@ -6516,7 +6519,7 @@ export function createOpenAIStreamAdapter(
                 }
                 if (toolEvent.type === "tool_execution") {
                   const liveId = resolveToolPartId((toolEvent.tool_call_id as string) || "");
-                  if (liveId) recordExecution(scopedToolOutputKey(liveId), toolEvent.execution);
+                  if (liveId) recordExecution(executionRecordKey(liveId), toolEvent.execution);
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -6611,7 +6614,7 @@ export function createOpenAIStreamAdapter(
                   // "call_0" restarts every response: drop stale live/preserved output under this key, else the
                   // card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
-                  clearExecution(staleKey);
+                  clearExecution(executionRecordKey(id));
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??

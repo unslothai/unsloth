@@ -1,6 +1,7 @@
 import { isolationLimitation } from "./isolation-labels";
 import { create } from "zustand";
-import { useToolOutputFor, useToolPaneScope } from "./tool-output-scope";
+import { useContext } from "react";
+import { toolOutputKey, ToolPaneScopeContext } from "./tool-output-scope";
 
 export const useExecutionRecords = create<{ records: Record<string, string> }>(() => ({ records: {} }));
 export function recordExecution(key: string, value: unknown) {
@@ -18,7 +19,8 @@ export function clearExecution(key: string) {
 }
 export function ToolExecutionDetails({ toolCallId }: { toolCallId: string }) {
   const records = useExecutionRecords(s => s.records);
-  const text = useToolOutputFor(records, useToolPaneScope(), toolCallId);
+  const paneScope = useContext(ToolPaneScopeContext);
+  const text = records[toolOutputKey(paneScope, toolCallId)];
   if (!text) return null;
   const record = JSON.parse(text);
   return <details className="mx-4 mb-2 text-xs text-muted-foreground" data-slot="tool-execution-protection">
