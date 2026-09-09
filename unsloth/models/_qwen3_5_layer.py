@@ -203,7 +203,23 @@ def _attn_mid(attn_output, gate, residual, Wo, Ao, Bo, so: float, norm_w, eps: f
 # ----------------------------------------------------------------------------- module glue
 def _lora_params(m):
     """(W, A, B, scaling) for a plain nn.Linear or a vanilla single-adapter peft lora.Linear in
-    its normal state; None when the module is anything else right now."""
+    its normal state; None when the module is anything else right now.
+
+    The full inspection costs ~15 attribute reads per module, x7 modules per layer, per call.
+    The answer only changes when an adapter is added, merged, disabled or swapped, so it is
+    cached on the module and re-validated with the three flags that can flip at run time."""
+    cached = m.__dict__.get("_unsloth_lora_params_cache")
+    if cached is not None:
+        params, adapters = cached
+        if not m.disable_adapters and not m.merged and m.active_adapters == adapters:
+            return params
+    params = _lora_params_uncached(m)
+    if params is not None and type(m) is not nn.Linear:
+        m._unsloth_lora_params_cache = (params, list(m.active_adapters))
+    return params
+
+
+def _lora_params_uncached(m):
     if type(m) is nn.Linear:
         if m.bias is not None:
             return None
