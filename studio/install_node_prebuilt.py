@@ -710,12 +710,14 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
         except OSError:
             pass
         if original is not None:
-            # Best effort, as the llama marker writer does: os.replace installs the temp
-            # file's ownership, so a group-shared marker refreshed by another member
-            # would otherwise take that member's group and stop being readable by the
-            # rest. A no-op for a non-root user.
+            # Best effort: os.replace installs the temp file's ownership, so a
+            # group-shared marker refreshed by another member would otherwise take that
+            # member's primary group and stop being readable by the rest. The group
+            # only (uid -1): a non-root member may hand a file to a group it belongs
+            # to, while asking for the original owner as well would refuse the whole
+            # call before the group was applied.
             try:
-                os.chown(tmp_path, original.st_uid, original.st_gid)
+                os.chown(tmp_path, -1, original.st_gid)
             except (OSError, AttributeError):
                 pass
         atomic_replace_from_tempfile(tmp_path, destination)

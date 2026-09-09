@@ -6712,3 +6712,21 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
     cpu_host = SimpleNamespace(has_usable_nvidia = False, is_linux = True, is_windows = False)
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, cpu_host) is False
+
+
+def test_the_host_profile_carries_the_cuda_runtimes_on_disk(monkeypatch):
+    """The CUDA selectors order the bundles by the runtimes on disk as well as by torch's
+    preference; a runtime that appeared since the install changes the selection with the
+    GPU and driver unchanged, so it has to move the profile the marker check compares."""
+    M = INSTALL_LLAMA_PREBUILT
+    host = linux_host(compute_caps = ["8.9"], has_physical_nvidia = True, has_usable_nvidia = True)
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))
+    before = M.host_profile(host)
+    assert before["cuda_runtime_lines"] == ["cuda12"]
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda13", "cuda12"], {}))
+    after = M.host_profile(host)
+    assert after["cuda_runtime_lines"] == ["cuda12", "cuda13"]
+    assert before != after
+    # Off CUDA hosts no selector reads it, and the key is a constant None.
+    cpu = linux_host(has_physical_nvidia = False, has_usable_nvidia = False)
+    assert M.host_profile(cpu)["cuda_runtime_lines"] is None

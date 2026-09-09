@@ -6603,7 +6603,23 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         "has_intel_gpu": bool(host.has_intel_gpu),
         "has_amd_gpu_without_rocm": bool(host.has_amd_gpu_without_rocm),
         "macos_version": list(host.macos_version) if host.macos_version else None,
+        # The CUDA runtimes on disk, which the Linux and Windows CUDA selectors order
+        # the bundles by alongside torch's preference: a CUDA 13 runtime that appeared
+        # since the install changes the selection with the GPU, the driver and every
+        # other field equal. None off CUDA hosts, where no selector reads it.
+        "cuda_runtime_lines": _detected_cuda_runtime_lines(host),
     }
+
+
+def _detected_cuda_runtime_lines(host: HostInfo) -> "list[str] | None":
+    if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
+        return None
+    try:
+        detected = detected_linux_runtime_lines() if host.is_linux else detected_windows_runtime_lines()
+    except Exception:  # noqa: BLE001 - an unreadable scan is "cannot tell", which takes the full path
+        return None
+    lines = detected[0] if isinstance(detected, tuple) else detected
+    return sorted({str(line) for line in lines})
 
 
 def write_prebuilt_metadata(

@@ -1235,7 +1235,9 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     chowned = []
     monkeypatch.setattr(M.os, "chown", lambda path, uid, gid: chowned.append((uid, gid)))
     M._write_metadata_payload(install_dir, {"kind": "node"})
-    assert chowned == [(original.st_uid, original.st_gid)]
+    # The group only: a non-root member can hand the file to a group it belongs to,
+    # and asking for the original owner too would refuse the call before the group.
+    assert chowned == [(-1, original.st_gid)]
     chowned.clear()
     # A marker written for the first time has no owner to preserve.
     marker.unlink()
