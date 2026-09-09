@@ -20,6 +20,7 @@ at a time, and the refusal is a Bad Image dialog: any probe that asks whether th
 would refuse the file has already produced the thing being avoided.
 """
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -40,7 +41,17 @@ from unsloth.import_fixes import (  # noqa: E402
     sentencepiece_should_be_disabled,
 )
 
-MAIN = REPO / "studio" / "backend" / "main.py"
+BACKEND = REPO / "studio" / "backend"
+MAIN = BACKEND / "main.py"
+GUARD = BACKEND / "utils" / "sentencepiece_guard.py"
+
+
+def _studio_guard():
+    """Studio's copy, loaded by path so the test needs nothing else from the backend tree."""
+    spec = importlib.util.spec_from_file_location("studio_sentencepiece_guard", GUARD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(autouse = True)
@@ -125,15 +136,13 @@ def test_calling_it_twice_is_stable(monkeypatch):
 def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     """Studio's parent must not import unsloth: that runs unsloth/__init__.py, whose GPU branch
     pulls torch, Triton, transformers and the model stack into a long-lived process built to
-    stay light, and can open a competing GPU context. So the rule is inlined there, and this
-    holds the two spellings to the same behaviour."""
+    stay light, and can open a competing GPU context. So it calls Studio's own copy instead."""
     source = MAIN.read_text(encoding = "utf-8")
-    assert 'sys.modules["sentencepiece"] = None' in source
     assert "from unsloth.import_fixes import" not in source
     assert "import unsloth\n" not in source
 
     marker = source.index('os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")')
-    guard = source.index('sys.modules["sentencepiece"] = None')
+    guard = source.index("from utils.sentencepiece_guard import")
     assert guard > marker
 
     # Real import statements only. Matching the bare word finds the surrounding comments,
@@ -158,9 +167,9 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     ],
 )
 def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
-    """The package helper and the inlined Studio condition, driven through the same cases.
-    Compared by behaviour rather than by source text, which would pass on two implementations
-    that had quietly stopped agreeing."""
+    """The package helper and Studio's copy, driven through the same cases. Compared by
+    behaviour rather than by source text, which would pass on two implementations that had
+    quietly stopped agreeing."""
     monkeypatch.setattr(sys, "platform", platform)
     if env is None:
         monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
@@ -168,19 +177,80 @@ def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
         monkeypatch.setenv(DISABLE_SENTENCEPIECE_VARIABLE, env)
     assert sentencepiece_should_be_disabled() is expect_disabled
 
-    source = MAIN.read_text(encoding = "utf-8")
-    start = source.index("_DISABLE_SENTENCEPIECE = ")
-    end = source.index('sys.modules["sentencepiece"] = None', start) + len(
-        'sys.modules["sentencepiece"] = None'
-    )
-    inlined = textwrap.dedent(source[start:end])
+    studio = _studio_guard()
+    monkeypatch.setattr(studio.sys, "platform", platform)
+    assert studio.DISABLE_SENTENCEPIECE_VARIABLE == DISABLE_SENTENCEPIECE_VARIABLE
+    assert studio.sentencepiece_should_be_disabled() is expect_disabled
+
     # A stub sys, because the real one already has sentencepiece imported by the test session,
-    # and the snippet correctly declines to replace a live module. Running it against the real
+    # and the rule correctly declines to replace a live module. Running it against the real
     # sys.modules would test the fixture, not the rule.
-    stub = types.SimpleNamespace(platform = platform, modules = {})
-    scope = {"os": os, "sys": stub}
-    exec(compile(inlined, "<studio-main-inline>", "exec"), scope)
-    assert (stub.modules.get("sentencepiece", "absent") is None) is expect_disabled
+    monkeypatch.setattr(studio, "sys", types.SimpleNamespace(platform = platform, modules = {}))
+    assert studio.disable_sentencepiece_on_windows() is expect_disabled
+    assert (studio.sys.modules.get("sentencepiece", "absent") is None) is expect_disabled
+
+
+def _run_shared_entrypoint(tmp_path, env):
+    """Drive the workers' shared spawn entrypoint against a stand-in worker module.
+
+    The stand-in records, at its own module scope, what the interpreter looked like when the
+    entrypoint imported it. That is the moment under test: the real worker modules import
+    transformers from there onwards.
+    """
+    (tmp_path / "sentencepiece_entrypoint_probe.py").write_text(
+        textwrap.dedent(
+            """
+            import os, sys
+            AT_IMPORT = sys.modules.get("sentencepiece", "absent") is None
+            ENV = os.environ.get("UNSLOTH_STUDIO_SP_PROBE")
+
+            def report():
+                print("SENTINEL AT IMPORT", AT_IMPORT)
+                print("ENV APPLIED", ENV)
+            """
+        ),
+        encoding = "utf-8",
+    )
+    program = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(BACKEND)!r})
+        sys.path.insert(0, {str(tmp_path)!r})
+        from utils.native_path_leases import run_without_native_path_secret
+        assert "sentencepiece" not in sys.modules, sys.modules["sentencepiece"]
+        run_without_native_path_secret(
+            "sentencepiece_entrypoint_probe", "report", {{"UNSLOTH_STUDIO_SP_PROBE": "yes"}}
+        )
+        """
+    )
+    return subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        env = env,
+    )
+
+
+def test_the_shared_worker_entrypoint_installs_it_before_the_worker_module(tmp_path):
+    """Every Studio worker is a spawned interpreter that inherits no sys.modules, and each one
+    imports transformers (version activation, fast-path hooks) long before it imports unsloth.
+    A sentinel installed after that leaves transformers reporting sentencepiece available while
+    importing it fails, which breaks tokenizer loads that work either without the rule or with
+    it applied in time. So the shared entrypoint installs it before the worker module."""
+    out = _run_shared_entrypoint(tmp_path, {**os.environ, DISABLE_SENTENCEPIECE_VARIABLE: "1"})
+    assert "SENTINEL AT IMPORT True" in out.stdout, (out.stdout, out.stderr[-2000:])
+    # The captured cache environment still lands first: the rule reads the environment.
+    assert "ENV APPLIED yes" in out.stdout, (out.stdout, out.stderr[-2000:])
+
+
+def test_the_shared_worker_entrypoint_leaves_it_alone_when_not_asked(tmp_path):
+    """The same entrypoint where the rule does not apply: off Windows and without the flag, a
+    worker still gets the real package."""
+    env = {k: v for k, v in os.environ.items() if k != DISABLE_SENTENCEPIECE_VARIABLE}
+    out = _run_shared_entrypoint(tmp_path, env)
+    expected = "SENTINEL AT IMPORT " + str(sys.platform == "win32")
+    assert expected in out.stdout, (out.stdout, out.stderr[-2000:])
 
 
 @pytest.mark.skipif(
