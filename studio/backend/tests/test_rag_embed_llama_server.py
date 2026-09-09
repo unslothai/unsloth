@@ -869,7 +869,7 @@ def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
     _seed_cache(tmp_path / "hub", repo, ["F16/bge-small.gguf"])
     _use_cache_root(monkeypatch, tmp_path / "hub")
     resolved = LlamaServerBackend._resolve_cached_gguf(repo)
-    assert resolved is not None and resolved.endswith("F16/bge-small.gguf")
+    assert resolved is not None and Path(resolved).parts[-2:] == ("F16", "bge-small.gguf")
 
 
 def test_an_incomplete_cached_shard_set_is_not_a_hit(monkeypatch, tmp_path):

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { type ProfileStats, loadProfileStats } from "../api/profile-stats";
 
 type ProfileStatsState = {
@@ -42,6 +43,9 @@ export function useProfileStats(): ProfileStatsState {
     void load();
     return () => abortRef.current?.abort();
   }, [load]);
+
+  // Tokens move while backgrounded. Reopen needs no watcher: the dialog is not force-mounted.
+  useEffect(() => subscribeResidentStatusRefresh(load), [load]);
 
   const reload = useCallback(() => {
     void load();

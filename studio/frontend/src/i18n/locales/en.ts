@@ -465,8 +465,7 @@ export const en = {
       droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
-      // Not rendered: extra terms the settings search matches this tab on, so
-      // the pane is still reachable by searching for debug or an error.
+      // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
@@ -916,7 +915,11 @@ export const en = {
         currentStreak: "Current streak",
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
-        activityDescription: "{total} over the last {weeks}",
+        activityDescription: {
+          daily: "{total} over the last {weeks}",
+          weekly: "Peak week {total} · last {weeks}",
+          cumulative: "{total} accumulated over the last {weeks}",
+        },
         mode: {
           daily: "Daily",
           weekly: "Weekly",
@@ -1252,6 +1255,7 @@ export const en = {
       copy: "Copy",
       copied: "Copied",
       commandBuilder: "Command builder",
+      commandShell: "Shell for all commands",
       agent: "Coding agent",
       model: "Model",
       searchModels: "Search GGUF models...",
@@ -1697,7 +1701,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now to prepare it in the background. You keep working and restart when it is ready.",
+          "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1707,20 +1711,11 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
-        desktopPreparingDescription:
-          "The update is being prepared in the background. You can keep working.",
-        desktopReadyToRestartDescription:
-          "Everything is ready. Restart to finish installing the update.",
-        desktopReadyToInstallDescription:
-          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
-        preparing: "Preparing...",
         updateNow: "Update now",
-        restartToUpdate: "Restart to update",
-        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
@@ -1875,6 +1870,7 @@ export const en = {
       sourceHfCache: "HF cache",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Custom folder",
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
@@ -2422,8 +2418,7 @@ export const en = {
       "Weights {model} + context {context} = {total} of {budget} usable VRAM",
     readoutWithSpec:
       "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
-    // Measured against llama.cpp: the cache is allocated at context creation,
-    // sized to n_ctx, so the rate is what a longer context actually costs.
+    // Measured against llama.cpp: the cache is allocated at context creation, sized to n_ctx.
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",

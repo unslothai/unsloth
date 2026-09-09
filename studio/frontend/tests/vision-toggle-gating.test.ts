@@ -13,23 +13,16 @@
 // tests next door.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { getImageInputUnavailableReason } from "../src/features/chat/utils/image-input-support.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (relative: string) =>
-  readFileSync(path.join(HERE, "..", relative), "utf8");
+import { readSrc } from "./helpers/kit.ts";
 
-const APPLIER = read(
-  "src/features/chat/lib/apply-inference-status-to-store.ts",
-);
-const API_TYPES = read("src/features/chat/types/api.ts");
-const CONFIG_PAGE = read(
-  "src/features/model-picker/components/model-config-page.tsx",
+const APPLIER = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+const API_TYPES = readSrc("features/chat/types/api.ts");
+const CONFIG_PAGE = readSrc(
+  "features/model-picker/components/model-config-page.tsx",
 );
 
 test("both response types carry the raw disable_vision echo", () => {
@@ -189,7 +182,7 @@ test("every other refusal is untouched by the new branch", () => {
 // which is false for a model that cannot do images. Source-level for the same reason
 // as the reseed above: the replay sits inside one large object literal.
 test("the rollback replays the loaded vision baseline, not the control or the gate", () => {
-  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const replay = runtime.slice(
     runtime.indexOf("tensor_parallel: stateBeforeUnload.loadedTensorParallel"),
   );
@@ -219,7 +212,7 @@ test("the rollback replays the loaded vision baseline, not the control or the ga
 // model whose projector is running, and arms the next Apply to switch it off for real.
 // Source-level for the same reason as the replay above.
 test("the rollback seeds the Vision control from the restored model, not the target", () => {
-  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const assignment = runtime.slice(
     runtime.indexOf("loadedSpeculativeType: rollbackSpeculativeType"),
   );
@@ -249,7 +242,7 @@ test("the rollback seeds the Vision control from the restored model, not the tar
 // where it parts company with tensorParallel, which is deliberately standing across
 // models. Source-level for the same reason as the tests above.
 test("an unconfigured target gets the default Vision value, not the outgoing model's", () => {
-  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const decl = runtime.slice(
     runtime.indexOf("const loadDisableVision ="),
     runtime.indexOf("const loadActivePresetSource"),
@@ -265,7 +258,7 @@ test("an unconfigured target gets the default Vision value, not the outgoing mod
 });
 
 test("a compare pane with no saved config does not inherit the live Vision value", () => {
-  const composer = read("src/features/chat/shared-composer.tsx");
+  const composer = readSrc("features/chat/shared-composer.tsx");
   const decl = composer.slice(
     composer.indexOf("const effectiveDisableVision ="),
     composer.indexOf("if (ownConfig.selectedGpuIds != null)"),

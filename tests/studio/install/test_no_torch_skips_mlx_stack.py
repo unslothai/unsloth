@@ -3,15 +3,11 @@
 
 """`unsloth studio update` must not hand a --no-torch install the MLX stack back.
 
-Gating the runtime self-heal is only half of the opt-out. The installer's own MLX step
-runs on `IS_MAC_ARM and not skip_base`, and the updater clears SKIP_STUDIO_BASE
-(`unsloth_cli/commands/studio.py`), so before the `not NO_TORCH` guard a routine update
-installed mlx/mlx-lm/mlx-vlm into a GGUF-only venv and the next launch enabled Train
-before the no_torch verdict was ever reached. That is the one line that makes the opt-out
-survive an update, and it is invisible to the backend tests.
-
-Structural rather than behavioural for the reason test_diffusers_pin.py is: running the
-installer needs a Mac, and what has to hold is a property of the gate, not of one run.
+The updater clears SKIP_STUDIO_BASE (`unsloth_cli/commands/studio.py`), so without the
+`not NO_TORCH` guard a routine update reinstalls MLX into a GGUF-only venv and the next
+launch enables Train before the no_torch verdict is reached. Invisible to the backend
+tests. Structural, like test_diffusers_pin.py: running the installer needs a Mac, and
+what must hold is a property of the gate, not of one run.
 """
 
 from __future__ import annotations
@@ -30,22 +26,34 @@ def _source() -> str:
     return STACK.read_text(encoding = "utf-8")
 
 
-def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
-    """The `if` test guarding every call whose arguments mention ``needle``."""
+def _guard_chains_of_calls_mentioning(source: str, needle: str) -> list[list[str]]:
+    """Every enclosing `if` test, outermost first, for each call mentioning ``needle``.
+
+    A chain because the step sits under the platform gate and then under a wheel-floor
+    branch; only the outermost is the gate this file is about.
+    """
     tree = ast.parse(source)
-    guards = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        for call in ast.walk(node):
-            if not isinstance(call, ast.Call):
-                continue
-            if any(
+    chains: list[list[str]] = []
+
+    def walk(node, enclosing: list[str]):
+        for child in ast.iter_child_nodes(node):
+            inner = enclosing
+            if isinstance(child, ast.If):
+                inner = enclosing + [ast.get_source_segment(source, child.test) or ""]
+            if isinstance(child, ast.Call) and any(
                 isinstance(arg, ast.Constant) and isinstance(arg.value, str) and needle in arg.value
-                for arg in call.args
+                for arg in child.args
             ):
-                guards.append(ast.get_source_segment(source, node.test) or "")
-    return guards
+                chains.append(enclosing)
+            walk(child, inner)
+
+    walk(tree, [])
+    return chains
+
+
+def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
+    """The outermost `if` test guarding every call whose arguments mention ``needle``."""
+    return [chain[0] for chain in _guard_chains_of_calls_mentioning(source, needle) if chain]
 
 
 def test_the_mlx_install_step_is_gated_on_no_torch():
@@ -64,8 +72,7 @@ def test_the_mlx_install_step_is_gated_on_no_torch():
 
 
 def test_the_progress_total_uses_the_same_gate_as_the_step():
-    """_TOTAL is computed from a copy of the gate. If the two drift, the progress bar
-    counts a step that never runs, and on a --no-torch install it would stall one short."""
+    """_TOTAL copies the gate; drift makes the bar count a step that never runs."""
     source = _source()
     step_guards = set(_guards_of_calls_mentioning(source, MLX_STEP_LABEL))
     tree = ast.parse(source)
@@ -74,8 +81,8 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
-        # Sliced by line rather than ast.get_source_segment: what names this branch is the
-        # trailing comment on the += 1, and a node's extent stops before it.
+        # Sliced by line: what names this branch is the trailing comment on the += 1,
+        # which a node's extent stops before.
         segment = "\n".join(lines[node.lineno - 1 : node.end_lineno])
         # The += 1 whose comment names the MLX stack, i.e. the accounting twin.
         if "base_total += 1" in segment and "MLX stack" in segment:
@@ -88,14 +95,12 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
 
 
 def test_the_updater_still_clears_skip_studio_base():
-    """The premise of the guard. If the updater ever stopped clearing this, the MLX step
-    would be skipped for a different reason and the test above would pass vacuously."""
+    """The premise: stop clearing this and the test above passes vacuously."""
     assert 'os.environ.pop("SKIP_STUDIO_BASE", None)' in STUDIO_CLI.read_text(encoding = "utf-8")
 
 
 def test_no_torch_is_resolved_from_the_manifest_not_only_from_the_environment():
-    """The updater injects no UNSLOTH_NO_TORCH, so the manifest tier is what makes the gate
-    fire on `unsloth studio update` rather than only on a fresh `install.sh --no-torch`."""
+    """No UNSLOTH_NO_TORCH is injected, so the manifest tier is what fires the gate on update."""
     source = _source()
     tree = ast.parse(source)
     infer = next(

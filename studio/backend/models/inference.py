@@ -1394,6 +1394,15 @@ class LoadResponse(_InferenceRuntimeFields):
         "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
         "them in from disk and generation will be slow. The model still loaded.",
     )
+    carveout_advice: Optional[dict] = Field(
+        None,
+        description = "Non-blocking advisory, or null: this machine's integrated GPU has "
+        "less memory dedicated to it than this model's weights need, so they run from "
+        "shared system memory and generation is slower than it could be. Carries "
+        "current_gb, needed_gb, suggested_gb, machine_gb, host_left_gb and a prose "
+        "message. Null once the user has dismissed it at this allocation, and on every "
+        "load where enlarging the allocation would not help. The model still loaded.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -2934,8 +2943,10 @@ class ResponsesOutputTextPart(BaseModel):
 class ResponsesUnknownContentPart(BaseModel):
     """Catch-all for unmodelled content-part types.
 
-    Keeps validation green for newer part types (e.g. ``input_audio``); skipped
-    during normalisation rather than rejected with a 422.
+    Keeps validation green for newer part types (e.g. ``input_audio``) so an unrelated turn
+    is never answered with a 422 schema dump. Normalisation then refuses the part by name,
+    the way ``UnknownContentPart`` is refused on the Chat Completions side: landing here
+    means the part was understood well enough to say what it is, not that it can be served.
     """
 
     type: str

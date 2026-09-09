@@ -1717,7 +1717,7 @@ class TrainingBackend:
                         },
                         daemon = True,
                     )
-                    from utils.process_lifetime import adopt_pid
+                    from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
                     previous_job_id = None
                     previous_start_request_id = None
@@ -1731,6 +1731,16 @@ class TrainingBackend:
                                 start_request_id,
                             )
                             return False
+                        # The cancel check above is about this start request; the latch is
+                        # about the process. A start admitted before the quit can still
+                        # reach here after the shutdown sweep has taken its snapshot, and
+                        # the worker would then train on past it holding the GPU.
+                        if is_process_shutting_down():
+                            logger.info(
+                                "Studio is shutting down; not starting training worker for %s",
+                                start_request_id,
+                            )
+                            return False
                         previous_job_id = self.current_job_id
                         previous_start_request_id = self.current_start_request_id
                         proc.start()
@@ -1738,9 +1748,16 @@ class TrainingBackend:
                         self.current_start_request_id = start_request_id
                     try:
                         adopt_pid(proc.pid)
+                        # Recheck once the pid is recorded, for the window between the
+                        # gate above and this record. Raised rather than handled inline
+                        # so it reuses the terminate ladder and the state rollback below;
+                        # adoption ran first, so the worker is in the sweep record for as
+                        # long as it exists.
+                        if is_process_shutting_down():
+                            raise RuntimeError("Studio is shutting down")
                     except Exception:
                         logger.error(
-                            "Failed to adopt training subprocess; terminating it",
+                            "Could not keep the training subprocess; terminating it",
                             exc_info = True,
                         )
                         try:
@@ -2416,10 +2433,37 @@ class TrainingBackend:
                             },
                             daemon = True,
                         )
-                        new_proc.start()
-                        from utils.process_lifetime import adopt_pid
+                        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
+                        # A stall recovery that started before the quit can still reach
+                        # this respawn after the shutdown sweep has taken its snapshot.
+                        if is_process_shutting_down():
+                            raise RuntimeError(
+                                "Studio is shutting down; not respawning the training worker"
+                            )
+                        new_proc.start()
                         adopt_pid(new_proc.pid)
+                        # Recheck once the pid is recorded, for the window between the gate
+                        # above and this record. Adoption ran first, so the worker killed
+                        # here was in the sweep record for as long as it existed.
+                        if is_process_shutting_down():
+                            logger.info(
+                                "shutdown began during the respawn; killing the new training worker"
+                            )
+                            try:
+                                if new_proc.is_alive():
+                                    new_proc.terminate()
+                                new_proc.join(timeout = 5.0)
+                                if new_proc.is_alive():
+                                    new_proc.kill()
+                                    new_proc.join(timeout = 2.0)
+                            except Exception:  # noqa: BLE001 - the reap is best-effort
+                                logger.warning(
+                                    "could not reap the new training worker", exc_info = True
+                                )
+                            raise RuntimeError(
+                                "Studio is shutting down; not respawning the training worker"
+                            )
                 except Exception:
                     logger.error("Failed to respawn training subprocess", exc_info = True)
                     self._spawn_in_progress = False

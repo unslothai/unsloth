@@ -6,8 +6,8 @@
 Every rule here is calibrated against what was MEASURED on a real 2xT4
 (`unsloth-probe-vision-recon-c76ea3`), not against what the brief assumed:
 
-* `fla` resolves to `unsloth_zoo/_vendored/fla`, version 0.5.1, and only AFTER
-  the model load;
+* `fla` resolves to `unsloth_zoo/_vendored/fla`, version 0.5.1, importable from
+  `import unsloth` onward (unsloth_zoo injects it), so it is read after the load;
 * attention resolves to `sdpa`, and `flash_attn` is not importable at all;
 * `causal_conv1d` and `mamba_ssm` are NOT installed on this path, before or
   after the load.

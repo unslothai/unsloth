@@ -27,6 +27,18 @@ from models.providers import (
 )
 
 
+def _provider(**overrides):
+    """A provider creation payload, with per-test overrides."""
+    return ProviderCreate(
+        **{
+            "provider_type": "openai_codex",
+            "display_name": "ChatGPT subscription",
+            "models": ["gpt-5.4"],
+            **overrides,
+        }
+    )
+
+
 def _load_route_module(module_name: str, path: Path):
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -235,7 +247,7 @@ def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeyp
 def test_custom_max_output_tokens_create_update_and_clear():
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
+            _provider(
                 provider_type = "custom",
                 display_name = "Custom",
                 base_url = "https://example.com/v1",
@@ -732,11 +744,7 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -788,11 +796,7 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -829,11 +833,7 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
     listed = "gpt-5.7-nova"
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -903,11 +903,7 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -958,11 +954,7 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     listed = "gpt-5.7-nova"
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1044,11 +1036,7 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1102,11 +1090,7 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
     listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1215,11 +1199,7 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1253,11 +1233,7 @@ def test_deleting_a_codex_connection_releases_its_plan_catalog():
 
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT subscription",
-                models = ["gpt-5.4"],
-            ),
+            _provider(),
             credential = ("alice", None),
             via_api_key = False,
         )
@@ -1336,11 +1312,7 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
     created = asyncio.run(
         providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "Original name",
-                models = ["gpt-5.4"],
-            ),
+            _provider(display_name = "Original name"),
             credential = ("alice", None),
             via_api_key = False,
         )
