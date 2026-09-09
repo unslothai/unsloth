@@ -3257,3 +3257,84 @@ def test_the_per_device_check_sizes_the_cache_the_caller_measured():
     trusted, product = plans
     assert not trusted.spills_anything, trusted.reason
     assert product.spills_anything, product.reason
+
+
+def test_a_context_priced_reserve_lets_the_ladder_find_the_context_that_fits():
+    """The seam's compute buffer is context-linear and was folded into the flat
+    per-device term at the requested context, so every rung the ladder tried
+    below it still paid the requested context's buffer. A callable re-prices it
+    per rung; frozen, the same load abstains at every context."""
+    layout = _small_layout(
+        blocks = tuple(BlockLayout(i, 0, int(0.175 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 4096,
+        n_ctx_train = 262144,
+    )
+    per_token = 8 * 1024  # 2 GiB of compute buffer at 262144, 64 MiB at 8192
+    shape = dict(
+        overhead_bytes_per_token = 0,
+        overhead_free_ctx = 32768,
+        min_ctx = 8192,
+        allow_lm_head_spill = False,
+        context_policy = ContextPolicy.FIT_ONLY,
+    )
+    card = [3 * GIB]
+    frozen = PlanOptions(overhead_bytes_per_device = 512 * MIB + per_token * 262144, **shape)
+    stuck = plan_placement(layout, card, 64 * GIB, 262144, opts = frozen)
+    assert not stuck.priced or stuck.spills_anything, stuck.reason
+    priced = PlanOptions(
+        overhead_bytes_per_device = 512 * MIB + per_token * 262144,
+        overhead_bytes_at = lambda ctx: 512 * MIB + per_token * ctx,
+        **shape,
+    )
+    plan = plan_placement(layout, card, 64 * GIB, 262144, opts = priced)
+    assert plan.priced and 8192 <= plan.n_ctx < 262144 and not plan.spills_anything, plan.reason
+
+
+def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector():
+    """The per-layer cache vector is measured at the requested context. On a
+    windowed cache the full-attention rows shrink with the context and the
+    windowed rows stay flat, so at a smaller context the vector no longer says
+    which card holds what, and a card could pass the check and fail to allocate.
+    One device has no split to get wrong and still walks the ladder."""
+    layout = replace(
+        _small_layout(
+            blocks = tuple(BlockLayout(i, int(0.05 * GIB), int(0.2 * GIB)) for i in range(8)),
+            kv_bytes_per_token_f16 = 64 * 1024,
+            n_ctx_train = 65536,
+        ),
+        has_swa = True,
+    )
+    shape = dict(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        min_ctx = 8192,
+        context_policy = ContextPolicy.FIT_ONLY,
+    )
+    floor = 3 * GIB  # at 65536; more than the pair can hold with the weights
+    shape["kv_bytes_at"] = lambda ctx, slots: floor * ctx // 65536
+    vector = [1, 0, 1, 0, 1, 0, 1, 0]
+    pair = [2 * GIB, 2 * GIB]
+    split = plan_placement(
+        layout,
+        pair,
+        64 * GIB,
+        65536,
+        opts = PlanOptions(**shape),
+        kv_bytes_floor = floor,
+        split_weights_per_device = pair,
+        kv_layer_weights = vector,
+    )
+    assert not split.changed and not split.priced, split.reason
+    assert "windowed cache" in split.reason or "sliding-window" in split.reason, split.reason
+    one = plan_placement(
+        layout,
+        [4 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(**shape),
+        kv_bytes_floor = floor,
+        kv_layer_weights = vector,
+    )
+    assert one.priced and one.n_ctx < 65536, one.reason

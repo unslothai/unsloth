@@ -482,6 +482,10 @@ class PlanOptions:
     # windowed cache (flat + linear) or an MLA latent at once. None keeps the
     # scaling rules in ``_kv_floor_at``.
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
+    # n_ctx -> the flat per-device term at that context. The seam's compute buffer
+    # is context-linear, and a value frozen at the requested context stays charged
+    # at every rung the ladder tries below it. None uses overhead_bytes_per_device.
+    overhead_bytes_at: Optional[Callable[[int], int]] = None
     # The micro-batch the launch normalises at each slot count, keyed like the
     # floor map. The emitted batch floor is max(slots, 2), so a first-class
     # batch of 1 launches at micro-batch 4 with four slots and 2 with one; the
@@ -612,7 +616,10 @@ def _device_reserve(opts: PlanOptions, n_ctx: int) -> int:
     more, at a measured 7 to 12% of generation per surplus GiB; under-reserving loses the load.
     """
     over = max(0, n_ctx - max(0, opts.overhead_free_ctx))
-    return max(0, opts.overhead_bytes_per_device) + over * max(0, opts.overhead_bytes_per_token)
+    flat = opts.overhead_bytes_per_device
+    if opts.overhead_bytes_at is not None:
+        flat = int(opts.overhead_bytes_at(max(0, n_ctx)))
+    return max(0, flat) + over * max(0, opts.overhead_bytes_per_token)
 
 
 def _usable_vram(
@@ -1910,6 +1917,20 @@ def plan_placement(
     # one: feasibility is monotone in context, acceptance is not (a smaller
     # deficit changes the spill set on both arms), so a binary search on the
     # gate could land on a smaller accepted context than exists.
+    if may_shrink and len(vram_bytes_per_device) > 1 and layout.has_swa:
+        # The per-layer cache vector was measured at the requested context. On a
+        # windowed cache the full-attention rows shrink with it and the windowed
+        # ones do not, so the split it implies no longer holds at a smaller
+        # context and a card could pass the check and fail to allocate.
+        may_shrink = False
+        if declined is None:
+            return Plan(
+                reason = (
+                    "the load does not fit at the requested context and a windowed cache "
+                    "split across devices cannot be re-priced at a smaller one; leaving "
+                    "llama.cpp's own fitter to place it"
+                )
+            )
     if may_shrink:
         step = max(256, opts.ctx_step // 256 * 256)
         # The bound has to assume every rung above the first weight spill is

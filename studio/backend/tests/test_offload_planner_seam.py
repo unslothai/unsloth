@@ -2922,3 +2922,32 @@ def test_a_pass_through_parallel_equal_to_the_priced_count_pins_rung_1(monkeypat
     assert opts.n_parallel == 4 and opts.min_parallel == 4
     opts, _ = _captured_opts(monkeypatch, _Stub(), n_parallel = 4)
     assert opts.min_parallel == 1
+
+
+def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch):
+    """The snapshot prices the compute buffer at the requested context and the
+    ladder tries smaller ones; a closure re-prices it per rung, floored like the
+    flat term. Without one the flat term stands at every context."""
+    from core.inference import offload_planner
+    from core.inference.offload_planner import _device_reserve
+
+    seen = {}
+    real = offload_planner.plan_placement
+
+    def capture(*a, **k):
+        seen["opts"] = k.get("opts")
+        return real(*a, **k)
+
+    monkeypatch.setattr(offload_planner, "plan_placement", capture)
+    inputs = _inputs(free_mib = 14 * 1024, ctx_compute = 512 * MIB, reserve_floor = 64 * MIB)
+    inputs["ctx_compute_at"] = lambda ctx: 512 * MIB * ctx // 32768
+    _Stub()._planned_tensor_spill(inputs, extra_args = None, env = {"UNSLOTH_SMART_OFFLOAD": "1"})
+    opts = seen["opts"]
+    assert opts.overhead_bytes_at is not None
+    assert _device_reserve(opts, 32768) == opts.overhead_bytes_per_device
+    assert _device_reserve(opts, 8192) == 128 * MIB
+    assert _device_reserve(opts, 1024) == 64 * MIB  # never under the floor
+
+    seen.clear()
+    _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
+    assert seen["opts"].overhead_bytes_at is None
