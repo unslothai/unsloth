@@ -49,7 +49,9 @@ def _print_topology() -> None:
     try:
         out = subprocess.run(
             ["nvidia-smi", "topo", "-m"],
-            capture_output = True, text = True, timeout = 30,
+            capture_output = True,
+            text = True,
+            timeout = 30,
         )
     except Exception as e:  # noqa: BLE001 -- diagnostic, never fatal
         print(f"topology read failed: {e}\n")
@@ -69,11 +71,16 @@ def _print_topology() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
     parser.add_argument(
-        "--sizes-mib", type = int, nargs = "+", default = list(SIZES_MIB),
+        "--sizes-mib",
+        type = int,
+        nargs = "+",
+        default = list(SIZES_MIB),
         help = "copy sizes to test, in MiB",
     )
     parser.add_argument(
-        "--repeats", type = int, default = REPEATS,
+        "--repeats",
+        type = int,
+        default = REPEATS,
         help = "copies per pair per size",
     )
     args = parser.parse_args()
@@ -123,12 +130,12 @@ def main() -> int:
                 for _ in range(args.repeats):
                     s = d = None
                     try:
-                        s = torch.arange(
-                            elements, dtype = torch.float32, device = f"cuda:{src}"
-                        )
+                        s = torch.arange(elements, dtype = torch.float32, device = f"cuda:{src}")
                         d = torch.full(
-                            (elements,), SENTINEL,
-                            dtype = torch.float32, device = f"cuda:{dst}",
+                            (elements,),
+                            SENTINEL,
+                            dtype = torch.float32,
+                            device = f"cuda:{dst}",
                         )
                         d.copy_(s)
                         torch.cuda.synchronize(src)

@@ -9371,9 +9371,7 @@ class LlamaCppBackend:
             return reason
 
         if not cls._all_selected_gpus_match(cls._NVLINK_FABRIC_GPU_RE, gpu_indices):
-            return _pcie(
-                "no NVLink-capable part in the selection, so peer copies would cross PCIe"
-            )
+            return _pcie("no NVLink-capable part in the selection, so peer copies would cross PCIe")
 
         matrix = cls._nvlink_topology()
         if not matrix:
@@ -9398,9 +9396,7 @@ class LlamaCppBackend:
                 translated = [join[p] for p in physical if p in join]
                 # A partly translated selection would check the wrong pairs, so
                 # fall back to demanding the whole box qualify.
-                selected = (
-                    translated if len(translated) == len(physical) else list(gpu_ids)
-                )
+                selected = translated if len(translated) == len(physical) else list(gpu_ids)
             else:
                 selected = physical
         else:
@@ -9498,7 +9494,11 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _apply_datacenter_env(env: dict, gpu_indices = None, p2p_opted_out = False) -> bool:
+    def _apply_datacenter_env(
+        env: dict,
+        gpu_indices = None,
+        p2p_opted_out = False,
+    ) -> bool:
         """Inject DC llama.cpp tuning into env in place via setdefault (user
         values win); return whether the box qualified. Opt out with
         UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
@@ -24197,7 +24197,8 @@ class LlamaCppBackend:
                 # for the peer flag alone.
                 if not is_vulkan_backend:
                     self._apply_datacenter_env(
-                        env, gpu_indices,
+                        env,
+                        gpu_indices,
                         p2p_opted_out = self._p2p_user_opted_out(),
                     )
 

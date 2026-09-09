@@ -103,12 +103,8 @@ def _isolate_host_topology(monkeypatch):
     LlamaCppBackend._SMI_INDEX_CACHE = None
     LlamaCppBackend._IOMMU_CACHE = None
     monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: False)
-    )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_running_virtualized", staticmethod(lambda: False)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: False))
+    monkeypatch.setattr(LlamaCppBackend, "_running_virtualized", staticmethod(lambda: False))
     # Overrides off and the warn-once latch reset, so neither the host's
     # environment nor test ordering leaks in.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
@@ -121,14 +117,16 @@ def _isolate_host_topology(monkeypatch):
     LlamaCppBackend._warned_no_nvlink = False
 
 
-def _use_topo(monkeypatch, text, returncode = 0):
+def _use_topo(
+    monkeypatch,
+    text,
+    returncode = 0,
+):
     """Feed the real parser canned `nvidia-smi topo -m` output."""
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **k: types.SimpleNamespace(
-            returncode = returncode, stdout = text, stderr = ""
-        ),
+        lambda *a, **k: types.SimpleNamespace(returncode = returncode, stdout = text, stderr = ""),
     )
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
 
@@ -471,16 +469,12 @@ def test_p2p_vetoed_on_pcie_pair_between_nvlink_parts(monkeypatch):
 def test_p2p_veto_names_the_iommu_on_bare_metal(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True))
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
     assert "translating IOMMU" in reason
     # Under a hypervisor CUDA supports pass-through P2P, so the IOMMU is not the
     # diagnosis.
-    monkeypatch.setattr(
-        LlamaCppBackend, "_running_virtualized", staticmethod(lambda: True)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_running_virtualized", staticmethod(lambda: True))
     assert "IOMMU" not in LlamaCppBackend._p2p_veto_reason([0, 1])
 
 
@@ -534,10 +528,7 @@ def test_apply_env_rtx_6000_ada_gets_fp32_but_not_p2p(monkeypatch):
     assert "GGML_CUDA_P2P" not in env
     # The launch-queue depth moves no data across the bus and #10613 measured it
     # clean on that host, so it is deliberately NOT gated with P2P.
-    assert env == {
-        "GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1",
-        "CUDA_SCALE_LAUNCH_QUEUES": "4x",
-    }
+    assert env == {"GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1", "CUDA_SCALE_LAUNCH_QUEUES": "4x"}
 
 
 def test_apply_env_l40s_multi_gpu_gets_fp32_but_not_p2p(monkeypatch):
@@ -572,9 +563,7 @@ def test_opted_out_p2p_is_not_reintroduced_by_the_default(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
     env: dict = {}
-    assert LlamaCppBackend._apply_datacenter_env(
-        env, [0, 1], p2p_opted_out = True
-    ) is True
+    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1], p2p_opted_out = True) is True
     assert "GGML_CUDA_P2P" not in env
     assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"
     assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
@@ -770,13 +759,17 @@ _UUIDS = [f"GPU-0000000{i}-0000-0000-0000-000000000000" for i in range(8)]
 
 def _fake_torch_with_uuids(names):
     t = _fake_torch(names)
-    t.cuda.get_device_properties = lambda i: types.SimpleNamespace(
-        name = names[i], uuid = _UUIDS[i]
-    )
+    t.cuda.get_device_properties = lambda i: types.SimpleNamespace(name = names[i], uuid = _UUIDS[i])
     return t
 
 
-def _use_topo_and_uuids(monkeypatch, text, n, *, smi_order = None):
+def _use_topo_and_uuids(
+    monkeypatch,
+    text,
+    n,
+    *,
+    smi_order = None,
+):
     """Answer both nvidia-smi calls: the topology matrix and the uuid join."""
     order = smi_order if smi_order is not None else list(range(n))
     rows = "\n".join(f"{i}, {_UUIDS[order[i]]}" for i in range(n))
@@ -795,9 +788,7 @@ def test_bridged_pair_keeps_p2p_via_the_uuid_join(monkeypatch):
     """A genuinely NVLinked pair on a partially bridged box keeps P2P. The join is
     on GPU uuid, so it holds under the default CUDA_DEVICE_ORDER instead of needing
     PCI_BUS_ID."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4))
     _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 4)
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
     assert LlamaCppBackend._p2p_veto_reason([2, 3]) is None
@@ -808,9 +799,7 @@ def test_bridged_pair_keeps_p2p_via_the_uuid_join(monkeypatch):
 def test_uuid_join_follows_the_uuid_not_the_position(monkeypatch):
     # Reverse nvidia-smi enumeration must not check the wrong pair: CUDA 0,1 are
     # nvidia-smi 3,2, still inside one island.
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4))
     _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 4, smi_order = [3, 2, 1, 0])
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
     assert LlamaCppBackend._p2p_veto_reason([1, 2]) is not None
@@ -819,9 +808,7 @@ def test_uuid_join_follows_the_uuid_not_the_position(monkeypatch):
 def test_partial_uuid_join_is_refused(monkeypatch):
     # Missing devices would silently narrow the pairs checked, so the join is
     # discarded rather than half-trusted.
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4))
     _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 2)
     assert LlamaCppBackend._physical_to_smi_index() is None
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
@@ -830,12 +817,8 @@ def test_partial_uuid_join_is_refused(monkeypatch):
 def test_name_gate_veto_still_names_the_iommu(monkeypatch):
     """The reporter's host fails the NAME gate first, so without this the one
     actionable diagnosis never reaches them (#10613)."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
-    )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
+    monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True))
     LlamaCppBackend._IOMMU_CACHE = None
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
