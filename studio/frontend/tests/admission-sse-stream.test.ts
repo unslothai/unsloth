@@ -64,6 +64,11 @@ function harness(slices: string[]) {
         consumeNativePathToken: () => undefined,
       },
       "@/lib/model-lifecycle-events": {},
+      // Imported by chat-api on main; stubbed here so the merge with main loads.
+      "@/features/igpu-carveout": {
+        dismissCarveoutAdviceForModel: () => {},
+        showCarveoutAdvice: () => {},
+      },
     },
   );
 }
