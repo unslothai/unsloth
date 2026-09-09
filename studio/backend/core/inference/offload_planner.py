@@ -25,7 +25,7 @@ import os
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Collection, Mapping, Optional, Sequence, Union
+from typing import Callable, Collection, Mapping, Optional, Sequence, Union
 
 from core.inference.offload_cost_model import (
     Access,
@@ -47,6 +47,10 @@ from core.inference.offload_layout import (
 
 GIB = 1024**3
 MIB = 1024**2
+
+# Ceiling for the context probe in :func:`max_context_for` when no reserve slope and
+# no training window bound the search. Far above any window llama.cpp serves.
+_MAX_CTX_SEARCH = 1 << 24
 
 # Nominal ggml bits-per-weight, by quant type. Standard block layouts: a type's
 # block size divided by its bytes per block.
@@ -472,6 +476,17 @@ class PlanOptions:
     # the one shape (sliding window, no map) where there is none and rung 1 is
     # skipped.
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
+    # (n_ctx, n_parallel) -> the KV cache bytes llama.cpp allocates for this launch,
+    # fixed recurrent state included; the seam passes its own estimator. Authoritative
+    # when set: every helper here asks it instead of re-pricing one scalar floor.
+    #
+    # One scalar cannot be re-priced correctly. A hybrid's floor is part fixed state
+    # and part growing cache, a windowed cache is flat on some layers and linear on
+    # others, and an MLA cache is a compressed latent the layout's product misses by
+    # two orders of magnitude, so every scaling rule below is wrong for one of them.
+    # The seam already computes the right answer per (context, slots); this is how it
+    # says so. None keeps the scaling rules documented in ``_kv_floor_at``.
+    kv_bytes_at: Optional[Callable[[int, int], int]] = None
     # The micro-batch the launch normalises at each slot count, keyed like the
     # floor map. The emitted batch floor is max(slots, 2), so a first-class
     # batch of 1 launches at micro-batch 4 with four slots and 2 with one; the
@@ -646,6 +661,21 @@ def _outside_layout_bytes(opts: PlanOptions, knobs: Optional[_Knobs] = None) -> 
     return total
 
 
+def _measured_cache_at(layout: ModelLayout, opts: PlanOptions, n_ctx: int, n_parallel: int) -> int:
+    """``opts.kv_bytes_at`` less the recurrent state charged separately.
+
+    The callable answers with the WHOLE memory llama.cpp allocates for the launch, the
+    fixed state included. Every sizing site here adds ``recurrent_bytes`` once per slot
+    of its own, so the state comes out here rather than being counted twice. A layout
+    that does not know its state leaves the callable's figure intact, which is the case
+    the scaling rules below get wrong.
+    """
+    assert opts.kv_bytes_at is not None
+    slots = max(1, n_parallel)
+    total = max(0, int(opts.kv_bytes_at(n_ctx, slots)))
+    return max(0, total - max(0, layout.recurrent_bytes) * slots)
+
+
 def _kv_floor_at(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -656,8 +686,11 @@ def _kv_floor_at(
 ) -> Optional[int]:
     """The caller's cache floor re-priced for ``(n_ctx, n_parallel)``; ``None`` when it cannot be.
 
-    The floor is a measurement at the requested context and the caller's slot count. Moving
-    either axis needs a rule:
+    ``opts.kv_bytes_at`` answers this exactly and is taken whenever it is set, because no
+    rule over one scalar can be right for a windowed, latent and fixed-state cache at once.
+
+    Without it the floor is a measurement at the requested context and the caller's slot
+    count, and moving either axis needs a rule:
 
     - a different slot count takes the caller's ``kv_bytes_floor_by_parallel`` entry when it
       has one. Without one, a non-SWA cache scales linearly in slots (each slot is a
@@ -672,6 +705,8 @@ def _kv_floor_at(
     """
     at = max(1, opts.n_parallel)
     want = max(1, n_parallel)
+    if opts.kv_bytes_at is not None:
+        return _measured_cache_at(layout, opts, n_ctx, want)
     base = max(0, kv_bytes_floor)
     if want != at:
         mapped = opts.kv_bytes_floor_by_parallel.get(want)
@@ -682,7 +717,15 @@ def _kv_floor_at(
         else:
             base = base * want // at
     if requested_ctx > 0 and n_ctx != requested_ctx and base > 0 and not layout.has_swa:
-        base = base * n_ctx // requested_ctx
+        # A hybrid's floor is part fixed state, and the state does not shrink with the
+        # context: scaling the whole scalar prices away memory llama.cpp still allocates
+        # (a 5 GiB floor of 4 GiB state re-priced from 32768 to 8192 read 1.25 GiB
+        # against a true 4.25, and the load then OOMs). Only the layout's own state can
+        # be named here, so a floor the caller already stripped it from over-reserves by
+        # that much on a shrink, which is the safe direction. ``kv_bytes_at`` is the way
+        # to say it exactly.
+        state = min(base, max(0, layout.recurrent_bytes) * want)
+        base = state + (base - state) * n_ctx // requested_ctx
     return base
 
 
@@ -1306,6 +1349,7 @@ def cache_bytes(
     *,
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
+    trust_floor: bool = False,
 ) -> int:
     """Attention cache to reserve, never below a caller-supplied measurement.
 
@@ -1333,6 +1377,11 @@ def cache_bytes(
     """
     naive = layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised))
     floor = max(0, kv_bytes_floor)
+    if trust_floor:
+        # ``PlanOptions.kv_bytes_at`` priced THIS context and slot count, so there is
+        # nothing left for the product to correct at any architecture. Keeping the max
+        # here would put a plain GQA hybrid back on the product it over-counts by 3.6x.
+        return floor
     if layout.has_swa and floor:
         # Sliding-window attention breaks the product in the UP direction, badly
         # and by construction: most layers keep a window-sized cache rather than
@@ -1364,6 +1413,7 @@ def resident_floor_bytes(
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
     n_seq: int = 1,
+    trust_floor: bool = False,
 ) -> int:
     """VRAM needed with EVERY spillable tensor already on the host.
 
@@ -1383,7 +1433,13 @@ def resident_floor_bytes(
         + layout.lm_head_bytes
         + layout.other_resident_bytes
         + layout.recurrent_bytes * max(1, n_seq)
-        + cache_bytes(layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor)
+        + cache_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = kv_quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            trust_floor = trust_floor,
+        )
     )
 
 
@@ -1395,6 +1451,7 @@ def all_resident_bytes(
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
     n_seq: int = 1,
+    trust_floor: bool = False,
 ) -> int:
     """VRAM needed with nothing spilled. token_embd is excluded: it is never
     GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
@@ -1406,6 +1463,7 @@ def all_resident_bytes(
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = kv_on_host,
             n_seq = n_seq,
+            trust_floor = trust_floor,
         )
         + layout.spillable_bytes
     )
@@ -1435,7 +1493,12 @@ def max_context_for(
     the layout's f16 product sizes the cache, which is the product the rest of
     this module refuses to trust on a sliding-window or MLA model. With it, a
     non-SWA floor scales linearly in context and an SWA floor is flat, and the
-    larger of floor and product is charged, exactly as ``cache_bytes`` does.
+    larger of floor and product is charged, exactly as ``cache_bytes`` does --
+    except on MLA, where the floor wins outright on both sides.
+
+    ``opts.kv_bytes_at`` replaces all of that: it prices each candidate context
+    directly, and the search is then bounded by the training window and the
+    reserve rather than by a per-token product that does not describe the cache.
 
     The reserve is a function of the context and the context is what is being
     solved for, so this is a search rather than a division: the predicate
@@ -1465,12 +1528,23 @@ def max_context_for(
         if kv_on_host:
             # -nkvo puts both caches in host RAM, so no context charges VRAM here.
             return 0
+        if opts.kv_bytes_at is not None:
+            return _measured_cache_at(layout, opts, ctx, n_seq)
         naive = per_token * ctx
         if floor <= 0:
             return naive
         if layout.has_swa:
+            # Flat for the WHOLE floor, and only because one scalar cannot say which
+            # layers hold the full-context half; those layers really do grow, so a
+            # shrink here frees nothing the caller can see. ``kv_bytes_at`` splits it.
             return floor
         scaled = floor * ctx // floor_at if floor_at > 0 else floor
+        if layout.has_mla:
+            # ``cache_bytes`` trusts the floor outright on MLA -- the per-head product
+            # models a K-only latent as a full K+V pair, ~70x over -- so taking the max
+            # here made the two disagree, and every MLA model that needed a shrink was
+            # refused at a context this budget holds.
+            return scaled
         return max(naive, scaled)
 
     def usable(ctx: int) -> int:
@@ -1495,16 +1569,27 @@ def max_context_for(
     # real answer -- the measured example in this module has that product 13x the
     # real SWA cache -- so the only context-linear term left, the reserve, sets the
     # bound instead.
-    if kv_on_host or (layout.has_swa and floor > 0):
+    # Priced, not products: a caller callable and an MLA floor both describe a cache
+    # the per-token product is not a bound for, so they take the branch below too.
+    priced = opts.kv_bytes_at is not None or (layout.has_mla and floor > 0)
+    if kv_on_host or (layout.has_swa and floor > 0) or priced:
         slack = top - cache_at(1)
         if slack < 0:
             return 0
         per_token_reserve = max(0, opts.overhead_bytes_per_token)
         if per_token_reserve > 0:
             hi = max(0, opts.overhead_free_ctx) + slack // per_token_reserve
+        elif layout.n_ctx_train:
+            hi = layout.n_ctx_train
+        elif priced:
+            # No reserve slope and no window: double until the priced cache alone is
+            # over budget, since the product would cut the search off far below it.
+            hi = 256
+            while hi < _MAX_CTX_SEARCH and cache_at(hi) <= top:
+                hi *= 2
         else:
             # Nothing grows with the context at all; only training length caps it.
-            hi = layout.n_ctx_train or (top // per_token)
+            hi = top // per_token
         hi = hi // 256 * 256
     else:
         hi = (top // per_token) // 256 * 256
@@ -1585,6 +1670,14 @@ def plan_placement(
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
 
+    if opts.kv_bytes_at is not None:
+        # One cache size for the whole function. A no-op without the callable, since
+        # ``_kv_floor_at`` at the requested context and the caller's own slot count
+        # returns the floor it was handed.
+        kv_bytes_floor = (
+            _kv_floor_at(layout, opts, kv_bytes_floor, n_ctx, n_ctx, max(1, opts.n_parallel)) or 0
+        )
+
     budget = _usable_vram(vram_bytes_per_device, opts, n_ctx)
     if budget <= 0:
         return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
@@ -1632,6 +1725,7 @@ def plan_placement(
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = opts.kv_on_host,
             n_seq = max(1, opts.n_parallel),
+            trust_floor = opts.kv_bytes_at is not None,
         )
         > budget
     ):
@@ -1770,7 +1864,11 @@ def plan_placement(
         return declined
 
     floor = resident_floor_bytes(
-        layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
+        layout,
+        n_ctx,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = opts.kv_on_host,
+        trust_floor = opts.kv_bytes_at is not None,
     )
     return Plan(
         changed = False,
@@ -2164,6 +2262,7 @@ def _plan_at(
             kv_bytes_floor = floor,
             kv_on_host = opts.kv_on_host,
             n_seq = k.n_parallel,
+            trust_floor = opts.kv_bytes_at is not None,
         )
         budget = _usable_vram(
             vram_bytes_per_device,

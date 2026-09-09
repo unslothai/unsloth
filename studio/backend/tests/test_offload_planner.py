@@ -2666,3 +2666,135 @@ def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_give
     # One card holding the same pool is a plain fit.
     whole = plan_placement(layout, [32 * GIB], 128 * GIB, 8192, opts = opts)
     assert whole.priced and "fits in VRAM" in whole.reason
+
+
+# ------------------------------------------- the caller's own cache estimator
+# One scalar floor plus a scaling rule cannot describe a hybrid's fixed state, a
+# windowed cache's two halves or an MLA latent at the same time, and the planner
+# re-prices that scalar on both axes. ``PlanOptions.kv_bytes_at`` lets the caller
+# that already computes the real size answer per (context, slots) instead.
+
+
+def _small_layout(**kw) -> ModelLayout:
+    """A tiny complete layout: the cache, not the weights, is what these move."""
+    fields = dict(
+        arch = "qwen3",
+        n_layers = 8,
+        n_attention_layers = 8,
+        blocks = tuple(BlockLayout(i, int(0.25 * GIB), int(0.0125 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.1 * GIB),
+        token_embd_bytes = int(0.1 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 1024,
+        n_ctx_train = 32768,
+        complete = True,
+    )
+    fields.update(kw)
+    return ModelLayout(**fields)
+
+
+_FLAT = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+
+
+def test_a_fixed_recurrent_state_is_re_priced_not_scaled_with_the_context():
+    """A hybrid's floor is part fixed state, and the state does not shrink.
+
+    GDN, Mamba, KDA and a DeepSeek-V4 whose GGUF carries no ``kv_lora_rank`` all
+    reach the planner as one scalar with no ``recurrent_bytes`` beside it, so the
+    context rule scaled the WHOLE thing: a 5 GiB floor at 32768 that is 4 GiB of
+    state plus 1 GiB of growing cache read 1.25 GiB at 8192 against a true 4.25,
+    and a plan built on that under-reserves by 3 GiB and OOMs at load.
+    """
+    layout = _small_layout()
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (4 * GIB + GIB * ctx // 32768) * slots
+
+    opts = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
+    assert _kv_floor_at(layout, opts, 5 * GIB, 32768, 8192, 1) == 4 * GIB + GIB // 4
+    # The rule the callable replaces, pinned so the difference is on the record.
+    assert _kv_floor_at(layout, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 5 * GIB // 4
+    # And where the layout DOES know the state, that much is held out of the scale
+    # even without a callable, which is the direction that over-reserves.
+    hybrid = _small_layout(recurrent_bytes = 2 * GIB)
+    assert _kv_floor_at(hybrid, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 2 * GIB + 3 * GIB // 4
+
+
+def test_a_shrunk_context_reserves_the_state_the_child_still_allocates():
+    """End to end: the context PREFER_RESIDENT settles on has to fit the card
+    under the caller's own estimator, not under a scaled scalar."""
+    layout = _small_layout()
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (4 * GIB + GIB * ctx // 32768) * slots
+
+    card = int(6.5 * GIB)
+    opts = PlanOptions(kv_bytes_at = kv_at, context_policy = ContextPolicy.PREFER_RESIDENT, **_FLAT)
+    plan = plan_placement(layout, [card], 64 * GIB, 32768, kv_bytes_floor = 5 * GIB, opts = opts)
+    assert plan.n_ctx < 32768 and not plan.spills_anything, plan.reason
+    weights = all_resident_bytes(layout, 0)  # no cache at ctx 0
+    assert weights + kv_at(plan.n_ctx, 1) <= card, plan.reason
+
+
+def test_the_context_search_prices_a_latent_cache_the_way_the_planner_does():
+    """``cache_bytes`` trusts a measured floor on MLA; the search did not.
+
+    It took the max against the per-head product -- which models a K-only latent
+    as a full K+V pair, ~70x over on DeepSeek-V3 -- and bounded itself by that
+    same product, so the largest context it would report was a few hundred tokens
+    and every MLA model that needed a shrink was refused instead. GLM-4.7 and
+    DeepSeek-V4 are both on this path.
+    """
+    mla = _small_layout(
+        has_mla = True,
+        blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.15 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 2 * MIB,
+        n_ctx_train = 65536,
+    )
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, **_FLAT)
+    floor = dict(kv_bytes_floor = 2 * GIB, floor_ctx = 65536)
+    assert max_context_for(mla, [3 * GIB], opts = opts, **floor) >= 32768
+    plan = plan_placement(mla, [3 * GIB], 64 * GIB, 65536, kv_bytes_floor = 2 * GIB, opts = opts)
+    assert plan.priced and not plan.insufficient, plan.reason
+    assert plan.n_ctx >= 32768, plan.reason
+
+
+def test_a_windowed_cache_shrinks_when_the_caller_can_split_its_halves():
+    """iSWA is flat only because one scalar cannot say which half is which.
+
+    gemma-4-31B keeps 10 full-attention layers whose cache grows linearly beside
+    the windowed ones, so holding the whole floor context-flat makes a shrink
+    free nothing and the ladder walks to min_ctx for no gain. The estimator the
+    seam already runs sizes the two halves separately.
+    """
+    swa = _small_layout(
+        has_swa = True,
+        blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.0125 * GIB)) for i in range(8)),
+    )
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (GIB + 3 * GIB * ctx // 32768) * slots
+
+    budget = [3 * GIB]
+    flat = PlanOptions(**_FLAT)
+    priced = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
+    floor = dict(kv_bytes_floor = 4 * GIB, floor_ctx = 32768)
+    # Held flat there is no context this budget fits; split, 8192 does.
+    assert max_context_for(swa, budget, opts = flat, **floor) == 0
+    assert max_context_for(swa, budget, opts = priced, **floor) >= 8192
+    assert _kv_floor_at(swa, priced, 4 * GIB, 32768, 8192, 1) == GIB + 3 * GIB // 4
+
+
+def test_an_exact_cache_is_charged_as_given_at_any_architecture():
+    """The max against the per-head product is a guard against a floor that might
+    be short. ``kv_bytes_at`` is not short: it is what llama.cpp will allocate,
+    and taking the max put a hybrid back on a product that over-counts it 3.6x."""
+    from core.inference.offload_planner import cache_bytes as _cache_bytes
+
+    layout = _small_layout(kv_bytes_per_token_f16 = 64 * 1024)
+    product = layout.kv_bytes(32768)
+    assert _cache_bytes(layout, 32768, kv_bytes_floor = product // 4) == product
+    assert _cache_bytes(layout, 32768, kv_bytes_floor = product // 4, trust_floor = True) == (
+        product // 4
+    )
