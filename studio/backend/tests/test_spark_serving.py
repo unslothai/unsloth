@@ -2521,3 +2521,53 @@ def test_a_replica_port_taken_by_a_stranger_is_not_routed_to(cluster, monkeypatc
     assert "did not take" in ss.state().reason
     assert ss.state().peer_process is None
     assert ss.route_base_url(backend) is None
+
+
+def test_a_replica_inherits_the_settings_that_live_only_in_the_environment(
+    cluster, monkeypatch, tmp_path
+):
+    # llama.cpp's common_arg reads LLAMA_ARG_* itself, and Studio leaves the KV cache types
+    # there rather than in argv. ssh carries no environment, so a replica built from the argv
+    # alone ran on f16: a different cache from the primary, more memory than the topology was
+    # priced against, and a different answer depending on which replica served the request.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", " Q8_0 ")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
+    monkeypatch.setenv("LLAMA_ARG_HOST", "0.0.0.0")
+    monkeypatch.setenv("UNSLOTH_SECRET_NOT_YOURS", "x")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert started, "the peer llama-server was launched"
+    peer_argv = started[0].argv
+    assert peer_argv[0] == "env"
+    # Normalised the way llama.cpp needs: it compares the raw string to ggml_type_name.
+    assert "LLAMA_ARG_CACHE_TYPE_K=q8_0" in peer_argv
+    assert "LLAMA_ARG_CACHE_TYPE_V=q8_0" in peer_argv
+    # The endpoint is the replica's own, and nothing outside the namespace crosses over.
+    assert not any(a.startswith("LLAMA_ARG_HOST=") for a in peer_argv)
+    assert not any("UNSLOTH_SECRET_NOT_YOURS" in a for a in peer_argv)
+    assert peer_argv[peer_argv.index("--host") + 1] == "127.0.0.1"
+
+
+def test_a_replica_with_nothing_in_the_environment_is_launched_unchanged(
+    cluster, monkeypatch, tmp_path
+):
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    for name in list(os.environ):
+        if name.startswith("LLAMA_ARG_"):
+            monkeypatch.delenv(name, raising = False)
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert started and started[0].argv[0] != "env"

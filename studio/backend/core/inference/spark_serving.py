@@ -665,6 +665,46 @@ def replica_argv(local_argv: List[str], *, binary: str, host: str, port: int) ->
     return out
 
 
+# llama.cpp's common_arg reads every LLAMA_ARG_* itself, so a setting can reach the primary
+# without ever appearing in its argv, and copying only the argv leaves the peer on defaults.
+_REPLICA_ENV_PREFIX = "LLAMA_ARG_"
+# The two the replica must NOT inherit: it is deliberately given a different endpoint.
+_REPLICA_ENV_DENY = frozenset({"LLAMA_ARG_HOST", "LLAMA_ARG_PORT"})
+# Normalised the way the backend normalises them before spawning, because llama.cpp compares
+# the raw string against ggml_type_name and throws on anything else, whitespace included.
+_REPLICA_ENV_LOWERED = frozenset({"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"})
+
+
+def replica_env(source: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The llama.cpp settings the primary takes from its environment rather than its argv.
+
+    ``LLAMA_ARG_CACHE_TYPE_K`` and ``_V`` are the ones that matter here: Studio leaves them in
+    the environment instead of materialising them, so a peer launched from the argv alone
+    falls back to f16 KV. That is a different cache from the primary's, more memory than the
+    topology was priced against, and a different answer to the same request depending on which
+    replica served it. ssh carries no environment, so they go on the remote command line.
+
+    Only the ``LLAMA_ARG_`` namespace, so nothing else in this process's environment crosses to
+    the peer, and never the endpoint, which the replica is given deliberately."""
+    env = os.environ if source is None else source
+    out: Dict[str, str] = {}
+    for name, value in env.items():
+        if not name.startswith(_REPLICA_ENV_PREFIX) or name in _REPLICA_ENV_DENY:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        out[name] = text.lower() if name in _REPLICA_ENV_LOWERED else text
+    return out
+
+
+def with_replica_env(argv: List[str], env: Dict[str, str]) -> List[str]:
+    """``argv`` prefixed with ``env NAME=VALUE`` so the remote shell exports them for it."""
+    if not env:
+        return list(argv)
+    return ["env"] + [f"{name}={value}" for name, value in sorted(env.items())] + list(argv)
+
+
 def redacted_argv(argv: List[str]) -> List[str]:
     out = list(argv)
     for index, arg in enumerate(out):
@@ -2145,7 +2185,9 @@ class SparkServing:
             logger.warning("spark serving: %s", self.reason)
             return
         peer_port = int(port)
-        peer_argv = replica_argv(argv, binary = binary, host = peer, port = peer_port)
+        peer_argv = with_replica_env(
+            replica_argv(argv, binary = binary, host = peer, port = peer_port), replica_env()
+        )
         log_dir = _log_dir()
         self.peer = peer
         self.peer_process = PeerProcess(
