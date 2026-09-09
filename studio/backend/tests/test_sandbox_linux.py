@@ -468,15 +468,18 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
     assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
 
-def test_a_workdir_too_large_to_check_stops_the_scan_rather_than_the_launch(tmp_path, monkeypatch):
-    """A tool call can write 50,000 files, so refusing on the budget would be the
-    same switch-the-boundary-off move as the socket. Running out of budget means
-    the scan could not finish looking, which is not the same as finding
-    something, and the launch is still isolated."""
+def test_a_workdir_too_large_to_check_is_refused_rather_than_accepted_unchecked(
+    tmp_path, monkeypatch
+):
+    """An unchecked remainder is not a checked one: a link out or a device node
+    past the cutoff is exposed exactly as if the scan had never run. Refusing
+    costs that session its calls, with the limit named, which is visible and
+    actionable where a boundary that quietly is not there is neither."""
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    with pytest.raises(SandboxUnavailableError, match = "too large"):
+        sandbox_linux._validate_workdir(str(tmp_path))
 
 
 def test_a_workdir_that_is_not_a_directory_is_refused(tmp_path):

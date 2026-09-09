@@ -165,7 +165,13 @@ _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 # already treats as credentials. Anything not named here resolves to the session
 # workdir, so a cache file a future release adds is written per-session rather
 # than shared.
-_MODEL_CACHE_SUBDIRS = ("hub", "datasets", "modules", "xet", "assets")
+# "modules" is deliberately NOT here. HF_MODULES_CACHE is where Transformers
+# writes the generated Python for a trust_remote_code model, so a writable share
+# of it is a path from a sandboxed tool call to code a later unsandboxed load
+# imports -- and the consent gate fingerprints the repository's files, not the
+# ones generated into that cache. It resolves per-session in the workdir instead,
+# which costs a regeneration and nothing else.
+_MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc and every interpreter dependency here, so an interpreter from
 # the store cannot dynamically link anything without it.
 _NIX_STORE = "/nix/store"

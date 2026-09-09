@@ -272,16 +272,11 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
         for name in (*dirs, *names):
             entries += 1
             if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                logger.info(
-                    "Stopped the session workdir scan after %d entries; a launch is not "
-                    "refused for a budget a tool call can spend on its own",
-                    entries,
+                raise SandboxUnavailableError(
+                    "the session workdir is too large to check for host channels before a "
+                    f"launch (over {WORKDIR_SCAN_ENTRIES} entries or "
+                    f"{WORKDIR_SCAN_SECONDS:.0f}s)"
                 )
-                # Not "clean": what was already counted still has to add up, or a
-                # link leading outside that the scan DID reach would be waved
-                # through by a tool call writing enough files to end the walk.
-                _refuse_unaccounted_links(links)
-                return
             path = os.path.join(base, name)
             try:
                 info = os.lstat(path)
@@ -307,11 +302,6 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1
-    _refuse_unaccounted_links(links)
-
-
-def _refuse_unaccounted_links(links: dict) -> None:
-    """Refuse a hard link whose inode has more names than this walk found."""
     for found, total, path in links.values():
         if found < total:
             raise SandboxUnavailableError(
