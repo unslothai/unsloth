@@ -2748,6 +2748,13 @@ exit 1
             if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
                 $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
             }
+            # The packaged .ico (studio\frontend\dist) serves irm|iex installs with no $PSScriptRoot.
+            $packagedIcon = $null
+            try {
+                $venvRoot = Split-Path -Parent (Split-Path -Parent $ManagedPythonPath)
+                $packagedIconCandidate = Join-Path $venvRoot "Lib\site-packages\studio\frontend\dist\unsloth.ico"
+                if (Test-Path -LiteralPath $packagedIconCandidate) { $packagedIcon = $packagedIconCandidate }
+            } catch {}
             $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
             if (-not (Test-Path -LiteralPath $appDir)) {
@@ -3088,6 +3095,12 @@ exit 0
                     Copy-Item -LiteralPath $bundledIcon -Destination $iconPath -Force
                 } catch {
                     Write-StudioLine "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            } elseif ($packagedIcon) {
+                try {
+                    Copy-Item -LiteralPath $packagedIcon -Destination $iconPath -Force
+                } catch {
+                    Write-StudioLine "[DEBUG] Error copying packaged icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
             } elseif (-not (Test-Path -LiteralPath $iconPath)) {
                 try {

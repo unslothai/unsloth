@@ -22,8 +22,11 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt.freshness_flow import (
+    GITHUB_RATE_LIMIT_STATUS,
     RELEASE_CACHE_TTL_SECONDS,
     RELEASE_FAILURE_CACHE_TTL_SECONDS,
+    github_rate_limit_remaining,
+    note_github_rate_limited,
 )
 
 logger = structlog.get_logger(__name__)
@@ -106,9 +109,17 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
             logger.debug("llama changelog release too large", repo = repo, tag = tag)
             return None
         payload = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in GITHUB_RATE_LIMIT_STATUS:
+            wait = note_github_rate_limited(exc.headers)
+            logger.debug(
+                "llama changelog fetch rate limited", repo = repo, tag = tag, backoff_seconds = int(wait)
+            )
+        else:
+            logger.debug("llama changelog fetch failed", repo = repo, tag = tag, error = str(exc))
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
         # A truncated read raises HTTPException, which is not an OSError.
         http.client.HTTPException,
@@ -146,6 +157,13 @@ def _release_for_tag(
             return cached[1] if fresh else None
         if fresh:
             return cached[1]
+    # A Retry into a rate-limited API spends nothing and only delays the reset, so the
+    # lockout holds even for force_refresh.
+    if github_rate_limit_remaining() > 0:
+        cached = _release_memo.get(key)
+        if cached and now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
+            return cached[1]
+        return None
     release = _fetch_release(repo, tag)
     if release is None:
         _release_failed_at[key] = time.monotonic()

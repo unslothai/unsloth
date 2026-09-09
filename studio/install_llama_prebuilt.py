@@ -932,6 +932,15 @@ def github_releases(
 
 
 def latest_upstream_release_tag() -> str:
+    # The release page redirect is the same "latest" pointer as the API's /releases/latest
+    # and costs no api.github.com quota.
+    try:
+        tag = _core.download_host_latest_release_tag(_OPS, UPSTREAM_REPO)
+    except Exception as exc:  # noqa: BLE001 - the API below is the fallback
+        log(f"upstream latest-release redirect failed ({exc}); falling back to the GitHub API")
+        tag = None
+    if isinstance(tag, str) and tag:
+        return tag
     payload = fetch_json(UPSTREAM_RELEASES_API)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
@@ -3876,10 +3885,11 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
+        # The manifest already names every approved asset and the URL is a function of
+        # repo, tag and name, so listing the release over api.github.com is pure rate limit.
+        # An asset absent from the manifest is never considered: this binary gets executed.
         match = None
-        unapproved_matches: list[str] = []
-        for asset_name, url in assets.items():
+        for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
                 continue
@@ -3887,28 +3897,18 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            # This binary is chmod'd executable and later launched by the
-            # backend, so it must be covered by the approved checksum manifest
-            # just like every other prebuilt artifact. An asset that matches the
-            # name but is missing from the manifest is refused rather than run.
-            approved = approved_checksums.artifacts.get(asset_name)
-            if approved is None:
-                unapproved_matches.append(asset_name)
+            if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
+                continue
+            url = release_asset_download_url(DEFAULT_PUBLISHED_REPO, release_tag, asset_name)
+            if not url:
                 continue
             match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            if unapproved_matches:
-                log(
-                    "diffusion visual server asset(s) were present but omitted from the "
-                    "approved checksum manifest; refusing unverified native executable: "
-                    + ", ".join(unapproved_matches)
-                )
-            else:
-                log(
-                    "diffusion visual server not found in the published release; native "
-                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-                )
+            log(
+                "diffusion visual server not in the approved checksum manifest for this "
+                "release; native DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
         download_file_verified(

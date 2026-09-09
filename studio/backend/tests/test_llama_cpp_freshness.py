@@ -739,3 +739,132 @@ def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
     assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
     # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
     assert time.monotonic() - started < 2.0
+
+
+# api.github.com rate limit: lock out, then answer from the release page redirect.
+
+
+class _Redirected:
+    def __init__(self, final_url):
+        self._final = final_url
+
+    def geturl(self):
+        return self._final
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _rate_limited(seconds_out: float):
+    import email.message
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = str(int(time.time() + seconds_out))
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/x/y/releases", 403, "rate limited", headers, None
+    )
+
+
+def test_a_rate_limited_api_locks_out_and_answers_from_the_release_redirect(monkeypatch):
+    import urllib.request
+
+    hosts = []
+
+    def fake_urlopen(req, timeout = 5.0):
+        hosts.append(req.full_url.split("/")[2])
+        if "api.github.com" in req.full_url:
+            raise _rate_limited(1800)
+        assert req.get_method() == "HEAD"
+        return _Redirected("https://github.com/unslothai/llama.cpp/releases/tag/b9600")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
+    assert hosts == ["api.github.com", "github.com"]
+    assert 1700 < fr._flow.github_rate_limit_remaining() <= 1801
+
+    # While locked out the API is not touched again; the redirect answers alone.
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9600"
+    assert hosts == ["api.github.com", "github.com", "github.com"]
+    # Asset sizes need the API, so they stay unknown rather than spend the reset.
+    assert fr._fetch_latest_release_assets("unslothai/llama.cpp") is None
+    assert hosts[-1] == "github.com"
+
+
+def test_a_dead_network_is_not_retried_against_the_release_page(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def fake_urlopen(req, timeout = 5.0):
+        calls.append(req.full_url)
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert len(calls) == 1 and "api.github.com" in calls[0]
+    assert fr._flow.github_rate_limit_remaining() == 0
+
+
+def test_a_403_without_headers_backs_off_for_the_default_window(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 403, "forbidden", None, None)
+        return _Redirected("https://github.com/unslothai/llama.cpp/releases/tag/b9601")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9601"
+    remaining = fr._flow.github_rate_limit_remaining()
+    assert fr._flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS - 5 < remaining
+    assert remaining <= fr._flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+
+
+def test_rate_limit_wait_prefers_retry_after_then_a_spent_reset():
+    import email.message
+
+    wait = fr._flow.rate_limit_wait_seconds
+    now = 1_000.0
+    h = email.message.Message()
+    assert wait(h, now = now) is None
+    h["X-RateLimit-Reset"] = "1300"
+    # A reset with quota left says nothing about this request.
+    assert wait(h, now = now) is None
+    h["X-RateLimit-Remaining"] = "0"
+    assert wait(h, now = now) == 300.0
+    h["Retry-After"] = "42"
+    assert wait(h, now = now) == 42.0
+    assert wait(None) is None
+
+
+def test_a_skewed_reset_is_held_to_one_window(monkeypatch):
+    import urllib.request
+
+    def fake_urlopen(req, timeout = 5.0):
+        raise _rate_limited(365 * 24 * 60 * 60)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    fr._fetch_latest_release_assets("unslothai/llama.cpp")
+    assert fr._flow.github_rate_limit_remaining() <= fr._flow.GITHUB_RATE_LIMIT_MAX_SECONDS
+
+
+def test_the_redirect_fallback_cannot_outlive_its_deadline(monkeypatch):
+    import urllib.request
+
+    def _stalls(req, timeout = 5.0):
+        if "api.github.com" in req.full_url:
+            raise _rate_limited(1800)
+        time.sleep(30)
+        raise AssertionError("deadline did not cut the redirect short")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stalls)
+    started = time.monotonic()
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp", timeout = 0.25) is None
+    assert time.monotonic() - started < 2.0

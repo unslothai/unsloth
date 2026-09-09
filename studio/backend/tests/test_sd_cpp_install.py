@@ -3440,3 +3440,64 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+# ── a rate-limited API stops the fallback ladder ──────────────────────────────
+
+
+def test_a_rate_limited_api_stops_the_fallback_ladder(monkeypatch, capsys):
+    """Every rung of the ladder is the same api.github.com quota, so after a 403 the other
+    three can only fail the same way and push the reset out."""
+    seen = []
+
+    def fake_fetch(tag, *, repo, token, timeout = 30.0, allow_latest = True):
+        seen.append((repo, tag))
+        raise urllib.error.HTTPError(f"https://api/{repo}", 403, "rate limited", None, None)
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    # install() and --print-asset both surface that message instead of "build from source".
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err
+
+
+def test_an_asset_download_retries_a_dropped_connection_but_not_a_404(monkeypatch, tmp_path):
+    attempts = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            return b""
+
+    def flaky(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        if len(attempts) == 1:
+            raise urllib.error.URLError("connection reset")
+        return _Resp()
+
+    import time
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "a.zip")
+    assert len(attempts) == 2
+
+    attempts.clear()
+
+    def missing(req, timeout = 300.0):
+        attempts.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", missing)
+    with pytest.raises(urllib.error.HTTPError):
+        sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "b.zip")
+    assert len(attempts) == 1
