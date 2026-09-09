@@ -1386,7 +1386,13 @@ def build_torch_schedule(
     kw = {"loss_fn": pp_loss_fn}
     if "args_chunk_spec" in sched_params:
         kw["args_chunk_spec"] = (TensorChunkSpec(0),)
-    if "scale_grads" in sched_params:
+    # `scale_grads` does not exist before torch 2.7, and 2.6 does no scaling of its own: it was
+    # added in 2.7 together with `PipelineStage.scale_grads`. Feature-detecting it and moving on
+    # therefore did not fall back to equivalent behaviour, it silently dropped the scaling while
+    # the log still said it was on, and every gradient came out `microbatches` times too large
+    # on the floor version of our own support matrix. Where upstream cannot do it, do it here.
+    upstream_scales_grads = "scale_grads" in sched_params
+    if upstream_scales_grads:
         kw["scale_grads"] = PP_SCALE_GRADS
     multi = len(stages) > 1 or "stages" in sched_params
     schedule = sched_cls(stages if multi else stages[0], microbatches, **kw)
@@ -1398,10 +1404,25 @@ def build_torch_schedule(
         # tensor nobody reads. Only newer torch can decline it.
         step_kw["return_outputs"] = False
 
+    def scale_grads_after_step():
+        """Upstream's `PipelineStage.scale_grads` for the versions that do not have it.
+
+        Same factor, same place: once per schedule step, after every backward and before the
+        optimizer, dividing this rank's stage parameters by the microbatch count. The loop
+        zeroes gradients each step, so nothing earlier is divided twice."""
+        if upstream_scales_grads or not PP_SCALE_GRADS or microbatches == 1:
+            return
+        for mod in mods:
+            for p in mod.parameters():
+                if p.grad is not None:
+                    p.grad.div_(microbatches)
+
+    where = "upstream" if upstream_scales_grads else "here (this torch has no scale_grads)"
     log(
         f"torch.distributed.pipelining: {sched_cls.__name__} "
         f"{plan['num_stages']} stages ({plan['stages_per_rank']}/rank, "
-        f"{plan['style']}-layout), M={microbatches}, scale_grads={PP_SCALE_GRADS}"
+        f"{plan['style']}-layout), M={microbatches}, "
+        f"scale_grads={PP_SCALE_GRADS} applied by {where}"
     )
     log(
         f"  this rank runs stage(s) {my['stages']} = layers {_ranges(my['layers'])}; "
@@ -1417,7 +1438,7 @@ def build_torch_schedule(
             f"  V layout: {colocated} of {plan['num_stages'] - 1} stage boundaries are "
             f"co-located and skip send/recv entirely"
         )
-    return schedule, mods, step_kw
+    return schedule, mods, step_kw, scale_grads_after_step
 
 
 # Re-enables the refused (deadlocking) schedules so a stack can be taken without editing this
@@ -1748,7 +1769,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     pp_schedule = pp_step_kw = None
     if use_torch_pp:
-        pp_schedule, _pp_mods, pp_step_kw = build_torch_schedule(
+        pp_schedule, _pp_mods, pp_step_kw, pp_scale_grads = build_torch_schedule(
             model,
             plan,
             my_plan,
@@ -1835,6 +1856,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # computing the loss, which under a V layout is rank 0, not the last rank.
             step_args = (whole,) if rank == plan["first_rank"] else ()
             pp_schedule.step(*step_args, target = whole_labels, losses = losses, **pp_step_kw)
+            pp_scale_grads()
             # One mean-reduced loss per microbatch, so the step loss is their mean. That
             # equals what the legacy schedules return, keeping the two backends comparable.
             loss = (sum(losses) / len(losses)) if losses else None
