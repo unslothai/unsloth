@@ -30,7 +30,7 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
+import uuid
 import threading
 import time
 from dataclasses import dataclass
@@ -205,7 +205,7 @@ class _QuarantinedRun:
     process: Optional[subprocess.Popen] = None
     spawn_attempt: Optional[_SpawnAttempt] = None
     spawn_ownership: Optional[_SpawnOwnership] = None
-    scratch_script: Optional[str] = None
+    scratch_script: Optional["_ProjectScript"] = None
     adopted: bool = False
     after_spawn_done: bool = False
     lifecycle_bound: bool = False
@@ -1055,11 +1055,76 @@ def _install_sitecustomize(boundary) -> str:
     return target_dir
 
 
+@dataclass
+class _ProjectScript:
+    path: str
+    name: str
+    root_fd: int
+    source_fd: int
+    identity: tuple[int, int]
+
+    def remove(self):
+        if self.root_fd < 0:
+            return
+        try:
+            metadata = os.stat(self.name, dir_fd = self.root_fd, follow_symlinks = False)
+            if (metadata.st_dev, metadata.st_ino) == self.identity:
+                os.unlink(self.name, dir_fd = self.root_fd)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(self.root_fd)
+            os.close(self.source_fd)
+            self.root_fd = -1
+            from core.inference import tools
+
+            with tools._scratch_lock:
+                tools._active_scratch.discard(self.path)
+
+
+def _create_project_script(boundary, source):
+    # Create and remove relative to the verified root descriptor, never by
+    # re-traversing a project path which could have changed during execution.
+    root_fd = os.dup(boundary._root_fd)
+    name = "studio_exec_" + uuid.uuid4().hex + ".py"
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd = root_fd,
+        )
+    except BaseException:
+        os.close(root_fd)
+        raise
+    metadata = os.fstat(descriptor)
+    script = _ProjectScript(
+        str(boundary.root / name), name, root_fd, descriptor, (metadata.st_dev, metadata.st_ino)
+    )
+    try:
+        view = memoryview(source.encode("utf-8"))
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise AgentWorkspaceError("Project Python source could not be written.")
+            view = view[written:]
+    except BaseException:
+        script.remove()
+        raise
+    from core.inference import tools
+
+    with tools._scratch_lock:
+        tools._active_scratch.add(script.path)
+    return script
+
+
 def _minimal_environment(boundary, workspace, project_id: str) -> dict[str, str]:
     """Build from scratch so parent credentials and code-loading hooks cannot leak."""
     executable_dir = os.path.dirname(os.path.realpath(sys.executable))
     path = os.pathsep.join(
-        dict.fromkeys(part for part in (executable_dir, "/usr/bin", "/bin") if part)
+        dict.fromkeys(
+            part for part in (executable_dir, "/usr/local/bin", "/usr/bin", "/bin") if part
+        )
     )
     pythonpath = os.pathsep.join((str(workspace.root), _install_sitecustomize(boundary)))
     return boundary.apply_environment(
@@ -1148,7 +1213,7 @@ def _quarantine_run(
     *,
     spawn_attempt: Optional[_SpawnAttempt] = None,
     spawn_ownership: Optional[_SpawnOwnership] = None,
-    scratch_script: Optional[str] = None,
+    scratch_script: Optional[_ProjectScript] = None,
     adopted: bool = False,
     after_spawn_done: bool = False,
     lifecycle_bound: bool = False,
@@ -1244,7 +1309,7 @@ def _advance_quarantined_run(run: _QuarantinedRun) -> None:
     if not run.scratch_removed:
         if run.scratch_script is not None:
             with contextlib.suppress(OSError):
-                os.unlink(run.scratch_script)
+                run.scratch_script.remove()
         run.scratch_removed = True
     if not run.pid_forgotten:
         if process is not None and run.adopted:
@@ -1412,7 +1477,7 @@ def _run_project_process(
     after_spawn_done = False
     lifecycle_bound = False
     output = _OutputBuffer(limit, output_callback)
-    scratch_script: Optional[str] = None
+    scratch_script: Optional[_ProjectScript] = None
     result_status = "failed"
     exit_code: Optional[int] = None
     try:
@@ -1448,22 +1513,8 @@ def _run_project_process(
         lifecycle = _BubblewrapLifecycle()
         lifecycle.attach_execution_fence(execution_fence_fd)
         if python_source is not None:
-            descriptor, scratch_script = tempfile.mkstemp(
-                suffix = ".py",
-                prefix = "studio_exec_",
-                dir = str(boundary.scratch),
-            )
-            try:
-                payload = python_source.encode("utf-8")
-                view = memoryview(payload)
-                while view:
-                    written = os.write(descriptor, view)
-                    if written <= 0:
-                        raise AgentWorkspaceError("Project Python source could not be written.")
-                    view = view[written:]
-            finally:
-                os.close(descriptor)
-            command = (os.path.realpath(sys.executable), "-u", scratch_script)
+            scratch_script = _create_project_script(boundary, python_source)
+            command = (os.path.realpath(sys.executable), "-u", scratch_script.path)
         wrapped = lifecycle.wrap_argv(boundary.wrap_argv(command))
         environment = _minimal_environment(boundary, workspace, workspace.project_id)
         options = _popen_options(boundary, environment, lifecycle)
@@ -1608,7 +1659,7 @@ def _run_project_process(
                 try:
                     if scratch_script is not None:
                         with contextlib.suppress(OSError):
-                            os.unlink(scratch_script)
+                            scratch_script.remove()
                     if boundary is not None:
                         boundary.close()
                 finally:

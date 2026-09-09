@@ -21,6 +21,11 @@ from pathlib import Path
 
 import pytest
 
+from importlib.util import find_spec
+
+if find_spec("core.agent_workspace.mutation") is None:
+    pytest.skip("Requires the optional confined edit boundary", allow_module_level = True)
+
 from core.agent_workspace import common, execution, mutation, supervisor
 from core.agent_workspace.common import AgentWorkspaceError, ProjectWorkspace
 from core.agent_workspace.execution import (

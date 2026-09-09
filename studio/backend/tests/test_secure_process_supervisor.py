@@ -19,6 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from importlib.util import find_spec
+
+if find_spec("core.agent_workspace.mutation") is None:
+    pytest.skip("Requires the optional confined edit boundary", allow_module_level = True)
+
 from core.agent_workspace import common, execution, mutation, supervisor
 from core.agent_workspace.common import AgentWorkspaceError, ProjectWorkspace
 from core.agent_workspace.execution import ExecutionBoundaryStatus, ProjectExecutionUnavailable
@@ -40,6 +45,7 @@ class _LocalBoundary:
 
     def __init__(self, workspace: ProjectWorkspace, scratch: Path) -> None:
         self.root = workspace.root
+        self._root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
         self.root_identity = (int(workspace.device_id), int(workspace.file_id))
         self.scratch = scratch
         self.closed = False
@@ -73,6 +79,8 @@ class _LocalBoundary:
         return options
 
     def close(self):
+        if not self.closed:
+            os.close(self._root_fd)
         if self.slot:
             mutation.release_workspace_mutation_slot(self.root_identity)
             self.slot = False
@@ -215,6 +223,7 @@ def test_supervisor_owns_workspace_lease_slot_and_minimal_environment(
         assert kwargs["stdin"] is subprocess.DEVNULL
         assert kwargs["stderr"] is subprocess.STDOUT
         assert kwargs["env"]["HOME"] == str(boundaries[-1].scratch)
+        assert "/usr/local/bin" in kwargs["env"]["PATH"].split(os.pathsep)
         return real_popen(*args, **kwargs)
 
     monkeypatch.setattr(supervisor.subprocess, "Popen", checked_popen)
@@ -245,10 +254,14 @@ def test_supervisor_owns_workspace_lease_slot_and_minimal_environment(
 def test_project_python_preserves_import_cwd_file_and_streaming_contract(local_supervisor):
     workspace, _lease_active, boundaries = local_supervisor
     (workspace.root / "helper.py").write_text("VALUE = 42\n", encoding = "utf-8")
+    (workspace.root / "data.csv").write_text("project-data", encoding = "utf-8")
     streamed = []
     source = (
-        "from pathlib import Path; import helper; "
+        "from pathlib import Path; import helper, sys; "
         "print(Path.cwd()); print(helper.VALUE); print(Path(__file__).name); "
+        "print(Path(__file__).with_name('data.csv').read_text()); "
+        "assert Path(__file__).read_text(); "
+        "Path(sys.argv[0]).with_name('result.txt').write_text('kept'); "
         "Path('/mnt/data/remapped.txt').write_text('mapped', encoding='utf-8')"
     )
 
@@ -263,6 +276,9 @@ def test_project_python_preserves_import_cwd_file_and_streaming_contract(local_s
     assert "42" in result.output
     assert str(workspace.root) in result.output
     assert "studio_exec_" in result.output
+    assert "project-data" in result.output
+    assert (workspace.root / "result.txt").read_text() == "kept"
+    assert not list(workspace.root.glob("studio_exec_*.py"))
     assert "".join(streamed) == result.output
     assert (workspace.root / "remapped.txt").read_text(encoding = "utf-8") == "mapped"
     assert not list(boundaries[-1].scratch.glob("studio_exec_*.py"))
@@ -1426,3 +1442,42 @@ def test_native_linux_owner_sigkill_contains_project_command(tmp_path, release_s
             check = False,
             timeout = 10,
         )
+
+
+def test_project_script_creation_and_cleanup_use_the_pinned_root(local_supervisor, tmp_path):
+    workspace, _lease, _boundaries = local_supervisor
+    from core.inference import tools
+
+    original = workspace.root
+    moved = tmp_path / "moved-root"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root_fd = os.open(original, os.O_RDONLY | os.O_DIRECTORY)
+    boundary = type("Boundary", (), {"root": original, "_root_fd": root_fd})()
+    try:
+        original.rename(moved)
+        original.symlink_to(outside, target_is_directory = True)
+        script = supervisor._create_project_script(boundary, "print('owned')")
+        assert (moved / script.name).read_text() == "print('owned')"
+        assert not (outside / script.name).exists()
+        assert script.path in tools._active_scratch
+        script.remove()
+        assert not (moved / script.name).exists()
+        assert script.path not in tools._active_scratch
+    finally:
+        os.close(root_fd)
+
+
+def test_project_script_cleanup_preserves_a_replacement_file(local_supervisor):
+    workspace, _lease, _boundaries = local_supervisor
+    root_fd = os.open(workspace.root, os.O_RDONLY | os.O_DIRECTORY)
+    boundary = type("Boundary", (), {"root": workspace.root, "_root_fd": root_fd})()
+    try:
+        script = supervisor._create_project_script(boundary, "print('owned')")
+        path = workspace.root / script.name
+        path.unlink()
+        path.write_text("replacement")
+        script.remove()
+        assert path.read_text() == "replacement"
+    finally:
+        os.close(root_fd)
