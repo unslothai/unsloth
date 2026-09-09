@@ -14,7 +14,8 @@ This script is the bridge, and its output is meant to land in a COMMIT that a hu
       --family z-image --base-repo Tongyi-MAI/Z-Image-Turbo \\
       --policy-id zimg_f8mod_toq34_v1 \\
       --repo-id unsloth/Z-Image-Turbo-NVFP4 --filename Z-Image-Turbo-NVFP4.pt \\
-      --backend flashinfer --cuda-graphs --gpu B200
+      --backend flashinfer --cuda-graphs --gpu B200 \\
+      --gate-script scripts/prequant_accuracy_gate.py
 
 It fails closed on everything it can check without a GPU: the policy id must resolve in the tree
 AND be the one ``resolve_policy`` gives for ``(family, base)``, the checkpoint must exist (its
@@ -194,6 +195,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--cuda-graphs", action = "store_true", help = "the gate ran with graphs captured")
     p.add_argument("--gpu", default = None, help = "the GPU the gate ran on, e.g. B200")
     p.add_argument("--gptq", action = "store_true", help = "the checkpoint carries GPTQ correction")
+    p.add_argument(
+        "--gate-script",
+        default = None,
+        help = "the gate script that produced --results, hashed into the record. Defaults to a "
+        "sibling prequant_accuracy_gate.py, which is absent when the gate was driven from a "
+        "harness outside this repo; pass it so the record still names what ran.",
+    )
     p.add_argument("--record", default = str(DEFAULT_RECORD), help = "gate record file to append to")
     p.add_argument(
         "--allow-fail",
@@ -218,7 +226,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             gpu = args.gpu,
             gptq = args.gptq,
             results_path = str(args.results),
-            gate_script = Path(__file__).resolve().parent / "prequant_accuracy_gate.py",
+            gate_script = (
+                Path(args.gate_script).resolve()
+                if args.gate_script
+                else Path(__file__).resolve().parent / "prequant_accuracy_gate.py"
+            ),
         )
         append_record(args.record, record, allow_fail = args.allow_fail)
     except Exception as exc:  # noqa: BLE001 -- a tool reports, it does not traceback
