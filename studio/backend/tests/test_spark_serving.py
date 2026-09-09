@@ -2716,3 +2716,114 @@ def test_the_combined_capability_probe_does_not_run_on_the_event_loop(
     main = threading.current_thread().name
     run(ss.before_load(_FakeRequest(str(model)), 4))
     assert loop_threads and all(name != main for name in loop_threads), loop_threads
+
+
+def test_resident_sidecars_are_charged_to_the_node(cluster, monkeypatch, tmp_path):
+    # A projector or a drafter is resident for the whole load. Pricing the base GGUF alone
+    # understates the node, and understating is the direction that plans single for something
+    # which then does not fit.
+    cluster.topology = "single"
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 4096)
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"x" * 1024)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x" * 2048)
+    _patch_remote(monkeypatch)
+
+    run(
+        ss.before_load(
+            _FakeRequest(
+                str(model),
+                llama_extra_args = ["--mmproj", str(projector), "-md", str(drafter)],
+            ),
+            4,
+        )
+    )
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024 + 2048
+
+
+def test_the_adapter_operand_forms_are_taken_apart_not_ignored(tmp_path):
+    # llama.cpp takes a comma-separated list with an optional :SCALE per entry. A raw token
+    # test sees one string that is neither a path nor a file, so preflight reported success
+    # and the peer then failed to launch for a sidecar it did not have.
+    a = tmp_path / "a.gguf"
+    a.write_bytes(b"x" * 10)
+    b = tmp_path / "b.gguf"
+    b.write_bytes(b"x" * 20)
+
+    assert ss.sidecar_operand_paths("/a.gguf,/b.gguf") == ["/a.gguf", "/b.gguf"]
+    assert ss.sidecar_operand_paths("/a.gguf:0.5") == ["/a.gguf"]
+    assert ss.sidecar_operand_paths("/a.gguf:0.5,/b.gguf:1") == ["/a.gguf", "/b.gguf"]
+    # Not every colon is a scale.
+    assert ss.sidecar_operand_paths("/models/a:b.gguf") == ["/models/a:b.gguf"]
+
+    args = ["--lora", f"{a},{b}", "--lora-scaled", f"{a}:0.5"]
+    assert ss.sidecar_files(args) == [str(a), str(b), str(a)]
+    assert ss.sidecar_bytes(args) == (10 + 20 + 10, False)
+
+    # Relative operands resolve against the primary's working directory, as llama-server does.
+    monkey_cwd = str(tmp_path)
+    assert ss.sidecar_files(["--lora", "a.gguf"], cwd = monkey_cwd) == [str(a)]
+
+    # And a launch that names them is preflighted for them.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    files = ss.launch_files(["llama-server", "--lora", f"{a},{b}"], str(model))
+    assert str(a) in files and str(b) in files
+
+
+def test_a_sidecar_that_cannot_be_sized_does_not_cost_the_topology(cluster, monkeypatch, tmp_path):
+    # A drafter the backend has yet to download is ordinary. Answering "size unknown" to it
+    # would mean single, the one topology that cannot hold a large model.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 4096)
+    _calls, started = _patch_remote(monkeypatch)
+
+    out = run(
+        ss.before_load(
+            _FakeRequest(str(model), llama_extra_args = ["-md", "/not/downloaded/yet.gguf"]), 4
+        )
+    )
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096
+    assert started and ss.state().topology == "layer_split"
+    assert "--rpc" in (out.llama_extra_args or [])
+
+
+def test_a_forced_split_does_not_apply_to_a_load_that_is_not_a_gguf(
+    cluster, monkeypatch, tmp_path
+):
+    # before_load runs ahead of model classification. Forcing the topology anyway started an
+    # rpc-server for a Transformers load, which then succeeded, after_load returned early
+    # because no llama backend was loaded, and nothing ever detached the peer: the RPC port
+    # stayed occupied and the status stayed on layer_split.
+    monkeypatch.setenv(ss.ENV_TOPOLOGY, "layer_split")
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-cache"))
+    cluster.topology = "single"
+    _calls, started = _patch_remote(monkeypatch)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant: None)
+
+    request = _FakeRequest("meta-llama/Llama-3.1-8B-Instruct")
+    assert run(ss.before_load(request, 4)) is request
+    assert not started, "no rpc-server for weights that will never touch it"
+    assert ss.state().topology == "single"
+
+    # A GGUF load with the same environment is still forced.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert started and ss.state().topology == "layer_split"
+    assert "--rpc" in (out.llama_extra_args or [])
+
+
+def test_what_counts_as_a_gguf_load_before_the_loader_says(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    assert ss.looks_like_a_gguf_load("repo/x", None, str(model)) is True
+    assert ss.looks_like_a_gguf_load("repo/x", "Q4_K_M", None) is True
+    assert ss.looks_like_a_gguf_load("/models/m.GGUF", None, None) is True
+    assert ss.looks_like_a_gguf_load("meta-llama/Llama-3.1-8B-Instruct", None, None) is False

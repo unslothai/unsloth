@@ -223,6 +223,26 @@ def forced_topology() -> Optional[str]:
     return value if value in TOPOLOGIES else None
 
 
+def looks_like_a_gguf_load(
+    model_path: str, variant: Optional[str], local_file: Optional[str]
+) -> bool:
+    """Whether this request resolves to a GGUF, as far as can be told before the loader says.
+
+    Only a GGUF load can use a peer, and ``before_load`` runs ahead of model classification, so
+    a forced topology would otherwise be applied to a Transformers or MLX load: an rpc-server
+    started for weights that never touch it, and nothing to detach it afterwards."""
+    if local_file:
+        return True
+    if str(variant or "").strip():
+        return True
+    text = str(model_path or "").strip().lower()
+    if text.endswith(".gguf"):
+        return True
+    # Uncached repo: the sizing already asked the hub for the variants, so its answer settles
+    # this too. None means the lister found no GGUF, not merely that it could not size one.
+    return False
+
+
 def node_budget_bytes() -> float:
     sc = _cluster()
     usable = getattr(sc, "SPARK_USABLE_GIB", _SPARK_USABLE_GIB)
@@ -628,6 +648,88 @@ def find_binary_script(candidates: List[str]) -> str:
     return checks + " echo MISSING; exit 1"
 
 
+# Sidecar weights: resident alongside the model, and every one of them is a file the replica
+# needs at the same path. The scaled forms take a comma-separated list with an optional
+# trailing :SCALE per entry (llama.cpp common_arg), which a raw token test sees as one string
+# that is neither a path nor a file, so it checks nothing.
+_SIDECAR_FLAGS = frozenset(
+    {
+        "--mmproj",
+        "-mm",
+        "--model-draft",
+        "-md",
+        "--lora",
+        "--lora-scaled",
+        "--control-vector",
+        "--control-vector-scaled",
+    }
+)
+
+
+def _looks_like_a_scale(text: str) -> bool:
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
+
+
+def sidecar_operand_paths(value: str) -> List[str]:
+    """The files one sidecar operand names, with the list and ``:SCALE`` forms taken apart."""
+    out: List[str] = []
+    for piece in str(value).split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        head, sep, tail = piece.rpartition(":")
+        if sep and head and _looks_like_a_scale(tail):
+            piece = head
+        out.append(piece)
+    return out
+
+
+def sidecar_files(args: Sequence[str], *, cwd: Optional[str] = None) -> List[str]:
+    """Every sidecar weight ``args`` names, resolved the way the launch will resolve it.
+
+    Relative against the primary's working directory, because that is what llama-server does
+    with them and a replica preflight that skipped them reported success and then watched the
+    peer fail to launch for a missing file."""
+    base = cwd or os.getcwd()
+    out: List[str] = []
+    tokens = [str(a) for a in args]
+    for index, token in enumerate(tokens):
+        name, sep, inline = token.partition("=")
+        if name not in _SIDECAR_FLAGS:
+            continue
+        value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
+        for path in sidecar_operand_paths(value):
+            out.append(path if osp.isabs(path) else osp.join(base, path))
+    return out
+
+
+def sidecar_bytes(args: Sequence[str], *, cwd: Optional[str] = None) -> Tuple[int, bool]:
+    """``(bytes, unknown)`` for the sidecars ``args`` names.
+
+    They are resident for the whole load, so charging only the base GGUF understates the
+    node's memory, and understating is the direction that plans ``single`` for something that
+    then does not fit. ``unknown`` is True when a named sidecar cannot be sized, which the
+    caller must not read as zero."""
+    total = 0
+    unknown = False
+    for path in sidecar_files(args, cwd = cwd):
+        size = gguf_size_bytes(path)
+        if size is None:
+            try:
+                size = osp.getsize(path)
+            except OSError:
+                size = None
+        if size is None:
+            unknown = True
+            continue
+        total += int(size)
+    return total, unknown
+
+
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
     """Every file the launch reads; the replica needs all of them at the same path. argv names
     only the first shard, so expand it: a peer holding just that one passes preflight and then
@@ -638,6 +740,11 @@ def launch_files(argv: List[str], gguf_path: str) -> List[str]:
         if arg not in seen and osp.isabs(arg) and osp.isfile(arg):
             files.append(arg)
             seen.add(arg)
+    # The operand forms above never survive that test, so they are taken apart separately.
+    for path in sidecar_files(argv[1:]):
+        if path not in seen and osp.isfile(path):
+            files.append(path)
+            seen.add(path)
     return files
 
 
@@ -1785,9 +1892,19 @@ class SparkServing:
         return self._lock
 
     def decide(
-        self, *, model_bytes: Optional[float], users: int, kv_bytes_per_user: Optional[float]
+        self,
+        *,
+        model_bytes: Optional[float],
+        users: int,
+        kv_bytes_per_user: Optional[float],
+        gguf: bool = True,
     ) -> Dict[str, Any]:
-        forced = forced_topology()
+        # before_load runs ahead of model classification, so a forced topology applied
+        # unconditionally started an rpc-server and added llama arguments for a Transformers
+        # or MLX load. Those loads succeed, after_load returns early because no llama backend
+        # is loaded, and the peer process is never detached: the RPC port stays occupied and
+        # the status stays on layer_split for a model that never used it.
+        forced = forced_topology() if gguf else None
         plan = plan_topology(model_bytes, users = users, kv_bytes_per_user = kv_bytes_per_user or 0.0)
         if forced and forced != plan.get("topology"):
             plan["recommended"] = plan.get("topology")
@@ -1830,11 +1947,38 @@ class SparkServing:
             variant = getattr(request, "gguf_variant", None)
             local_file = cached_repo_file(model_path, variant)
             size = gguf_size_bytes(local_file)
+            # A projector, a drafter, a LoRA or a control vector is resident for the whole
+            # load, so pricing the base GGUF alone understates the node. That is the direction
+            # that plans single for something which then does not fit, so a sidecar nobody can
+            # size abstains rather than counting as zero.
+            extras_for_sizing = list(
+                getattr(request, "llama_extra_args", None)
+                if getattr(request, "llama_extra_args", None) is not None
+                else (inherited_extra_args or [])
+            )
+            sidecars, sidecars_unknown = sidecar_bytes(extras_for_sizing)
+            if size is not None:
+                size += sidecars
+            if sidecars_unknown:
+                # NOT abstaining. A sidecar the backend has yet to download is the ordinary
+                # case, and answering "size unknown" to it means single, which is the topology
+                # that cannot hold a large model: the cure would be worse than the omission.
+                # What can be seen is charged, and the base term dominates either way.
+                logger.info(
+                    "spark serving: a sidecar could not be sized; the plan charges "
+                    "%.1f GiB of sidecars it could see",
+                    sidecars / _GIB,
+                )
+            remote_size = None
             if size is None:
                 # Not cached yet. The hub knows what it weighs, and knowing that here is what
                 # lets a model larger than one Spark be split on its FIRST load rather than
-                # after a single-node launch that cannot fit.
-                size = await asyncio.to_thread(remote_gguf_size_bytes, model_path, variant)
+                # after a single-node launch that cannot fit. Asked once: its answer also
+                # settles whether this request is a GGUF load at all.
+                remote_size = await asyncio.to_thread(
+                    remote_gguf_size_bytes, model_path, variant
+                )
+                size = remote_size
             # max_seq_length 0 means "let the backend size it", so after_load re-plans with
             # the context actually allocated.
             requested_ctx = int(getattr(request, "max_seq_length", None) or 0)
@@ -1846,7 +1990,15 @@ class SparkServing:
                 )
             users = max(1, int(n_parallel))
             kv_per_user = (kv_total / users) if kv_total else 0.0
-            plan = self.decide(model_bytes = size, users = users, kv_bytes_per_user = kv_per_user)
+            plan = self.decide(
+                model_bytes = size,
+                users = users,
+                kv_bytes_per_user = kv_per_user,
+                gguf = (
+                    looks_like_a_gguf_load(model_path, variant, local_file)
+                    or remote_size is not None
+                ),
+            )
             # The header read and the --help probe are file and process work: off the loop.
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
