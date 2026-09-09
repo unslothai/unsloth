@@ -1908,6 +1908,47 @@ def test_each_import_carries_the_charset_its_declaration_had(method: str, charse
     assert _lines(result, "LIB:") == ["LIB:kernel32.dll"]
 
 
+# `out uint` in the C# this replaces. A by-ref type alone emits `ref`, which leaves both
+# In and Out unset, and DefinePInvokeMethod has no argument for it, so the emitter calls
+# DefineParameter. The value is blittable and the callers initialise it first, so writeback
+# works either way; what this pins is that the metadata says what the declaration said, and
+# that the Out key is wired through the emitter at all.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_the_console_mode_parameter_is_still_declared_out(script: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    which = "StudioVTNative" if script == "setup" else "StudioVTNative"
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _one_function(source, "New-StudioDynamicAssembly"),
+                _one_function(source, "New-StudioEmittedNativeType"),
+                '$null = New-StudioEmittedNativeType -TypeName "UnslothOutParamProbe" -Imports @(',
+                '    @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]',
+                '       Args = @([IntPtr], [uint32].MakeByRefType())',
+                '       Ansi = $true',
+                '       Out = @(2) }',
+                ')',
+                '$p = ([type]"UnslothOutParamProbe").GetMethod("GetConsoleMode").GetParameters()[1]',
+                'Write-Output "OUT:$($p.IsOut)"',
+                'Write-Output "BYREF:$($p.ParameterType.IsByRef)"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "OUT:") == ["OUT:True"]
+    assert _lines(result, "BYREF:") == ["BYREF:True"]
+    # And the real declaration in the script carries the key, not just the emitter's ability
+    # to honour it.
+    block = re.search(
+        r'Name = "GetConsoleMode".*?\}', source, flags = re.DOTALL
+    )
+    assert block is not None and "Out = @(2)" in block.group(0), (
+        "GetConsoleMode lost its Out position"
+    )
+
+
 @requires_pwsh
 def test_a_published_type_counts_even_when_creation_threw():
     """CreateType can publish the type and then fail on the way back.

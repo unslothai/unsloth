@@ -1024,6 +1024,14 @@ try {
                 $standard, $import.Return, $import.Args, $winapi, $charSet)
             $method.SetImplementationFlags(
                 $method.GetMethodImplementationFlags() -bor $preserveSig)
+            # `out uint` in the C# this replaces, and DefinePInvokeMethod has no way to say
+            # so: a by-ref type alone emits `ref`, which is In and Out unset. The value is
+            # blittable and every caller initialises it first, so the marshaller pins and
+            # writes back either way, but the metadata is what a reader and any future
+            # marshalling change go by, so it says what the declaration said.
+            foreach ($position in @($import.Out)) {
+                if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
+            }
         }
         $null = $builder.CreateType()
         return $null -ne ($TypeName -as [type])
@@ -1713,7 +1721,8 @@ try {
                        Ansi = $true },
                     @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
                        Args = @([IntPtr], [uint32].MakeByRefType())
-                       Ansi = $true },
+                       Ansi = $true
+                       Out = @(2) },
                     @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
                        Args = @([IntPtr], [uint32])
                        Ansi = $true }
