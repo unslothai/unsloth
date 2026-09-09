@@ -614,9 +614,7 @@ def test_the_presence_masks_separate_every_ordered_pair():
         for b in _CALLER_ENV_NAMES:
             if a == b:
                 continue
-            assert any(
-                a in p and b not in p for p in patterns
-            ), (
+            assert any(a in p and b not in p for p in patterns), (
                 f"no pattern has {a} present while {b} is absent, so a restore of {a} reading "
                 f"{b}'s $hadPrevious flag is invisible"
             )
