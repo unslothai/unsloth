@@ -29315,6 +29315,11 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         # Appended, never inserted: no bare `*`, so a mid parameter rebinds positional callers.
         admission_output_allowance: Optional[int] = None,
+        # Re-prices the bound from the messages the fit LEAVES. This path has no re-cost, so
+        # without it a history over the window is bounded at the one-token floor and stays
+        # there after the fit made room. Pure pricing, no lease: the fit only shrinks the
+        # prompt, so the figure it returns is already inside what the opening charged.
+        on_prompt_fitted: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -29379,6 +29384,7 @@ class LlamaCppBackend:
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         # Wire only: `max_tokens` stays the caller's figure for `_loop_budget_left`.
+        _uncapped_max_tokens = payload["max_tokens"]
         if admission_output_allowance is not None:
             payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -29466,6 +29472,19 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
+                # Below the recall, which puts messages back: the bound has to be for the
+                # prompt this request sends, not for the one the fit was about to cut.
+                if on_prompt_fitted is not None:
+                    try:
+                        _refitted_allowance = on_prompt_fitted(openai_messages)
+                        if _refitted_allowance is not None:
+                            admission_output_allowance = _refitted_allowance
+                    except Exception:  # accounting must never break a run in progress
+                        logger.debug("fitted prompt recost failed", exc_info = True)
+                    if admission_output_allowance is not None:
+                        payload["max_tokens"] = min(
+                            _uncapped_max_tokens, admission_output_allowance
+                        )
                 # Reuse the fitted request on respawn; re-running the preflight would
                 # emit the same truncation event twice.
                 retry_messages = openai_messages

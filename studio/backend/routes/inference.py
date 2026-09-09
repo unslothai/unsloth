@@ -23695,6 +23695,19 @@ async def produce_openai_chat_completions(
             conversation = gguf_messages,
         )
 
+        def _gguf_refit_allowance(fitted) -> Optional[int]:
+            """Re-price the bound once `truncate_oldest` has settled what is sent.
+
+            A history over the window prices at the one-token floor, and this path has no
+            re-cost to lift it after the fit made room.
+            """
+            return _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = fitted,
+            )
+
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
@@ -23706,6 +23719,7 @@ async def produce_openai_chat_completions(
                 min_p = payload.min_p,
                 max_tokens = effective_max_tokens,
                 admission_output_allowance = _admission_output_allowance,
+                on_prompt_fitted = _gguf_refit_allowance,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
                 frequency_penalty = payload.frequency_penalty,

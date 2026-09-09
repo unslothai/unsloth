@@ -156,6 +156,11 @@ def _caps(payloads: list[dict]) -> list[int]:
     return [payload["max_tokens"] for payload in payloads]
 
 
+def _count_by_length(messages, *_args, **_kwargs) -> int:
+    """Stands in for the template render, on the estimator's four-characters-a-token."""
+    return sum(len(str(message.get("content") or "")) for message in messages) // 4
+
+
 _TOOL = {
     "type": "function",
     "function": {"name": "web_search", "parameters": {"type": "object", "properties": {}}},
@@ -235,6 +240,71 @@ class TestTheGeneratorsSendIt:
 
         assert len(payloads) == 2, "expected the first attempt and the post-respawn retry"
         assert _caps(payloads) == [_SHARE, _SHARE]
+
+    def test_a_truncated_plain_chat_is_re_priced_from_what_it_sends(self, monkeypatch):
+        """A history over the window prices at the one-token floor before the fit runs.
+
+        The plain path has no re-cost, so that floor used to reach llama-server even
+        though `truncate_oldest` had just made room, turning any overlong chat into a
+        one-token reply. The bound is re-priced from the messages the fit leaves.
+        """
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+        monkeypatch.setattr(backend, "count_chat_tokens", _count_by_length)
+        stub = _backend_stub(window = _CTX, total = _CTX, slots = 4)
+        history = [
+            {"role": "user", "content": f"turn {index} " + "word " * 400} for index in range(10)
+        ]
+
+        def _price(messages):
+            return _openai_llama_admission_enforced_max_tokens(
+                _Payload(messages = messages),
+                request = None,
+                llama_backend = stub,
+                conversation = messages,
+            )
+
+        assert _price(history) == 1, "the pre-fit prompt has to price at the floor"
+
+        list(
+            backend.generate_chat_completion(
+                messages = history,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = _price(history),
+                on_prompt_fitted = _price,
+            )
+        )
+
+        sent = _caps(payloads)[0]
+        fitted = _openai_llama_admission_wire_prompt_tokens(payloads[0]["messages"])
+        assert sent > 1, "the fit made room and the bound never moved"
+        assert fitted + sent <= _CTX, (fitted, sent)
+
+    def test_a_plain_chat_that_fits_keeps_the_bound_it_was_priced(self, monkeypatch):
+        """No truncation, so the re-price is the same figure and nothing widens."""
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+        stub = _backend_stub(window = _CTX, total = _CTX, slots = 4)
+
+        def _price(messages):
+            return _openai_llama_admission_enforced_max_tokens(
+                _Payload(messages = messages),
+                request = None,
+                llama_backend = stub,
+                conversation = messages,
+            )
+
+        messages = [{"role": "user", "content": "hello"}]
+        list(
+            backend.generate_chat_completion(
+                messages = messages,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = _price(messages),
+                on_prompt_fitted = _price,
+            )
+        )
+
+        assert _caps(payloads) == [_price(messages)]
 
     def test_the_tool_round_and_the_final_pass_both_send_it(self, monkeypatch):
         """The final pass carries the whole run's history and skips the top of the loop."""
@@ -780,6 +850,24 @@ class TestEveryCallSiteCarriesIt:
             if not any(keyword.arg == "admission_output_allowance" for keyword in call.keywords)
         ]
         assert not unbounded, f"these call sites send the whole window: {unbounded}"
+
+    def test_a_fitting_call_site_re_prices_what_the_fit_leaves(self):
+        """`context_overflow` turns the fit on, and the fit moves the prompt the bound was
+        priced from. The loop re-prices through its re-cost; the plain path has no re-cost,
+        so it needs the fitted hook or it sends the pre-fit floor."""
+        # Which hook re-prices the bound on each generator.
+        _REPRICES = {
+            "generate_chat_completion": "on_prompt_fitted",
+            "generate_chat_completion_with_tools": "on_conversation_grew",
+        }
+        tree = self._routes_tree()
+        blind = [
+            name
+            for name, call in self._generator_calls(tree)
+            if any(keyword.arg == "context_overflow" for keyword in call.keywords)
+            and not any(keyword.arg == _REPRICES[name] for keyword in call.keywords)
+        ]
+        assert not blind, f"these fit the prompt but keep the pre-fit bound: {blind}"
 
     def test_a_tool_loop_bound_is_priced_with_the_catalogue_it_sends(self):
         """`payload.tools` omits Studio's server-side catalogue, which the lease charges."""
