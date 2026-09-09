@@ -21,12 +21,11 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from utils import native_tls
+import os
 
 
 @pytest.fixture(autouse = True)
 def _reset_activation(monkeypatch):
-    import os
-
     monkeypatch.setattr(native_tls, "_activated", False)
     for key in (
         "UNSLOTH_STUDIO_NATIVE_TLS",
@@ -82,8 +81,6 @@ def test_activate_injects_once(monkeypatch):
 
 
 def test_activate_exports_uv_native_tls(monkeypatch):
-    import os
-
     monkeypatch.setattr(sys, "platform", "darwin")
     _fake_truststore(monkeypatch)
 
@@ -93,8 +90,6 @@ def test_activate_exports_uv_native_tls(monkeypatch):
 
 
 def test_activate_keeps_explicit_uv_override(monkeypatch):
-    import os
-
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("UV_SYSTEM_CERTS", "0")
     _fake_truststore(monkeypatch)
@@ -106,8 +101,6 @@ def test_activate_keeps_explicit_uv_override(monkeypatch):
 
 
 def test_activate_mirrors_legacy_uv_override(monkeypatch):
-    import os
-
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("UV_NATIVE_TLS", "0")
     _fake_truststore(monkeypatch)
@@ -118,8 +111,6 @@ def test_activate_mirrors_legacy_uv_override(monkeypatch):
 
 
 def test_disabled_does_not_touch_uv_env(monkeypatch):
-    import os
-
     monkeypatch.setattr(sys, "platform", "linux")
     _fake_truststore(monkeypatch)
 
