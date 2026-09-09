@@ -951,6 +951,89 @@ def test_the_record_survives_an_unwritable_marker(tmp_path: Path):
     assert M.load_metadata(tmp_path) is None
 
 
+def test_a_failed_marker_refresh_leaves_the_old_marker_intact(tmp_path: Path, monkeypatch):
+    """The read-modify-write rewrites a marker that already describes a good install.
+
+    A truncated one reads as "no install" (load_metadata returns None on a parse
+    error), so a crash or a full disk mid-write would retire a working 110 MB runtime
+    and buy a full re-download. The replace is atomic: the marker is either the one
+    that was there or the new one, never half of either.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    before = M.metadata_path(tmp_path).read_bytes()
+
+    def boom(tmp, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", boom)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.metadata_path(tmp_path).read_bytes() == before
+    assert M.load_metadata(tmp_path) is not None
+    # A stranded sibling would sit in the install directory forever, and _swap_into_place
+    # would carry one written during an install into the live tree.
+    assert list(tmp_path.glob(M.METADATA_FILENAME + ".tmp-*")) == []
+
+
+def test_the_marker_is_never_written_in_place(tmp_path: Path, monkeypatch):
+    """What makes the guarantee above true: the payload is complete on disk in a
+    sibling before the destination is touched at all."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    original = M.metadata_path(tmp_path).read_bytes()
+    seen = {}
+    real = M.atomic_replace_from_tempfile
+
+    def observe(tmp, destination):
+        seen["destination"] = Path(destination).read_bytes()
+        seen["staged"] = json.loads(Path(tmp).read_text(encoding = "utf-8"))
+        return real(tmp, destination)
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", observe)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert seen["destination"] == original, "the destination was written before the replace"
+    assert seen["staged"]["npm_major_checked"] == 11
+    assert M.load_metadata(tmp_path)["npm_major_checked"] == 11
+
+
+def test_the_marker_bytes_are_unchanged_by_the_atomic_writer(tmp_path: Path):
+    """The setup fast path and the idempotency harness both compare this file byte for
+    byte, so moving the writer must not re-spell it."""
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    payload = {
+        "schema_version": M.METADATA_SCHEMA_VERSION,
+        "kind": "node",
+        "version": "24.17.0",
+        "asset": "x",
+        "sha256": "y",
+    }
+    expected = json.dumps(payload, indent = 2) + "\n"
+    assert M.metadata_path(tmp_path).read_text(encoding = "utf-8") == expected
+
+
+def test_a_failed_install_marker_write_strands_nothing(tmp_path: Path, monkeypatch):
+    """write_metadata still raises -- it writes into a staging tree the caller discards
+    -- but it must not leave the temp file behind in it either."""
+
+    def boom(tmp, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", boom)
+    with pytest.raises(OSError):
+        M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert not M.metadata_path(tmp_path).exists()
+    assert list(tmp_path.glob(M.METADATA_FILENAME + ".tmp-*")) == []
+
+
+def test_both_marker_writers_share_one_atomic_path() -> None:
+    """Two spellings of "write the marker" is how one of them would stay non-atomic."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("_write_metadata_payload(") == 3  # def + write_metadata + refresh
+    assert "metadata_path(install_dir).write_text(" not in source
+
+
 def test_the_record_is_written_after_the_swap_not_before() -> None:
     """_ensure_npm_floor rewrites npm inside the staged tree, so a record taken there
     describes bytes that are about to be replaced."""

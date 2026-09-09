@@ -658,6 +658,49 @@ def metadata_path(install_dir: Path) -> Path:
     return install_dir / METADATA_FILENAME
 
 
+def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
+    """Replace the marker atomically, or leave the previous one exactly as it was.
+
+    load_metadata reads a truncated or unparseable file as "no install", so a crash,
+    a full disk or a killed installer partway through a plain write_text retires the
+    install the marker described: the next run refetches ~110 MB of Node. Same shape as
+    download_file -- a sibling temp file, flushed and fsynced, then os.replace, which is
+    atomic within a directory on POSIX and Windows alike.
+
+    The temp file is removed on every failure path. A stranded `.tmp-` sibling would sit
+    inside the install directory forever, and _swap_into_place would carry one written
+    here into the live tree.
+
+    Raises: the caller decides. write_metadata is writing into a staging tree that is
+    discarded on failure, so a raise there aborts an install that never landed.
+    """
+    destination = metadata_path(install_dir)
+    destination.parent.mkdir(parents = True, exist_ok = True)
+    # newline left at the default, as write_text had it: the marker's bytes must not
+    # change spelling on Windows just because the writer moved.
+    handle = tempfile.NamedTemporaryFile(
+        prefix = destination.name + ".tmp-",
+        dir = destination.parent,
+        delete = False,
+        mode = "w",
+        encoding = "utf-8",
+    )
+    tmp_path: Path | None = Path(handle.name)
+    try:
+        with handle:
+            handle.write(json.dumps(payload, indent = 2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace_from_tempfile(tmp_path, destination)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok = True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) -> None:
     payload = {
         "schema_version": METADATA_SCHEMA_VERSION,
@@ -666,7 +709,7 @@ def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) 
         "asset": asset,
         "sha256": sha256,
     }
-    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
+    _write_metadata_payload(install_dir, payload)
 
 
 def load_metadata(install_dir: Path) -> dict | None:
@@ -713,8 +756,9 @@ def record_runtime_verification(
 ) -> None:
     """Remember that THESE bytes answered `node -v` and `npm --version`.
 
-    Read-modify-write, never raises: a marker that cannot be refreshed only costs the
-    two spawns again next time.
+    Read-modify-write, never raises, and never leaves a half-written marker: this
+    rewrites a file that already describes a good install, so a torn write here is
+    strictly worse than not writing at all.
     """
     meta = load_metadata(install_dir)
     if meta is None:
@@ -732,8 +776,11 @@ def record_runtime_verification(
         }
     )
     try:
-        metadata_path(install_dir).write_text(json.dumps(meta, indent = 2) + "\n", encoding = "utf-8")
-    except OSError:
+        _write_metadata_payload(install_dir, meta)
+    except Exception:  # noqa: BLE001
+        # A marker that cannot be refreshed costs the two spawns again next time; the
+        # atomic replace is what makes sure that is the ONLY cost, rather than a torn
+        # marker that reads as "nothing installed" and buys a full re-download.
         pass
 
 
