@@ -287,3 +287,172 @@ def _assert_catalog_rendering(template, expected):
 )
 def test_alias_assignment_flow_matches_rendered_catalog(template, expected):
     _assert_catalog_rendering(template, expected)
+
+
+@pytest.mark.parametrize(
+    "template, schema_flags",
+    [
+        ("{% if tools and false %}tool instructions{% endif %}", ()),
+        ("{% if false and tools %}tool instructions{% endif %}", ()),
+        ("{% if tools and (false or false) %}tool instructions{% endif %}", ()),
+        ("{% if tools and 1 == 2 %}tool instructions{% endif %}", ()),
+        ("{% if tools or true %}plain{% endif %}", ()),
+        (
+            "{% set flag=true %}{% if tools or flag %}plain{% endif %}",
+            (),
+        ),
+        (
+            "{% if tools and false %}plain{% elif tools %}{{ tools|tojson }}{% endif %}",
+            (False, True),
+        ),
+        (
+            "{% if flag %}{% set catalog=tools %}{% endif %}"
+            "{% if not flag %}{{ catalog|default([])|tojson }}{% endif %}",
+            (),
+        ),
+        (
+            "{% if flag %}{% set catalog=tools %}{% endif %}"
+            "{% if flag %}{{ catalog|default([])|tojson }}{% endif %}",
+            (True,),
+        ),
+        (
+            "{% if not flag %}{% set catalog=tools %}{% endif %}"
+            "{% if flag %}{{ catalog|default([])|tojson }}{% endif %}",
+            (),
+        ),
+        (
+            "{% if flag %}{% set catalog=tools %}{% endif %}{% set flag=false %}"
+            "{% if not flag %}{{ catalog|default([])|tojson }}{% endif %}",
+            (True,),
+        ),
+        (
+            "{% if flag and other %}{% set catalog=tools %}{% endif %}"
+            "{% if not flag or not other %}{{ catalog|default([])|tojson }}{% endif %}",
+            (),
+        ),
+        (
+            "{% if flag or other %}{% set catalog=tools %}{% endif %}"
+            "{% if not flag and not other %}{{ catalog|default([])|tojson }}{% endif %}",
+            (),
+        ),
+        (
+            "{% set catalog=[] %}{% if tools %}{% do catalog.extend(tools) %}"
+            "{% endif %}{{ catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set catalog=[] %}{% do catalog.append(tools[0]) %}{{ catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set catalog=[] %}{% do catalog.extend(tools) %}"
+            "{% do catalog.clear() %}{{ catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set catalog=[] %}{% if flag %}{% do catalog.extend(tools) %}{% endif %}"
+            "{% if not flag %}{{ catalog|tojson }}{% endif %}",
+            (),
+        ),
+        (
+            "{% set catalog=[] %}{% for tool in tools %}{% do catalog.append(tool) %}"
+            "{% endfor %}{{ catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% if tools %}{% set ns=namespace({'catalog': tools}) %}{% endif %}"
+            "{{ ns.catalog|default([])|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set mapping={'catalog': tools, 'label': 'plain'} %}"
+            "{% set ns=namespace(mapping) %}{{ ns.catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set ns=namespace({'catalog': tools}, catalog=[]) %}{{ ns.catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set ns=namespace({'catalog': tools, 'label': 'plain'}) %}{{ ns.label }}",
+            (),
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% for x in [1] %}"
+            "{% set ns.catalog=[] %}{% endfor %}{{ ns.catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% for x in [] %}"
+            "{% set ns.catalog=[] %}{% endfor %}{{ ns.catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% for x in [1] if false %}"
+            "{% set ns.catalog=[] %}{% endfor %}{{ ns.catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% for x in [1] %}"
+            "{% set ns=namespace(catalog=[]) %}{% set ns.catalog=[] %}"
+            "{% endfor %}{{ ns.catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% for value in [tools, []] %}"
+            "{% set ns.catalog=value %}{% endfor %}{{ ns.catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set catalog=[] %}{% if tools %}{% set catalog, ignored=tools, none %}"
+            "{% endif %}{{ catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set catalog=tools %}{% set catalog, ignored=[], tools %}{{ catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set catalog=tools %}{% set ignored=[] %}"
+            "{% set ignored, catalog=catalog, ignored %}{{ catalog|tojson }}",
+            (),
+        ),
+        (
+            "{% set pair=[tools, 'plain'] %}{% set catalog, label=pair %}{{ catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set wrapper={'catalog': tools, 'label': 'plain'} %}{{ wrapper['label'] }}",
+            (),
+        ),
+        (
+            "{% set wrapper={'catalog': tools, 'label': 'plain'} %}{{ wrapper.catalog|tojson }}",
+            (False, True),
+        ),
+        (
+            "{% set wrapper={'inner': {'catalog': tools, 'label': 'plain'}} %}"
+            "{{ wrapper.inner.label }}",
+            (),
+        ),
+        ("{% set wrapper=[tools, 'plain'] %}{{ wrapper[1] }}", ()),
+        ("{% set wrapper=[tools, 'plain'] %}{{ wrapper[0]|tojson }}", (False, True)),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% with %}{% if flag %}"
+            "{% set ns.catalog=tools %}{% endif %}{% endwith %}"
+            "{% if not flag %}{{ ns.catalog|tojson }}{% endif %}",
+            (),
+        ),
+    ],
+)
+def test_reviewed_paths_match_rendered_catalog(template, schema_flags):
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    render = Environment(extensions = ["jinja2.ext.do"]).from_string(template)
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+    for flag in (False, True):
+        for other in (False, True):
+            output = render.render(tools = tools, flag = flag, other = other)
+            assert ("get_weather" in output) is (flag in schema_flags)
+    expected = bool(schema_flags)
+    assert template_supports_tools(template) is expected
+    assert detect_reasoning_flags(template)["supports_tools"] is expected

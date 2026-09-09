@@ -3,6 +3,7 @@
 
 """Tool-capability hints from executable Jinja syntax."""
 
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from jinja2 import Environment, TemplateSyntaxError, nodes
@@ -18,6 +19,31 @@ class _Generation(Extension):
 
 
 _ENVIRONMENT = Environment(extensions = [_Generation, "jinja2.ext.loopcontrols", "jinja2.ext.do"])
+_UNKNOWN = object()
+
+
+class _AnalysisLimit(Exception):
+    pass
+
+
+@dataclass
+class _State:
+    aliases: set
+    macros: dict = field(default_factory = dict)
+    facts: dict = field(default_factory = dict)
+    assigned: set = field(default_factory = set)
+    mutated: set = field(default_factory = set)
+    budget: list = field(default_factory = lambda: [8192])
+
+    def copy(self, scoped = False):
+        return _State(
+            self.aliases.copy(),
+            self.macros.copy(),
+            self.facts.copy(),
+            set() if scoped else self.assigned.copy(),
+            set() if scoped else self.mutated.copy(),
+            self.budget,
+        )
 
 
 def _field(node):
@@ -25,7 +51,7 @@ def _field(node):
         return node.attr
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
-    return None
+    return _UNKNOWN
 
 
 def _reference_key(node):
@@ -35,35 +61,113 @@ def _reference_key(node):
         return (node.name, node.attr)
     if isinstance(node, (nodes.Getattr, nodes.Getitem)):
         parent = _reference_key(node.node)
-        field = _field(node)
-        if parent is not None and isinstance(field, str):
-            return (*parent, field)
+        member = _field(node)
+        if parent is not None and isinstance(member, (str, int)):
+            return (*parent, member)
     return None
 
 
-def _tool_reference(node, aliases):
-    return _reference_key(node) in aliases or _field(node) == "tool_calls"
+def _names(node):
+    return {item.name for item in node.find_all(nodes.Name)} | (
+        {node.name} if isinstance(node, nodes.Name) else set()
+    )
 
 
-def _walk(node):
-    yield node
-    if not isinstance(node, nodes.Macro):
-        for child in node.iter_child_nodes():
-            yield from _walk(child)
-
-
-def _positive_test(node, aliases):
-    if _tool_reference(node, aliases):
-        return True
+def _constant_truth(node, state = None):
+    fact = state.facts.get(repr(node)) if state is not None else None
+    if fact is not None:
+        return fact[0]
+    if isinstance(node, nodes.Const):
+        return bool(node.value)
+    if isinstance(node, (nodes.List, nodes.Tuple, nodes.Dict)):
+        return bool(node.items)
+    if (
+        isinstance(node, nodes.Compare)
+        and isinstance(node.expr, nodes.Const)
+        and all(isinstance(operand.expr, nodes.Const) for operand in node.ops)
+    ):
+        try:
+            return bool(node.as_const())
+        except nodes.Impossible:
+            pass
+    if isinstance(node, nodes.Not):
+        value = _constant_truth(node.node, state)
+        return None if value is None else not value
     if isinstance(node, (nodes.And, nodes.Or)):
-        return _positive_test(node.left, aliases) or _positive_test(node.right, aliases)
+        left = _constant_truth(node.left, state)
+        right = _constant_truth(node.right, state)
+        decisive = isinstance(node, nodes.Or)
+        if left is decisive or right is decisive:
+            return decisive
+        if left is not None and right is not None:
+            return not decisive
+    return None
+
+
+def _assume(node, truth, state):
+    state.budget[0] -= 1
+    if state.budget[0] < 0:
+        raise _AnalysisLimit
+    known = _constant_truth(node, state)
+    if known is not None:
+        return [state.copy()] if known is truth else []
+    if isinstance(node, nodes.Not):
+        return _assume(node.node, not truth, state)
+    if isinstance(node, (nodes.And, nodes.Or)):
+        both = truth if isinstance(node, nodes.And) else not truth
+        if both:
+            return [
+                right
+                for left in _assume(node.left, truth, state)
+                for right in _assume(node.right, truth, left)
+            ]
+        return _assume(node.left, truth, state) + [
+            right
+            for left in _assume(node.left, not truth, state)
+            for right in _assume(node.right, truth, left)
+        ]
+    result = state.copy()
+    result.facts[repr(node)] = (truth, _names(node))
+    return [result]
+
+
+def _forget(key, state):
+    state.facts = {
+        expression: fact for expression, fact in state.facts.items() if key[0] not in fact[1]
+    }
+
+
+def _select(paths, member):
+    return {
+        suffix[1:] if suffix else ()
+        for suffix in paths
+        if not suffix or member is _UNKNOWN or suffix[0] in (member, _UNKNOWN)
+    }
+
+
+def _tool_reference(node, state):
+    key = _reference_key(node)
+    return key in state.aliases or _field(node) == "tool_calls"
+
+
+def _positive_test(node, state):
+    if _constant_truth(node) is not None:
+        return False
+    if _tool_reference(node, state):
+        return True
+    if isinstance(node, nodes.And):
+        return _positive_test(node.left, state) or _positive_test(node.right, state)
+    if isinstance(node, nodes.Or):
+        return (
+            _constant_truth(node.right, state) is not True and _positive_test(node.left, state)
+        ) or (_constant_truth(node.left, state) is not True and _positive_test(node.right, state))
     if isinstance(node, nodes.Test):
-        return node.name == "defined" and _tool_reference(node.node, aliases)
+        return node.name == "defined" and _tool_reference(node.node, state)
     if isinstance(node, nodes.Not):
         return (
             isinstance(node.node, nodes.Test)
             and node.node.name in ("none", "undefined")
-            and _tool_reference(node.node.node, aliases)
+            and _tool_reference(node.node.node, state)
         )
     if isinstance(node, nodes.Compare) and len(node.ops) == 1:
         operand = node.ops[0]
@@ -80,6 +184,8 @@ def _is_payload(node):
         return False
     if isinstance(node, nodes.Filter) and node.name in ("length", "count"):
         return False
+    if isinstance(node, nodes.TemplateData):
+        return bool(node.data.strip())
     return not (
         isinstance(node, nodes.Call)
         and isinstance(node.node, nodes.Name)
@@ -87,189 +193,294 @@ def _is_payload(node):
     )
 
 
-def _emits_tools(node, aliases, macros, active):
-    if not _is_payload(node):
-        return False
-    if isinstance(node, nodes.CondExpr):
-        truth = _constant_truth(node.test)
-        return any(
-            value is not None and _emits_tools(value, aliases, macros, active)
-            for value, possible in (
-                (node.expr1, truth is not False),
-                (node.expr2, truth is not True),
+def _replace(paths, key, derived):
+    paths.difference_update({old for old in paths if old[: len(key)] == key})
+    paths.update((*key, *suffix) for suffix in derived)
+
+
+def _value_aliases(value, state, active):
+    if value is None or not _is_payload(value):
+        return set()
+    if isinstance(value, nodes.Name):
+        return {key[1:] for key in state.aliases if key[0] == value.name}
+    if isinstance(value, (nodes.Getattr, nodes.Getitem)):
+        if _field(value) == "tool_calls":
+            return {()}
+        return _select(_value_aliases(value.node, state, active), _field(value))
+    if isinstance(value, nodes.Dict):
+        result = set()
+        for pair in value.items:
+            key = pair.key.value if isinstance(pair.key, nodes.Const) else _UNKNOWN
+            _replace(result, (key,), _value_aliases(pair.value, state, active))
+        return result
+    if isinstance(value, (nodes.List, nodes.Tuple)):
+        return {
+            (index, *suffix)
+            for index, item in enumerate(value.items)
+            for suffix in _value_aliases(item, state, active)
+        }
+    if isinstance(value, nodes.CondExpr):
+        return set().union(
+            *(
+                _value_aliases(expression, branch, active)
+                for expression, truth in ((value.expr1, True), (value.expr2, False))
+                for branch in _assume(value.test, truth, state)
             )
-            if possible
         )
-    if isinstance(node, nodes.And):
-        return _constant_truth(node.left) is not False and _emits_tools(
-            node.right, aliases, macros, active
+    if isinstance(value, nodes.And):
+        return set().union(
+            *(
+                _value_aliases(value.right, branch, active)
+                for branch in _assume(value.left, True, state)
+            )
         )
-    if isinstance(node, nodes.Or):
-        if _constant_truth(node.left) is True:
-            return _emits_tools(node.left, aliases, macros, active)
-        return _emits_tools(node.left, aliases, macros, active) or _emits_tools(
-            node.right, aliases, macros, active
+    if isinstance(value, nodes.Or):
+        return set().union(
+            *(
+                _value_aliases(expression, branch, active)
+                for expression, truth in ((value.left, True), (value.right, False))
+                for branch in _assume(value.left, truth, state)
+            )
         )
-    if isinstance(node, nodes.Call) and isinstance(node.node, nodes.Name):
-        macro = macros.get(node.node.name)
+    if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Name):
+        if value.node.name == "namespace":
+            result = set().union(*(_value_aliases(arg, state, active) for arg in value.args))
+            for keyword in value.kwargs:
+                _replace(result, (keyword.key,), _value_aliases(keyword.value, state, active))
+            return result
+        macro = state.macros.get(value.node.name)
         if macro is not None:
             if macro.name in active:
-                return False
+                return set()
+            local = state.copy(scoped = True)
             parameters = [argument.name for argument in macro.args]
-            local_aliases = {key for key in aliases if key[0] not in parameters}
-            arguments = dict(zip(parameters, node.args))
-            arguments.update((keyword.key, keyword.value) for keyword in node.kwargs)
+            arguments = dict(zip(parameters, value.args))
+            arguments.update((keyword.key, keyword.value) for keyword in value.kwargs)
             defaults = dict(
                 zip(parameters[len(parameters) - len(macro.defaults) :], macro.defaults)
             )
             for name in parameters:
-                value = arguments.get(name, defaults.get(name))
-                source_aliases = aliases if name in arguments else local_aliases.copy()
-                if value is not None and _emits_tools(value, source_aliases, macros, active):
-                    local_aliases.add((name,))
-                source = _reference_key(value)
-                if source is not None:
-                    for key in source_aliases:
-                        if key[: len(source)] == source:
-                            local_aliases.add((name, *key[len(source) :]))
-            local_macros = {name: value for name, value in macros.items() if name not in parameters}
-            return _scan(macro.body, local_aliases, local_macros, active | {macro.name})
-    return _tool_reference(node, aliases) or any(
-        _emits_tools(child, aliases, macros, active) for child in node.iter_child_nodes()
+                _replace(local.aliases, (name,), set())
+                local.macros.pop(name, None)
+                _forget((name,), local)
+            for parameter in macro.args:
+                expression = arguments.get(parameter.name, defaults.get(parameter.name))
+                _bind(
+                    parameter,
+                    expression,
+                    local,
+                    active,
+                    source = state if parameter.name in arguments else local.copy(),
+                )
+            emits, _ = _scan(macro.body, local, active | {macro.name})
+            return {()} if emits else set()
+    # Other expressions serialize or transform their inputs.
+    return (
+        {()}
+        if any(_value_aliases(child, state, active) for child in value.iter_child_nodes())
+        else set()
     )
-
-
-def _emits(body):
-    for statement in body:
-        outputs = (node for node in _walk(statement) if isinstance(node, nodes.Output))
-        for output in outputs:
-            for value in output.nodes:
-                if not _is_payload(value):
-                    continue
-                if isinstance(value, nodes.TemplateData) and not value.data.strip():
-                    continue
-                return True
-    return False
-
-
-def _value_aliases(value, aliases, macros, active):
-    if (
-        isinstance(value, nodes.Call)
-        and isinstance(value.node, nodes.Name)
-        and value.node.name == "namespace"
-    ):
-        return {
-            (keyword.key, *suffix)
-            for keyword in value.kwargs
-            for suffix in _value_aliases(keyword.value, aliases, macros, active)
-        }
-    result = {()} if _emits_tools(value, aliases, macros, active) else set()
-    source = _reference_key(value)
-    if source is not None:
-        result.update(key[len(source) :] for key in aliases if key[: len(source)] == source)
-    return result
 
 
 def _bind(
     target,
     value,
-    aliases,
-    macros,
+    state,
     active,
-    source_aliases = None,
+    source = None,
 ):
+    source = state.copy() if source is None else source
+    if isinstance(target, (nodes.Tuple, nodes.List)):
+        if isinstance(value, (nodes.Tuple, nodes.List)):
+            for item, expression in zip(target.items, value.items):
+                _bind(item, expression, state, active, source = source)
+        else:
+            paths = _value_aliases(value, source, active)
+            for index, item in enumerate(target.items):
+                _bind_paths(item, _select(paths, index), state)
+        return
+    _bind_paths(target, _value_aliases(value, source, active), state)
+    truth = _constant_truth(value, source) if value is not None else None
+    if isinstance(target, nodes.Name) and truth is not None:
+        state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
+
+
+def _bind_paths(target, paths, state):
+    if isinstance(target, (nodes.Tuple, nodes.List)):
+        for index, item in enumerate(target.items):
+            _bind_paths(item, _select(paths, index), state)
+        return
     key = _reference_key(target)
     if key is None:
         return
-    derived = _value_aliases(
-        value, aliases if source_aliases is None else source_aliases, macros, active
-    )
-    aliases.difference_update({old for old in aliases if old[: len(key)] == key})
-    aliases.update((*key, *suffix) for suffix in derived)
-
-
-def _constant_truth(node):
-    if isinstance(node, nodes.Const):
-        return bool(node.value)
-    if isinstance(node, nodes.Not):
-        value = _constant_truth(node.node)
-        return None if value is None else not value
-    return None
-
-
-def _scan_if(node, aliases, macros, active):
-    states = []
-    for branch in [node, *node.elif_]:
-        truth = _constant_truth(branch.test)
-        if truth is False:
-            continue
-        if _positive_test(branch.test, aliases) and _emits(branch.body):
-            return True
-        local_aliases, local_macros = aliases.copy(), macros.copy()
-        if _scan(branch.body, local_aliases, local_macros, active):
-            return True
-        states.append((local_aliases, local_macros))
-        if truth is True:
-            break
+    _replace(state.aliases, key, paths)
+    _forget(key, state)
+    if isinstance(target, nodes.Name):
+        state.assigned.add(target.name)
+        state.macros.pop(target.name, None)
     else:
-        local_aliases, local_macros = aliases.copy(), macros.copy()
-        if _scan(node.else_, local_aliases, local_macros, active):
-            return True
-        states.append((local_aliases, local_macros))
-    aliases.clear()
-    for local_aliases, local_macros in states:
-        aliases.update(local_aliases)
-        macros.update(local_macros)
-    return False
+        state.mutated.add(key)
 
 
-def _scan(body, aliases, macros, active):
+def _mutate(call, state, active):
+    if not isinstance(call, nodes.Call) or not isinstance(call.node, nodes.Getattr):
+        return
+    key = _reference_key(call.node.node)
+    if key is None:
+        return
+    method = call.node.attr
+    if method not in ("append", "extend", "clear"):
+        return
+    paths = set().union(*(_value_aliases(arg, state, active) for arg in call.args))
+    if method == "clear":
+        _replace(state.aliases, key, set())
+    elif paths:
+        if method == "append":
+            paths = {(_UNKNOWN, *suffix) for suffix in paths}
+        state.aliases.update((*key, *suffix) for suffix in paths)
+    state.mutated.add(key)
+    _forget(key, state)
+
+
+def _export_scope(parent, child):
+    result = parent.copy()
+    result.facts.update(
+        {
+            expression: fact
+            for expression, fact in child.facts.items()
+            if not fact[1] & child.assigned
+        }
+    )
+    for key in child.mutated:
+        if key[0] in child.assigned:
+            continue
+        _replace(
+            result.aliases,
+            key,
+            {alias[len(key) :] for alias in child.aliases if alias[: len(key)] == key},
+        )
+        result.mutated.add(key)
+        _forget(key, result)
+    return result
+
+
+def _scan_if(node, state, active, guarded):
+    remaining = [state]
+    results = []
+    for branch in [node, *node.elif_]:
+        next_remaining = []
+        for current in remaining:
+            for positive in _assume(branch.test, True, current):
+                emits, states = _scan(
+                    branch.body, positive, active, guarded or _positive_test(branch.test, current)
+                )
+                if emits:
+                    return True, []
+                results.extend(states)
+            next_remaining.extend(_assume(branch.test, False, current))
+        remaining = next_remaining
+    for current in remaining:
+        emits, states = _scan(node.else_, current, active, guarded)
+        if emits:
+            return True, []
+        results.extend(states)
+    return False, results
+
+
+def _scan_loop(node, state, active, guarded):
+    literal = isinstance(node.iter, (nodes.List, nodes.Tuple))
+    values = node.iter.items if literal else [None]
+    states = [state]
+    if not values:
+        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
+        return emits, [_export_scope(state, child) for child in children]
+    for value in values:
+        results = []
+        for parent in states:
+            local = parent.copy(scoped = True)
+            if value is None:
+                _bind_paths(
+                    node.target, _select(_value_aliases(node.iter, parent, active), _UNKNOWN), local
+                )
+            else:
+                _bind(node.target, value, local, active)
+            candidates = [local] if node.test is None else _assume(node.test, True, local)
+            for candidate in candidates:
+                emits, children = _scan(
+                    node.body, candidate, active, guarded or _tool_reference(node.iter, parent)
+                )
+                if emits:
+                    return True, []
+                results.extend(_export_scope(parent, child) for child in children)
+            if node.test is not None:
+                results.extend(
+                    _export_scope(parent, child) for child in _assume(node.test, False, local)
+                )
+        states = results
+    if not literal:
+        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
+        if emits:
+            return True, []
+        states.extend(_export_scope(state, child) for child in children)
+    return False, states
+
+
+def _scan(
+    body,
+    state,
+    active,
+    guarded = False,
+):
+    states = [state]
     for node in body:
-        if isinstance(node, nodes.Output):
-            if any(_emits_tools(value, aliases, macros, active) for value in node.nodes):
-                return True
-        elif isinstance(node, nodes.Assign):
-            _bind(node.target, node.node, aliases, macros, active)
-        elif isinstance(node, nodes.Macro):
-            macros[node.name] = node
-        elif isinstance(node, nodes.For):
-            if _tool_reference(node.iter, aliases) and _emits(node.body):
-                return True
-            local_aliases = aliases.copy()
-            _bind(node.target, node.iter, local_aliases, macros, active)
-            if _scan(node.body, local_aliases, macros.copy(), active):
-                return True
-            # Loop-local names do not escape, but namespace writes do.
-            local_names = {
-                item.target.name
-                for statement in node.body
-                for item in _walk(statement)
-                if isinstance(item, nodes.Assign) and isinstance(item.target, nodes.Name)
-            }
-            aliases.update(
-                key for key in local_aliases if len(key) > 1 and key[0] not in local_names
-            )
-            if _scan(node.else_, aliases.copy(), macros.copy(), active):
-                return True
-        elif isinstance(node, nodes.If):
-            if _scan_if(node, aliases, macros, active):
-                return True
-        elif isinstance(node, nodes.AssignBlock):
-            contains_tools = _scan(node.body, aliases.copy(), macros.copy(), active)
-            _bind(node.target, nodes.Const(None), aliases, macros, active)
-            key = _reference_key(node.target)
-            if contains_tools and key is not None:
-                aliases.add(key)
-        elif isinstance(node, nodes.With):
-            local_aliases = aliases.copy()
-            for target, value in zip(node.targets, node.values):
-                _bind(target, value, local_aliases, macros, active, source_aliases = aliases)
-            if _scan(node.body, local_aliases, macros.copy(), active):
-                return True
-        elif hasattr(node, "body"):
-            if _scan(node.body, aliases.copy(), macros.copy(), active):
-                return True
-    return False
+        results = []
+        for current in states:
+            current.budget[0] -= 1
+            if current.budget[0] < 0:
+                raise _AnalysisLimit
+            if isinstance(node, nodes.Output):
+                if any(
+                    _is_payload(value) and (guarded or _value_aliases(value, current, active))
+                    for value in node.nodes
+                ):
+                    return True, []
+            elif isinstance(node, nodes.Assign):
+                _bind(node.target, node.node, current, active)
+            elif isinstance(node, nodes.ExprStmt):
+                _mutate(node.node, current, active)
+            elif isinstance(node, nodes.Macro):
+                current.macros[node.name] = node
+            elif isinstance(node, nodes.If):
+                emits, children = _scan_if(node, current, active, guarded)
+                if emits:
+                    return True, []
+                results.extend(children)
+                continue
+            elif isinstance(node, nodes.For):
+                emits, children = _scan_loop(node, current, active, guarded)
+                if emits:
+                    return True, []
+                results.extend(children)
+                continue
+            elif isinstance(node, nodes.AssignBlock):
+                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                _bind_paths(node.target, {()} if emits else set(), current)
+            elif isinstance(node, nodes.With):
+                local = current.copy(scoped = True)
+                for target, value in zip(node.targets, node.values):
+                    _bind(target, value, local, active, source = current)
+                emits, children = _scan(node.body, local, active, guarded)
+                if emits:
+                    return True, []
+                results.extend(_export_scope(current, child) for child in children)
+                continue
+            elif hasattr(node, "body"):
+                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                if emits:
+                    return True, []
+            results.append(current)
+        states = results
+    return False, states
 
 
 @lru_cache(maxsize = 128)
@@ -279,6 +490,7 @@ def template_supports_tools(template: str) -> bool:
         return False
     try:
         tree = _ENVIRONMENT.parse(template)
-    except TemplateSyntaxError:
+        emits, _ = _scan(tree.body, _State({("tools",), ("tool_calls",)}), set())
+        return emits
+    except (TemplateSyntaxError, _AnalysisLimit):
         return False
-    return _scan(tree.body, {("tools",), ("tool_calls",)}, {}, set())
