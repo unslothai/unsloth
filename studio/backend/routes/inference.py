@@ -2421,11 +2421,12 @@ def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
     return _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX if active else 0
 
 
-def _openai_llama_effective_batch_tokens(llama_backend) -> int:
+def _openai_llama_effective_batch_tokens(llama_backend, env = None) -> int:
     """--batch-size llama-server prefills in, which the buffer has to hold: the cache fails when the
     NEXT batch does not fit, so a smaller buffer cannot prevent the shrinking-batch retry upstream
     #24840 throws on. The extras FIRST, since they are appended after the launcher's own flag and
-    win the child's last-wins parse; then `requested_n_batch`, the only name the backend answers to."""
+    win the child's last-wins parse; then `requested_n_batch`, the only name the backend answers to; then
+    `LLAMA_ARG_BATCH`, which the child inherits and honours whenever no flag is emitted."""
     from core.inference.llama_server_args import parse_batch_override
 
     try:
@@ -2451,6 +2452,13 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
             continue
         if value > 0:
             return value
+    source_env = os.environ if env is None else env
+    try:
+        from_env = int(str(source_env.get("LLAMA_ARG_BATCH") or "").strip())
+    except (TypeError, ValueError):
+        from_env = 0
+    if from_env > 0:
+        return from_env
     return _OPENAI_LLAMA_DEFAULT_N_BATCH
 
 
@@ -2521,12 +2529,16 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # Read BEFORE the scrape, so a chat that parks between the two is left out rather
         # than released against cells this reading never saw and no erase will take.
         parked_before = controller.parked_holders()
+        # Taken before the probe leaves: a holder measured while it is in flight is not
+        # in this sample, and must not be promoted off it.
+        sample_epoch = controller.residency_epoch()
         occupancy = read_slot_occupancy(
             lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
         )
         controller.note_resident(
             None if occupancy is None else occupancy.get("resident"),
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
+            started_at_seq = sample_epoch,
         )
         _gguf_slots_seen["occupancy"] = occupancy
         # Carried with the reading it belongs to: the token path reclaims from a snapshot
@@ -2562,6 +2574,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 controller.note_resident(
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
+                    started_at_seq = sample_epoch,
                 )
                 # ONLY when every idle slot went: the erase can stop after one, and after a
                 # partial erase the release would hand back commitments whose cells are
@@ -2850,6 +2863,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                     # Re-read rather than subtract: each erase can take seconds, during
                     # which a live chat publishes newer samples that `old - freed` would
                     # overwrite with a stale, lower figure.
+                    after_epoch = _controller.residency_epoch()
                     after = read_slot_occupancy(
                         lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                     )
@@ -2857,6 +2871,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                         _controller.note_resident(
                             int(after.get("resident") or 0),
                             int(after.get("idle_tokens") or 0),
+                            started_at_seq = after_epoch,
                         )
                     # And only when every idle slot went, or the release hands out cells
                     # that are still resident -- and only to the holders that were parked

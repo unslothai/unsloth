@@ -161,3 +161,57 @@ class TestThePassThroughBatchSizesTheReserve:
         assert inference._openai_llama_effective_batch_tokens(_Typed()) == 8192
         assert inference._openai_llama_effective_batch_tokens(_LastWins()) == 4096
         assert inference._openai_llama_effective_batch_tokens(_Empty()) == 512
+
+    def test_llama_arg_batch_is_the_batch_the_child_runs_when_nothing_is_emitted(self):
+        """llama-server reads the env whenever no flag is emitted, so an operator who
+        exports 8192 and states nothing prefills in 8192 and must be reserved for it."""
+        import routes.inference as inference
+
+        class _Unstated:
+            requested_n_batch = None
+            _requested_n_batch = None
+            extra_args = []
+
+        class _Typed:
+            requested_n_batch = 512
+            extra_args = []
+
+        class _Extras:
+            requested_n_batch = None
+            extra_args = ["--batch-size", "4096"]
+
+        env = {"LLAMA_ARG_BATCH": "8192"}
+        assert inference._openai_llama_effective_batch_tokens(_Unstated(), env = env) == 8192
+        # Both are emitted as flags, and llama.cpp's flags beat its env.
+        assert inference._openai_llama_effective_batch_tokens(_Typed(), env = env) == 512
+        assert inference._openai_llama_effective_batch_tokens(_Extras(), env = env) == 4096
+        assert inference._openai_llama_effective_batch_tokens(_Unstated(), env = {}) == 2048
+
+    def test_an_unusable_llama_arg_batch_falls_back_to_the_default(self):
+        import routes.inference as inference
+
+        class _Unstated:
+            requested_n_batch = None
+            _requested_n_batch = None
+            extra_args = []
+
+        for raw in ("", "   ", "not-a-number", "0", "-1"):
+            assert (
+                inference._openai_llama_effective_batch_tokens(
+                    _Unstated(), env = {"LLAMA_ARG_BATCH": raw}
+                )
+                == 2048
+            ), raw
+
+    def test_the_process_environment_is_the_default_source(self, monkeypatch):
+        import routes.inference as inference
+
+        class _Unstated:
+            requested_n_batch = None
+            _requested_n_batch = None
+            extra_args = []
+
+        monkeypatch.setenv("LLAMA_ARG_BATCH", "6144")
+        assert inference._openai_llama_effective_batch_tokens(_Unstated()) == 6144
+        monkeypatch.delenv("LLAMA_ARG_BATCH")
+        assert inference._openai_llama_effective_batch_tokens(_Unstated()) == 2048
