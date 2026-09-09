@@ -276,11 +276,13 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
-    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder. bf16 only: the QuantStack GGUF
-    // consumer route was unpublished, and an entry the Hub cannot serve renders as a one-click
-    // download that fails partway through. No vetted replacement: unsloth has an FP8 mirror but
-    // no GGUF, and the third-party GGUF repos are a different lineage. At 24 GB the bf16 still
-    // fits the 61.6 GB budget, so the group stays visible; the quant ladder is what is gone.
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder. bf16 only: this used to carry
+    // gguf("QuantStack/HunyuanImage-2.1-GGUF") as the consumer route, and that repo was
+    // unpublished. An entry the Hub cannot serve renders as a one-click download that fails
+    // partway through, the exact case model-catalog-network-check exists to find. No vetted
+    // replacement: unsloth has an FP8 mirror but no GGUF, and the third-party GGUF repos are a
+    // different lineage. At 24 GB the bf16 still fits the 61.6 GB budget, so the group stays
+    // visible; the quant ladder is what is gone.
     // The mirror guider components load natively on diffusers 0.39. The retired GGUF repo 404s to an
     // authed request and 401s anonymously; QuantStack itself is alive and still ships its other GGUF
     // repos, so this is one model withdrawn rather than a publisher going away.

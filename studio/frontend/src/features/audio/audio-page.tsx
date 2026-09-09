@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT via the
-// dictation sidecar). The page stays mounted across tab switches, so `active` gates polling,
-// popovers and the recorder rather than lifecycle.
+// dictation sidecar). The page stays mounted across tab switches (see __root.tsx), so `active`
+// gates polling, popovers and the recorder rather than lifecycle.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
@@ -880,7 +880,8 @@ export function AudioPage({
       ggufFilename?: string | null,
       // Where the weights actually are: a row cached in a NON-ACTIVE HF cache is loadable only by its
       // snapshot path, which the picker supplies as meta.loadId, and sending the display repo id
-      // instead failed offline or re-downloaded into the active cache.
+      // instead failed offline or re-downloaded into the active cache. Chat threads the same field
+      // (chat-page.tsx).
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,

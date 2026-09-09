@@ -32,6 +32,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
+    for column in ("builtin_id", "builtin_config_json"):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_builtin_id ON mcp_servers(builtin_id)"
+    )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -59,6 +65,8 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
+    builtin_id: Optional[str] = None,
+    builtin_config_json: Optional[str] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -67,8 +75,8 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -79,6 +87,8 @@ def create_server(
                 int(use_oauth),
                 now,
                 now,
+                builtin_id,
+                builtin_config_json,
             ),
         )
         conn.commit()
@@ -124,7 +134,7 @@ def get_server(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
-        return dict(row) if row else None
+        return _effective_row(dict(row)) if row else None
     finally:
         conn.close()
 
@@ -133,6 +143,19 @@ def list_servers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+        return [_effective_row(dict(row)) for row in rows]
     finally:
         conn.close()
+
+
+def get_server_for_tool(key: str) -> Optional[dict]:
+    if key == "blender":
+        return next((row for row in list_servers() if row.get("builtin_id") == key), None)
+    return get_server(key)
+
+
+def _effective_row(row: dict) -> dict:
+    if row.get("builtin_id"):
+        from integrations.blender.service import resolve_server
+        return resolve_server(row)
+    return row

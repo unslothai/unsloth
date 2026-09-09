@@ -81,9 +81,11 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
-# Must precede `import unsloth_zoo`: its temporary_patches reach transformers.processing_utils ->
-# audio_utils -> torchaudio, so a torchaudio raising at extension init takes the whole unsloth
-# import down before the late guard would have neutralised it.
+# Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
+# temporary_patches reach transformers.processing_utils, which imports transformers.audio_utils, which
+# imports torchaudio, so a torchaudio that raises at extension init takes the whole unsloth import down at
+# that `import unsloth_zoo` line, long before the late block would have neutralised it. Measured:
+# Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4 with the guard present but not yet run.
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()

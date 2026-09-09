@@ -405,3 +405,39 @@ def test_collapse_short_assert_left_alone(name, src):
     out, changed = collapse_short_asserts(src)
     assert changed is False
     assert out == src
+
+
+class TestTheRewriteKeepsThePermissions:
+    """The rewrite is a temp file moved over the target, so the mode travels with it.
+
+    tempfile.mkstemp creates 0600 and os.replace carries that onto the target, so
+    every file this hook touched came back 0600: an executable script lost the bit,
+    git recorded 100755 -> 100644, and pre-commit.ci committed that mode change on
+    a branch whose diff showed nothing. scripts/run_ruff_format.py is one of the
+    files this hook formats, so it did it to itself.
+    """
+
+    @staticmethod
+    def _rewrite(path: Path) -> None:
+        import subprocess
+        script = Path(__file__).resolve().parent.parent / "scripts" / "enforce_kwargs_spacing.py"
+        subprocess.run([sys.executable, str(script), str(path)], check = True, capture_output = True)
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    @pytest.mark.parametrize("mode", [0o755, 0o644, 0o600])
+    def test_a_rewritten_file_keeps_the_mode_it_had(self, tmp_path, mode):
+        target = tmp_path / "sample.py"
+        target.write_text("x = f(a=1)\n", encoding = "utf-8")
+        target.chmod(mode)
+        self._rewrite(target)
+        # It really did rewrite: otherwise this asserts nothing about the writer.
+        assert target.read_text(encoding = "utf-8") == "x = f(a = 1)\n"
+        assert target.stat().st_mode & 0o777 == mode
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    def test_a_file_it_leaves_alone_is_not_touched_either(self, tmp_path):
+        target = tmp_path / "already.py"
+        target.write_text("x = f(a = 1)\n", encoding = "utf-8")
+        target.chmod(0o755)
+        self._rewrite(target)
+        assert target.stat().st_mode & 0o777 == 0o755

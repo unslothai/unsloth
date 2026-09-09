@@ -202,8 +202,8 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_export(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_export(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", ExportGGUFRequest = FakeExportGGUFRequest)
     _stub_module(monkeypatch, "routes")
@@ -231,6 +231,9 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
     assert captured["private"] is True
     assert captured["gguf_shard_size"] == "2GB"
     assert result["current_subject"] == "mcp"
+    # A direct call skips FastAPI, so the route's Depends default never resolves; MCP has to
+    # name the policy itself or allow_ambient arrives as a truthy Depends object.
+    assert result["allow_ambient"] is False
 
 
 def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
@@ -240,15 +243,15 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_load(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_load(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", LoadCheckpointRequest = FakeLoadCheckpointRequest)
     _stub_module(monkeypatch, "routes")
     _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
 
     tool = _get_tool("load_checkpoint")
-    asyncio.run(
+    result = asyncio.run(
         tool.fn(
             checkpoint_path = "/tmp/ckpt",
             approved_remote_code_fingerprint = "sha256:abc",
@@ -258,6 +261,7 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
 
     assert captured["hf_token"] == "hf_secret"
     assert captured["approved_remote_code_fingerprint"] == "sha256:abc"
+    assert result["allow_ambient"] is False
 
 
 def test_stop_training_forwards_job_scope(monkeypatch):

@@ -114,6 +114,7 @@ import {
   createBoundaryScan,
   mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
@@ -139,7 +140,10 @@ import {
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
+  externalMaxOutputTokensNeedsConnectionCap,
   getExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
+  getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -407,7 +411,8 @@ type OpenAIStreamAdapterOptions = {
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
-// Synthetic provider-side tool names; mirror of backend _SERVER_SIDE_BUILTIN_TOOL_NAMES.
+// Synthetic provider-side tool names; the backend stamps args._server_tool so user functions with
+// the same name aren't dropped. Mirror of backend _SERVER_SIDE_BUILTIN_TOOL_NAMES.
 const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
   "web_search",
   "web_fetch",
@@ -1129,8 +1134,8 @@ function serializeToolResultPart(
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
-    // Replay the stdout the model saw, not the wrapper; image tokens go with it, since a token
-    // resolves only against the message whose search produced it.
+    // Replay the stdout the model saw, not the card's sessionId/images/files; image tokens go with
+    // it, since a token resolves only against the message whose search produced it.
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
@@ -1189,9 +1194,12 @@ function buildReplayContent(
   textContent: string,
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
-  return imageParts.length > 0
+  if (imageParts.length === 0) return textContent;
+  // Anthropic rejects whitespace-only text, and collectTextParts joins with "\n".
+  // Spread: the caller's array must not become the message content.
+  return textContent.trim()
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : textContent;
+    : [...imageParts];
 }
 
 function collectAssistantTextThoughtSignature(
@@ -4156,6 +4164,19 @@ export function createOpenAIStreamAdapter(
                   providerId: researchExternalProvider.id,
                   providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
+                  maxOutputTokens: getGroundedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                    researchExternalProvider.maxOutputTokens,
+                  ),
+                  maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
+                  maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
                 }
               : undefined,
           temperature: params.temperature,
@@ -5408,7 +5429,8 @@ export function createOpenAIStreamAdapter(
         });
       // Backend tool ids ("call_0", ...) restart every response, so a bare id as store key lets a
       // later turn's stream overwrite a finished card's output. Mint one run-unique part id per
-      // backend id, resolved through this map and dropped at tool_end.
+      // backend id; every tool_start/output/args/end resolves the same id through this map, which
+      // is dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
@@ -5835,6 +5857,10 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
+              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.repetitionPenalty
+                ? { repetition_penalty: params.repetitionPenalty }
+                : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
@@ -6715,7 +6741,8 @@ export function createOpenAIStreamAdapter(
                       parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default", the backend sandbox dir used when there is no session_id.
+                      // Fall back to "_default", the backend sandbox dir used when there is no
+                      // session_id (see tools.py _get_workdir).
                       const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
@@ -6995,10 +7022,9 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
-                  const deltaArgs =
-                    typeof call.function?.arguments === "string"
-                      ? call.function.arguments
-                      : "";
+                  const deltaArgs = streamedToolCallArguments(
+                    call.function?.arguments,
+                  );
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
                   // resolve the backend id now to keep all three shapes on one card. Before resolving, since
                   // a provider claiming a minted spelling would merge two calls.
