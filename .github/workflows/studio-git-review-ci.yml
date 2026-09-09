@@ -75,7 +75,7 @@ jobs:
           python -m pip install \
             fastapi httpx typer packaging structlog huggingface-hub \
             pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests \
-            pytest pytest-timeout
+            'fastmcp>=3.0.2' pytest pytest-timeout
 
       - name: Run Git review and lifecycle contracts
         working-directory: studio/backend

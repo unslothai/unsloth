@@ -44,6 +44,10 @@ filesystem root.
    Project deletion refuses while owned worktrees, checkpoint refs, or prepared
    refs still need recovery. The UI exposes explicit removal of recovery refs.
    Startup reconciles worktree and checkpoint ownership conservatively.
+   When the verification split is installed, this retirement entry point also
+   cancels its runs and delegates the shared process fence to verification.
+   Integration must retain this one wrapper around archive/delete, rather than
+   nesting both splits' retirement wrappers.
 
 All mutation routes require an authenticated UI session and workspace revision.
 API keys retain read access but cannot create, restore, merge, remove, or submit.

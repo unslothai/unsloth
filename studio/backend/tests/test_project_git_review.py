@@ -332,7 +332,7 @@ def test_hostile_git_configuration_cannot_execute_hooks_or_helpers(
     marker = tmp_path / "executed"
     attacker = tmp_path / "attacker.sh"
     attacker.write_text(
-        "#!/bin/sh\nprintf hit >> " + shlex.quote(str(marker)) + "\ncat\n",
+        "#!/bin/sh\nprintf hit >> " + shlex.quote(marker.as_posix()) + "\ncat\n",
         encoding = "utf-8",
     )
     attacker.chmod(0o755)
@@ -340,7 +340,7 @@ def test_hostile_git_configuration_cannot_execute_hooks_or_helpers(
     hooks.mkdir()
     (hooks / "post-index-change").write_text(attacker.read_text(encoding = "utf-8"), encoding = "utf-8")
     (hooks / "post-index-change").chmod(0o755)
-    hostile = str(attacker)
+    hostile = attacker.as_posix()
     included_secret = "CONFIG_SECRET_MUST_NOT_ESCAPE"
     excludes = tmp_path / "external-excludes"
     excludes.write_text("untracked.txt\n", encoding = "utf-8")
@@ -360,9 +360,9 @@ def test_hostile_git_configuration_cannot_execute_hooks_or_helpers(
         f"\tsecret = {included_secret}\n"
         "[core]\n"
         f"\taskPass = {hostile}\n"
-        f"\texcludesFile = {excludes}\n"
+        f"\texcludesFile = {excludes.as_posix()}\n"
         "[diff]\n"
-        f"\torderFile = {order}\n",
+        f"\torderFile = {order.as_posix()}\n",
         encoding = "utf-8",
     )
     _git(repository, "config", "include.path", str(included_config))
@@ -417,11 +417,14 @@ def test_hostile_git_configuration_cannot_execute_hooks_or_helpers(
     _bind_workspace(monkeypatch, _workspace(repository))
 
     manifest = git_review.build_diff_manifest("project-one")
-    assert manifest["selectable"] is True
+    can_read_untracked = (
+        os.name != "nt" or importlib.util.find_spec("core.agent_workspace.mutation") is not None
+    )
+    assert manifest["selectable"] is can_read_untracked
     assert _file(manifest, "tracked.txt")["hunks"]
     assert _file(manifest, "included.dat")["hunks"]
     assert _file(manifest, "worktree.dat")["hunks"]
-    assert _file(manifest, "untracked.txt")["hunks"]
+    assert bool(_file(manifest, "untracked.txt")["hunks"]) is can_read_untracked
     rendered = json.dumps(manifest)
     assert included_secret not in rendered
     assert str(included_config) not in rendered

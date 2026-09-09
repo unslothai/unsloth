@@ -3,7 +3,9 @@
 
 import json
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -158,6 +160,50 @@ def test_project_deletion_cannot_cascade_checkpoint_ownership(tmp_path):
         git_retirement.begin_git_retirement("project", deleting = True)
     assert checkpoints.list_checkpoints("project")[0]["id"] == record["id"]
     assert _git(root, "rev-parse", record["refName"]) == record["commitSha"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Native POSIX process fence")
+def test_retirement_holds_shared_execution_fence_until_finished(tmp_path):
+    from core.agent_workspace.process_fence import (
+        _acquire_project_execution_fence,
+        _release_project_execution_fence,
+    )
+
+    _setup(tmp_path)
+    retirement = git_retirement.begin_git_retirement("project", deleting = True)
+    try:
+        with pytest.raises(TimeoutError):
+            _acquire_project_execution_fence("project:project", None, time.monotonic() + 0.1)
+    finally:
+        git_retirement.finish_git_retirement("project", retirement)
+    descriptor = _acquire_project_execution_fence("project:project", None, time.monotonic() + 1)
+    _release_project_execution_fence(descriptor)
+
+
+def test_verification_stop_failure_releases_retirement_admission(tmp_path, monkeypatch):
+    from core.agent_workspace.git_state import require_git_admission
+
+    _setup(tmp_path)
+    active = set()
+
+    def cannot_stop(project_id):
+        assert project_id in active
+        raise AgentWorkspaceError("Process tree is still running")
+
+    verification = SimpleNamespace(
+        begin_project_deletion = active.add,
+        cancel_project_verifications_and_wait = cannot_stop,
+        finish_project_deletion = active.remove,
+    )
+    monkeypatch.setattr(
+        git_retirement, "importlib", SimpleNamespace(import_module = lambda *args: verification)
+    )
+    with pytest.raises(AgentWorkspaceError, match = "still running"):
+        git_retirement.begin_git_retirement("project", deleting = True)
+    assert not active
+    require_git_admission("project")
+    worktrees.begin_project_deletion("project")
+    worktrees.finish_project_deletion("project")
 
 
 def test_remote_head_must_match_reviewed_commit():
