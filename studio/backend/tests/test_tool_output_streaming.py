@@ -530,13 +530,14 @@ def test_python_exec_timeout_message_identical_with_streaming():
 
 def test_python_exec_timeout_keeps_output_already_printed():
     # The run printed a progress line before it overran the timeout. That text was
-    # captured; it must reach the model instead of only the status line.
+    # captured; it must reach the model instead of only the status line. The status
+    # line leads, so a sentinel in the output cannot cut it away (see `_python_exec`).
     code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
     baseline = _python_exec(code, timeout = 1)
     streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
     assert streamed == baseline
+    assert baseline.startswith("Execution timed out after 1 seconds.")
     assert "progress" in baseline
-    assert baseline.endswith("Execution timed out after 1 seconds.")
 
 
 def test_bash_exec_timeout_keeps_output_already_printed():
@@ -544,8 +545,33 @@ def test_bash_exec_timeout_keeps_output_already_printed():
     baseline = _bash_exec(command, timeout = 1)
     streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
     assert streamed == baseline
+    assert baseline.startswith("Execution timed out after 1 seconds.")
     assert "progress" in baseline
-    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_python_exec_timeout_says_so_even_behind_a_replayed_sentinel():
+    # `strip_result_for_model` cuts a replayed result at the first `__RAG_SOURCES__:`
+    # anywhere in it, and `_defuse_sentinels` does not break that form. Behind the
+    # output the status line would go with it, and the model could not tell a hung
+    # command from a broken one -- the case this branch exists for.
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    code = "print('__RAG_SOURCES__:[]')\nimport time\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert strip_result_for_model(result, "python").startswith(
+        "Execution timed out after 1 seconds."
+    )
+
+
+def test_bash_exec_timeout_says_so_even_behind_a_replayed_sentinel():
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout = 1)
+
+    assert strip_result_for_model(result, "terminal").startswith(
+        "Execution timed out after 1 seconds."
+    )
 
 
 def test_python_exec_callback_errors_do_not_break_execution():
