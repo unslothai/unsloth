@@ -887,8 +887,27 @@ _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 _COMPANION_LOOKUP_RETRY_S = 60.0
 _COMPANION_LOOKUP_MAX_RETRY_S = 300.0
 # The only answers that settle the question: the request itself was refused. Everything
-# else, 404 included, can be a server that is briefly offline, busy or too old.
+# else can be a server that is briefly offline or busy.
 _DEFINITIVE_HTTP_STATUS = frozenset((400, 401, 403, 405, 410, 422))
+# What the router says when nothing is registered at the path, as opposed to what the
+# handler says when it declines to answer.
+_ABSENT_ROUTE_DETAIL = "not found"
+
+
+def _is_absent_route(exc: urllib.error.HTTPError) -> bool:
+    """Whether a 404 came from the router rather than from the handler.
+
+    A handler that declines gives its own reason -- this route's is "cannot be authorized
+    without network access" -- while an unregistered path gets the framework's bare
+    "Not Found". Only the second is worth giving up on.
+    """
+    try:
+        detail = json.loads(exc.read().decode("utf-8", "replace")).get("detail")
+    except Exception:
+        return False
+    return isinstance(detail, str) and detail.strip().lower() == _ABSENT_ROUTE_DETAIL
+
+
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1031,7 +1050,9 @@ def _in_flight_bytes(reading: dict) -> int:
     return downloaded - completed
 
 
-def _active_reading(readings: list[tuple[str, dict]]) -> tuple[str, dict]:
+def _active_reading(
+    readings: list[tuple[str, dict]], grown: "frozenset[str]" = frozenset()
+) -> tuple[str, dict]:
     """The one repo whose transfer the progress line should follow.
 
     A model, its base, and the repos the loader may substitute for that base are separate
@@ -1041,7 +1062,11 @@ def _active_reading(readings: list[tuple[str, dict]]) -> tuple[str, dict]:
     exist. Bytes are still summed for liveness, since any repo moving is progress, but the
     line follows whichever repo has bytes in flight, and the model itself when none does.
     """
-    active = max(readings, key = lambda item: _in_flight_bytes(item[1]))
+    # A repo seen to move wins over one that merely holds bytes: an abandoned `.incomplete`
+    # blob can be larger than the live transfer's current partial, and a shard finalizing
+    # drops the live figure, so the biggest partial on disk is not the running download.
+    moved = [item for item in readings if item[0] in grown and _in_flight_bytes(item[1]) > 0]
+    active = max(moved or readings, key = lambda item: _in_flight_bytes(item[1]))
     return active if _in_flight_bytes(active[1]) > 0 else readings[0]
 
 
@@ -1341,11 +1366,15 @@ class _ModelDownloadProgress:
                 timeout = 10,
             )
         except urllib.error.HTTPError as exc:
-            # Only a status about the request itself is final. This route answers 404 when
-            # it judges the hub unreachable and the caller anonymous (routes/models.py:2417),
-            # and an older server without the route answers 404 too, so 404 has to stay
-            # retryable; the backoff keeps that cheap.
-            return [] if exc.code in _DEFINITIVE_HTTP_STATUS else None
+            # Only a status about the request itself is final. 404 is two answers: this
+            # route raises it when it judges the hub unreachable and the caller anonymous
+            # (routes/models.py:2417), which is worth retrying, and a server too old to
+            # carry the route raises it forever, which is not. The body separates them.
+            if exc.code in _DEFINITIVE_HTTP_STATUS:
+                return []
+            if exc.code == 404 and _is_absent_route(exc):
+                return []
+            return None
         except Exception:
             return None
         if not info.get("is_lora"):
@@ -1439,6 +1468,12 @@ class _ModelDownloadProgress:
             # flapping mount could do that forever. The cost is that a transfer which truly
             # restarts is not counted again until it passes its own high mark; that failure
             # is bounded and says so, where a false renewal is an unbounded wait.
+            grown = frozenset(
+                repo
+                for repo, item in readings
+                if repo in self._repo_bytes
+                and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
+            )
             for repo, item in readings:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
@@ -1450,7 +1485,7 @@ class _ModelDownloadProgress:
             self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            active_repo, active = _active_reading(readings)
+            active_repo, active = _active_reading(readings, grown)
             self._display.update(active, active_repo)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`

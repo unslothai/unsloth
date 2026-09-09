@@ -4708,6 +4708,79 @@ def test_companion_lookup_retries_an_offline_404(monkeypatch):
     assert progress.downloaded_bytes == 1024 + 5 * 1024**3
 
 
+def test_companion_lookup_gives_up_on_a_server_without_the_route(monkeypatch):
+    # The router's bare "Not Found" means the path is not registered, so retrying it for
+    # the length of a download achieves nothing.
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            raise urllib.error.HTTPError(
+                url, 404, "Not Found", None, io.BytesIO(b'{"detail":"Not Found"}')
+            )
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
+
+    for _ in range(4):
+        progress.poll()
+        now[0] += start._COMPANION_LOOKUP_MAX_RETRY_S
+
+    assert len(lookups) == 1
+
+
+def test_companion_lookup_retries_the_routes_own_404(monkeypatch):
+    # The handler's own 404 carries its reason, and means try again later.
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    lookups = []
+    body = b'{"detail":"This request cannot be authorized without network access."}'
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, io.BytesIO(body))
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
+
+    for _ in range(4):
+        progress.poll()
+        now[0] += start._COMPANION_LOOKUP_MAX_RETRY_S
+
+    assert len(lookups) == 4
+
+
+def test_active_reading_prefers_a_repo_that_moved_over_a_bigger_partial():
+    corpse = ("unsloth/base-4bit", {"downloaded_bytes": 9 * 1024**3, "completed_bytes": 0})
+    live = ("owner/base", {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0})
+    model = ("owner/adapter", {"downloaded_bytes": 10, "completed_bytes": 10})
+
+    # Nothing known to have moved: the biggest partial is all there is to go on.
+    assert start._active_reading([model, corpse, live]) is corpse
+    # Once the live repo is seen to move it wins, however large the abandoned blob is.
+    assert start._active_reading([model, corpse, live], frozenset({"owner/base"})) is live
+
+
 def test_companion_lookup_stops_on_a_refused_request(monkeypatch):
     lookups = []
 
