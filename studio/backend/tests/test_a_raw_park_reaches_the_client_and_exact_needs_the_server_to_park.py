@@ -338,7 +338,9 @@ class TestTheNamedBudgetIsJudged:
         again = source.index("_exact_host_shortfall_after_load(")
         assert again < after, "judged after the props read, which is after the launch"
         assert "if _exact_host_short is None: " in source[again - 400 : again]
-        assert "parking_holds = _exact_short is None and _exact_host_short is None" in source[again:]
+        assert (
+            "parking_holds = _exact_short is None and _exact_host_short is None" in source[again:]
+        )
         assert llama_mod._exact_host_shortfall_after_load(4096, 8192) is None
         assert llama_mod._exact_host_shortfall_after_load(4096, 4096) is None
         assert llama_mod._exact_host_shortfall_after_load(4096, 1000) == (4096, 1000)
