@@ -197,9 +197,18 @@ jobs:
         timeout-minutes: 30
         env:
           UNSLOTH_IDEMPOTENCY_E2E: '1'
+          # Each run's update log and proxy journal, kept for the upload below. A
+          # failure here is unreadable without them: the assertion says which host
+          # served bytes, not which of the eight runs did it.
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
+          # The install above is --local and editable, so the CLI would find the
+          # checkout on its own; naming it keeps that working if the install ever
+          # stops being editable.
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
+          mkdir -p logs
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
             2>&1 | tee logs/idempotency.log
 
@@ -296,6 +305,8 @@ jobs:
             logs/update.log
             logs/update2.log
             logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
             logs/studio.log
             logs/uninstall.log
           retention-days: 7
@@ -333,6 +344,8 @@ jobs:
         timeout-minutes: 30
         env:
           UNSLOTH_IDEMPOTENCY_E2E: '1'
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
@@ -348,6 +361,8 @@ jobs:
           path: |
             logs/install.log
             logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
           retention-days: 7
 
   idempotency-windows:
@@ -392,8 +407,11 @@ jobs:
         shell: pwsh
         env:
           UNSLOTH_IDEMPOTENCY_E2E: '1'
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}\logs\idempotency
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
           $ErrorActionPreference = 'Continue'
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s 2>&1 |
             Tee-Object -FilePath logs/idempotency.log
@@ -407,4 +425,6 @@ jobs:
           path: |
             logs/install.log
             logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
           retention-days: 7
