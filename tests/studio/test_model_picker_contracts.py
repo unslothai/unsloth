@@ -78,18 +78,69 @@ def _call_arguments(text: str, callee: str) -> list[str]:
     return calls
 
 
-def _guard_conjuncts(source: str, opener: str) -> set[str]:
-    """The conditions in the `opener` guard, whitespace collapsed and split on the operator.
+def _assert_guard_holds(
+    source: str, keyword: str, operator: str, required: set[str], *, expected: int
+) -> None:
+    """Exactly `expected` `keyword` guards must join all of `required` with `operator`.
 
-    Prettier rewraps a guard the moment it gains a condition, and a later PR can add one,
-    so slicing the source on the guard's exact text breaks on a pure reformat. #10508 broke
-    two assertions here that way, by adding a validateFailures bound and wrapping both guards.
-    Comparing the SET of conditions instead survives both, and still fails if a condition is
-    dropped, which is what these tests are actually about.
+    Slicing the source on a guard's exact text breaks on a pure reformat: prettier rewraps a
+    guard the moment it gains a condition, which is how #10508 broke two assertions here. So
+    compare conditions instead. Four things this must not do:
+
+    - Take the first `keyword` in the slice: an unrelated earlier `if` gets parsed instead.
+    - Stop at the first `)`: a condition holding a call closes a paren of its own, truncating
+      the body.
+    - Split on both `||` and `&&`: the operator carries the meaning, since an OR guard flipped
+      to AND stops short-circuiting.
+    - Accept the first guard that matches, or demand every guard mentioning a condition holds
+      them all. This slice carries the guard twice, so accepting one lets the other rot; but
+      nearby guards legitimately test a subset, so requiring all of them is wrong too. Counting
+      the complete ones catches a dropped condition in either copy and leaves the neighbours be.
     """
-    body = source.split(opener, 1)[1]
-    body = body.split(")", 1)[0] if opener.endswith("(") else body
-    return {c.strip() for c in re.split(r"\|\||&&", re.sub(r"\s+", " ", body)) if c.strip()}
+    complete = [
+        body
+        for body in _parenthesised_bodies(source, keyword)
+        if required <= set(_split_top_level(body, operator))
+    ]
+    assert len(complete) == expected, (
+        f"expected {expected} {keyword} guards joining {sorted(required)} with {operator!r}, "
+        f"found {len(complete)}: {complete}"
+    )
+
+
+def _parenthesised_bodies(source: str, keyword: str):
+    """Each `keyword (...)` body in `source`, whitespace collapsed, parentheses balanced."""
+    for match in re.finditer(rf"\b{re.escape(keyword)}\s*\(", source):
+        depth, i = 0, match.end() - 1
+        while i < len(source):
+            if source[i] == "(":
+                depth += 1
+            elif source[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        else:
+            continue
+        yield re.sub(r"\s+", " ", source[match.end() : i]).strip()
+
+
+def _split_top_level(body: str, operator: str) -> list[str]:
+    """Split `body` on `operator`, ignoring occurrences nested inside parentheses."""
+    parts, depth, current, j = [], 0, "", 0
+    while j < len(body):
+        if body[j] == "(":
+            depth += 1
+        elif body[j] == ")":
+            depth -= 1
+        if depth == 0 and body.startswith(operator, j):
+            parts.append(current.strip())
+            current, j = "", j + len(operator)
+            continue
+        current += body[j]
+        j += 1
+    parts.append(current.strip())
+    return [c for c in parts if c]
 
 
 def _read_backend(rel: str) -> str:
@@ -2623,9 +2674,13 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    guard = _guard_conjuncts(autoload, "if (")
-    assert "autoLoadCancelled" in guard
-    assert "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS" in guard
+    _assert_guard_holds(
+        autoload,
+        "if",
+        "||",
+        {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 2,
+    )
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -3435,9 +3490,13 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    loop = _guard_conjuncts(cascade, "while (")
-    assert "!autoLoadCancelled" in loop
-    assert "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS" in loop
+    _assert_guard_holds(
+        cascade,
+        "while",
+        "&&",
+        {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 1,
+    )
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 
