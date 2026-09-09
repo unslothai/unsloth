@@ -357,7 +357,7 @@ _fork_reset_installed = False
 def _reset_after_fork() -> None:
     """A fork child inherits both locks in whatever state they were in and a
     _spawner whose thread does not exist here. Start clean instead of deadlocking."""
-    global _spawner, _spawner_lock, _record_lock, _owner_identity
+    global _spawner, _spawner_lock, _record_lock, _owner_identity, _shutdown_latch
     _spawner_lock = threading.Lock()
     # A different pid here.
     _owner_identity = None
@@ -366,6 +366,14 @@ def _reset_after_fork() -> None:
     # A fork while another thread was inside adopt_pid / forget_pid leaves this held here with nobody to release it, and
     # the first adoption blocks forever.
     _record_lock = threading.Lock()
+    # Same hazard: Event carries an internal lock, so a fork taken while another thread
+    # was inside set() leaves the child unable to latch. Rebuilt holding the flag it had
+    # -- the child is still inside the lifecycle that forked it, and a cleared latch
+    # would read as permission to spawn.
+    _was_latched = _shutdown_latch.is_set()
+    _shutdown_latch = threading.Event()
+    if _was_latched:
+        _shutdown_latch.set()
     _spawner = None
 
 
@@ -986,6 +994,37 @@ def adopt_pid(pid: Optional[int]) -> None:
                 kernel32.CloseHandle(handle)
         except Exception:
             pass
+
+
+# Set once when the app starts quitting, read by every spawner in the process.
+_shutdown_latch = threading.Event()
+
+
+def mark_process_shutting_down() -> None:
+    """Latch "this process is quitting" for every spawner in it.
+
+    Each subsystem already refuses to spawn during its OWN teardown, but that state
+    lives on the object being torn down: a second LlamaCppBackend built for a helper
+    load, or the inference orchestrator, never sees it and can Popen a child after
+    terminate_all has taken its snapshot. Set once here, read everywhere, so the answer
+    does not depend on which object a spawn happens to belong to.
+    """
+    _shutdown_latch.set()
+
+
+def is_process_shutting_down() -> bool:
+    """Whether a spawn must be refused because the app is quitting."""
+    return _shutdown_latch.is_set()
+
+
+def begin_process_lifecycle() -> None:
+    """Clear the latch for an embedded host that calls run_server again.
+
+    Quitting is terminal for a CLI run, but in-process callers (studio/backend/colab.py)
+    reuse the interpreter, and a latch that never cleared would refuse every spawn of
+    the second session.
+    """
+    _shutdown_latch.clear()
 
 
 def terminate_all(timeout: float = 5.0) -> "list[int]":

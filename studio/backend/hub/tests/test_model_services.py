@@ -1126,11 +1126,48 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
             (),
             (),
             (),
+            (),
             [{"path": str(custom)}],
         )
     )
     assert builds == [(("model", "Org/Active", active), ("model", "Org/Custom", custom))]
     assert propagated == [indexed, indexed]
+
+
+def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(monkeypatch, tmp_path):
+    # Adding ~/.hermes/models as a custom folder was the way to see Hermes downloads before
+    # Studio scanned it; the Hermes scan and a generic walk of the same folder must not each
+    # list every download under the same id.
+    hermes = tmp_path / ".hermes" / "models"
+    hermes.mkdir(parents = True)
+    weight = hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"\x00" * 32)
+    # Something else the user keeps in that folder stays a custom row.
+    extra = hermes / "extra" / "Other-Q4_K_M.gguf"
+    extra.parent.mkdir()
+    extra.write_bytes(b"\x00" * 32)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    monkeypatch.setattr(local_inventory, "record_scan_failure", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (hermes,),
+            (),
+            [{"path": str(hermes)}],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert sorted((row.source, row.path) for row in rows) == [
+        ("custom", str(extra.parent)),
+        ("hermes", str(weight)),
+    ]
 
 
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
