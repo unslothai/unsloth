@@ -5,9 +5,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
+
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const AUTO_CONTINUE_RUN_KEEPER = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
 
 const {
   AUTO_CONTINUE_CONTINUED_TTL_MS,
@@ -20,13 +24,17 @@ const {
   createAutoContinueTab,
   budgetImpliesTruncation,
   incompleteLabel,
+  incompleteRemedy,
   isContinuableContent,
+  isProviderReportedReason,
   isRestart,
   joinContinuation,
   modeAllowsContinuation,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resolveIncompleteReason,
+  restoredAssistantStatus,
   claimAutoContinue,
   recordAutoContinue,
   rejectsAssistantPrefill,
@@ -179,6 +187,172 @@ test("every stop reason has a label", () => {
   assert.equal(incompleteLabel("length"), "Response hit the Max Tokens limit");
   assert.equal(incompleteLabel("cancelled"), "Response stopped");
   assert.equal(incompleteLabel("interrupted"), "Response interrupted");
+  assert.equal(
+    incompleteLabel("context_window"),
+    "Response filled the model's context window",
+  );
+});
+
+test("the provider's own reason outranks every reason the client infers", () => {
+  // The event ends Anthropic's turn, so the model has already stopped. A null reason
+  // matters most: it reads as a completed answer.
+  assert.equal(resolveIncompleteReason("length", true), "context_window");
+  assert.equal(resolveIncompleteReason(null, true), "context_window");
+  assert.equal(resolveIncompleteReason("cancelled", true), "context_window");
+  assert.equal(resolveIncompleteReason("interrupted", true), "context_window");
+  assert.equal(resolveIncompleteReason("length", false), "length");
+  assert.equal(resolveIncompleteReason("cancelled", false), "cancelled");
+  assert.equal(resolveIncompleteReason("interrupted", false), "interrupted");
+  assert.equal(resolveIncompleteReason(null, false), null);
+});
+
+test("a provider-reported reason is the one a cancelled status cannot overrule", () => {
+  assert.equal(isProviderReportedReason("context_window"), true);
+  assert.equal(isProviderReportedReason("length"), false);
+  assert.equal(isProviderReportedReason("cancelled"), false);
+  assert.equal(isProviderReportedReason("interrupted"), false);
+  assert.equal(isProviderReportedReason(null), false);
+  assert.equal(isProviderReportedReason(undefined), false);
+});
+
+test("a window-exhausted turn is stamped apart from a Max Tokens cut", () => {
+  resetAutoContinue();
+  // `length` either way; only the out-of-band signal separates budget from window.
+  assert.equal(resolveIncompleteReason("length", false), "length");
+  const reason = resolveIncompleteReason("length", true);
+  assert.equal(reason, "context_window");
+  assert.deepEqual(readIncompleteInfo({ custom: { incomplete: { reason } } }), {
+    reason: "context_window",
+  });
+  assert.deepEqual(restoredAssistantStatus({ custom: { incomplete: { reason } } }), {
+    type: "incomplete",
+    reason: "length",
+  });
+});
+
+test("a window-exhausted turn is never resumed automatically", () => {
+  resetAutoContinue();
+  // The `fits` guard cannot catch this: that metadata is only emitted by local models.
+  assert.equal(
+    shouldAutoContinue(resolveIncompleteReason("length", true), "parent-1"),
+    false,
+  );
+  assert.equal(
+    shouldAutoContinueMessage(
+      "m1",
+      resolveIncompleteReason("length", true),
+      "parent-1",
+    ),
+    false,
+  );
+  assert.equal(autoContinueCount("parent-1"), 0);
+});
+
+test("the adapter latches the backend window-exhaustion event", () => {
+  // The mapping lives in the streaming loop, which cannot be imported here.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /toolEvent\.type === "context_window_exceeded"[\s\S]{0,120}contextWindowExceeded = true/,
+    "the backend event is no longer latched",
+  );
+  assert.match(
+    adapter,
+    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,\s*\)/,
+    "the latched signal no longer reaches the stamped reason",
+  );
+  assert.match(
+    adapter,
+    /incomplete: finalIncompleteReason\s*\?\s*\{ reason: finalIncompleteReason \}/,
+    "the resolved reason no longer reaches the persisted metadata",
+  );
+  assert.match(
+    adapter,
+    /reason: resolveIncompleteReason\([\s\S]{0,400}contextWindowExceeded,\s*\)/,
+    "the error path decides a reason without asking what the provider reported",
+  );
+  assert.match(
+    adapter,
+    /incomplete: \{\s*reason: resolveIncompleteReason\("cancelled" as const, contextWindowExceeded\),\s*\}/,
+    "an abort saves a bare cancelled again, losing what the provider reported",
+  );
+  // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.
+  const handler = adapter.slice(
+    adapter.indexOf('toolEvent.type === "context_window_exceeded"'),
+    adapter.indexOf('toolEvent.type === "tool_output"'),
+  );
+  assert.ok(handler.length > 0, "the handler moved; this assertion reads nothing");
+  assert.match(
+    handler,
+    /yield \{[\s\S]*custom: liveCustom\(\),/,
+    "the latched signal is no longer published when it arrives",
+  );
+  // Redacted thinking renders as no text, so a length check would drop the reason.
+  assert.doesNotMatch(
+    handler,
+    /\.length > 0/,
+    "publishing the reason depends on renderable content again",
+  );
+});
+
+test("only the cut no continuation can undo carries a way out", () => {
+  assert.equal(incompleteRemedy("length"), null);
+  assert.equal(incompleteRemedy("cancelled"), null);
+  assert.equal(incompleteRemedy("interrupted"), null);
+  // A hosted window is fixed, so not the "Context Length" lever local models point at.
+  assert.equal(
+    incompleteRemedy("context_window"),
+    "Start a new chat, or shorten this one, to keep going",
+  );
+});
+
+test("a tool-using turn that fills the window is the case the bar must not miss", () => {
+  // A continuation runs as a sibling, without the call or its result, so a tool-calling
+  // turn is never continuable -- and a big tool result is a likely way to fill the window.
+  const content = [
+    { type: "tool-call", toolName: "web_search", toolCallId: "t1", args: {} },
+    { type: "text", text: "Based on those results, the three main causes are, first, the" },
+  ];
+  assert.equal(isContinuableContent(content), false);
+  const reason = resolveIncompleteReason("length", true);
+  assert.equal(reason, "context_window");
+  assert.notEqual(incompleteRemedy(reason!), null);
+});
+
+test("the bar offers the way out in place of a Continue that cannot help", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /const remedy = reason \? incompleteRemedy\(reason\) : null/,
+    "the bar no longer asks whether resuming can help",
+  );
+  assert.match(
+    thread,
+    /if \(!reason \|\| \(!remedy && !resumable\)\) \{\n\s*return null;/,
+    "the way out is gated on the turn being resumable again",
+  );
+  // Reading the cancelled status first shows "Response stopped" and offers Continue.
+  assert.match(
+    thread,
+    /cancelled && !isProviderReportedReason\(stamped\?\.reason\)/,
+    "a cancelled status overrules the provider's own reason again",
+  );
+  assert.match(
+    thread,
+    /\{incompleteLabel\(reason\)\}\.\{remedy \? ` \$\{remedy\}\.` : ""\}/,
+    "the way out is no longer rendered beside the reason",
+  );
+  assert.match(
+    thread,
+    /\{remedy \? null : \([\s\S]{0,400}Continue\n\s*<\/Button>/,
+    "Continue is offered again for a cut it cannot help",
+  );
 });
 
 test("a continuation request is read only when it carries text", () => {
@@ -1406,17 +1580,13 @@ test("a claim whose run was never issued is left to lapse, not held", async () =
   // the message until this one closes. So the message has to still be there before anything
   // is held. Pinned at the source, since there is no renderer here -- the same way
   // composer-keystroke-subscription-budget.test.ts pins its seams.
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const claimed = thread.indexOf(
+  const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
   assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
-  const branch = thread.slice(
+  const branch = THREAD.slice(
     claimed,
-    thread.indexOf("held-elsewhere", claimed),
+    THREAD.indexOf("held-elsewhere", claimed),
   );
 
   const guard = branch.search(/messages\.some\(/);
@@ -1455,28 +1625,18 @@ test("a losing claim does not follow the row onto the next branch", () => {
   // re-renders this component rather than remounting it, and the flag set for the message
   // that lost carried over onto a message nobody has claimed at all -- no automatic
   // continuation for it, for as long as that row lives.
-  const rows = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/progressive-messages.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
     /<MessageByIndexProvider key=\{index\}/,
     "rows are no longer keyed by index; this test needs rewriting",
   );
 
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const start = thread.indexOf("const ContinueMessageBarForLastMessage");
+  const start = THREAD.indexOf("const ContinueMessageBarForLastMessage");
   assert.notEqual(start, -1, "the bar moved; this test needs rewriting");
-  const component = thread.slice(
+  const component = THREAD.slice(
     start,
-    thread.indexOf("const WebSearchToolUIConfirmable", start),
+    THREAD.indexOf("const WebSearchToolUIConfirmable", start),
   );
   const state =
     /const \[(\w+), (set\w+)\] = useState<string \| null>\(null\)/.exec(
@@ -1536,17 +1696,13 @@ test("a claim taken for a run that was never issued is given back", async () => 
 test("the bar rolls its claim back when it issues no run", () => {
   // The behaviour above, pinned where it has to be called from: the early return that
   // decided no run would be issued.
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
-  const claimed = thread.indexOf(
+  const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
   assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
-  const branch = thread.slice(
+  const branch = THREAD.slice(
     claimed,
-    thread.indexOf("held-elsewhere", claimed),
+    THREAD.indexOf("held-elsewhere", claimed),
   );
   const guard = branch.search(/messages\.some\(/);
   const hold = branch.indexOf("holdAutoContinueRun(");
@@ -1667,36 +1823,25 @@ test("the keeper is wired to the failure the adapter already reports", () => {
   // There is exactly one signal for a run that failed on its way out, and it is not a
   // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
   // per thread. Pinned at both ends, since neither side is exercised by a unit test.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
-  const wrapper = adapter.slice(adapter.indexOf("yield* adapter.run(args)"));
+  const wrapper = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("yield* adapter.run(args)"));
   assert.match(
     wrapper,
     /catch \(error\) \{[\s\S]*notifyPromptQueueRunFailed\(/,
     "the adapter no longer reports a failed run per thread; this test needs rewriting",
   );
 
-  const wiring = readFileSync(
-    new URL(
-      "../src/features/chat/utils/auto-continue-run-keeper.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /PROMPT_QUEUE_RUN_FAILED_EVENT/,
     "nothing settles a hold whose run failed before it started",
   );
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /keeper\.failed\(/,
     "the failure has to reach the keeper",
   );
   assert.doesNotMatch(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
@@ -1890,11 +2035,7 @@ test("only the gate's own tokens are read as a refusal", () => {
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
   // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
-  const gate = adapter.slice(adapter.indexOf("const imageGateReason ="));
+  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
   assert.match(
     gate,
     /const gateOwner = createImageGateRunOwner\(\)/,
@@ -1906,20 +2047,13 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
     "the pulse compare mode waits on is still fired under that token",
   );
 
-  const wiring = readFileSync(
-    new URL(
-      "../src/features/chat/utils/auto-continue-run-keeper.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /isImageGateRunOnly\(state\.runOwnerByThreadId\[threadId\]\)/,
     "the keeper is arming holds on a request the gate refused to send",
   );
   assert.doesNotMatch(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
@@ -1944,6 +2078,7 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
 const { createContinuationMerger } = await import(
   "../src/features/chat/utils/continuation.ts"
 );
+
 
 const REASONING =
   "Okay, so the user is asking about how to structure the migration. " +
