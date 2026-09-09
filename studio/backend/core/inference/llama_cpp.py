@@ -2092,6 +2092,15 @@ def _exact_parking_need_mib(
     return pool_mib * slots + _PARKING_MARGIN_MIB
 
 
+def _available_host_memory_mib() -> Optional[int]:
+    """Host RAM free right now, in MiB, or None where it cannot be read."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available // (1024 * 1024))
+    except Exception:
+        return None
+
+
 def _exact_parking_budget_mib(
     kv_bytes: int,
     *,
@@ -23726,12 +23735,23 @@ class LlamaCppBackend:
                             cmd.extend(["--preempt-ram", str(_exact_budget)])
                             logger.info(
                                 "Exact concurrency: --preempt-ram %d holds every park of the "
-                                "%d MiB pool and its %d MiB of draft state, so no park has to be "
-                                "re-prefilled.",
+                                "%d MiB pool and its %d MiB of draft state across %d slots, so no "
+                                "park has to be re-prefilled.",
                                 _exact_budget,
                                 _exact_kv_bytes // (1024 * 1024),
                                 _exact_draft_bytes // (1024 * 1024),
+                                n_parallel,
                             )
+                            # A cap, not an allocation: parks past what the host can give fail
+                            # their allocation and are re-prefilled, so say so up front.
+                            _host_free_mib = _available_host_memory_mib()
+                            if _host_free_mib is not None and _exact_budget > _host_free_mib:
+                                self._record_load_warning(
+                                    "Exact concurrency may park up to %d MiB of KV state in host "
+                                    "RAM, and this host has %d MiB free. A park the host cannot "
+                                    "hold is re-prefilled, and that answer is not guaranteed "
+                                    "byte-identical." % (_exact_budget, _host_free_mib)
+                                )
                         # An auto-fit context leaves the pool unknown, so no budget is sized: the
                         # server's default is judged after launch off the context it chose. A
                         # budget guessed here survives every abandoned attempt, parking unlimited.

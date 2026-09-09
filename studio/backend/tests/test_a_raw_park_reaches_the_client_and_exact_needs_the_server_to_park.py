@@ -265,6 +265,18 @@ class TestTheNamedBudgetIsJudged:
             is None
         )
 
+    def test_a_budget_past_the_hosts_free_memory_is_warned_about(self, monkeypatch):
+        # The budget is a cap the server parks up to, not an allocation: a park the host
+        # cannot hold fails its allocation and is re-prefilled, so the load says so.
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        site = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
+        assert "_available_host_memory_mib()" in source[site : site + 900]
+        assert "_exact_budget > _host_free_mib" in source[site : site + 1200]
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: None)
+        assert llama_mod._available_host_memory_mib() is None
+        real = llama_mod.__dict__["_available_host_memory_mib"]
+        assert real() is None
+
     def test_a_single_slot_still_budgets_the_one_snapshot_it_writes(self):
         pool = 1024 * 1024 * 1024
         assert llama_mod._exact_parking_need_mib(pool, draft_bytes = pool, parallel = 1) == (
