@@ -816,9 +816,13 @@ def _http_error_source(
         # Only for GitHub's own API host: an UNSLOTH_RELEASES_URL mirror refusing us
         # says nothing about api.github.com, and a lockout recorded from one would send
         # those checks to the lagging redirect for up to an hour.
+        #
+        # The headers go with it rather than the deadline computed above: a 403 whose
+        # headers still report quota is a permission refusal, and forcing `wait` would
+        # walk straight past the helper's check for exactly that.
         if urllib.parse.urlparse(url).hostname == "api.github.com":
             from utils.prebuilt.freshness_flow import note_github_rate_limited
-            note_github_rate_limited(wait = ttl)
+            note_github_rate_limited(error.headers)
         return (
             ReleaseSource(
                 release = None,

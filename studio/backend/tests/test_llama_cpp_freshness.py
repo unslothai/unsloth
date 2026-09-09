@@ -929,3 +929,56 @@ def test_a_403_with_quota_left_is_not_a_rate_limit(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
     assert fr._flow.github_rate_limit_remaining() == 0
+
+
+def test_a_redirect_tag_stays_bounded_when_the_reset_lands_mid_request(monkeypatch):
+    """The lockout can expire while the redirect is still in flight. Asking the clock
+    again after the fetch would read zero and bank the lagging tag as a full success."""
+    fr.reset_caches(drop_disk = True)
+    fr._flow.note_github_rate_limited(wait = 1)
+
+    def _redirect(repo, timeout, *, log_message):
+        fr._flow.clear_github_rate_limit()  # the reset lands during the request
+        return "b9500"
+
+    # The real fetch runs, so the provenance under test is the one it records.
+    monkeypatch.setattr(fr._flow, "download_host_latest_release_tag", _redirect)
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9500"
+    assert fr._flow.github_rate_limit_remaining() == 0
+    assert fr._load_disk_cache("unslothai/llama.cpp") is None
+    memo_age = time.time() - fr._release_memo["unslothai/llama.cpp"][0]
+    held_for = fr._flow.RELEASE_CACHE_TTL_SECONDS - memo_age
+    assert held_for <= fr._flow.RELEASE_FAILURE_CACHE_TTL_SECONDS + 1
+
+
+def test_an_api_tag_is_still_cached_normally(monkeypatch):
+    """The bound is for redirect answers only; a real API answer keeps the 24h life."""
+    fr.reset_caches(drop_disk = True)
+    monkeypatch.setattr(
+        fr._flow,
+        "_fetch_newest_published_release",
+        lambda repo, timeout, *, log_message: {"tag_name": "b9600"},
+    )
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9600"
+    assert fr._load_disk_cache("unslothai/llama.cpp")[1] == "b9600"
+
+
+def test_concurrent_refusals_cannot_shorten_a_longer_lockout():
+    """Two refusals racing must not let the shorter wait store last."""
+    import threading
+
+    fr._flow.clear_github_rate_limit()
+    start = threading.Barrier(9)
+
+    def note(seconds):
+        start.wait()
+        for _ in range(200):
+            fr._flow.note_github_rate_limited(wait = seconds)
+
+    threads = [threading.Thread(target = note, args = (s,)) for s in (5,) * 4 + (1800,) * 4]
+    for t in threads:
+        t.start()
+    start.wait()
+    for t in threads:
+        t.join()
+    assert fr._flow.github_rate_limit_remaining() > 1700

@@ -351,8 +351,22 @@ class GitHubRateLimited(RuntimeError):
     pass
 
 
+def _quota_left(headers: object) -> bool:
+    if headers is None:
+        return False
+    try:
+        return float(str(getattr(headers, "get")("X-RateLimit-Remaining") or "").strip()) > 0
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def _is_rate_limited(exc: BaseException) -> bool:
-    return isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 429)
+    """A refusal that a spent quota explains. A 403 whose headers still report quota is
+    a permission or policy refusal: the other rungs of the ladder may well answer, so it
+    must fall through rather than abort the whole resolution."""
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
+        return False
+    return not _quota_left(getattr(exc, "headers", None))
 
 
 def _rate_limit_message() -> str:

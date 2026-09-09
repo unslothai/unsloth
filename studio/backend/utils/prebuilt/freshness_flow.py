@@ -13,6 +13,7 @@ so the modules' monkeypatch seams keep working.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,9 @@ GITHUB_RATE_LIMIT_STATUS = (403, 429)
 
 # One lockout for the whole process: the quota is per token or per IP, not per repo, so a
 # 403 from any caller means every api.github.com call would fail the same way. Monotonic.
+# Guarded: two refusals racing here would otherwise both read the old deadline and let the
+# shorter wait store last, which is exactly what the max() below exists to prevent.
+_api_rate_limited_lock = threading.Lock()
 _api_rate_limited_until: float = 0.0
 
 
@@ -84,7 +88,8 @@ def note_github_rate_limited(headers: Any = None, *, wait: Optional[float] = Non
             return 0.0
         wait = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     wait = min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
-    _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
     return wait
 
 
@@ -302,6 +307,33 @@ def download_host_latest_release_tag(
         return None
 
 
+def fetch_latest_release_tag_with_source(
+    repo: str,
+    timeout: float = 5.0,
+    *,
+    log_message: str,
+) -> tuple[Optional[str], str]:
+    """``(tag, source)`` where source is ``api``, ``redirect`` or ``none``.
+
+    The source is reported rather than re-derived from the lockout afterwards: the
+    reset can land while the redirect request is still in flight, and a caller asking
+    the clock a second time would then bank a redirect answer as an API one.
+    """
+    if github_rate_limit_remaining() > 0:
+        return download_host_latest_release_tag(repo, timeout, log_message = log_message), "redirect"
+    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
+    if newest:
+        return newest["tag_name"], "api"
+    if github_rate_limit_remaining() > 0:
+        return download_host_latest_release_tag(repo, timeout, log_message = log_message), "redirect"
+    return None, "none"
+
+
+# Where the tag this thread last fetched came from. Recorded beside the return value
+# rather than in it, so the components' monkeypatch seam keeps its plain-string shape.
+_fetch_source = threading.local()
+
+
 def fetch_latest_release_tag(
     repo: str,
     timeout: float = 5.0,
@@ -311,14 +343,9 @@ def fetch_latest_release_tag(
     """Newest published release tag for `repo`, by publish time. None on failure.
     Rate limited: the release page redirect answers instead. Only then, since
     /releases/latest can lag the newest publish, and a dead network is not retried."""
-    if github_rate_limit_remaining() > 0:
-        return download_host_latest_release_tag(repo, timeout, log_message = log_message)
-    newest = _fetch_newest_published_release(repo, timeout, log_message = log_message)
-    if newest:
-        return newest["tag_name"]
-    if github_rate_limit_remaining() > 0:
-        return download_host_latest_release_tag(repo, timeout, log_message = log_message)
-    return None
+    tag, source = fetch_latest_release_tag_with_source(repo, timeout, log_message = log_message)
+    _fetch_source.value = source
+    return tag
 
 
 def fetch_latest_release_assets(
@@ -379,7 +406,10 @@ def latest_published_release(
         if disk and wall_now - disk[0] < RELEASE_CACHE_TTL_SECONDS:
             memo[repo] = disk
             return disk[1]
+    _fetch_source.value = None
     latest = fetch(repo)
+    # None when a component's fetch seam is stubbed; the clock is the fallback then.
+    source = getattr(_fetch_source, "value", None)
     if latest is None:
         if failed_at is not None:
             failed_at[repo] = time.monotonic()
@@ -391,13 +421,15 @@ def latest_published_release(
         return None
     if failed_at is not None:
         failed_at.pop(repo, None)
-    lockout = github_rate_limit_remaining()
-    if lockout > 0:
-        # Fetched under the api.github.com lockout, so this is the release-page
-        # redirect's answer: it sorts by commit date and can name an older release
-        # than the newest publish. Hold it only until the lockout ends, and never on
-        # disk, or one rate limit pins a lagging tag for the whole 24h TTL.
-        memo[repo] = (wall_now - (RELEASE_CACHE_TTL_SECONDS - lockout), latest)
+    degraded = source == "redirect" if source is not None else github_rate_limit_remaining() > 0
+    if degraded:
+        # The release-page redirect answered: it sorts by commit date and can name an
+        # older release than the newest publish. Hold it only for what is left of the
+        # lockout, and never on disk, or one rate limit pins a lagging tag for the whole
+        # 24h TTL. Floored, because the reset can land while the redirect is in flight
+        # and a zero here would bank the degraded tag as a full success.
+        hold = max(github_rate_limit_remaining(), RELEASE_FAILURE_CACHE_TTL_SECONDS)
+        memo[repo] = (wall_now - (RELEASE_CACHE_TTL_SECONDS - hold), latest)
         return latest
     memo[repo] = (wall_now, latest)
     save(repo, latest)

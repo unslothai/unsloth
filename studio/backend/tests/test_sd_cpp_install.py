@@ -3508,3 +3508,24 @@ def test_an_asset_download_retries_a_dropped_connection_but_not_a_404(monkeypatc
     with pytest.raises(urllib.error.HTTPError):
         sdmod._download("https://github.com/x/y/releases/download/t/a.zip", tmp_path / "b.zip")
     assert len(attempts) == 1
+
+
+def test_a_permission_403_is_not_treated_as_a_spent_quota():
+    """The resolution ladder shares one quota, so an exhausted one stops it. A 403 whose
+    headers still report quota is a permission refusal and the next rung may answer."""
+    import email.message
+    import urllib.error
+
+    spent = email.message.Message()
+    spent["X-RateLimit-Remaining"] = "0"
+    permission = email.message.Message()
+    permission["X-RateLimit-Remaining"] = "4998"
+
+    def err(headers):
+        return urllib.error.HTTPError("https://api.github.com/x", 403, "no", headers, None)
+
+    assert sdmod._is_rate_limited(err(spent)) is True
+    assert sdmod._is_rate_limited(err(None)) is True
+    assert sdmod._is_rate_limited(err(permission)) is False
+    assert sdmod._is_rate_limited(err(spent)) is True
+    assert sdmod._is_rate_limited(ValueError("not http")) is False
