@@ -400,9 +400,7 @@ def read_default_chat_template(
             """
             try:
                 from huggingface_hub import try_to_load_from_cache
-                return isinstance(
-                    try_to_load_from_cache(repo_id = resolved, filename = rel), str
-                )
+                return isinstance(try_to_load_from_cache(repo_id = resolved, filename = rel), str)
             except Exception:
                 return True
 
