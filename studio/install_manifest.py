@@ -1469,6 +1469,17 @@ def _sidecar_damaged_files(
     return found
 
 
+# Mirror of transformers_version._sidecar_file_check_disabled: same variable, same
+# values. The runtime's file scan has this escape hatch because a false positive costs a
+# several-hundred-MB reinstall, and the setup-side predicate must not be the one path
+# that still wipes the sidecar while the hatch is set. Package and version checks stay.
+SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
+
+
+def _sidecar_file_check_disabled() -> bool:
+    return os.environ.get(SIDECAR_FILE_CHECK_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def sidecar_is_current(
     venv_dir,
     pins: Sequence[str],
@@ -1499,6 +1510,8 @@ def sidecar_is_current(
         problem = _sidecar_pin_ok(root, spec)
         if problem is not None:
             return False, problem
+    if _sidecar_file_check_disabled():
+        return True, ""
     damaged = _sidecar_damaged_files(root, budget_seconds = budget_seconds)
     if damaged:
         return False, "; ".join(damaged)
