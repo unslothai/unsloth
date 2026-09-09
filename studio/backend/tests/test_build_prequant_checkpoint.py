@@ -857,3 +857,298 @@ def test_a_calibrated_policy_build_corrects_the_4_bit_layers_only(monkeypatch, t
     assert set(block["layers"]) == {"blocks.0.attn1.to_q"}
     assert block["applied"] == 1
     assert saved["ckpt"]["metadata"]["nvfp4_policy"]["gptq"] is True
+
+
+# ── the in-builder calibration: flags, order, prompts, metadata ──────────────────
+
+
+def _calib_prompts():
+    build = _script()
+    return build.load_calibration_prompts()
+
+
+def test_the_calibration_prompts_are_disjoint_from_the_gate_suite():
+    """A quantisation calibrated on the prompts it is then scored on measures how well it memorised
+    them. The gate's seven cases are copied into gptq_prompts.py precisely so this can be asserted
+    rather than remembered."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[3] / "scripts" / "gptq_prompts.py"
+    spec = importlib.util.spec_from_file_location("gptq_prompts", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    calibration = module.CALIBRATION_PROMPTS
+    gate = module.GATE_SUITE_PROMPTS
+    assert len(calibration) == 32
+    assert len(set(calibration)) == 32
+    assert len(gate) == 7
+    assert not set(calibration) & set(gate)
+
+    def _normalise(text):
+        return " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
+
+    # Not just character-exact: a prompt that differs from an evaluation one by punctuation is the
+    # same prompt for this purpose.
+    assert not {_normalise(p) for p in calibration} & {_normalise(p) for p in gate}
+
+
+def test_the_default_calibration_file_is_the_one_the_flag_documents():
+    build = _script()
+    assert build.DEFAULT_CALIB_PROMPTS.endswith("scripts/gptq_prompts.py")
+    assert len(_calib_prompts()) == 32
+
+
+def test_a_prompt_file_is_read_line_by_line_and_a_repeat_is_refused(tmp_path):
+    build = _script()
+    path = tmp_path / "prompts.txt"
+    path.write_text("# a comment\na red bicycle\n\na blue bicycle\n")
+    assert build.load_calibration_prompts(str(path)) == ("a red bicycle", "a blue bicycle")
+    repeated = tmp_path / "repeat.txt"
+    repeated.write_text("a red bicycle\na red bicycle\n")
+    with pytest.raises(ValueError):
+        build.load_calibration_prompts(str(repeated))
+    empty = tmp_path / "empty.txt"
+    empty.write_text("\n\n")
+    with pytest.raises(ValueError):
+        build.load_calibration_prompts(str(empty))
+
+
+def test_the_step_spec_parses_or_refuses():
+    build = _script()
+    assert build.parse_step_spec("0,12,25,37") == (0, 12, 25, 37)
+    assert build.parse_step_spec(" 4 , 0 ,4") == (0, 4)
+    for bad in ("", "0,-3", "first"):
+        with pytest.raises(ValueError):
+            build.parse_step_spec(bad)
+
+
+def test_the_calibration_stages_run_hessians_then_gptq_then_the_bake():
+    """The order is the whole contract: a Hessian describes the activations the correction is
+    solved against, and an activation scale has to describe the model that ships."""
+    build = _script()
+    assert build.calibration_stage_order(32, True) == ("hessians", "gptq", "bake")
+    assert build.calibration_stage_order(32, False) == ("hessians", "gptq")
+    # --gptq-prompts 0 --bake-activation-scales is a supported build on its own.
+    assert build.calibration_stage_order(0, True) == ("bake",)
+    assert build.calibration_stage_order(0, False) == ()
+
+
+def test_the_calibration_flags_are_refused_for_a_build_that_cannot_honour_them():
+    build = _script()
+    common = {
+        "nvfp4": "nvfp4",
+        "gptq_dir": None,
+        "convrot_groupsize": 0,
+        "available_prompts": 32,
+    }
+    # Off: nothing to refuse.
+    assert build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = False, **common) is None
+    # A 4-bit grid and a 4-bit activation scale describe an nvfp4 build and nothing else.
+    assert "nvfp4" in build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = True, **common)
+    assert "nvfp4" in build.calibration_refusal(scheme = "int8", gptq_prompts = 4, bake = False, **common)
+    # Two sources for the same corrected weights.
+    both = dict(common, gptq_dir = "/tmp/gptq")
+    assert "--gptq-dir" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 4, bake = False, **both
+    )
+    # ... but --gptq-dir plus a BAKE is fine: they touch different halves of the artifact.
+    assert build.calibration_refusal(scheme = "nvfp4", gptq_prompts = 0, bake = True, **both) is None
+    rotated = dict(common, convrot_groupsize = 64)
+    assert "unrotated" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 4, bake = False, **rotated
+    )
+    assert "exceeds" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 64, bake = False, **common
+    )
+    assert build.calibration_refusal(scheme = "nvfp4", gptq_prompts = 32, bake = True, **common) is None
+
+
+class _StubPipe:
+    """A pipeline as far as the calibration pass drives it: prompts in, nothing out."""
+
+    def __init__(
+        self,
+        *,
+        supports = (
+            "prompt",
+            "num_inference_steps",
+            "width",
+            "height",
+            "generator",
+            "output_type",
+            "guidance_scale",
+            "callback_on_step_end",
+        ),
+    ):
+        self.calls: list = []
+        self._supports = tuple(supports)
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        callback = kwargs.get("callback_on_step_end")
+        if callback is not None:
+            for step in range(int(kwargs.get("num_inference_steps", 0))):
+                callback(self, step, 0.0, {})
+        return None
+
+
+def test_every_calibration_render_is_seeded_so_a_second_build_reproduces_it():
+    build = _script()
+    # A ``**kwargs`` pipeline declares nothing, so nothing is filtered out of the call.
+    pipe = _StubPipe()
+    armed: list = []
+    ran = build.render_calibration(
+        pipe,
+        ("a red bicycle", "a blue bicycle"),
+        steps = 4,
+        guidance = 3.5,
+        cfg_kwarg = "true_cfg_scale",
+        width = 512,
+        height = 512,
+        seed = 11,
+        device = "cpu",
+        before_prompt = lambda: armed.append(len(pipe.calls)),
+    )
+    assert ran == 2 and len(pipe.calls) == 2 and armed == [0, 1]
+    first, second = pipe.calls
+    assert first["prompt"] == "a red bicycle" and second["prompt"] == "a blue bicycle"
+    assert first["num_inference_steps"] == 4 and first["width"] == first["height"] == 512
+    # The family's own guidance kwarg, not a hardcoded one.
+    assert first["true_cfg_scale"] == 3.5 and "guidance_scale" not in first
+    # No VAE decode: this pass wants the denoiser's activations and nothing else.
+    assert first["output_type"] == "latent"
+    # Seeded from the index, so two builds accumulate the same Hessians and correct identically.
+    assert first["generator"].initial_seed() == 11
+    assert second["generator"].initial_seed() == 12
+
+
+def test_a_pipeline_with_no_step_callback_cannot_be_hessian_calibrated():
+    build = _script()
+
+    class _NoCallback:
+        def __call__(
+            self,
+            prompt,
+            num_inference_steps = 1,
+            generator = None,
+        ):
+            return None
+
+    with pytest.raises(ValueError) as excinfo:
+        build.render_calibration(
+            _NoCallback(),
+            ("a red bicycle",),
+            steps = 4,
+            guidance = 1.0,
+            device = "cpu",
+            callback = lambda *a: None,
+        )
+    assert "callback_on_step_end" in str(excinfo.value)
+    # Without a callback the same pipeline calibrates fine, and unsupported kwargs are dropped
+    # rather than raising.
+    assert (
+        build.render_calibration(
+            _NoCallback(), ("a red bicycle",), steps = 4, guidance = 1.0, device = "cpu"
+        )
+        == 1
+    )
+
+
+def test_the_gptq_metadata_block_says_which_weights_are_corrected_and_what_made_them():
+    build = _script()
+    scores = {
+        "blocks.0.attention.to_q": {
+            "err_rtn": 1.0,
+            "err_gptq": 0.5,
+            "ratio": 0.5,
+            "improved": True,
+        },
+        "blocks.1.attention.to_q": {
+            "err_rtn": 1.0,
+            "err_gptq": 1.5,
+            "ratio": 1.5,
+            "improved": False,
+        },
+    }
+    plan = {
+        "apply": ["blocks.0.attention.to_q"],
+        "counts": {"applied": 1, "applied_regressed": 0, "skipped_no_gain": 1},
+    }
+    block = build.gptq_metadata_block(
+        prompts = ("a red bicycle", "a blue bicycle"),
+        steps_sampled = (0, 2, 4, 6),
+        schedule_steps = 8,
+        max_regressions = 0,
+        plan = plan,
+        scores = scores,
+        damps = {"blocks.0.attention.to_q": 0.01, "blocks.1.attention.to_q": 0.05},
+        seconds = 12.34,
+    )
+    assert block["source"] == "in-builder"
+    assert block["prompts"] == 2 and len(block["prompt_sha256"]) == 64
+    assert block["steps_sampled"] == [0, 2, 4, 6] and block["schedule_steps"] == 8
+    assert (block["applied"], block["skipped_no_gain"], block["applied_regressed"]) == (1, 1, 0)
+    assert block["scored"] == 2 and block["seconds"] == 12.3
+    applied = block["layers"]["blocks.0.attention.to_q"]
+    skipped = block["layers"]["blocks.1.attention.to_q"]
+    assert applied["applied"] is True and applied["reason"] == "applied" and applied["damp"] == 0.01
+    assert skipped["applied"] is False and skipped["reason"] == "no_gain"
+    assert (skipped["err_rtn"], skipped["err_gptq"]) == (1.0, 1.5)
+    # The same prompts hash the same and different ones do not, so an artifact can say which set
+    # made it.
+    assert build.prompt_digest(("a red bicycle",)) != block["prompt_sha256"]
+
+
+def test_the_baked_scales_record_the_set_and_the_schedule_they_were_measured_on():
+    build = _script()
+    meta = build.activation_scale_metadata(
+        prompts = ("a red bicycle", "a blue bicycle"),
+        schedule_steps = 8,
+        scales = {"a": 12.0, "b": 4.0, "c": 100.0},
+        layers = 3,
+    )
+    assert meta["prompts"] == 2 and meta["schedule_steps"] == 8 and meta["layers"] == 3
+    # Every step of every prompt: the step with the largest activation is the one a sampled subset
+    # would miss.
+    assert meta["steps_sampled"] == "all"
+    assert (meta["min_a_gsf"], meta["max_a_gsf"], meta["scaled"]) == (4.0, 100.0, 3)
+
+
+def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tmp_path):
+    """Every calibration refusal is decided by the arguments alone, so it costs a second rather
+    than a multi-gigabyte download."""
+    build = _script()
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "fp8",
+            "--out",
+            str(tmp_path / "a.pt"),
+            "--bake-activation-scales",
+        ]
+    )
+    assert code == 2
+    assert "from_pretrained" not in saved  # nothing was downloaded
+
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(tmp_path / "a.pt"),
+            "--gptq-prompts",
+            "64",
+        ]
+    )
+    assert code == 2
+    assert "from_pretrained" not in saved
