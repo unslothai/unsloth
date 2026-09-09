@@ -164,3 +164,55 @@ def test_other_reasoning_styles_are_untouched():
     backend._reasoning_style = "reasoning_effort"
     backend._reasoning_always_on = True
     assert backend._request_reasoning_kwargs(True, "max", None) is None
+
+
+def test_the_launch_default_lands_on_a_level_the_template_actually_branches_on():
+    """The load-time ``--chat-template-kwargs`` default has to be on the ladder.
+
+    ``_reasoning_kwargs`` builds the value llama-server falls back to for every
+    request that omits ``reasoning_effort``. Detection publishes whatever effort
+    literals it found as long as ``low`` and ``high`` are among them, so a
+    template laddering ``low|high|max`` has no ``medium`` branch, and handing it
+    one would fall through every arm of its ``if``/``elif`` chain. Those models
+    keep ``high``; the ones whose ladder has ``medium``, and the ones that
+    publish no ladder at all and so run on the default ``low|medium|high``, get
+    ``medium`` to match what the template would have chosen unprompted.
+    """
+    # No published ladder: the default low/medium/high applies, so medium is on it.
+    assert _shim([], architecture = None)._reasoning_kwargs(True) == {
+        "reasoning_effort": "medium",
+    }
+    # Published and contains medium.
+    assert _shim(["low", "medium", "high"], architecture = None)._reasoning_kwargs(True) == {
+        "reasoning_effort": "medium",
+    }
+    assert _shim(
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        architecture = None,
+    )._reasoning_kwargs(True) == {"reasoning_effort": "medium"}
+    # Published without medium: stays on high, which is what it got before.
+    assert _shim(["low", "high"], architecture = None)._reasoning_kwargs(True) == {
+        "reasoning_effort": "high",
+    }
+    assert _shim(["low", "high", "max"], architecture = None)._reasoning_kwargs(True) == {
+        "reasoning_effort": "high",
+    }
+    # Thinking off is unchanged everywhere, and low is on every published ladder
+    # because detection only trusts a scan that holds both low and high.
+    for levels in ([], ["low", "medium", "high"], ["low", "high"], ["low", "high", "max"]):
+        assert _shim(levels, architecture = None)._reasoning_kwargs(False) == {
+            "reasoning_effort": "low",
+        }
+    # The inkling dial maps the chosen name, so it moves with the ladder too.
+    assert _shim([], architecture = "inkling")._reasoning_kwargs(True) == {
+        "reasoning_effort": 0.7,
+    }
+    assert _shim(["low", "high"], architecture = "inkling")._reasoning_kwargs(True) == {
+        "reasoning_effort": 0.9,
+    }
+    # The other styles never read the effort literal at all.
+    _et = _shim([], architecture = None)
+    _et._reasoning_style = "enable_thinking_effort"
+    assert _et._reasoning_kwargs(True) == {"enable_thinking": True}
+    _et._reasoning_style = "enable_thinking"
+    assert _et._reasoning_kwargs(False) == {"enable_thinking": False}

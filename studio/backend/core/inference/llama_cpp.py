@@ -7027,14 +7027,22 @@ class LlamaCppBackend:
             # the template's default effort (max) in place.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
+            # medium, not high, when thinking is on. This is the value a request that omits
+            # reasoning_effort falls back to, and gpt-oss already defaults to medium on its own:
+            # the Harmony template sets it when the key is undefined, and the harmony library
+            # does the same. Sending high here made a raw /v1/chat/completions call reason
+            # harder than the same model does anywhere else.
+            #
+            # Only when the template actually branches on medium. The level scan publishes whatever
+            # literals it found as long as low and high are among them, so a template that ladders
+            # low|high|max has no medium to land on, and handing it one would fall through every
+            # branch. Those keep high, which is what they got before. An empty list means the scan
+            # found nothing to trust and the default low|medium|high applies, so medium is safe.
+            levels = self._reasoning_effort_levels or []
+            thinking_effort = "medium" if (not levels or "medium" in levels) else "high"
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                # medium, not high, when thinking is on. This is the value a request that omits
-                # reasoning_effort falls back to, and gpt-oss already defaults to medium on its own:
-                # the Harmony template sets it when the key is undefined, and the harmony library
-                # does the same. Sending high here made a raw /v1/chat/completions call reason
-                # harder than the same model does anywhere else.
-                {"reasoning_effort": "medium" if enable_thinking else "low"},
+                {"reasoning_effort": thinking_effort if enable_thinking else "low"},
             )
         return {"enable_thinking": enable_thinking}
 
