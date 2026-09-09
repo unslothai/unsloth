@@ -2244,7 +2244,9 @@ def _child_parking_stands_down(server_supports: Optional[bool] = None) -> bool:
 
 
 def _stand_down_child_parking(
-    env: dict, args: Optional[list] = None, server_supports: Optional[bool] = None
+    env: dict,
+    args: Optional[list] = None,
+    server_supports: Optional[bool] = None,
 ) -> Optional[list[str]]:
     """One switch means no preemption anywhere: with Studio's off, the child would still park on its
     own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down too, a park the child
@@ -32821,7 +32823,9 @@ class LlamaCppBackend:
                                     # Only the window case: a spent output cap belongs to THIS
                                     # request, and "does not fit" would hide a working Continue.
                                     if _cap_left_c != 0 and not _continuation_refusal_announced:
-                                        _refusal_c = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                        _refusal_c = _continuation_refusal_event(
+                                            _iteration_fit_max_tokens
+                                        )
                                         if _refusal_c is not None:
                                             _continuation_refusal_announced = True
                                             yield _refusal_c
@@ -32934,7 +32938,9 @@ class LlamaCppBackend:
                                 # Same signal and the same exclusion for a cap the caller set: this
                                 # turn ends at the window, and a resume meets the preflight's refusal.
                                 if not _reasoning_cap_spent and not _continuation_refusal_announced:
-                                    _refusal_l = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                    _refusal_l = _continuation_refusal_event(
+                                        _iteration_fit_max_tokens
+                                    )
                                     if _refusal_l is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_l

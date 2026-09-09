@@ -660,5 +660,6 @@ class TestAReasoningOnlyTurnPromotesTheWholeThought:
         )
         assert "Half one" in final, f"the paused prose was dropped: {final!r}"
         _, _, fallback = final.rpartition("</think>")
-        assert "Thinking. " not in fallback, f"a thought the turn answered around was promoted: {final!r}"
-
+        assert (
+            "Thinking. " not in fallback
+        ), f"a thought the turn answered around was promoted: {final!r}"
