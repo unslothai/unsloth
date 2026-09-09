@@ -6,8 +6,9 @@
 ``keep_resident``  -- weights never go back to system RAM while loaded: no idle
 auto-unload, and ``--mlock`` so the OS cannot page them out and re-fault them in.
 
-``no_ram_reserve`` -- no full host-RAM copy: keeps llama.cpp's default mmap path
-and drops ``--no-mmap`` / ``--mlock``.
+``no_ram_reserve`` -- avoids locked or reserved weight buffers. Uses DirectIO on
+supported Windows builds when full GPU offload is confirmed, otherwise keeps
+llama.cpp's default mmap path. Required CPU buffers can still use host RAM.
 
 Both on means "live in VRAM, keep no RAM copy, never idle-unload". ``--mlock`` is
 itself a full-model RAM reservation, so ``no_ram_reserve`` wins on that flag.

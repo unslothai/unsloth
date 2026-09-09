@@ -22965,7 +22965,7 @@ class LlamaCppBackend:
                 if _mem_managed:
                     cmd.extend(_mem_managed)
                     logger.info(
-                        "Model Memory: keeping weights pinned in place (%s)",
+                        "Model Memory: applying loading policy (%s)",
                         " ".join(_mem_managed),
                     )
                 if _load_mode_managed:

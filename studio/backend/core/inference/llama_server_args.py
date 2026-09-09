@@ -1220,8 +1220,9 @@ def apply_model_memory_policy(
     would drop the mlock.
 
     "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
-    default mmap path. With both off nothing is stripped, so a hand-typed flag
-    still applies.
+    default mmap path except on Windows with confirmed full GPU offload, where
+    supported builds use DirectIO to avoid retaining the resident file mapping.
+    With both off nothing is stripped, so a hand-typed flag still applies.
 
     The per-model Mmap/Mlock control is resolved separately, by
     ``apply_load_mode_policy``, which runs after this and defers to it.
@@ -1250,6 +1251,11 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
+    if no_ram_reserve and sys.platform == "win32" and not weights_in_host_memory and supports_load_mode:
+        # Windows cannot partially unmap the GGUF after offload: unmap_fragment
+        # is a no-op in llama.cpp. Prefer streaming for this confirmed placement.
+        # Explicit per-model mmap/dio and surviving extras still resolve afterward.
+        managed.extend(["--load-mode", "dio"])
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not bare mlock: it matches what --mlock
         # meant alongside the default mmap.

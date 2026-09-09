@@ -2452,3 +2452,38 @@ class TestTheEffectiveFitterState:
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "fit_active = fit_is_effectively_on(" in src
         assert "[*cmd, *(_mem_extra_args or [])], _mem_env" in src
+
+
+class TestWindowsNoReserveStreaming:
+    @pytest.mark.parametrize("keep_resident", [False, True])
+    def test_full_offload_streams_and_none_cannot_restore_mmap(self, policy, monkeypatch, keep_resident):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, extras = policy(
+            keep_resident, True, ["--no-mmap", "--temp", "0.7"],
+            supports_load_mode = True, weights_in_host_memory = False,
+        )
+        selected, extras = _lsa.apply_load_mode_policy(
+            extras, supports_load_mode = True, weights_in_host_memory = False,
+            requested_load_mode = "none",
+        )
+        assert managed + selected + extras == ["--load-mode", "dio", "--temp", "0.7"]
+
+    @pytest.mark.parametrize("platform,host,supported", [
+        ("linux", False, True), ("darwin", False, True),
+        ("win32", True, True), ("win32", False, False),
+    ])
+    def test_other_placements_and_legacy_builds_keep_their_policy(self, policy, monkeypatch, platform, host, supported):
+        monkeypatch.setattr(_lsa.sys, "platform", platform)
+        managed, extras = policy(
+            False, True, ["--mlock"], supports_load_mode = supported, weights_in_host_memory = host,
+        )
+        assert managed == []
+        assert extras == []
+
+    def test_explicit_mmap_remains_an_override(self, policy, monkeypatch):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, extras = policy(False, True, [], supports_load_mode = True, weights_in_host_memory = False)
+        selected, extras = _lsa.apply_load_mode_policy(
+            extras, supports_load_mode = True, weights_in_host_memory = False, requested_load_mode = "mmap",
+        )
+        assert managed + selected == ["--load-mode", "dio", "--load-mode", "mmap"]
