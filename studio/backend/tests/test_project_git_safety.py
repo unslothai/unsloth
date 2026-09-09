@@ -53,6 +53,17 @@ def test_windows_mutation_boundary_rejects_before_git(monkeypatch):
         git_service._run(Path("."), ["status"])
 
 
+def test_missing_project_archive_and_delete_keep_not_found_response():
+    from routes.chat_history import router as history_router
+    with _client() as client:
+        client.app.include_router(history_router, prefix = "/history")
+        assert client.delete("/history/projects/missing-project").status_code == 404
+        assert (
+            client.patch("/history/projects/missing-project", json = {"archived": True}).status_code
+            == 404
+        )
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "Native POSIX mutation contract")
 def test_prepared_ref_is_one_use_and_preserves_head_index_and_unselected_paths(tmp_path):
     root = _setup(tmp_path)
