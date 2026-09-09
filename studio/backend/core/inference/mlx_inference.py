@@ -2961,7 +2961,9 @@ class MLXInferenceBackend:
             getattr(self._tokenizer, "all_special_tokens", None),
             # Matches native_token_decoder below: when it runs </think> survives, so the
             # prefilled opener has to be re-emitted with it.
-            preserves_think_close = (bool(tools) or reasoning_channel_markers is not None)
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+            )
             and decoder_preserves_token(
                 self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
             ),
@@ -3402,7 +3404,12 @@ class MLXInferenceBackend:
                 self._tokenizer,
                 preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
             )
-            if (tools or tool_protocol_active) and self._tokenizer
+            # ``vlm_reasoning_markers`` too, matching the text path: mlx-vlm has already
+            # dropped those controls from ``response.text``, so without the decoder the
+            # snapshot normaliser never sees the opener or closer and the reasoning surfaces
+            # as ordinary answer text on a no-tools request.
+            if (tools or tool_protocol_active or vlm_reasoning_markers is not None)
+            and self._tokenizer
             else None
         )
         # The runtime EOS can itself be an allowlisted control, and this path appends every

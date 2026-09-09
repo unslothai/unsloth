@@ -269,7 +269,7 @@
       "_strip_mistral_reasoning": "core.inference.tool_call_parser._strip_mistral_reasoning(content: 'str') -> 'str'",
       "_top_level_args_values": "core.inference.tool_call_parser._top_level_args_values(text: 'str', start: 'int', end: 'int') -> 'list'",
       "_top_level_bare_json_name": "core.inference.tool_call_parser._top_level_bare_json_name(probe: 'str') -> 'Optional[str]'",
-      "_top_level_maskable_values": "core.inference.tool_call_parser._top_level_maskable_values(text: 'str', start: 'int', end: 'int') -> 'list'",
+      "_top_level_maskable_values": "core.inference.tool_call_parser._top_level_maskable_values(text: 'str', start: 'int', end: 'int', keep: 'str' = None) -> 'list'",
       "_trim_param_value": "core.tool_healing._trim_param_value(val: 'str') -> 'str'",
       "_unmask_blocked_bodies": "core.inference.tool_call_parser._unmask_blocked_bodies(text: 'str', bodies: 'list') -> 'Optional[str]'",
       "_unmatched_think_closer": "core.inference.tool_call_parser._unmatched_think_closer(text: 'str', start: 'int' = 0) -> 'int'",

@@ -671,16 +671,26 @@ def _decoded_key(literal: str) -> "str | None":
 _BARE_JSON_CLASSIFY_KEYS = ("name", "function")
 
 
-def _top_level_maskable_values(text: str, start: int, end: int) -> list:
+def _top_level_maskable_values(
+    text: str,
+    start: int,
+    end: int,
+    keep: str = None,
+) -> list:
     """``(begin, stop)`` spans to blank for every top-level DATA field of the object at
-    ``start`` other than the classification keys and ``arguments``.
+    ``start`` other than ``arguments`` and the classification value actually in use.
 
     A blocked call is opaque as a WHOLE, not only in ``arguments``: a wrapper quoted in any
     other field, as in ``{"note":"<function=python>...","name":"terminal"}``, stayed visible
     and the passthrough healer promoted it as a real call. A string field is blanked whole,
-    an object or array only in its string contents, so the shape still parses."""
+    an object or array only in its string contents, so the shape still parses.
+
+    ``keep`` is the resolved classification name, which stays readable so the call still
+    reads as blocked downstream. The OTHER classification field is data like any other:
+    exempting both let ``{"name":"terminal","function":"<function=python>..."}`` keep an
+    executable wrapper in plain sight."""
     spans: list = []
-    skip = _BARE_JSON_CLASSIFY_KEYS + _BARE_JSON_ARGS_KEYS
+    skip = _BARE_JSON_ARGS_KEYS
     depth = 0
     i = start
     while i < end:
@@ -689,7 +699,8 @@ def _top_level_maskable_values(text: str, start: int, end: int) -> list:
             j = i + 1
             while j < end and text[j] != '"':
                 j += 2 if text[j] == "\\" else 1
-            if depth == 1 and _decoded_key(text[i : j + 1]) not in skip:
+            key = _decoded_key(text[i : j + 1]) if depth == 1 else None
+            if depth == 1 and key not in skip:
                 k = j + 1
                 while k < end and text[k].isspace():
                     k += 1
@@ -710,7 +721,13 @@ def _top_level_maskable_values(text: str, start: int, end: int) -> list:
                         stop = k + 1
                         while stop < end and text[stop] != '"':
                             stop += 2 if text[stop] == "\\" else 1
-                        spans.append((k + 1, min(stop, end)))
+                        in_use = (
+                            key in _BARE_JSON_CLASSIFY_KEYS
+                            and keep is not None
+                            and _decoded_key(text[k : min(stop, end) + 1]) == keep
+                        )
+                        if not in_use:
+                            spans.append((k + 1, min(stop, end)))
                         if stop >= end:
                             return spans
                         i = stop + 1
@@ -1052,12 +1069,11 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             # An UNCLOSED leading object still names its call and the healer still parses it,
             # so an execution body has to stay opaque through EOF; breaking here left the
             # wrapper quoted inside a truncated ``terminal`` call visible and promotable.
-            if probe.startswith("{") and _markerless_execution_class(
-                _top_level_bare_json_name(probe)
-            ):
+            truncated_name = _top_level_bare_json_name(probe)
+            if probe.startswith("{") and _markerless_execution_class(truncated_name):
                 spans.extend(
                     (a + shift, b + shift)
-                    for a, b in _top_level_maskable_values(probe, 0, len(probe))
+                    for a, b in _top_level_maskable_values(probe, 0, len(probe), truncated_name)
                 )
                 # The WHOLE argument span, not just its quoted strings: an unresolved object is
                 # not a call whose structure has to survive, and raw wrapped syntax sitting
@@ -1080,7 +1096,8 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             # Every DATA field, not just the arguments: the scans that decide the call is
             # blocked read only the name, so the rest of the object can stay opaque.
             spans.extend(
-                (a + shift, b + shift) for a, b in _top_level_maskable_values(probe, obj, lead)
+                (a + shift, b + shift)
+                for a, b in _top_level_maskable_values(probe, obj, lead, name)
             )
             for begin, stop, is_string in values:
                 inner = (

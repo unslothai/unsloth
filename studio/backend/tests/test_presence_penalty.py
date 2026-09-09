@@ -309,5 +309,34 @@ def test_the_mlx_backend_declares_the_tool_protocol_flag():
     # Both decoder gates must consult it, not bool(tools) alone.
     for method in ("_generate_text", "_generate_vlm"):
         src = inspect.getsource(getattr(MLXInferenceBackend, method))
-        gate = src[src.index("NativeToolTokenDecoder(") :][:400]
+        after = src[src.index("NativeToolTokenDecoder(") :]
+        gate = after[: after.index("else None")]
         assert "tool_protocol_active" in gate, f"{method}'s decoder gate ignores the flag"
+
+
+def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
+    """The prefill predicate tells ``detect_think_prefill`` whether ``</think>`` will
+    survive. It has to name the same conditions as the decoder gate below it, or an
+    unrestricted turn re-emits no opener and the answer starts on a raw unmatched closer."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_text)
+    after = src[src.index("preserves_think_close") :]
+    predicate = after[: after.index("decoder_preserves_token")]
+    assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+
+
+def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
+    """mlx-vlm strips native reasoning controls from ``response.text``, so a no-tools request
+    whose delimiters are special ids needs the decoder too or the reasoning is rendered as
+    ordinary answer text."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_vlm)
+    after = src[src.index("vlm_token_decoder = ") :]
+    gate = after[: after.index("else None")]
+    assert "vlm_reasoning_markers is not None" in gate, "the VLM decoder gate ignores reasoning"

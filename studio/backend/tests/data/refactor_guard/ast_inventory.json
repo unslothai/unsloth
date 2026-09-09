@@ -1877,7 +1877,7 @@
       "_top_level_maskable_values": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int, end: int"
+        "signature": "text: str, start: int, end: int, keep: str=None"
       },
       "_trim_param_value": {
         "kind": "assign"
