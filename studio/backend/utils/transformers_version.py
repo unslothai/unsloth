@@ -2908,6 +2908,9 @@ def _ensure_venv_t5_latest_exists() -> bool:
         # Only a scan that actually read the files may retire it; one that hit EIO has not.
         if conclusive:
             _clear_latest_repair_request()
+        # Healthy without an optional package is healthy; activation is where the latest
+        # tier is asked for, so it is where a missing tiktoken gets its top-up.
+        _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
         return True
     # Broken, and every path below can still fail to fix it (offline, a child, a swap already
     # running, pip). Flag it here rather than per bailout, so the routing predicate withholds
