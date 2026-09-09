@@ -577,3 +577,20 @@ def test_host_process_metadata_is_named_rather_than_withheld(profile):
     assert '(sysctl-name-prefix "kern.proc.pid.")' in sysctl
     assert "host_process_metadata_readable" in backend.LIMITATIONS
     assert "(allow process-info* (target same-sandbox))" in profile
+
+
+def test_a_framework_build_gets_its_dyld_image(monkeypatch, tmp_path):
+    """A python.org framework build loads <prefix>/Python, a FILE at the top of a
+    prefix this otherwise only descends into, and under no read root either. The
+    probe fails at dyld startup without it and the whole backend reads as
+    unavailable."""
+    prefix = tmp_path / "Python.framework" / "Versions" / "3.13"
+    (prefix / "bin").mkdir(parents = True)
+    (prefix / "lib").mkdir()
+    (prefix / "Python").write_bytes(b"\xcf\xfa\xed\xfe")
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, name, str(prefix))
+    paths = backend.runtime_read_paths()
+    assert str(prefix / "Python") in paths
+    # And still not the prefix itself.
+    assert str(prefix) not in paths

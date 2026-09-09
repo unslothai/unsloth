@@ -790,3 +790,31 @@ def test_a_host_that_never_isolated_is_handed_back_what_it_handed_in():
     shutil.rmtree(os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH), ignore_errors = True)
     handed_in = {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}
     assert tools._with_session_packages(handed_in, workdir) == handed_in
+
+
+def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):
+    """prepare() only builds an argv, so a probe verdict that goes stale under a
+    running Studio is not discovered until bwrap exits at exec. Nothing rescues
+    the call that already ran, but re-probing bounds the damage to that one call
+    instead of every call for the rest of the cache's life."""
+    reset = []
+    monkeypatch.setattr(
+        "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
+    )
+    prepared = PreparedSandboxLaunch(
+        argv = ("bwrap",), workdir = "/work", env = {}, preexec_fn = None, backend = "bubblewrap"
+    )
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nbwrap: setting up uid map: Permission denied\n"
+    )
+    assert reset == [True]
+
+    # An ordinary tool failure is not one, and neither is a fallback launch.
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nTraceback (most recent call last):\n"
+    )
+    prepared.backend = "software-safeguards"
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nbwrap: setting up uid map: Permission denied\n"
+    )
+    assert reset == [True]

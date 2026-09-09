@@ -484,6 +484,11 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
         )
+        # A python.org framework build loads its dyld image from <prefix>/Python,
+        # a FILE at the top of a prefix this loop otherwise only descends into. It
+        # is not under any read root either, so without it the probe fails at dyld
+        # startup and the whole backend reads as unavailable.
+        candidates.append(posixpath.join(prefix, "Python"))
     try:
         paths = sysconfig.get_paths()
         candidates.extend(

@@ -7343,6 +7343,11 @@ def _prepare_tool_launch(plan):
                 prepared.backend,
             )
             prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # Both doors into a launch without OS isolation, not just the one that
+            # builds its own: os_sandbox returns the unavailable-capability
+            # fallback itself, and it comes through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
     except os_sandbox.SandboxUnavailableError:
         # A refusal about the session WORKDIR is never turned into an unisolated
@@ -7378,6 +7383,27 @@ def _prepare_tool_launch(plan):
                 else "This host cannot start an OS sandbox.",
             ) from exc
         return _software_safeguards_launch(plan, "sandbox_planner_error")
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """Re-probe next time when the launch itself, not the tool, is what failed.
+
+    ``prepare()`` only builds an argv, so a probe verdict that has gone stale --
+    user namespaces disabled under a running Studio -- is not discovered until
+    bwrap exits at exec. Nothing can rescue the call that already ran, but
+    dropping the cached verdict bounds the damage to that one call instead of
+    every call for the rest of the cache's life.
+    """
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code ") or "bwrap: " not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
 
 
 def _sandbox_refusal(exc) -> str:
@@ -16446,6 +16472,7 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
@@ -16615,6 +16642,7 @@ def _bash_exec(
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, None, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
