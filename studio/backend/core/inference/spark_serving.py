@@ -853,10 +853,21 @@ def gguf_has_mtp_head(path: Optional[str]) -> bool:
         return False
 
 
+def _arg_name(arg: Any) -> str:
+    """The option name in ``arg`` the way llama-server itself reads it.
+
+    common/arg.cpp folds ``_`` to ``-`` in every ``--`` token before it looks the option up, so
+    ``--spec_type`` and ``--control_vector`` are spellings the server accepts and a raw
+    comparison against the hyphenated name silently misses them. Shorts are left alone, which
+    is also what arg.cpp does: the fold is guarded on the ``--`` prefix there too."""
+    name = str(arg).strip().partition("=")[0]
+    return name.replace("_", "-") if name.startswith("--") else name
+
+
 def extra_args_own_speculation(extra_args: Optional[List[str]]) -> Optional[str]:
     """The first pass-through flag that makes speculative decoding the caller's, or None."""
     for arg in extra_args or []:
-        name = str(arg).partition("=")[0]
+        name = _arg_name(arg)
         if name in _SPEC_OWNER_FLAGS or name.startswith(_SPEC_OWNER_PREFIXES):
             return name
     return None
@@ -1074,7 +1085,8 @@ def launched_spec_flags(argv: List[str]) -> Tuple[Optional[str], Optional[int]]:
     depth: Optional[int] = None
     args = [str(a) for a in argv]
     for index, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
+        _, _, inline = arg.partition("=")
+        name = _arg_name(arg)
         if name not in (SPEC_TYPE_FLAG, SPEC_DRAFT_N_MAX_FLAG):
             continue
         value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
@@ -1093,7 +1105,8 @@ def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
     found: Optional[int] = None
     args = [str(a) for a in (extra_args or [])]
     for index, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
+        _, _, inline = arg.partition("=")
+        name = _arg_name(arg)
         if name not in ("-np", "--parallel"):
             continue
         value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
@@ -1107,7 +1120,7 @@ def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
 def extra_args_refuse_pipeline_groups(extra_args: Optional[List[str]] = None) -> Optional[str]:
     """The first pass-through flag the server still refuses together with the groups."""
     for arg in extra_args or []:
-        name = str(arg).partition("=")[0]
+        name = _arg_name(arg)
         if name in _GROUPS_REFUSED_FLAGS:
             return name
     return None

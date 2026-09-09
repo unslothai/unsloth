@@ -2161,3 +2161,26 @@ def test_current_topology_does_not_pay_for_rail_discovery(cluster, monkeypatch):
     assert not probed
     st.peer_process = None
     st.topology = "single"
+
+
+def test_underscore_spellings_are_read_the_way_llama_server_reads_them():
+    # common/arg.cpp folds `_` to `-` in every `--` token before the lookup, so these are
+    # spellings the server accepts and a raw comparison used to miss all four.
+    assert ss.extra_args_own_speculation(["--spec_type", "none"]) == "--spec-type"
+    assert ss.extra_args_own_speculation(["--model_draft", "/d.gguf"]) == "--model-draft"
+    assert ss.extra_args_refuse_pipeline_groups(["--control_vector", "/v.gguf"]) == (
+        "--control-vector"
+    )
+    assert ss.extra_args_refuse_pipeline_groups(["--sleep_idle_seconds=30"]) == (
+        "--sleep-idle-seconds"
+    )
+    assert ss.launched_spec_flags(["--spec_type", "draft-mtp", "--spec_draft_n_max=3"]) == (
+        "draft-mtp",
+        3,
+    )
+    assert ss._extra_args_slots(["--parallel_", "4"]) is None  # not an option at all
+    assert ss._extra_args_slots(["--parallel", "4"]) == 4
+
+    # Shorts keep their exact spelling, as they do in arg.cpp: the fold is guarded on "--".
+    assert ss.extra_args_own_speculation(["-md", "/d.gguf"]) == "-md"
+    assert ss.extra_args_refuse_pipeline_groups(["-mm", "/p.gguf"]) == "-mm"
