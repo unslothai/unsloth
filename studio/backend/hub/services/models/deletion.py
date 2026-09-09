@@ -265,7 +265,12 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
-def _state_spellings_for_delete(target_repo, variant: str) -> set[str]:
+def _state_spellings_for_delete(
+    target_repo,
+    variant: str,
+    repo_id: Optional[str] = None,
+    root: Optional[Path] = None,
+) -> set[str]:
     """Every spelling the manifest and cancel marker for this build could be stored under.
 
     State is written under the spelling the DOWNLOAD used, which need not be the one the delete
@@ -274,6 +279,12 @@ def _state_spellings_for_delete(target_repo, variant: str) -> set[str]:
     that is gone. ``_variant_keys_to_delete`` covers bare-request-to-qualified-key; this adds the
     reverse, and only when no plain sibling owns the bare spelling, since then it is another
     build's state.
+
+    The snapshot entries alone cannot answer that. An interrupted plain-build download has a
+    bare-spelled manifest and an incomplete blob but no snapshot file yet, so it is invisible
+    here and the bare spelling looked unowned -- purging it would have thrown away that
+    download's resumability and orphaned its bytes. The manifest is read before claiming the
+    spelling, and any manifest naming files this delete is not removing keeps it.
     """
     wanted = (variant or "").strip().lower()
     spellings = {wanted} | _variant_keys_to_delete(target_repo, variant)
@@ -291,9 +302,34 @@ def _state_spellings_for_delete(target_repo, variant: str) -> set[str]:
         for key in keys
         if key == bare or (accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == bare)
     }
-    if owners == {wanted}:
-        spellings.add(bare)
+    if owners != {wanted}:
+        return spellings
+    if repo_id and _bare_state_belongs_to_another_build(repo_id, bare, spellings, root):
+        return spellings
+    spellings.add(bare)
     return spellings
+
+
+def _bare_state_belongs_to_another_build(
+    repo_id: str, bare: str, deleting: set[str], root: Optional[Path]
+) -> bool:
+    """Whether a manifest under *bare* describes a build this delete is NOT removing.
+
+    Fails CLOSED on an unreadable or absent manifest: leaving a stale marker costs a phantom
+    partial row, while purging a live one costs the download's resume state and leaves its
+    incomplete blobs untracked.
+    """
+    try:
+        manifest = download_manifest.read_manifest("model", repo_id, bare, hub_cache = root)
+    except Exception:
+        return True
+    if manifest is None:
+        return False
+    paths = [getattr(f, "path", "") for f in getattr(manifest, "expected_files", ())]
+    main = [p for p in paths if p and _is_main_gguf_filename(p)]
+    if not main:
+        return False
+    return any(gguf_variant_key(p).lower() not in deleting for p in main)
 
 
 def _delete_gguf_variant_from_repos(
@@ -319,7 +355,7 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        purge_variants.update(_state_spellings_for_delete(target_repo, variant))
+        purge_variants.update(_state_spellings_for_delete(target_repo, variant, repo_id, root))
         matched = _repo_file_matches(
             target_repo,
             lambda name, keys = wanted_keys: _is_main_gguf_filename(name)

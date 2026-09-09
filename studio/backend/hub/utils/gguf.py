@@ -871,11 +871,16 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
     this, or a variant downloads under one identity and is looked up, resumed or guarded under
     another. Ambiguity resolves to None so each caller fails closed.
 
-    A ROOT build outranks a path-qualified one, because the bare quant is the spelling the root
+    A ROOT build outranks a SUBORDINATE one, because the bare quant is the spelling the root
     build USED to key under exactly: a tagged root beside ``distilled/model-Q4_K_M.gguf`` put two
     keys in the alias list, and a pin that resolved before this change stopped resolving at all.
-    A path-qualified key never owned the bare spelling, so it only answers when nothing at the
-    root does. Two ROOT builds still tie, and still refuse.
+    A subordinate key never owned the bare spelling, so it only answers when nothing at the root
+    does. Two ROOT builds still tie, and still refuse.
+
+    Root-level is the lister's own rule, not the presence of a slash: a quant-named parent adds
+    no identity (``Q4_K_M/model-Q4_K_M-fp16.gguf`` is a second build at the root, not a distilled
+    checkpoint), so the slash test alone let a root build win a contest it should have lost and
+    served an existing pin one of two checkpoints instead of refusing.
 
     Separators are normalised on both sides, as ``collapse_same_quant_root_builds`` and
     ``_main_variant_rank`` already do: a key is always minted with forward slashes, but a request
@@ -895,8 +900,18 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
         if accepts_bare_quant_alias(original) and bare_quant_alias(original).lower() == target
     ]
     if len(matches) > 1:
-        matches = [key for key in matches if "/" not in _forward_slashed(key)] or matches
+        matches = [key for key in matches if _keys_at_repo_root(key)] or matches
     return matches[0] if len(matches) == 1 else None
+
+
+def _keys_at_repo_root(key: str) -> bool:
+    """Whether *key* names a build the repo root offers, by ``gguf_variant_key``'s own rule.
+
+    A quant-named parent says only how the file was quantized, which its name already says, so
+    it leaves the build at the root; any other directory is a different checkpoint.
+    """
+    parents = _forward_slashed(key).rpartition("/")[0]
+    return all(_is_quant_directory(segment) for segment in parents.split("/") if segment)
 
 
 def variant_spellings_may_name_one_build(a: Optional[str], b: Optional[str]) -> bool:
@@ -931,14 +946,12 @@ def _quant_group_identity(key: str) -> Optional[str]:
     ``IQ4_XS-4.05bpw`` are different precisions the listers publish as separate rows, so they are
     never two builds of one quant.
     """
-    token = extract_quant_token(key)
-    if token is None:
-        return None
-    # Not the trailing-anchored form: a tagged build carries its modifier mid-name
-    # (``m-IQ4_XS-3.53bpw-mtp``), and it is a second build of THAT precision, so it has to group
-    # with the plain 3.53bpw build rather than land in a bpw-less group of its own.
-    bpw = _GGUF_BPW_SUFFIX_RE.search(key or "")
-    return f"{token}{bpw.group(0)}".lower() if bpw else token.lower()
+    # ``quant_token_with_bpw`` is what decides elsewhere whether a modifier belongs to the token,
+    # and it reads only an ADJACENT one: it keeps ``m-IQ4_XS-3.53bpw-mtp`` at IQ4_XS-3.53bpw while
+    # rejecting the far ``08.577bpw`` in ``flux1-dev-Q8_0-fp32-08.577bpw``. Searching the whole key
+    # instead read that unrelated size annotation as Q8_0's bit width, so the build never grouped
+    # with the plain Q8_0 it is a second copy of.
+    return (quant_token_with_bpw(key) or extract_quant_token(key) or "").lower() or None
 
 
 def collapse_same_quant_root_builds(keys: Iterable[str]) -> list[str]:

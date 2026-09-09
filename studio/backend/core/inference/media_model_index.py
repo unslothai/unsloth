@@ -222,12 +222,17 @@ def _add_gguf_picks(
         collapse_same_quant_root_builds,
     )
 
+    # Ownership is decided over EVERY published row, not just the openable ones. A plain row that
+    # exists but the loader cannot open still owns its bare quant; scoring only the openable set
+    # let it vanish from the contest and handed ``repo:q4_k_m`` to a tagged sibling, so an
+    # explicit request for the plain build silently ran different weights.
     alias_owners: dict[str, list[str]] = {}
-    for quant in openable:
+    published = {q.lower() for q in by_quant}
+    for quant in by_quant:
         if not accepts_bare_quant_alias(quant):
             continue
         alias = bare_quant_alias(quant)
-        if alias and alias.lower() not in {q.lower() for q in openable}:
+        if alias and alias.lower() not in published:
             alias_owners.setdefault(alias.lower(), []).append(quant)
 
     for quant, variant in openable.items():

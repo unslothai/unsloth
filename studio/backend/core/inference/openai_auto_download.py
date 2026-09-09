@@ -889,20 +889,16 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     A key is a pure function of the path, so a repo that files every quant under one shared
     container, or tags every build past its quant, qualifies all of them even though nothing there
     disambiguates, and the bare spelling every stored id uses then matches no key at all.
-    """
-    from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias
 
-    target = (wanted or "").strip().lower()
-    if not target:
-        return None
-    # Every qualified key but an H3 root stem, whose bare quant names both partitions, so it must
-    # miss rather than serve one of them.
-    matches = [
-        name
-        for key, name in lowered.items()
-        if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == target
-    ]
-    return matches[0] if len(matches) == 1 else None
+    Delegated to ``resolve_variant_alias`` rather than deciding it here, so this agrees with the
+    plan lookup and the loader on the root-precedence rule too. Requiring a single alias match of
+    its own rejected a legacy pin the root build still owns exactly, and the download it gates
+    never ran.
+    """
+    from hub.utils.gguf import resolve_variant_alias
+
+    resolved = resolve_variant_alias(lowered.keys(), wanted)
+    return lowered.get(resolved) if resolved is not None else None
 
 
 def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:

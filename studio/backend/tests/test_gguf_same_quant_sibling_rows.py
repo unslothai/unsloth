@@ -906,3 +906,144 @@ def test_the_media_index_leaves_a_contested_bare_spelling_alone(tmp_path):
     assert index["repo:model-q4_k_m-mtp"].gguf_filename == "model-Q4_K_M-mtp.gguf"
     # And the bare id itself means the plain build, as it does in every other resolver.
     assert index["repo"].gguf_filename == "model-Q4_K_M.gguf"
+
+
+def test_a_quant_named_directory_still_contests_the_bare_spelling():
+    """Root precedence is the lister's rule, not the presence of a slash.
+
+    A quant-named parent adds no identity, so ``Q4_K_M/model-Q4_K_M-fp16.gguf`` is a second
+    build AT the root, not a distilled checkpoint. Testing for a slash let the root build win a
+    contest it should have lost, and an existing pin got one of two checkpoints rather than a
+    refusal.
+    """
+    from hub.utils.gguf import resolve_variant_alias
+
+    contested = [
+        gguf_variant_key("model-Q4_K_M-mtp.gguf"),
+        gguf_variant_key("Q4_K_M/model-Q4_K_M-fp16.gguf"),
+    ]
+    assert contested == ["model-Q4_K_M-mtp", "Q4_K_M/model-Q4_K_M-fp16"]
+    assert resolve_variant_alias(contested, "Q4_K_M") is None
+    # A directory that DOES name another checkpoint stays subordinate, so the root build wins.
+    assert resolve_variant_alias(["model-Q4_K_M-mtp", "distilled/model-Q4_K_M"], "Q4_K_M") == (
+        "model-Q4_K_M-mtp"
+    )
+
+
+def test_the_auto_download_lookup_shares_the_root_precedence_rule():
+    """Deciding the alias independently meant this rejected a pin the root build owns, and the
+    download it gates never ran even though the plan lookup would have resolved it."""
+    from core.inference.openai_auto_download import _bare_quant_alias
+    from hub.utils.gguf import resolve_variant_alias
+
+    for keys in (
+        ["model-Q4_K_M-mtp", "distilled/model-Q4_K_M"],
+        ["model-Q4_K_M-mtp", "model-Q4_K_M-fp16"],
+        ["Q4_K_M", "model-Q4_K_M-mtp"],
+        ["gemma-4-31B_q4_0-it"],
+    ):
+        lowered = {key.lower(): key for key in keys}
+        expected = resolve_variant_alias(lowered.keys(), "Q4_K_M" if "Q4" in keys[0] else "q4_0")
+        wanted = "Q4_K_M" if "Q4" in keys[0] else "q4_0"
+        assert _bare_quant_alias(wanted, lowered) == (
+            lowered.get(expected) if expected is not None else None
+        ), keys
+
+
+def test_a_far_bit_width_annotation_is_not_the_quant_s_own():
+    """``quant_token_with_bpw`` reads only an ADJACENT modifier, and the group identity has to
+    agree with it. Searching the whole key read ``08.577bpw`` as Q8_0's bit width, so the build
+    never grouped with the plain Q8_0 it is a second copy of and the bare id stayed
+    order-dependent."""
+    from hub.utils.gguf import _quant_group_identity, collapse_same_quant_root_builds
+    from hub.utils.gguf import quant_token_with_bpw
+
+    far = "flux1-dev-Q8_0-fp32-08.577bpw"
+    assert quant_token_with_bpw(far) == "Q8_0"
+    assert _quant_group_identity(far) == "q8_0"
+    assert collapse_same_quant_root_builds(["Q8_0", far]) == ["Q8_0"]
+    # An adjacent modifier is still the quant's own, mid-name or not.
+    assert _quant_group_identity("m-IQ4_XS-3.53bpw-mtp") == "iq4_xs-3.53bpw"
+    assert collapse_same_quant_root_builds(["IQ4_XS-3.53bpw", "m-IQ4_XS-3.53bpw-mtp"]) == [
+        "IQ4_XS-3.53bpw"
+    ]
+
+
+def test_an_unopenable_plain_row_keeps_its_own_bare_spelling(tmp_path):
+    """Alias ownership is decided over every published row. Scoring only the openable ones let a
+    plain build the loader refuses vanish from the contest, so ``repo:q4_k_m`` was registered for
+    its tagged sibling and an explicit request for the plain row ran different weights."""
+    from core.inference import media_model_index as mmi
+
+    for name in ("model-Q4_K_M.gguf", "model-Q4_K_M-mtp.gguf"):
+        (tmp_path / name).write_bytes(b"GGUF" + b"\0" * 64)
+
+    real_can_open = mmi._loader_can_open
+    # the plain build is present but unopenable; only the tagged sibling loads
+    mmi._loader_can_open = lambda _path, filename: filename != "model-Q4_K_M.gguf"
+    index: dict = {}
+    try:
+        mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path)
+    finally:
+        mmi._loader_can_open = real_can_open
+
+    assert index["repo:model-q4_k_m-mtp"].gguf_filename == "model-Q4_K_M-mtp.gguf"
+    # The bare spelling belongs to the plain row, which is not loadable, so nothing answers it.
+    assert "repo:q4_k_m" not in index
+
+
+def test_a_partial_siblings_manifest_survives_a_qualified_delete(tmp_path):
+    """An interrupted plain-build download has a bare-spelled manifest and an incomplete blob but
+    no snapshot file, so it is invisible to the snapshot scan. Claiming the bare spelling on that
+    evidence purged the partial download's resume state and orphaned its bytes."""
+    import hub.services.models.deletion as deletion
+
+    class _Repo:
+        def __init__(self, names):
+            self._names = names
+
+    def _matches(target_repo, _pred):
+        return [(None, None, name) for name in target_repo._names]
+
+    class _Expected:
+        def __init__(self, path):
+            self.path = path
+
+    class _Manifest:
+        def __init__(self, paths):
+            self.expected_files = tuple(_Expected(p) for p in paths)
+
+    real_matches = deletion._repo_file_matches
+    real_read = deletion.download_manifest.read_manifest
+    deletion._repo_file_matches = _matches
+    lone = _Repo(["model-Q4_K_M-mtp.gguf"])
+    try:
+        # A bare manifest naming the PLAIN build: a different checkpoint, still downloading.
+        deletion.download_manifest.read_manifest = lambda *a, **k: _Manifest(["model-Q4_K_M.gguf"])
+        assert deletion._state_spellings_for_delete(
+            lone, "model-q4_k_m-mtp", "org/repo", tmp_path
+        ) == {"model-q4_k_m-mtp"}
+        # A bare manifest naming THIS build: it is this download's own state, so it goes.
+        deletion.download_manifest.read_manifest = lambda *a, **k: _Manifest(
+            ["model-Q4_K_M-mtp.gguf"]
+        )
+        assert deletion._state_spellings_for_delete(
+            lone, "model-q4_k_m-mtp", "org/repo", tmp_path
+        ) == {"model-q4_k_m-mtp", "q4_k_m"}
+        # No manifest at all: nothing to protect, so the reverse alias is still purged.
+        deletion.download_manifest.read_manifest = lambda *a, **k: None
+        assert deletion._state_spellings_for_delete(
+            lone, "model-q4_k_m-mtp", "org/repo", tmp_path
+        ) == {"model-q4_k_m-mtp", "q4_k_m"}
+
+        # An unreadable manifest fails CLOSED: a stale marker is cheaper than a lost resume.
+        def _raise(*a, **k):
+            raise OSError("unreadable")
+
+        deletion.download_manifest.read_manifest = _raise
+        assert deletion._state_spellings_for_delete(
+            lone, "model-q4_k_m-mtp", "org/repo", tmp_path
+        ) == {"model-q4_k_m-mtp"}
+    finally:
+        deletion._repo_file_matches = real_matches
+        deletion.download_manifest.read_manifest = real_read
