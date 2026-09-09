@@ -1603,9 +1603,9 @@ def existing_install_current_without_plan(
         # release pin the marker's upstream_tag rules out a wrong pin but cannot answer
         # alone: the install is current only when it is also the release the HEAD below
         # names.
-        if _normalized_upstream_tag(str(marker.get("upstream_tag") or "")) != _normalized_upstream_tag(
-            whisper_tag
-        ):
+        if _normalized_upstream_tag(
+            str(marker.get("upstream_tag") or "")
+        ) != _normalized_upstream_tag(whisper_tag):
             return False
     if pinned:
         if pinned != recorded_release:
