@@ -46,6 +46,14 @@ is the flow a desktop user gets:
 The fault-injection cases DAMAGE that install and expect the update to repair exactly
 the damaged part. They restore what they broke, but a failure mid-case can leave the
 install in the damaged state, so never point this at an install you care about.
+
+Reading a CI failure: run 1 is the SETTLE run and is deliberately not measured. The
+first update performed by new installer code legitimately rewrites the manifest --
+`step_results` and `pass_inputs` are recorded by the pass that introduces them, so an
+install laid down by an older build has neither -- and it may repair torchao, which an
+earlier release installed from the wrong index. Only runs 2 and later are asserted on.
+A staging run confirmed the third (offline) run changed nothing at all, which is the
+claim this branch makes; a diff reported against `run1-settle` is not that claim.
 """
 
 from __future__ import annotations
@@ -421,8 +429,15 @@ def diff(before: dict, after: dict) -> list[str]:
 
 @pytest.fixture(scope = "session")
 def desktop_path(install) -> bool:
-    """Whether the non-local cases can run at all: they can only measure a no-op when
-    the installed version is the one PyPI would hand back."""
+    """Whether a non-local update can short-circuit: True only when the installed
+    version is the one PyPI would hand back.
+
+    Which EXPECTATIONS apply, not whether the case runs. The measurement a version
+    mismatch invalidates is the fast path itself; everything a `studio update` must
+    never do -- refetch a llama.cpp release, list a GitHub release, refetch a Node
+    tarball -- holds whether or not unsloth itself is being upgraded, and dropping
+    those assertions is how a regression in them reaches a release unnoticed.
+    """
     installed, latest = _installed_version(install), _pypi_latest()
     print(f"[idempotency] installed={installed!r} pypi={latest!r}", flush = True)
     return bool(installed) and installed == latest
@@ -484,27 +499,59 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
 
 def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_path):
     """No --local: the flow the desktop app and the Repair button run. Its whole cost on
-    a settled install should be one version check and the prebuilt HEADs."""
-    if not desktop_path:
-        pytest.skip("installed version is not PyPI's latest; a no-op update is an upgrade")
+    a settled install should be one version check and the prebuilt HEADs.
+
+    Runs on BOTH branches of desktop_path. Skipping the case when the installed version
+    is not PyPI's latest also dropped the assertions that hold either way -- the release
+    payload hosts, api.github.com, release-assets -- and those are the ones that catch a
+    prebuilt regression regardless of whether the version check short-circuited. Only
+    what genuinely depends on that short-circuit is relaxed below, each with its reason.
+    """
     directory, before = settled
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
-    for host in PAYLOAD_HOSTS:
+    # files.pythonhosted.org is the ONE payload host the version check governs: with a
+    # version mismatch this run IS an upgrade, and an upgrade downloads the wheel it
+    # upgrades to. The other three carry release payloads -- llama.cpp, whisper.cpp,
+    # node -- which no upgrade of unsloth has any reason to refetch, so they are held at
+    # zero on both branches.
+    payload_hosts = (
+        PAYLOAD_HOSTS
+        if desktop_path
+        else tuple(host for host in PAYLOAD_HOSTS if host != "files.pythonhosted.org")
+    )
+    for host in payload_hosts:
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
     assert run.bytes_from("raw.githubusercontent.com") <= ICON_FETCH_CEILING, run.report()
-    for marker in NO_WORK_MARKERS:
+    # "dependencies up to date" is setup.sh's fast-path line, and the fast path is
+    # exactly what the version check decides; an upgrade legitimately runs the pass
+    # instead. The prebuilt and sidecar markers are not the version check's business:
+    # both are answered from disk whether or not the dependency pass runs.
+    markers = (
+        NO_WORK_MARKERS
+        if desktop_path
+        else tuple(marker for marker in NO_WORK_MARKERS if marker != "dependencies up to date")
+    )
+    for marker in markers:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
     # One version check, and one "what is the latest release" HEAD per prebuilt. The
-    # bound is what stops this quietly becoming a full release listing again.
-    assert run.connections_to("pypi.org") <= 2, run.report()
+    # bound is what stops this quietly becoming a full release listing again. Only the
+    # pypi.org one is relaxed: a real dependency pass resolves against the index, and
+    # how many connections that takes is the resolver's business. The github.com bound
+    # belongs to the prebuilts, which do the same work either way.
+    if desktop_path:
+        assert run.connections_to("pypi.org") <= 2, run.report()
     assert run.connections_to("github.com") <= 6, run.report()
     # The other half of the prebuilt claim: the release itself is never listed. Both of
     # these carried traffic on every update before the marker checks, and both are where
     # the 13-63 s macOS re-validation went.
     assert run.connections_to("api.github.com") == 0, run.report()
     assert run.connections_to("release-assets.githubusercontent.com") == 0, run.report()
-    assert diff(before, snapshot(install)) == []
+    if desktop_path:
+        # A dependency pass rewrites the manifest and can move the distribution list, so
+        # "nothing changed on disk" is only a claim about the short-circuited path. The
+        # no-op case is asserted in full by test_a_second_update_changes_nothing_on_disk.
+        assert diff(before, snapshot(install)) == []
 
 
 # ── offline ──
