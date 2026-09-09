@@ -8,6 +8,7 @@ import {
 import {
   SEARCH_IMAGE_TOOL,
   extractSearchImages,
+  searchResultText,
 } from "../search-images/search-images";
 import {
   mergedToolCallArgumentsText,
@@ -18,7 +19,10 @@ import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
 } from "./deep-research-handoff";
-import { documentCitationToSource } from "./document-citation-source";
+import {
+  documentCitationToSource,
+  parseSourcesFromResult,
+} from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -314,5 +318,30 @@ export function createGenerationToolRecovery(
       }
     }
   };
-  return { replayFrom, apply };
+  // The Sources-panel entries the live path derives from every finished web_search / web_fetch
+  // card at the end of a stream. Recovery has the same results but never reaches that yield, so
+  // it rebuilds them here and the commit appends them where the live path put them.
+  const withSources = <TPart>(parts: TPart[]): TPart[] => {
+    const seen = new Set(sourceIds);
+    const out: TPart[] = [...parts];
+    for (const { part } of carried) {
+      const card = record(part);
+      if (
+        card?.type !== "tool-call" ||
+        card.result === undefined ||
+        (card.toolName !== "web_search" && card.toolName !== "web_fetch")
+      ) {
+        continue;
+      }
+      for (const source of parseSourcesFromResult(
+        searchResultText(card.result),
+      )) {
+        if (seen.has(source.id)) continue;
+        seen.add(source.id);
+        out.push(source as TPart);
+      }
+    }
+    return out;
+  };
+  return { replayFrom, apply, withSources };
 }

@@ -300,6 +300,7 @@ import {
 import {
   documentCitationToSource,
   isSafeNavigableSourceUrl,
+  parseSourcesFromResult,
 } from "../utils/document-citation-source";
 import { mergeGoogleNativeParts } from "../utils/google-native-parts";
 import { cancelResearchRun, createResearchRun } from "./research-api";
@@ -663,47 +664,6 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
-}
-
-/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): {
-  type: "source";
-  sourceType: "url";
-  id: string;
-  url: string;
-  title: string;
-  metadata?: { description: string };
-}[] {
-  if (!raw) return [];
-  const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: {
-    type: "source";
-    sourceType: "url";
-    id: string;
-    url: string;
-    title: string;
-    metadata?: { description: string };
-  }[] = [];
-  for (const block of blocks) {
-    const titleMatch = block.match(/Title:\s*(.+)/);
-    const urlMatch = block.match(/URL:\s*(.+)/);
-    const snippetMatch = block.match(/Snippet:\s*(.+)/);
-    if (titleMatch && urlMatch) {
-      // Provider output is attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
-      const url = isSafeNavigableSourceUrl(urlMatch[1]);
-      if (!url) continue;
-      const snippet = snippetMatch?.[1]?.trim();
-      sources.push({
-        type: "source" as const,
-        sourceType: "url" as const,
-        id: url,
-        url,
-        title: titleMatch[1].trim(),
-        ...(snippet ? { metadata: { description: snippet } } : {}),
-      });
-    }
-  }
-  return sources;
 }
 
 function estimateTokenCount(text: string): number | undefined {

@@ -868,3 +868,69 @@ test("a full identity replay does not republish the saved history", async () => 
     `history must not be republished, got ${imports.length} imports`,
   );
 });
+
+test("recovery rebuilds the Sources panel from a replayed web search", async () => {
+  const result = [
+    "Title: Unsloth docs",
+    "URL: https://docs.unsloth.ai/",
+    "Snippet: fine-tuning guide",
+  ].join("\n");
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "ws_1", tool_name: "web_search" },
+      { type: "tool_end", tool_call_id: "ws_1", result },
+    ],
+  );
+  const sources = content.filter((part) => part.type === "source");
+  assert.deepEqual(
+    sources.map((part) => [part.url, part.title]),
+    [["https://docs.unsloth.ai/", "Unsloth docs"]],
+  );
+  assert.equal(
+    content.at(-1)?.type,
+    "source",
+    "sources trail the reply, as the live path yields them",
+  );
+});
+
+test("rebuilt sources do not duplicate ones already saved", async () => {
+  const result = "Title: Docs\nURL: https://docs.unsloth.ai/\nSnippet: guide";
+  const saved = [
+    {
+      type: "tool-call",
+      toolCallId: "ws_1:saved",
+      backendToolCallId: "ws_1",
+      toolName: "web_search",
+      args: {},
+      argsText: "{}",
+      result,
+    },
+    {
+      type: "source",
+      sourceType: "url",
+      id: "https://docs.unsloth.ai/",
+      url: "https://docs.unsloth.ai/",
+      title: "Docs",
+    },
+  ];
+  const { content } = await recoverRun(saved, [
+    { choices: [{ delta: { content: "more" } }] },
+  ]);
+  assert.equal(content.filter((part) => part.type === "source").length, 1);
+});
+
+test("an unsafe search URL never reaches the Sources panel", async () => {
+  const { content } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "ws_2", tool_name: "web_fetch" },
+      {
+        type: "tool_end",
+        tool_call_id: "ws_2",
+        result: "Title: Bad\nURL: javascript:alert(1)\nSnippet: no",
+      },
+    ],
+  );
+  assert.equal(content.filter((part) => part.type === "source").length, 0);
+});

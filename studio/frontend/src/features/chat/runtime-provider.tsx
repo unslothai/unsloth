@@ -910,10 +910,13 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      // Restore cards before persisting the rebuilt reply.
-      const content = restoreCarriedPartsFromRaw(
-        reasoningOpen ? `${raw}</think>` : raw,
-        carried,
+      // Restore cards before persisting the rebuilt reply. Search sources trail the reply, which
+      // is where the live path yields them.
+      const content = toolRecovery.withSources(
+        restoreCarriedPartsFromRaw(
+          reasoningOpen ? `${raw}</think>` : raw,
+          carried,
+        ),
       ) as MessageRecord["content"];
       await saveStoredChatMessage({
         id: storedMessage.id,
