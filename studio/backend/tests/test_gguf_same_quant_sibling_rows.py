@@ -438,7 +438,9 @@ def test_route_side_resolution_refuses_an_ambiguous_bare_alias(tmp_path):
     revealed a checkpoint the caller never asked for, while ``plan_for_variant`` refused it."""
     from routes.models import _resolve_quant_gguf
 
-    both = _materialize(tmp_path / "both", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)])
+    both = _materialize(
+        tmp_path / "both", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)]
+    )
     assert _resolve_quant_gguf(str(both), "Q4_K_M", True) == (None, 0)
 
     # The unambiguous cases keep working: a lone tagged build, and a build's own shards.
