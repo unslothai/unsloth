@@ -412,7 +412,6 @@ def _load_download_repos(
         if getattr(backend, "device", None) == "mlx":
             try:
                 from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
-
                 mapped = _remap_unsloth_bnb_hub_id_for_mlx(str(base), None)[0]
             except Exception:
                 mapped = None

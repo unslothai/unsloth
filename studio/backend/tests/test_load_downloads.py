@@ -279,7 +279,10 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
         "hubertsiuzdak/snac_24khz",
     ]
     audio_vlm = SimpleNamespace(
-        identifier = "owner/avlm-lora", base_model = "owner/base", audio_type = "audio_vlm", is_audio = False
+        identifier = "owner/avlm-lora",
+        base_model = "owner/base",
+        audio_type = "audio_vlm",
+        is_audio = False,
     )
     assert worker._load_download_repos(audio_vlm, True, cuda) == [
         "owner/avlm-lora",

@@ -4322,12 +4322,29 @@ def test_model_download_progress_completes_the_transfer_it_last_showed(monkeypat
     monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
     base_readings = iter(
         [
-            {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0, "expected_bytes": 4 * 1024**3, "progress": 0.5},
-            {"downloaded_bytes": 4 * 1024**3, "completed_bytes": 4 * 1024**3, "expected_bytes": 4 * 1024**3, "progress": 0.99},
+            {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 0,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.5,
+            },
+            {
+                "downloaded_bytes": 4 * 1024**3,
+                "completed_bytes": 4 * 1024**3,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.99,
+            },
         ]
     )
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return _load_listing("owner/base")
         if url.endswith("repo_id=owner%2Fbase"):
