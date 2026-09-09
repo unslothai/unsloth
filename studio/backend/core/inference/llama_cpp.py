@@ -19565,14 +19565,20 @@ class LlamaCppBackend:
                     else _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
                 )
                 # And a remembered --mmproj-auto, which asks llama-server to rediscover
-                # the adjacent projector by itself -- the same mechanism the vision
-                # switch already has to counter with --no-mmproj-auto below. Nothing
-                # Studio resolved, nothing named, nothing inherited, and the child still
-                # ends up with a non-causal encoder.
+                # the adjacent projector by itself. Nothing Studio resolved, nothing
+                # named, nothing inherited, and the child still ends up with a
+                # non-causal encoder.
+                #
+                # Except where the switch already countered it. The argv builder appends
+                # --no-mmproj-auto, last so it wins, on exactly the condition below, so
+                # that child rediscovers nothing and flooring it would hold four times
+                # the compute buffers for no encoder -- in the one mode whose whole
+                # purpose is giving that memory back.
                 _extras_mmproj_auto = bool(
                     extra_args
                     and any(_flag_name(str(a)) == "--mmproj-auto" for a in extra_args)
                     and not extra_args_disable_mmproj(extra_args)
+                    and not (disable_vision and not launch_mmproj_path and not _env_mmproj_survives)
                 )
                 _launch_opens_projector = (
                     bool(effective_is_vision)

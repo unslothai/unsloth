@@ -4009,3 +4009,28 @@ def test_mmproj_auto_turned_back_off_gets_no_floor(tmp_path):
 
     assert "--batch-size" not in cmd
     assert "--ubatch-size" not in cmd
+
+
+def test_mmproj_auto_countered_by_the_vision_switch_gets_no_floor(tmp_path):
+    """The argv builder appends --no-mmproj-auto, last so it wins, when the switch is
+    off and nothing else kept a projector. That child rediscovers nothing, so flooring
+    it would hold 4x the compute buffers for no encoder, in the one mode whose whole
+    purpose is giving that memory back."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        disable_vision = True,
+        extra_args = ["--mmproj-auto"],
+    )["cmd"]
+
+    assert "--no-mmproj-auto" in cmd
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd
