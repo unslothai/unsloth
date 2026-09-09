@@ -49,8 +49,7 @@ print(json.dumps({{
 
 def _probe(env_overrides: dict) -> dict:
     env = dict(os.environ)
-    # UNSLOTH_LLAMA_CPP_PATH too, as _main_probe already does: this asserts on what the CLI
-    # exports, so inheriting the runner's value measures the runner rather than the CLI.
+    # UNSLOTH_LLAMA_CPP_PATH too, as _main_probe does: an inherited value measures the runner.
     for key in ("UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
         env.pop(key, None)
     env.update(env_overrides)
@@ -97,9 +96,8 @@ def test_no_unsloth_home_keeps_the_legacy_default(tmp_path):
 
 
 def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
-    # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a CLI that exports
-    # <root>/studio/llama.cpp pins that wrong path for every worker and the
-    # managed llama-server is never found.
+    # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a CLI exporting
+    # <root>/studio/llama.cpp pins that wrong path for every worker.
     master = tmp_path / "portable"
     result = _probe({"UNSLOTH_HOME": str(master)})
 
@@ -173,8 +171,8 @@ def _main_probe(env_overrides: dict) -> dict:
 
 
 def test_main_marks_the_same_llama_cpp_path_run_py_exports(tmp_path):
-    # A direct `uvicorn main:app` exports this outright; under run.py main.py keeps the correct
-    # value but would mark the wrong one managed, making the bundled path look like an override.
+    # A direct `uvicorn main:app` exports this outright; under run.py main.py would instead
+    # mark the wrong path managed, making the bundled one look like an override.
     master = tmp_path / "portable"
     result = _main_probe({"UNSLOTH_HOME": str(master)})
 
@@ -191,9 +189,8 @@ def test_main_leaves_a_plain_custom_root_alone(tmp_path):
 
 
 def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
-    # A portable install pointed at the legacy Studio path still owns <root>/llama.cpp, so
-    # guarding on the legacy equality alone skipped the export and left unsloth_zoo on
-    # ~/.unsloth/llama.cpp, never seeing the installed runtime.
+    # A portable install pointed at the legacy Studio path still owns <root>/llama.cpp, so the
+    # legacy equality alone skipped the export and left unsloth_zoo on ~/.unsloth/llama.cpp.
     home = tmp_path / "home"
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)

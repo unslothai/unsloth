@@ -2220,13 +2220,10 @@ fn names_a_path(name: &str, value: &str) -> bool {
 /// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
 ///
-/// UNSLOTH_HOME is the master root storage_roots.studio_root() falls back to, one
-/// level above STUDIO_HOME, so an inherited one moves the databases, assets and
-/// caches exactly as UNSLOTH_STUDIO_HOME does, and moves the managed llama.cpp,
-/// node and whisper.cpp directories with them. UNSLOTH_PORTABLE names no root but
-/// arrives at the same place: storage_roots.portable_mode() reads it on its own,
-/// and that repoints the Hugging Face hub, xet, datasets and torch caches under
-/// the install instead of the shared user ones the desktop has always used.
+/// UNSLOTH_HOME moves the databases, assets and caches exactly as
+/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
+/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
+/// repointing the Hugging Face and torch caches away from the shared user ones.
 pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
     "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
@@ -3354,10 +3351,9 @@ pub fn start_backend(
     scrub_appimage_python_env(&mut cmd);
 
     // Tauri uses the legacy root whatever the environment says; scrub so the
-    // spawned Python backend can't diverge. Read off the shared list rather than
-    // written out again, so a name added there cannot be honoured by the backend
-    // and missed here. UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled
-    // llama.cpp dir override; keep it.
+    // spawned Python backend can't diverge. Off the shared list, so a name added
+    // there cannot be honoured by the backend and missed here.
+    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }

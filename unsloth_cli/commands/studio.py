@@ -118,8 +118,8 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    # The native runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is
-    # one level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
+    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
     _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if _master:
         try:

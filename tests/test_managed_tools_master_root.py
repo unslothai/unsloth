@@ -117,8 +117,8 @@ def test_a_studio_home_outside_the_master_root_still_warns(tmp_path):
 
 
 def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
-    # scripts/build_whisper_cpp.sh installs under UNSLOTH_HOME. The resolver has to land on the
-    # same path or dictation reports the engine unavailable with whisper-server one level up.
+    # build_whisper_cpp.sh installs under UNSLOTH_HOME; a resolver one level off reports
+    # dictation unavailable with whisper-server sitting right there.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
@@ -180,8 +180,8 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
 
 
 def test_discovery_finds_the_llama_server_the_master_root_holds(tmp_path):
-    # The managed marker makes discovery SKIP the env var and fall through to its own root
-    # derivation, so the two have to name one directory or every GGUF model reports no runtime.
+    # The managed marker makes discovery SKIP the env var for its own derivation, so the two
+    # must name one directory or every GGUF model reports no runtime.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"

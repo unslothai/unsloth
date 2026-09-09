@@ -6,8 +6,7 @@ backend.
 
 Neither calls ensure_studio_backend_path(), so before the seeding moved into
 studio_backend_imports() they reached studio.backend.core.export with UNSLOTH_COMPILE_LOCATION
-unset, and the export subprocess (mp spawn, which inherits os.environ) then let unsloth_zoo
-resolve its relative default against the shell's working directory (#8865).
+unset and unsloth_zoo resolved its relative default against the shell's cwd (#8865).
 """
 
 import json
@@ -92,9 +91,8 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
 
     env = dict(os.environ)
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
-    # UNSLOTH_STUDIO_HOME and STUDIO_HOME both outrank UNSLOTH_HOME in the resolver, so an
-    # inherited one (studio/backend/tests/conftest.py sets a session-scoped UNSLOTH_STUDIO_HOME,
-    # and a developer may export either) would send the probe somewhere this test never named.
+    # Both outrank UNSLOTH_HOME in the resolver, and conftest.py sets a session-scoped
+    # UNSLOTH_STUDIO_HOME, so an inherited one would send the probe somewhere unnamed.
     for key in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_PORTABLE"):
         env.pop(key, None)
     env.update(

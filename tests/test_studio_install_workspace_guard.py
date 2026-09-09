@@ -630,8 +630,7 @@ def test_tauri_preflight_scrubs_studio_home_env():
     assert (
         'cmd.env_remove("STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub STUDIO_HOME"
-    # Those two literals are belt and braces: what actually removes the whole scrub list at
-    # these sites is the managed context, so the call is the load-bearing half.
+    # Belt and braces: the managed context is what removes the whole list at these sites.
     assert (
         preflight.count("apply_managed_cli_context_tokio(&mut cmd)") >= 2
     ), "preflight probes must build the managed context, which is what applies the scrub list"
@@ -643,10 +642,8 @@ def test_tauri_preflight_scrubs_studio_home_env():
 # The three storage_roots.py resolvers that CHOOSE a data root, as opposed to the ones that
 # join a subdirectory onto whatever they chose. Every environment variable read inside them
 # moves the desktop's databases, assets and caches, so every one has to be scrubbed.
-# _env_unsloth_home is the env-reading half of unsloth_home once that grows an on-disk
-# fallback and has to be split to break the cycle with studio_root. Absent resolvers are
-# skipped rather than failed, so this holds for whichever spelling a branch carries, and
-# the union is what has to be non-empty.
+# _env_unsloth_home is the env-reading half unsloth_home splits into once it grows an on-disk
+# fallback. Absent resolvers are skipped, not failed, so this holds for either spelling.
 _ROOT_CHOOSING_RESOLVERS = (
     "unsloth_home",
     "_env_unsloth_home",
@@ -705,8 +702,7 @@ def test_tauri_managed_children_scrub_every_root_moving_env():
     )
 
     # Second scrub path: start_backend removes the list again after the managed context, so
-    # the skip is a fact about the child rather than an assumption about the caller. It must
-    # take the whole list, not a hand-written subset that the list can drift away from.
+    # the skip is a fact about the child. The whole list, not a subset that can drift.
     start = process.index("pub fn start_backend(")
     end = min(
         offset
@@ -718,8 +714,8 @@ def test_tauri_managed_children_scrub_every_root_moving_env():
         "for name in MANAGED_CHILD_SCRUBBED_ENV" in backend_start
     ), "start_backend must scrub the whole list, not the names that were in it when it was written"
 
-    # Third spawn path: the installer runs install.sh / install.ps1 directly, so it never
-    # reaches apply_managed_cli_context and has to apply the list itself.
+    # Third spawn path: the installer runs install.sh / install.ps1 directly, never reaching
+    # apply_managed_cli_context, so it applies the list itself.
     assert (
         "for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV" in install
     ), "install.rs spawns outside the managed context and must scrub the whole list"

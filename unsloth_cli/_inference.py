@@ -137,9 +137,8 @@ _cache_env_seeded = False
 def _seed_cache_env() -> None:
     """Pin the cache locations the backend pins, for in-process CLI commands.
 
-    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, which resolves against
-    the working directory and leaves an unsloth_compiled_cache cache_cleanup will not remove
-    (issue #8865).
+    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
+    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
     """
     global _cache_env_seeded
     if _cache_env_seeded:

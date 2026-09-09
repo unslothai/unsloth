@@ -93,8 +93,7 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
     # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
-    # override would leave the chunk and shard caches in the host home. Same test
-    # _portable_cache_defaults applies to the assets and datasets caches.
+    # override would leave the chunk and shard caches in the host home.
     xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
     xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
@@ -115,12 +114,10 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 def _stored_cache_home() -> Optional[Path]:
     # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
-    # machines that had never opened Studio.
-    # os.stat, not Path.exists: only a positively observed absence may skip the read. From 3.14
-    # the predicates answer through os.path, which reports EACCES and EIO as False, so a database
-    # we merely could not inspect would read as "no setting stored" and drop the chosen cache home.
-    # stat, not lstat: sqlite follows symlinks, so a dangling link is absent rather than a file to
-    # open the creating connection against.
+    # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
+    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False, so a
+    # database we could not inspect would read as "no setting stored". stat, not lstat: sqlite
+    # follows symlinks.
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
@@ -168,7 +165,7 @@ def configured_cache_key() -> str:
 
 def _portable_cache_home() -> Optional[Path]:
     """The HF cache home a portable install uses, else None: a normal install keeps the platform
-    default so models shared with other tools are not re-downloaded. Imported lazily, since
+    default so models shared with other tools are not re-downloaded. Lazy import, since
     storage_roots reaches into this module during startup."""
     try:
         from utils.paths.storage_roots import cache_root, portable_mode

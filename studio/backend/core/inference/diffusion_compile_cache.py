@@ -111,9 +111,8 @@ def legacy_cache_root() -> Optional[Path]:
     """The pre-relocation root, when it is still worth READING old bundles from.
 
     Read-only on purpose: returning it as the write root would pin an upgraded install to the home
-    directory forever, since nothing else creates the new default and begin() points
-    TORCHINDUCTOR_CACHE_DIR here too. Skipped under an explicit dir override (which names one
-    exact directory) and in portable mode (the host's home is not part of the install).
+    directory forever. Skipped under an explicit dir override (it names one exact directory) and
+    in portable mode (the host's home is not part of the install).
     """
     if os.environ.get(_ENV_DIR) or _portable_mode():
         return None
@@ -311,10 +310,8 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
     """Load the same key's bundle from the pre-relocation root, then migrate it.
 
     The key already covers every portability dimension, so a legacy bundle under it is the same
-    artifact this run would have written. The copy keeps the read fallback from becoming
-    permanent: the next run finds the pair in the write root and never reaches into the home
-    directory again. Best-effort, and skipped when saving is off, since that mode promises a
-    read-only cache."""
+    artifact this run would have written. The copy stops the read fallback becoming permanent.
+    Best-effort, and skipped when saving is off, since that mode promises a read-only cache."""
     root = legacy_cache_root()
     if root is None:
         return False
@@ -328,8 +325,7 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         try:
             ctx.dir.mkdir(parents = True, exist_ok = True)
             shutil.copyfile(bundle, ctx.bundle)
-            # Bundle first: a manifest without its bundle reads as a miss, not a hit the cache
-            # cannot serve.
+            # Bundle first: a manifest without one reads as a miss, not an unservable hit.
             shutil.copyfile(manifest_path, ctx.manifest_path)
             _info(logger, f"compile-cache: migrated legacy bundle for key {ctx.key}")
         except OSError as exc:
