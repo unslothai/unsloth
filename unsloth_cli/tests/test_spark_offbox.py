@@ -817,13 +817,27 @@ def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() 
 
 
 def test_recommend_topology_counts_kv_for_every_user() -> None:
+    """A replica is not half a node.
+
+    Each replica runs its own full server, and the launcher hands it the same context and
+    --parallel as the primary while the router declares the slots on both, so it allocates KV
+    for every user rather than half of them. This test used to assert the halved figure and so
+    blessed a plan that put 132 GiB on a 120 GiB node.
+    """
     sc = _load("studio/spark_cluster.py")
-    # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB on one node, 116 per replica.
+    # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB per node either way, so neither a
+    # single node nor a replica of it fits, and only spreading the layers does.
     out = sc.recommend_topology(100 * _GIB, 2 * _GIB, 16, 512, 120 * _GIB)
-    assert out["topology"] == "replicas" and "KV" in out["reason"]
-    # 100 GiB model, 4 GiB KV per user, 16 users: 132 GiB even per replica.
+    assert out["topology"] == "layer_split" and "KV" in out["reason"]
+    assert out["replica_node_bytes"] == out["single_node_bytes"]
+    # 100 GiB model, 4 GiB KV per user, 16 users: further past the budget, same answer.
     out = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
     assert out["topology"] == "layer_split" and "KV" in out["reason"]
+    # Whenever replicas ARE chosen, a node must hold a full copy plus KV for every user.
+    for users in (1, 2, 4, 8, 16, 32, 64):
+        out = sc.recommend_topology(20 * _GIB, 0.5 * _GIB, users, 512, 113 * _GIB)
+        if out["topology"] == "replicas":
+            assert 20 * _GIB + 0.5 * _GIB * users <= 113 * _GIB, users
 
 
 def test_recommend_topology_is_pure_and_tolerant() -> None:

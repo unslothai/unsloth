@@ -46,16 +46,6 @@ def stage_dirs(root: str) -> List[str]:
             f"stage directories are not contiguous from 0: found {ranks}. A missing stage means "
             f"missing layers, and merging would silently produce a partly-untrained adapter."
         )
-    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank 1 that died
-    # before saving passed this check and merged half a model. A pipeline is two ranks or more,
-    # and each rank saves on its own node, so a lone stage0 usually means stage1 is still on the
-    # peer or was never written.
-    if len(ranks) < 2:
-        raise RuntimeError(
-            f"only stage{ranks[0]}/ is here, and a layer split always has at least two stages. "
-            f"Copy the other stage directories from the peer into {root}, or re-run the training "
-            f"if a rank failed before saving."
-        )
     return [p for _, p in found]
 
 
@@ -96,6 +86,17 @@ def plan_merge(root: str) -> Dict[str, Any]:
                     f"{osp.basename(st['path'])} -- stages must own disjoint layers"
                 )
             seen[n] = st["path"]
+
+    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank that died
+    # before saving passed the directory check and merged half a model. Reported here rather
+    # than raised in discovery so `force` can still override it, the same escape the other
+    # refusals have: a deliberate one-rank run is degenerate but not forbidden.
+    if len(stages) < 2:
+        problems.append(
+            f"only {osp.basename(stages[0]['path'])} is present, and a layer split has at least "
+            f"two stages. Copy the other stage directories from the peer, or re-run the training "
+            f"if a rank failed before saving"
+        )
 
     # Gaps: contiguous coverage from 0 is what stage_layers() guarantees.
     covered = sorted(seen)

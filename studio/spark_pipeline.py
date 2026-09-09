@@ -35,6 +35,22 @@ _LAYER_PATHS = (
 )
 
 
+# find_layers accepts OPT, GPT-2 and GPT-NeoX, so the stage wrapper must not assume Llama's
+# names. Getting this wrong is not always loud: OPT keeps its final normalisation in
+# `final_layer_norm`, so looking only for `norm` dropped it from the last stage silently.
+_EMBED_NAMES = ("embed_tokens", "wte", "embed_in")
+_FINAL_NORM_NAMES = ("norm", "ln_f", "final_layer_norm")
+_LAYER_CONTAINER_NAMES = ("layers", "h")
+
+
+def _first_attr(owner, names: Sequence[str]):
+    for name in names:
+        found = getattr(owner, name, None)
+        if found is not None:
+            return found
+    return None
+
+
 def _resolve(root, path: Sequence[str]):
     node = root
     for attr in path:
@@ -284,7 +300,12 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     from safetensors import safe_open
 
     wanted = {k for k, _ in model.named_parameters()} | {k for k, _ in model.named_buffers()}
-    snap = snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
+    # snapshot_download takes a repo id, so handing it a path fails before a tensor is read.
+    # Local checkpoints matter most here: --shard-load exists for models too large to refetch.
+    snap = (
+        model_name if osp.isdir(model_name)
+        else snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
+    )
 
     loaded, seen = {}, 0
     for f in sorted(glob.glob(osp.join(snap, "*.safetensors"))):
@@ -991,7 +1012,13 @@ def stage_module_cls():
             super().__init__()
             self.is_first, self.is_last = bool(is_first), bool(is_last)
             self.grad_checkpoint = bool(grad_checkpoint)
-            self.layers = torch.nn.ModuleList([owner.layers[i] for i in layer_ids])
+            container = _first_attr(owner, _LAYER_CONTAINER_NAMES)
+            if container is None:
+                raise RuntimeError(
+                    f"no decoder layer container on {type(owner).__name__}; tried "
+                    f"{_LAYER_CONTAINER_NAMES}"
+                )
+            self.layers = torch.nn.ModuleList([container[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
             # sdpa and flash derive causality from is_causal when attention_mask is None, but
             # eager only masks what it is given: transformers' eager_attention_forward adds the
@@ -1001,11 +1028,21 @@ def stage_module_cls():
             self.needs_causal_mask = impl not in (
                 "sdpa", "flash_attention_2", "flash_attention_3",
             )
-            self.embed_tokens = getattr(owner, "embed_tokens", None) if is_first else None
-            self.norm = getattr(owner, "norm", None) if is_last else None
-            self.lm_head = getattr(top, "lm_head", None) if is_last else None
+            self.embed_tokens = _first_attr(owner, _EMBED_NAMES) if is_first else None
+            self.norm = _first_attr(owner, _FINAL_NORM_NAMES) if is_last else None
+            self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
             if self.is_first and not isinstance(self.embed_tokens, torch.nn.Module):
-                raise RuntimeError("the first pipeline stage has no embedding to run")
+                raise RuntimeError(
+                    f"the first pipeline stage has no embedding to run; tried {_EMBED_NAMES} "
+                    f"on {type(owner).__name__}"
+                )
+            if self.is_last and not isinstance(self.norm, torch.nn.Module):
+                # Not optional, and silence here is the dangerous outcome: skipping the final
+                # normalisation trains and saves a model whose last stage is subtly wrong.
+                raise RuntimeError(
+                    f"the last pipeline stage has no final normalisation to run; tried "
+                    f"{_FINAL_NORM_NAMES} on {type(owner).__name__}"
+                )
             if self.is_last and self.lm_head is None:
                 raise RuntimeError("the last pipeline stage has no lm_head to run")
 
@@ -1040,7 +1077,7 @@ def stage_module_cls():
                 else:
                     h = self._call_layer(layer, h, pos, mask)
             if self.is_last:
-                h = self.lm_head(self.norm(h) if self.norm is not None else h)
+                h = self.lm_head(self.norm(h))
             return h
 
     _STAGE_MODULE_CLS = _PPStageModule

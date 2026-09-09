@@ -2507,7 +2507,14 @@ def recommend_topology(
     kv_each = max(0.0, float(kv_bytes_per_user or 0))
     free = float(per_node_free_bytes or 0)
     single_need = model_bytes + kv_each * users
-    replica_need = model_bytes + kv_each * ((users + 1) // 2)
+    # Full users, not half. A replica node runs its own complete server, and the launcher hands
+    # each one the same --parallel and context as the primary while the router declares the
+    # slots on both, so every node allocates KV for the whole user count. Budgeting half was
+    # optimistic in exactly the window this branch exists to rescue -- full-user KV does not fit
+    # one node, half-user KV does -- and on 121.69 GiB shared between CPU and GPU that is an
+    # OOM rather than a slowdown. Pricing it honestly declines a throughput optimisation
+    # instead, which is the right way round.
+    replica_need = model_bytes + kv_each * users
     fits_model = model_bytes <= free
     out: Dict[str, Any] = {
         "topology": "single",
@@ -2538,31 +2545,22 @@ def recommend_topology(
         )
         return out
     if single_need > free:
-        if replica_need <= free:
-            out.update(
-                topology = "replicas",
-                speedup = replicas_speedup(prompt_tokens, users),
-                reason = (
-                    f"the model fits, but with KV for {users} users it needs "
-                    f"{single_need / gib:.1f} GiB against {free / gib:.1f} GiB free. Two "
-                    f"replicas carry half the users each ({replica_need / gib:.1f} GiB per "
-                    f"node) and measured {replicas_speedup(prompt_tokens, users):.2f}x "
-                    f"aggregate decode at {users} users."
-                ),
-            )
-        else:
-            out.update(
-                topology = "layer_split",
-                prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
-                reason = (
-                    f"the model fits, but model plus KV for {users} users "
-                    f"({single_need / gib:.1f} GiB) exceeds one node even when halved "
-                    f"across replicas ({replica_need / gib:.1f} GiB against "
-                    f"{free / gib:.1f} GiB free), so only a layer split, which spreads the KV "
-                    f"with the layers, has the room. Capacity, not speed: decode about "
-                    f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
-                ),
-            )
+        # No replicas branch here, and that is the point: a replica node runs its own full
+        # server, and the launcher gives it the same context and --parallel as the primary
+        # while the router declares the slots on both, so a replica needs exactly what a single
+        # node needs. Replicas buy throughput for a model that already fits, never capacity.
+        out.update(
+            topology = "layer_split",
+            prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            reason = (
+                f"the model fits, but model plus KV for {users} users "
+                f"({single_need / gib:.1f} GiB) exceeds one node's {free / gib:.1f} GiB, and a "
+                f"replica is no smaller because each one holds a full copy and KV for every "
+                f"user. Only a layer split, which spreads the KV with the layers, has the "
+                f"room. Capacity, not speed: decode about "
+                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
+            ),
+        )
         return out
     if prefill_heavy and users < REPLICAS_MIN_USERS:
         out.update(
