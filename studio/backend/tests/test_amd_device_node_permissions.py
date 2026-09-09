@@ -574,6 +574,9 @@ def _kernel_stack_hint_runs(
             # The run-scope predicate the guard now asks in place of a bare SKIP_TORCH
             # test. Lifted, not stubbed, so this arm goes through the installer's own rule.
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
             # live one would answer from the runner's own hardware. False by default, so
@@ -1042,6 +1045,9 @@ def _install_sh_hint(
             # The block also asks which nodes THIS run opens, to name the right --device
             # pair, so the predicate has to exist before the span that calls it.
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             # The real derivation by default. An override stands in only where the case
@@ -2206,6 +2212,9 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
             "C_WARN=",
             "_amd_node_diag_route=true",
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
             # live one would answer from the runner's own hardware. False by default, so
@@ -2301,6 +2310,9 @@ def _install_sh_missing_kfd(
             "OS=linux",
             "_amd_node_diag_route=true",
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
             # live one would answer from the runner's own hardware. False by default, so
@@ -2666,6 +2678,9 @@ def _install_sh_kfd_scope(
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
             # live one would answer from the runner's own hardware. False by default, so
@@ -4201,6 +4216,9 @@ def _nvidia_probe_calls(backend = None):
             "_probe_calls=0",
             "_has_usable_nvidia_gpu() { _probe_calls=$((_probe_calls + 1)); return 1; }",
             _shell_fn(lines, "_torch_index_url_leaf"),
+            # _torch_opens_amd_nodes classifies a ROCm index through this,
+            # so lifting one without the other measures a missing function.
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
@@ -4370,3 +4388,64 @@ def test_a_readable_non_amd_node_is_still_dropped(monkeypatch, linux):
     )
     monkeypatch.setattr(amd, "_render_node_vendor", lambda path: "0x10de")
     assert amd.amd_nodes_closed_to_this_user() == ["/dev/kfd"]
+
+
+def test_a_cuda_wheel_beside_a_vulkan_bundle_is_not_sent_after_kfd():
+    """Only a ROCm wheel opens /dev/kfd, and reading "any index that is not cpu" as one that
+    does was harmless only while _amd_node_diag_route dropped every non-ROCm index. The
+    explicit-backend arm keeps the route for a vulkan request, so a CUDA wheel beside a
+    Vulkan bundle reached the KFD scope and told a healthy hybrid host to repair permissions
+    on a node neither of them opens.
+
+    Fails before the fix, which excluded the cpu leaf alone."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = "vulkan",
+        torch_index = "https://download.pytorch.org/whl/cu128",
+        nvidia = True,
+    )
+    assert out.strip() == ""
+
+
+def test_the_same_pair_still_reports_a_closed_render_node():
+    """The control that keeps the round-twenty-four fix: the Vulkan bundle DOES open a
+    render node, so scoping /dev/kfd must not have taken the diagnosis the explicit-backend
+    arm exists to reach."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd\n/dev/dri/renderD128",
+        skip_torch = False,
+        backend = "vulkan",
+        torch_index = "https://download.pytorch.org/whl/cu128",
+        nvidia = True,
+    )
+    assert "/dev/dri/renderD128" in out
+    assert "/dev/kfd" not in out
+
+
+def test_a_cuda_wheel_asking_for_the_rocm_bundle_still_gets_kfd():
+    """The second control: the bundle is the other half of the question. A CUDA wheel with
+    an explicit rocm request installs a bundle that opens /dev/kfd, so the node stays in the
+    list even though the wheel never touches it."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = "rocm",
+        torch_index = "https://download.pytorch.org/whl/cu128",
+        nvidia = True,
+    )
+    assert "/dev/kfd" in out
+
+
+def test_a_radeon_repo_wheel_is_still_a_kfd_consumer():
+    """The third control, on the route this installer reroutes #10466's own host to:
+    repo.radeon.com's leaf is rocm-rel-X.Y, which is not a pip family, so a classifier that
+    only knew the pip spellings would have silenced the diagnosis for exactly the host it
+    was written for."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = "vulkan",
+        torch_index = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/gfx1151",
+    )
+    assert "/dev/kfd" in out

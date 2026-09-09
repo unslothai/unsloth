@@ -5586,16 +5586,28 @@ esac
 # trim and collapse, never delete). Deleting internal whitespace made "vul kan" match here
 # and suppress the diagnosis, while setup.sh rejects that value and falls back to automatic
 # selection -- which may install ROCm and need the very nodes this went quiet about.
-# Whether the TORCH this run installs can open an AMD device node. --no-torch is not the
-# only run that cannot: an explicitly CPU index installs a wheel with no ROCm runtime in
-# it, so it opens no more than --no-torch does. Every other non-ROCm index is already
-# handled one layer up, where _amd_node_diag_route drops the whole diagnosis; "cpu" is
-# deliberately kept there because the GGUF bundle may still be the ROCm one, which is
-# exactly why the backend request below has to settle it.
+# Whether the TORCH this run installs can open an AMD device node, which only a ROCm wheel
+# does. Asked positively rather than as "anything that is not the cpu leaf": that read a
+# CUDA index as a KFD consumer, which was harmless only while _amd_node_diag_route dropped
+# every non-ROCm index one layer up. The explicit-backend arm below now keeps the route for
+# a vulkan or rocm request, so a CUDA wheel beside a Vulkan bundle reached here and told a
+# healthy hybrid host to repair /dev/kfd permissions for a node neither of them opens.
+#
+# The same classification the route case uses, so the two cannot disagree: a leaf this does
+# not recognise as ROCm is one the route would have dropped anyway. "cpu" is still kept
+# there because the GGUF bundle may be the ROCm one, which is what the backend request and
+# the automatic-bundle check below settle.
 _torch_opens_amd_nodes() {
     [ "$SKIP_TORCH" = true ] && return 1
-    [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "cpu" ] && return 1
-    return 0
+    _toan_leaf=$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")
+    case "$_toan_leaf" in
+        # repo.radeon.com is rocm-rel-X.Y and nothing else; a pin that merely starts with
+        # it is somebody's mirror, exactly as the route case anchors its own arm.
+        rocm-rel-*[!0-9.]*) return 1 ;;
+        rocm-rel-[0-9]*) return 0 ;;
+    esac
+    _is_pip_rocm_family_leaf "$_toan_leaf" && return 0
+    return 1
 }
 
 # An unset or `auto` request is not a decision here, but it is not a coin toss either:
