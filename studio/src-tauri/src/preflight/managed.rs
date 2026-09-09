@@ -307,8 +307,14 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
 ///
 /// `ntpath.expanduser` answers USERPROFILE, while `dirs::home_dir()` reads the
 /// known folder, which a portable or overridden profile moves. Taking the latter
-/// would fingerprint a tree the child never looks at. Same order as process.rs.
-fn tilde_home() -> Option<PathBuf> {
+/// would fingerprint a tree the child never looks at.
+///
+/// process.rs calls this rather than keeping its own order: it used to pass
+/// `dirs::home_dir()` straight into `expand_windows_user`, so on a Windows box with
+/// an overridden USERPROFILE the child was pinned to the known folder while this
+/// fingerprinted the profile, and quarantine in the tree actually in use never
+/// invalidated a cached healthy result.
+pub(crate) fn tilde_home() -> Option<PathBuf> {
     if cfg!(windows) {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
             if !profile.is_empty() {
@@ -339,7 +345,7 @@ fn llama_runtime_override() -> Option<PathBuf> {
 }
 
 /// Split out from the reads so tests can drive it without a process-wide variable.
-fn llama_runtime_override_from(
+pub(crate) fn llama_runtime_override_from(
     value: Option<&str>,
     home: Option<&Path>,
     cwd: Option<&Path>,
@@ -792,6 +798,22 @@ fn name_hash(name: &std::ffi::OsStr) -> u64 {
     hash
 }
 
+/// The fingerprint an answer may be stored under, or None when it may not be stored.
+///
+/// The one taken before the probe, and only while the tree still matches it. Reading
+/// the fingerprint afresh afterwards instead meant a file quarantined while
+/// desktop-capabilities was running was cached as healthy under its own damaged
+/// fingerprint, which then matched on every later launch, so the CLI was never asked
+/// again and the repair was never offered. A mismatch describes a tree that no longer
+/// exists; there is nothing worth keeping and the next launch asks again.
+fn fingerprint_to_cache_under<'a>(
+    before: Option<&'a ManagedBinFingerprint>,
+    after: Option<ManagedBinFingerprint>,
+) -> Option<&'a ManagedBinFingerprint> {
+    let before = before?;
+    (after.as_ref() == Some(before)).then_some(before)
+}
+
 fn capability_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     if let Some(home) = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME") {
@@ -1159,8 +1181,13 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         Ok(true) => {}
     }
 
-    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-        if read_cached_capability(&fingerprint).is_some() {
+    // Taken before the probe and kept, so the answer is stored against the tree the
+    // CLI actually read. Re-reading it afterwards instead let a file quarantined
+    // during the probe be cached as healthy under its own damaged fingerprint, which
+    // then matched on every later launch and the CLI was never asked again.
+    let fingerprint_before = managed_bin_fingerprint(&bin);
+    if let Some(fingerprint) = fingerprint_before.as_ref() {
+        if read_cached_capability(fingerprint).is_some() {
             info!(
                 "Managed preflight: using cached desktop capability for {:?} in {}ms",
                 bin,
@@ -1186,8 +1213,11 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         }
     };
     if let Some(capability) = capability {
-        if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-            write_cached_capability(&fingerprint, &capability);
+        if let Some(fingerprint) = fingerprint_to_cache_under(
+            fingerprint_before.as_ref(),
+            managed_bin_fingerprint(&bin),
+        ) {
+            write_cached_capability(fingerprint, &capability);
         }
         if desktop_capability_ready(&capability) {
             info!(
@@ -2204,6 +2234,37 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_verdict_is_only_cached_against_the_tree_the_probe_read() {
+        // Codex 3973890115, P2. The fingerprint used to be re-read after the probe, so
+        // a file quarantined while desktop-capabilities was running was stored as
+        // healthy under its own damaged fingerprint. That entry then matched on every
+        // later launch, the CLI was never asked again, and the repair was never
+        // offered, which is worse than the race it came from.
+        let parent = scratch_dir("verdict-snapshot");
+        let root = parent.join("llama.cpp");
+        install_fake_runtime(&root);
+        let before = fingerprint_for_runtime(&root);
+
+        assert_eq!(
+            fingerprint_to_cache_under(Some(&before), Some(fingerprint_for_runtime(&root))),
+            Some(&before),
+            "an unchanged tree is what the answer describes, so it is cacheable"
+        );
+
+        // Quarantine lands mid-probe.
+        fs::remove_file(runtime_bin_dir(&root).join("libggml-base.so")).unwrap();
+        assert_eq!(
+            fingerprint_to_cache_under(Some(&before), Some(fingerprint_for_runtime(&root))),
+            None,
+            "a verdict about a tree that no longer exists must not be kept"
+        );
+        assert_eq!(fingerprint_to_cache_under(Some(&before), None), None);
+        assert_eq!(fingerprint_to_cache_under(None, Some(before)), None);
+
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

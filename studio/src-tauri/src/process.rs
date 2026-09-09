@@ -2538,7 +2538,10 @@ fn relative_override_pins(
         // GetFullPathNameW on Windows, which is what knows each drive's own
         // current directory.
         |value| std::path::absolute(value).ok(),
-        dirs::home_dir().as_deref(),
+        // preflight::managed's own reader, not dirs::home_dir(): ntpath.expanduser
+        // answers USERPROFILE and dirs reads the known folder, so an overridden
+        // profile pinned the child to one tree while the fingerprint watched another.
+        crate::preflight::managed::tilde_home().as_deref(),
         skipped,
         cfg!(windows),
     )
@@ -4853,6 +4856,28 @@ mod managed_cli_working_dir_tests {
             pins,
             vec![("UNSLOTH_LLAMA_CPP_PATH", cwd.join(value))],
             "an unresolvable name is anchored, the way the fingerprint anchors it"
+        );
+    }
+
+    #[test]
+    fn the_child_and_the_fingerprint_expand_a_bare_tilde_to_one_home() {
+        // Codex 3973890105, P2, right about the disagreement and wrong about where it
+        // was: this caller passed dirs::home_dir(), not USERPROFILE, so the POSIX side
+        // already agreed. Windows was the odd one: ntpath.expanduser answers USERPROFILE
+        // and dirs reads the known folder, so an overridden profile pinned the child to
+        // one tree while preflight::managed fingerprinted another, and quarantine in the
+        // tree in use never invalidated a cached healthy result. One reader now.
+        let home = crate::preflight::managed::tilde_home();
+        let pinned = expand_user("~/llama.cpp", home.as_deref(), None, cfg!(windows));
+        let watched = crate::preflight::managed::llama_runtime_override_from(
+            Some("~/llama.cpp"),
+            home.as_deref(),
+            Some(std::path::Path::new("/nowhere-relative")),
+        );
+        assert_eq!(
+            Some(std::path::PathBuf::from(pinned)),
+            watched,
+            "the tree the child is pinned to and the tree the cache watches must be one"
         );
     }
 

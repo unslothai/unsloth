@@ -3307,6 +3307,41 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     assert call_log == ["b9002"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
+def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
+    """Codex 3973890098, P1. installed_runtime_health grades the install root's own copy,
+    because _find_llama_server_binary reaches it before build/bin and a wrapper
+    create_exec_entrypoint had to write instead of a symlink rots on its own. This keep
+    decision graded only build/bin, so an online repair took the shortcut, replaced
+    nothing, and every later launch offered the same repair again. Both read
+    _damaged_entrypoint now, which is the whole point of it being one function."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+    host = linux_host()
+    choice = asset_choice(name = "llama-b9001-bin-ubuntu-x64-good.tar.gz")
+    checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
+    write_metadata(install_dir, choice, checksums)
+    kwargs = dict(
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+    )
+    assert existing_install_matches_choice(install_dir, host, **kwargs) is True
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+
+    (install_dir / name).chmod(0o644)
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a tree the probe rejects and this keeps is a repair that changes nothing"
+
+
 def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

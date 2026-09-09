@@ -7448,22 +7448,34 @@ def installed_runtime_health(
     # X_OK answers true for it and exists() does too, while _file_status in the
     # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
     # that.
-    # Root copies too, and for the same reason _existing_install_runs probes them
-    # first: _find_llama_server_binary reaches install_dir/llama-server before
-    # build/bin, and when create_exec_entrypoint could not make a symlink it wrote a
-    # real wrapper there, which can rot on its own while build/bin stays intact.
-    # Only when one is there. An absent root copy is not a pin, the finder falls
-    # through, and a symlink whose target went is absent by exists() as well, which
-    # is the state the build/bin check below already rejects.
-    ext = ".exe" if host.is_windows else ""
-    for name in ("server", "quantize"):
-        binary = runtime_dir / f"llama-{name}{ext}"
-        if not _entrypoint_is_runnable(binary, host):
-            return False, "llama_runtime_binaries_missing"
-        root_binary = root / f"llama-{name}{ext}"
-        if root_binary.exists() and not _entrypoint_is_runnable(root_binary, host):
-            return False, "llama_runtime_binaries_missing"
+    if _damaged_entrypoint(root, host) is not None:
+        return False, "llama_runtime_binaries_missing"
     return True, ""
+
+
+def _damaged_entrypoint(install_dir: Path, host: HostInfo) -> Path | None:
+    """The first runtime entrypoint the loader would not start, or None.
+
+    build/bin, and the install root's own copy when one is there:
+    ``_find_llama_server_binary`` reaches the root first, and a wrapper
+    ``create_exec_entrypoint`` had to write instead of a symlink rots on its own. An
+    absent root copy is not a pin and the finder falls through, which is also what a
+    link whose target went looks like to ``exists()``.
+
+    One owner for the question, so the launch verdict and both keep decisions cannot
+    answer it differently: a tree one rejects and another keeps is repaired by
+    changing nothing and rejected again on the next launch.
+    """
+    runtime_dir = install_runtime_dir(install_dir, host)
+    ext = ".exe" if host.is_windows else ""
+    for name in ("llama-server", "llama-quantize"):
+        binary = runtime_dir / f"{name}{ext}"
+        if not _entrypoint_is_runnable(binary, host):
+            return binary
+        root_binary = install_dir / f"{name}{ext}"
+        if root_binary.exists() and not _entrypoint_is_runnable(root_binary, host):
+            return root_binary
+    return None
 
 
 def _entrypoint_is_runnable(binary: Path, host: HostInfo) -> bool:
@@ -7543,7 +7555,7 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
-    if not all(_entrypoint_is_runnable(binary, host) for binary in binaries):
+    if _damaged_entrypoint(install_dir, host) is not None:
         return False
     try:
         # Each preflight is a no-op outside its platform.
@@ -7620,11 +7632,9 @@ def existing_install_matches_choice(
     # tree: security software or a bad extraction that clears the execute bit
     # leaves the file in place, and ldd reads a non-executable ELF quite happily,
     # so both gates here passed while the probe said llama_runtime_binaries_missing.
+    if _damaged_entrypoint(install_dir, host) is not None:
+        return False
     runtime_dir = install_runtime_dir(install_dir, host)
-    ext = ".exe" if host.is_windows else ""
-    for binary in ("llama-server", "llama-quantize"):
-        if not _entrypoint_is_runnable(runtime_dir / f"{binary}{ext}", host):
-            return False
     if host.is_linux:
         try:
             preflight_linux_installed_binaries(
