@@ -570,8 +570,14 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             if path not in tmp_runtime_paths:
                 argv += ["--ro-bind", path, path]
         # The workdir mount point has to exist before the root goes read-only; the
-        # writable bind onto it, and the private /tmp, come after.
-        argv += ["--dir", workdir, "--remount-ro", "/"]
+        # writable bind onto it, and the private /tmp, come after. Both spellings
+        # need one: the caller's spelling is a separate path inside the jail
+        # whenever the workdir is reached through a symlink, and bwrap cannot
+        # create it once / is read-only.
+        argv += ["--dir", workdir]
+        if inner != workdir:
+            argv += ["--dir", inner]
+        argv += ["--remount-ro", "/"]
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]

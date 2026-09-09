@@ -138,6 +138,38 @@ def test_the_writable_workdir_bind_lands_after_the_root_goes_read_only(prepared,
     assert argv[argv.index("--chdir") + 1] == workdir
 
 
+def test_both_spellings_of_a_symlinked_workdir_get_a_mount_point(tmp_path):
+    """A workdir reached through a symlink is TWO paths inside the jail, and both
+    are bound. The mount points for both therefore have to be created before the
+    root goes read-only, or bwrap dies with "Can't mkdir ...: Read-only file
+    system" in exactly the case the second bind exists to serve. Measured in a
+    container with working user namespaces before this assertion was written.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    launch = sandbox_linux.prepare(
+        ToolLaunchPlan(
+            argv = (sys.executable, "-c", "pass"),
+            workdir = str(link),
+            env = {"PATH": "/usr/bin:/bin"},
+        )
+    )
+    try:
+        argv = launch.argv
+        remount = argv.index("--remount-ro")
+        made = [argv[i + 1] for i, token in enumerate(argv[:remount]) if token == "--dir"]
+        assert str(link) in made, "the caller's spelling has no mount point"
+        assert os.path.realpath(link) in made, "the canonical spelling has no mount point"
+        # And both still resolve, which is why the pair is needed at all.
+        bound = _pairs(argv[remount:], "--bind")
+        assert (os.path.realpath(link), str(link)) in bound
+    finally:
+        launch.cleanup()
+
+
 def test_the_private_tmpfs_replaces_the_shared_directories(prepared):
     argv = prepared.argv
     remount = argv.index("--remount-ro")
@@ -244,10 +276,20 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         workdir = os.path.realpath(tmp_path)
         inner = os.path.join(workdir, ".cache", "huggingface")
         shared = _pairs(launch.argv, "--bind-try")
+        # Spelled out rather than built from _MODEL_CACHE_SUBDIRS. Deriving the
+        # expected value from the constant under test makes both sides move
+        # together, so the assertion holds no matter what the constant says:
+        # "modules" was dropped from it in d0e30972f and no test changed. A
+        # literal is the only version of this that can fail.
         assert sorted(shared) == sorted(
             (os.path.join(str(cache), name), os.path.join(inner, name))
-            for name in sandbox_linux._MODEL_CACHE_SUBDIRS
+            for name in ("hub", "datasets", "xet", "assets")
         )
+        # "modules" is remote code huggingface_hub writes and then imports. It is
+        # deliberately NOT shared with the host: a sandboxed call that fetched a
+        # trust_remote_code model would otherwise leave a module behind that an
+        # unisolated later call imports.
+        assert not any("modules" in destination for _, destination in shared)
         # HF_HOME still resolves so the default cache location finds the weights.
         assert launch.argv[launch.argv.index("HF_HOME") + 1] == inner
         # The credentials are named by no bind of any kind, so inside the jail
