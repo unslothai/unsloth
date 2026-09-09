@@ -991,9 +991,7 @@ def _real_cache(monkeypatch, home):
     """
     import types
 
-    paths = types.SimpleNamespace(
-        cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet"
-    )
+    paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: paths
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
@@ -1039,7 +1037,9 @@ def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
     assert sandbox_linux._model_cache_binds(str(tmp_path / "session"))["hub"] == str(host / "hub")
 
 
-def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(tmp_path, monkeypatch):
+def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
+    tmp_path, monkeypatch
+):
     """Dropping, never refusing. The cache is an optimisation, so the degraded
     case is the re-download every call did before it was shared; refusing would
     let anything able to write one socket end every later tool call."""
