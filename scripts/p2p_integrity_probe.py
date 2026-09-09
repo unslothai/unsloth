@@ -3,30 +3,28 @@
 
 """Probe: do GPU-to-GPU peer copies on this host actually transfer the data?
 
-On bare-metal Linux with a translating IOMMU, a PCIe peer-to-peer copy between
-two NVIDIA GPUs can be discarded by the chipset while CUDA still reports
-``cudaSuccess``. The driver advertises peer access as available and
-``torch.cuda.can_device_access_peer`` returns True, so nothing upstream of the
-data notices. In llama.cpp, with ``GGML_CUDA_P2P`` set, the result is a model
-that emits ``!!!!!``, ``/////``, a repeated Cyrillic token or word salad, which
-looks exactly like a broken quant or chat template. See issue #10613.
+On bare-metal Linux with a translating IOMMU, a PCIe peer-to-peer copy between two
+NVIDIA GPUs can be discarded by the chipset while CUDA still reports
+``cudaSuccess``, and ``torch.cuda.can_device_access_peer`` still returns True, so
+nothing upstream of the data notices. In llama.cpp with ``GGML_CUDA_P2P`` set, the
+model emits ``!!!!!``, ``/////``, a repeated token or word salad, which looks
+exactly like a broken quant or chat template. See issue #10613.
 
-This probe fills the destination with a sentinel before each copy, so a transfer
-that moves nothing is distinguishable from one that legitimately writes zeros. It
-tests every ordered GPU pair at several sizes, because small copies can succeed
-through a different path than large ones.
+The destination is filled with a sentinel before each copy, so a transfer that
+moves nothing is distinguishable from one that legitimately writes zeros. Every
+ordered pair is tested at several sizes, because small copies can succeed through
+a different path than large ones.
 
 Run with no arguments on the host in question::
 
     python scripts/p2p_integrity_probe.py
 
-Exit code 0 means every peer copy transferred intact. Exit code 1 means at least
-one dropped data: do NOT set ``GGML_CUDA_P2P`` on this host. Exit code 2 means
-the probe could not run (no torch, fewer than two GPUs).
+Exit 0: every peer copy transferred intact. Exit 1: at least one dropped data, so
+do NOT set ``GGML_CUDA_P2P`` here. Exit 2: could not run (no torch, <2 GPUs).
 
-Note that ``GGML_CUDA_P2P=0`` does not disable the flag upstream: llama.cpp tests
-it for presence, not value, so the variable must be unset entirely. Unsloth
-Studio unsets it for you and gates the flag on verified NVLink.
+``GGML_CUDA_P2P=0`` does not disable the flag upstream: llama.cpp tests it for
+presence, not value, so it must be unset entirely. Unsloth Studio unsets it for
+you and gates the flag on verified NVLink.
 """
 
 from __future__ import annotations
@@ -42,12 +40,9 @@ REPEATS = 3
 
 
 def _print_topology() -> None:
-    """Show `nvidia-smi topo -m`, the cheap read that answers this in advance.
-
-    NV# between a pair means NVLink, which does not traverse the PCIe root
-    complex and is not exposed to this failure. NODE / PHB / PXB / PIX / SYS all
-    mean the copy goes over PCIe.
-    """
+    """Show `nvidia-smi topo -m`, the cheap read that answers this in advance. NV#
+    means NVLink, which does not traverse the PCIe root complex and is not exposed
+    to this failure; NODE / PHB / PXB / PIX / SYS all go over PCIe."""
     if shutil.which("nvidia-smi") is None:
         print("nvidia-smi not found; skipping topology.\n")
         return
@@ -63,7 +58,7 @@ def _print_topology() -> None:
         print("topology read returned non-zero; skipping.\n")
         return
     print("=== nvidia-smi topo -m ===")
-    # The legend after the matrix is long and not what the reader needs here.
+    # The legend after the matrix is long and not what the reader needs.
     for line in out.stdout.splitlines():
         if line.strip().startswith("Legend"):
             break
@@ -83,9 +78,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # A probe that tests nothing must not print PASS: this script's whole job is
-    # to license setting GGML_CUDA_P2P, so an empty run is the worst answer it
-    # could give.
+    # A probe that tests nothing must not print PASS: its whole job is to license
+    # setting GGML_CUDA_P2P, so an empty run is the worst answer it could give.
     if args.repeats <= 0:
         parser.error("--repeats must be positive")
     if any(size <= 0 for size in args.sizes_mib):
@@ -139,12 +133,11 @@ def main() -> int:
                         d.copy_(s)
                         torch.cuda.synchronize(src)
                         torch.cuda.synchronize(dst)
-                        # Compare against the source, not just the sentinel. A
-                        # partial or scrambled transfer overwrites the sentinel
-                        # with the wrong data, which a sentinel-only test scores
-                        # as a pass; the sentinel count is kept because "never
-                        # written" is a different diagnosis from "written wrong"
-                        # and points at a dropped DMA specifically.
+                        # Compare against the source, not just the sentinel: a
+                        # scrambled transfer overwrites it with wrong data, which
+                        # a sentinel-only test scores as a pass. The sentinel
+                        # count stays because "never written" is a different
+                        # diagnosis, pointing at a dropped DMA specifically.
                         host_dst = d.cpu()
                         wrong = int((host_dst != s.cpu()).sum())
                         dropped = int((host_dst == SENTINEL).sum())

@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data-center llama.cpp env tuning: FP32 accum (+ P2P / launch queues for
-multi-GPU) must apply only to datacenter NVIDIA parts, never consumer GeForce,
-AMD/ROCm, CPU or macOS. User values win; UNSLOTH_DISABLE_DC_TUNING=1 disables.
+"""Data-center llama.cpp env tuning: applies only to datacenter NVIDIA parts,
+never consumer GeForce, ROCm, CPU or macOS. User values win;
+UNSLOTH_DISABLE_DC_TUNING=1 disables.
 
-P2P carries a second, stricter gate (#10613): a datacenter NAME is not evidence
-of an NVLink fabric, and on a non-NVLink multi-GPU box the peer copy is silently
-discarded while still reporting success, so every model emits garbage. The flags
-now need a confirmed NV# link across the selection and fail CLOSED on unknowns.
+P2P has a second, stricter gate (#10613): a datacenter NAME is not evidence of an
+NVLink fabric, and on a non-NVLink box the peer copy is silently discarded while
+still reporting success, so every model emits garbage. It now needs a confirmed
+NV# link across the selection and fails CLOSED on unknowns.
 """
 
 from __future__ import annotations
@@ -39,10 +39,9 @@ def _fake_torch(
     return t
 
 
-# Real `nvidia-smi topo -m` from an 8x B200 NVLink host, verbatim: nvidia-smi
-# underlines the header with ANSI escapes, the table carries NIC rows/columns and
-# trailing affinity columns, and a Legend section follows. A toy two-line string
-# would not exercise any of that.
+# Real `nvidia-smi topo -m` from an 8x B200 NVLink host, verbatim: ANSI-underlined
+# header, NIC rows/columns, trailing affinity columns and a Legend, none of which a
+# toy string would exercise.
 TOPO_NVLINK_8X = (
     "\t\x1b[4mGPU0\tGPU1\tGPU2\tGPU3\tGPU4\tGPU5\tGPU6\tGPU7\tNIC0\tNIC1\t"
     "CPU Affinity\tNUMA Affinity\tGPU NUMA ID\x1b[0m\n"
@@ -65,8 +64,8 @@ TOPO_NVLINK_8X = (
     "  NV#  = Connection traversing a bonded set of # NVLinks\n"
 )
 
-# The reporter's host (#10613): 2x RTX 6000 Ada, NODE (PCIe through a host
-# bridge), no NVLink anywhere. The driver still advertises P2P as available.
+# The reporter's host (#10613): 2x RTX 6000 Ada, NODE (PCIe through a host bridge),
+# no NVLink. The driver still advertises P2P as available.
 TOPO_PCIE_2X = (
     "\t\x1b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\x1b[0m\n"
     "GPU0\t X \tNODE\t0-23\t0\t\tN/A\n"
@@ -81,14 +80,13 @@ TOPO_PCIE_2X = (
 
 @pytest.fixture(autouse = True)
 def _clear_cuda_visible_devices(monkeypatch):
-    """Detection reads CUDA_VISIBLE_DEVICES, so clear it by default (run unmasked,
-    physical id == ordinal) regardless of host; masked tests set it explicitly."""
+    """Run unmasked by default (physical id == ordinal); masked tests set it."""
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
 
 
-# Captured before the autouse fixture stubs the class attribute, so the platform
-# probes can still be exercised for real against a fixture tree.
+# Captured before the autouse fixture stubs it, so the probe can still run for real
+# against a fixture tree.
 _REAL_IOMMU_IS_TRANSLATING = LlamaCppBackend.__dict__["_iommu_is_translating"].__func__
 
 
@@ -98,10 +96,9 @@ def _no_nvidia_smi(*a, **k):
 
 @pytest.fixture(autouse = True)
 def _isolate_host_topology(monkeypatch):
-    """Keep the P2P gate off the real host. The parser itself always runs (only
-    what nvidia-smi "returns" is stubbed), the process-lifetime cache is dropped
-    either side, and the platform probes are pinned so a CI box that happens to
-    have GPUs or a translating IOMMU cannot colour the results."""
+    """Keep the P2P gate off the real host: only what nvidia-smi "returns" is
+    stubbed (the parser always runs), caches are dropped either side, and the
+    platform probes are pinned so a CI box with GPUs cannot colour the results."""
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     LlamaCppBackend._SMI_INDEX_CACHE = None
     LlamaCppBackend._IOMMU_CACHE = None
@@ -112,8 +109,8 @@ def _isolate_host_topology(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_running_virtualized", staticmethod(lambda: False)
     )
-    # Both explicit overrides off by default, and the once-per-process warning
-    # latch reset, so neither the host's environment nor test ordering leaks in.
+    # Overrides off and the warn-once latch reset, so neither the host's
+    # environment nor test ordering leaks in.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_DC_P2P", raising = False)
     LlamaCppBackend._warned_no_nvlink = False
@@ -163,15 +160,14 @@ def _use_topo(monkeypatch, text, returncode = 0):
         (["NVIDIA GeForce RTX 3090"], False),
         (["NVIDIA GeForce RTX 2080 Ti"], False),
         (["NVIDIA GeForce GTX 1080"], False),
-        # Workstation/laptop: short markers must not match as substrings
-        # ("a100" in "A1000", "a30" in "A3000").
+        # Short markers must not match as substrings ("a100" in "A1000").
         (["NVIDIA RTX A1000 Laptop GPU"], False),
         (["NVIDIA RTX A1000 6GB Laptop GPU"], False),
         (["NVIDIA RTX A3000 Laptop GPU"], False),
         # Homogeneous multi-DC: all must match.
         (["NVIDIA B200", "NVIDIA B200"], True),
         (["NVIDIA H100 80GB HBM3", "NVIDIA H100 80GB HBM3"], True),
-        # Mixed DC + consumer: non-DC, so tuning never lands on the GeForce.
+        # Mixed: non-DC, so tuning never lands on the GeForce.
         (["NVIDIA B200", "NVIDIA GeForce RTX 4090"], False),
         (["NVIDIA GeForce RTX 4090", "NVIDIA B200"], False),
     ],
@@ -182,7 +178,6 @@ def test_is_datacenter_gpu(monkeypatch, names, expected):
 
 
 def test_is_datacenter_gpu_respects_selection(monkeypatch):
-    # A mixed box where only the DC GPU is selected -> True; only consumer -> False.
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -195,15 +190,14 @@ def test_is_datacenter_gpu_respects_selection(monkeypatch):
 
 def test_is_datacenter_gpu_out_of_range_indices_skipped(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"]))
-    # Out-of-range / negative indices are skipped; the one valid DC GPU still wins.
+    # Invalid indices are skipped; only invalid -> nothing seen -> False.
     assert LlamaCppBackend._is_datacenter_gpu([0, 5, -1]) is True
-    # Only invalid indices -> nothing seen -> False (fail closed for the flag).
     assert LlamaCppBackend._is_datacenter_gpu([5, 9]) is False
 
 
 def test_is_datacenter_gpu_masked_host_physical_ids(monkeypatch):
-    # Mask 4,5,6,7 -> ordinals 0..3 == physical 4..7. PHYSICAL selection [4,5]
-    # must resolve, not index out of range (the pre-fix bug: 4 >= device_count).
+    # PHYSICAL selection [4,5] must resolve, not index out of range (the pre-fix
+    # bug: 4 >= device_count).
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     assert LlamaCppBackend._is_datacenter_gpu([4, 5]) is True
@@ -213,15 +207,14 @@ def test_is_datacenter_gpu_masked_host_physical_ids(monkeypatch):
 
 
 def test_is_datacenter_gpu_masked_host_reordered(monkeypatch):
-    # Reordered mask preserves order: ordinal 0 -> physical 7, 1 -> 4, ...
+    # Reordered mask preserves order: ordinal 0 -> physical 7.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,4,5,6")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4))
     assert LlamaCppBackend._is_datacenter_gpu([7, 4]) is True
 
 
 def test_is_datacenter_gpu_masked_host_mixed_class(monkeypatch):
-    # Mask 4,5: physical 4 = GeForce, physical 5 = B200. Detection must follow the
-    # selected physical GPU, not a same-numbered ordinal.
+    # Detection must follow the selected physical GPU, not a same-numbered ordinal.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
     monkeypatch.setitem(
         sys.modules,
@@ -234,15 +227,14 @@ def test_is_datacenter_gpu_masked_host_mixed_class(monkeypatch):
 
 
 def test_is_datacenter_gpu_unparsable_mask_falls_back(monkeypatch):
-    # Unparsable (UUID) mask falls back to physical id == ordinal (mirrors
-    # _get_gpu_free_memory), so ordinal lookup still classifies the device.
+    # Unparsable (UUID) mask falls back to physical id == ordinal.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abcdef12")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"]))
     assert LlamaCppBackend._is_datacenter_gpu([0]) is True
 
 
 def test_is_datacenter_gpu_rocm_is_false(monkeypatch):
-    # ROCm reuses torch.cuda.*; an MI300X must not qualify.
+    # ROCm reuses torch.cuda.*.
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -273,7 +265,6 @@ def test_effective_gpu_count_explicit_selection(monkeypatch):
 
 
 def test_effective_gpu_count_none_uses_visible(monkeypatch):
-    # None -> visible device count.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     assert LlamaCppBackend._effective_gpu_count(None) == 4
 
@@ -315,7 +306,6 @@ def test_apply_env_multi_dc_gpu_sets_all(monkeypatch):
 
 
 def test_apply_env_none_indices_uses_visible_count(monkeypatch):
-    # None on a 2x DC box -> multi-GPU flags applied.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100", "NVIDIA H100"]))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
@@ -342,7 +332,7 @@ def test_apply_env_user_value_wins(monkeypatch):
         "CUDA_SCALE_LAUNCH_QUEUES": "8x",  # user override
     }
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
-    # setdefault must not clobber user values; the unset one still defaults.
+    # setdefault must not clobber user values; the unset one defaults.
     assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "0"
     assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "8x"
     assert env["GGML_CUDA_P2P"] == "1"
@@ -365,8 +355,7 @@ def test_apply_env_fail_open_on_detection_error(monkeypatch):
 
 
 def test_apply_env_masked_host_multi_dc(monkeypatch):
-    # End-to-end masked host (mask 4,5,6,7, physical selection [4,5]): pre-fix
-    # applied no tuning; now all three multi-GPU flags must be set.
+    # Masked host end-to-end: pre-fix this applied no tuning at all.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
@@ -384,8 +373,7 @@ def test_apply_env_masked_host_multi_dc(monkeypatch):
 
 
 def test_topo_parses_real_nvlink_table(monkeypatch):
-    # 8 GPUs -> 8*7 ordered pairs. NIC rows/columns, the affinity columns, the
-    # ANSI-underlined header and the legend must all be ignored.
+    # 8 GPUs -> 8*7 ordered pairs; NIC rows, affinity columns and legend ignored.
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
     matrix = LlamaCppBackend._nvlink_topology()
     assert len(matrix) == 56
@@ -410,14 +398,14 @@ def test_topo_is_cached_then_refreshable(monkeypatch):
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     LlamaCppBackend._nvlink_topology()
     LlamaCppBackend._nvlink_topology()
-    assert len(calls) == 1  # one shell-out per process, not per launch
+    assert len(calls) == 1  # one shell-out per process
     LlamaCppBackend._nvlink_topology(refresh = True)
     assert len(calls) == 2
 
 
 def test_topo_unavailable_paths_are_none(monkeypatch):
-    # Missing binary (the autouse default), non-zero exit, and a table with no
-    # GPU rows all mean "unknown", never "assume NVLink".
+    # Missing binary, non-zero exit and a GPU-less table all mean "unknown", never
+    # "assume NVLink".
     assert LlamaCppBackend._nvlink_topology() is None
     _use_topo(monkeypatch, TOPO_NVLINK_8X, returncode = 9)
     assert LlamaCppBackend._nvlink_topology() is None
@@ -441,7 +429,7 @@ def test_topo_truncated_row_refuses_to_guess(monkeypatch):
 
 
 def test_p2p_vetoed_on_rtx_6000_ada(monkeypatch):
-    # The reported host: 2x RTX 6000 Ada, a datacenter NAME with no NVLink.
+    # A datacenter NAME with no NVLink.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
@@ -465,16 +453,15 @@ def test_p2p_allowed_on_confirmed_nvlink(monkeypatch):
 
 
 def test_p2p_vetoed_when_topology_unknown(monkeypatch):
-    # NVLink-capable parts but no nvidia-smi: fail CLOSED, the whole point of the
-    # fix. The old code set the flag on the name alone.
+    # NVLink-capable parts but no nvidia-smi: fail CLOSED. The old code set the
+    # flag on the name alone.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
     assert reason is not None and "interconnect matrix" in reason
 
 
 def test_p2p_vetoed_on_pcie_pair_between_nvlink_parts(monkeypatch):
-    # A100s wired over PCIe (no NVLink bridge fitted) is a real configuration and
-    # the name gate alone would wave it through.
+    # A100s with no bridge fitted is real, and the name gate would wave it through.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
@@ -490,7 +477,7 @@ def test_p2p_veto_names_the_iommu_on_bare_metal(monkeypatch):
     reason = LlamaCppBackend._p2p_veto_reason([0, 1])
     assert "translating IOMMU" in reason
     # Under a hypervisor CUDA supports pass-through P2P, so the IOMMU is not the
-    # diagnosis and must not be blamed.
+    # diagnosis.
     monkeypatch.setattr(
         LlamaCppBackend, "_running_virtualized", staticmethod(lambda: True)
     )
@@ -498,8 +485,8 @@ def test_p2p_veto_names_the_iommu_on_bare_metal(monkeypatch):
 
 
 def test_p2p_exact_mapping_consults_only_the_selected_pair(monkeypatch):
-    # CUDA_DEVICE_ORDER=PCI_BUS_ID makes physical ids and nvidia-smi indices the
-    # same space, so a partially linked box can still use its NVLinked pair.
+    # PCI_BUS_ID makes the two index spaces the same, so a partially linked box can
+    # still use its NVLinked pair.
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100"] * 3))
     _use_topo(
@@ -515,9 +502,9 @@ def test_p2p_exact_mapping_consults_only_the_selected_pair(monkeypatch):
 
 
 def test_p2p_inexact_mapping_demands_a_uniform_matrix(monkeypatch):
-    # Without PCI_BUS_ID ordering, "GPU 0" means different cards to CUDA and to
-    # nvidia-smi. A uniformly NVLinked box is safe under any permutation; a
-    # partially linked one is not, so it is refused even for its linked pair.
+    # Without PCI_BUS_ID, "GPU 0" means different cards to CUDA and nvidia-smi: a
+    # uniform box is safe under any permutation, a partially linked one is refused
+    # even for its linked pair.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100"] * 3))
     _use_topo(
         monkeypatch,
@@ -537,8 +524,8 @@ def test_p2p_inexact_mapping_demands_a_uniform_matrix(monkeypatch):
 
 
 def test_apply_env_rtx_6000_ada_gets_fp32_but_not_p2p(monkeypatch):
-    """#10613 exactly: 2x RTX 6000 Ada kept FP32 accum (which the reporter's own
-    isolation shows is harmless) and lost the P2P pair that garbled every model."""
+    """#10613 exactly: 2x RTX 6000 Ada keeps FP32 accum, which the reporter's own
+    isolation shows is harmless, and loses the P2P that garbled every model."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
@@ -546,7 +533,7 @@ def test_apply_env_rtx_6000_ada_gets_fp32_but_not_p2p(monkeypatch):
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
     assert "GGML_CUDA_P2P" not in env
     # The launch-queue depth moves no data across the bus and #10613 measured it
-    # clean on the affected host, so it is deliberately NOT gated with P2P.
+    # clean on that host, so it is deliberately NOT gated with P2P.
     assert env == {
         "GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1",
         "CUDA_SCALE_LAUNCH_QUEUES": "4x",
@@ -565,7 +552,7 @@ def test_apply_env_l40s_multi_gpu_gets_fp32_but_not_p2p(monkeypatch):
 
 def test_sanitize_falsy_user_p2p_is_removed():
     """ggml tests GGML_CUDA_P2P for presence, so passing a user's "0" through
-    ENABLES peer copies. The documented opt-out has to unset it instead."""
+    ENABLES peer copies; the opt-out has to unset it instead."""
     for value in ("0", "false", "OFF", "no", "", " 0 "):
         env = {"GGML_CUDA_P2P": value, "OTHER": "kept"}
         assert LlamaCppBackend._sanitize_p2p_env(env) == value
@@ -579,8 +566,8 @@ def test_sanitize_leaves_a_truthy_user_p2p_alone():
 
 
 def test_opted_out_p2p_is_not_reintroduced_by_the_default(monkeypatch):
-    # The call site strips the falsy value; the DC block must not put it back on
-    # an NVLink box that would otherwise qualify. The rest of the tuning stands.
+    # The call site strips it; the DC block must not put it back on a box that
+    # would otherwise qualify. The rest of the tuning stands.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
@@ -594,8 +581,8 @@ def test_opted_out_p2p_is_not_reintroduced_by_the_default(monkeypatch):
 
 
 def test_disable_dc_p2p_drops_peer_flag_but_keeps_fp32(monkeypatch):
-    # UNSLOTH_DISABLE_DC_TUNING is all-or-nothing and throws away a tuning that
-    # is not implicated; this is the surgical opt-out the #10613 reporter wanted.
+    # The surgical opt-out: UNSLOTH_DISABLE_DC_TUNING is all-or-nothing and throws
+    # away a tuning that is not implicated.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
@@ -607,8 +594,7 @@ def test_disable_dc_p2p_drops_peer_flag_but_keeps_fp32(monkeypatch):
 
 
 def test_force_dc_p2p_opts_back_in_over_an_unreadable_topology(monkeypatch):
-    # For the host whose fabric is real but whose topology we cannot parse, after
-    # they have confirmed it with scripts/p2p_integrity_probe.py.
+    # For a fabric that is real but unparsable, once p2p_integrity_probe.py passes.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
     monkeypatch.setenv("UNSLOTH_FORCE_DC_P2P", "1")
@@ -631,15 +617,15 @@ def test_disable_dc_p2p_beats_force_dc_p2p(monkeypatch):
 
 
 def test_sanitize_applies_to_a_consumer_box_that_never_reaches_the_dc_gate():
-    # A 2x RTX 3090 user who set GGML_CUDA_P2P=0 by hand never matches the
-    # datacenter allowlist, so only the call-site sanitizer protects them.
+    # A 2x RTX 3090 user never matches the datacenter allowlist, so only the
+    # call-site sanitizer protects them.
     env = {"GGML_CUDA_P2P": "0"}
     assert LlamaCppBackend._sanitize_p2p_env(env) == "0"
     assert env == {}
 
 
 def test_apply_env_truthy_user_p2p_still_wins(monkeypatch):
-    # An explicit opt-in survives the veto: the user asked for it by name.
+    # An explicit opt-in survives the veto.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
@@ -649,7 +635,7 @@ def test_apply_env_truthy_user_p2p_still_wins(monkeypatch):
 
 
 def test_apply_env_single_nvlink_gpu_still_skips_p2p(monkeypatch):
-    # One GPU has no peer, so the topology is never consulted.
+    # One GPU has no peer.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
@@ -659,8 +645,7 @@ def test_apply_env_single_nvlink_gpu_still_skips_p2p(monkeypatch):
 
 
 def test_apply_env_multi_dc_without_nvidia_smi_withholds_p2p(monkeypatch):
-    # The regression that matters: unknown topology must cost the optimisation,
-    # not the correctness of the output.
+    # Unknown topology must cost the optimisation, not the correctness.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     env: dict = {}
@@ -689,7 +674,7 @@ def test_iommu_identity_groups_are_not_translating(tmp_path):
 
 
 def test_iommu_dma_group_is_translating(tmp_path):
-    # The reporter's host: all 175 groups in DMA-FQ (translating) mode.
+    # The reporter's host: 175 groups in DMA-FQ (translating) mode.
     root = _iommu_tree(tmp_path, {0: "identity", 1: "DMA-FQ"})
     assert _REAL_IOMMU_IS_TRANSLATING(root) is True
 
@@ -701,15 +686,13 @@ def test_iommu_absent_or_empty_is_not_translating(tmp_path):
 
 
 def test_iommu_unreadable_types_are_unknown(tmp_path):
-    # Pre-5.x kernels expose groups without a `type` file: unknown, not "safe".
+    # Pre-5.x kernels expose groups with no `type`: unknown, not "safe".
     root = _iommu_tree(tmp_path, {0: None, 1: None})
     assert _REAL_IOMMU_IS_TRANSLATING(root) is None
 
 
 # ---------------------------------------------------------------------------
-# Gaps found in review of the #10613 fix. Each is xfail(strict=True): the
-# assertion states the behaviour we want, so the test PASSES while the gap is
-# open and FAILS loudly the moment someone closes it without updating this file.
+# Gaps found reviewing the #10613 fix
 # ---------------------------------------------------------------------------
 
 
@@ -734,9 +717,8 @@ def test_apply_env_does_not_leave_a_falsy_value_present_when_called_directly(mon
 
 
 def test_shared_llama_server_env_builder_sanitizes_p2p(monkeypatch, tmp_path):
-    """The STT sidecar and the embedding probe both build from
-    _llama_server_env_for_binary, so stripping there covers every llama-server
-    child rather than only the chat path the fix started with."""
+    """The STT sidecar and the embedding probe both build from this, so stripping
+    here covers every llama-server child, not just the chat path."""
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
     binary = tmp_path / "llama-server"
     binary.write_text("", encoding = "utf-8")
@@ -745,8 +727,7 @@ def test_shared_llama_server_env_builder_sanitizes_p2p(monkeypatch, tmp_path):
 
 
 def test_stt_sidecar_env_sanitizes_p2p(monkeypatch, tmp_path):
-    # The dictation server spawns llama-server with -ngl 99, so it is exposed to
-    # the same peer-copy corruption as chat.
+    # Spawns llama-server with -ngl 99, so it is exposed like chat.
     from core.inference import stt_mtmd_sidecar
 
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
@@ -756,9 +737,8 @@ def test_stt_sidecar_env_sanitizes_p2p(monkeypatch, tmp_path):
 
 
 def test_embedding_server_env_sanitizes_p2p(monkeypatch, tmp_path):
-    """The RAG embedding server builds its env from child_env_without_native_path_secret
-    directly, bypassing the shared builder. A corrupt embedding degrades retrieval
-    silently, with no garbled text to notice, so this path matters most."""
+    """This one bypasses the shared builder. A corrupt embedding degrades retrieval
+    silently, with no garbled text to notice, so the path matters most."""
     from core.rag.embed_llama_server import LlamaServerBackend
 
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
@@ -774,9 +754,8 @@ def test_embedding_server_env_sanitizes_p2p(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-# 4x A100 PCIe with NVLink bridges over (0,1) and (2,3), PCIe between the
-# islands: the standard bridged server build, and the case the whole-matrix
-# fallback used to veto even for a genuinely bridged pair.
+# 4x A100 PCIe bridged over (0,1) and (2,3), PCIe between the islands: the standard
+# bridged build, which the whole-matrix fallback used to veto outright.
 TOPO_BRIDGED_4X = (
     "\t\x1b[4mGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\x1b[0m\n"
     "GPU0\t X \tNV12\tSYS\tSYS\t0-23\t0\n"
@@ -813,9 +792,9 @@ def _use_topo_and_uuids(monkeypatch, text, n, *, smi_order = None):
 
 
 def test_bridged_pair_keeps_p2p_via_the_uuid_join(monkeypatch):
-    """A genuinely NVLinked pair on a partially bridged box keeps P2P. The join
-    is on GPU uuid, so it holds under the default CUDA_DEVICE_ORDER rather than
-    needing PCI_BUS_ID, which is what made this a real optimisation regression."""
+    """A genuinely NVLinked pair on a partially bridged box keeps P2P. The join is
+    on GPU uuid, so it holds under the default CUDA_DEVICE_ORDER instead of needing
+    PCI_BUS_ID."""
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
     )
@@ -827,8 +806,8 @@ def test_bridged_pair_keeps_p2p_via_the_uuid_join(monkeypatch):
 
 
 def test_uuid_join_follows_the_uuid_not_the_position(monkeypatch):
-    # nvidia-smi enumerating in the reverse order must not silently check the
-    # wrong pair: CUDA 0,1 are nvidia-smi 3,2, still inside one island.
+    # Reverse nvidia-smi enumeration must not check the wrong pair: CUDA 0,1 are
+    # nvidia-smi 3,2, still inside one island.
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
     )
@@ -838,8 +817,8 @@ def test_uuid_join_follows_the_uuid_not_the_position(monkeypatch):
 
 
 def test_partial_uuid_join_is_refused(monkeypatch):
-    # Half the devices missing from nvidia-smi would silently narrow the pairs
-    # checked, so the join must be discarded rather than half-trusted.
+    # Missing devices would silently narrow the pairs checked, so the join is
+    # discarded rather than half-trusted.
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
     )
@@ -849,8 +828,8 @@ def test_partial_uuid_join_is_refused(monkeypatch):
 
 
 def test_name_gate_veto_still_names_the_iommu(monkeypatch):
-    """The reporter's own host fails the NAME gate first, so without this the one
-    actionable diagnosis never reaches the person who needs it (#10613)."""
+    """The reporter's host fails the NAME gate first, so without this the one
+    actionable diagnosis never reaches them (#10613)."""
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
     )
@@ -864,8 +843,7 @@ def test_name_gate_veto_still_names_the_iommu(monkeypatch):
 
 
 def test_a_raising_probe_never_fails_the_model_load(monkeypatch):
-    # Losing the tuning is acceptable; an exception escaping into load_model and
-    # taking the whole model load down with it is not.
+    # Losing the tuning is acceptable; taking the model load down with it is not.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
 
     def boom(*a, **k):
@@ -881,8 +859,7 @@ def test_a_raising_probe_never_fails_the_model_load(monkeypatch):
 
 
 def test_iommu_scan_is_cached_across_loads(monkeypatch):
-    # 175 IOMMU groups on the reporter's host: a boot-time property, so it must
-    # not be re-scanned on every model load.
+    # A boot-time property, and 175 groups on the reporter's host.
     calls = []
 
     def counted(*a, **k):
