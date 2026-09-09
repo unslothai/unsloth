@@ -104,3 +104,33 @@ def test_a_runtime_repair_survives_a_tiktoken_that_will_not_install(tmp_path, mo
 
     monkeypatch.setattr(tv, "_install_to_dir", fake_install_failing_required)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+
+
+def test_a_tiktoken_dist_info_without_its_payload_is_not_damage(tmp_path, monkeypatch):
+    """An interrupted tiktoken install leaves a dist-info whose RECORD names files that
+    never landed. The whole-tree scan used to read that as damage and wipe the sidecar
+    on every check; the optional package's leftovers are the top-up's business."""
+    root = tmp_path / ".venv_t5_550"
+    _sidecar(
+        root,
+        "transformers",
+        "huggingface_hub",
+        "hf_xet",
+        versions = {
+            "transformers": tv.TRANSFORMERS_550_VERSION,
+            "huggingface_hub": "1.8.0",
+            "hf_xet": "1.4.2",
+        },
+    )
+    (root / "transformers" / "__init__.py").write_text("", encoding = "utf-8")
+    info = root / "tiktoken-0.9.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Name: tiktoken\nVersion: 0.9.0\n", encoding = "utf-8")
+    (info / "RECORD").write_text("tiktoken/__init__.py,sha256=abc,1234\n", encoding = "utf-8")
+    monkeypatch.delenv(tv._SIDECAR_FILE_CHECK_ENV, raising = False)
+    assert tv._sidecar_damaged_files(str(root)) == []
+    assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is True
+    # A required package's RECORD is still held to the disk.
+    hub = root / "huggingface_hub-1.8.0.dist-info"
+    (hub / "RECORD").write_text("huggingface_hub/gone.py,sha256=abc,12\n", encoding = "utf-8")
+    assert tv._sidecar_damaged_files(str(root)) != []
