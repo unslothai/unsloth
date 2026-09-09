@@ -271,6 +271,66 @@ def test_supervisor_bounds_combined_stdout_and_stderr(local_supervisor):
     assert "".join(streamed).count(result.truncation_notice) == 1
 
 
+def test_review_preflight_refuses_before_popen_and_releases_ownership(
+    local_supervisor, monkeypatch
+):
+    workspace, lease_active, boundaries = local_supervisor
+
+    def refuse(opened, argv):
+        assert opened is workspace
+        assert argv == (sys.executable, "-c", "print('never')")
+        assert lease_active["value"] and boundaries[-1].slot
+        raise AgentWorkspaceError("Reviewed settings changed")
+
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("spawned a command with stale review"),
+    )
+    with pytest.raises(AgentWorkspaceError, match = "Reviewed settings changed"):
+        supervisor.run_project_process(
+            workspace.project_id, [sys.executable, "-c", "print('never')"], before_start = refuse
+        )
+    assert not lease_active["value"]
+    assert boundaries[-1].closed and not boundaries[-1].slot
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "native blocked namespace")
+def test_review_preflight_rechecks_before_releasing_native_user_code(tmp_path, monkeypatch):
+    status = supervisor.supervised_process_status()
+    if not status.available:
+        if os.environ.get("UNSLOTH_SECURE_BOUNDARY_REQUIRED") == "1":
+            pytest.fail(status.reason)
+        pytest.skip(status.reason)
+    workspace = _workspace(tmp_path)
+    marker = tmp_path / "must-not-run"
+    calls = []
+
+    @contextlib.contextmanager
+    def access(project_id):
+        assert project_id == workspace.project_id
+        yield workspace
+
+    def refuse_release(opened, argv):
+        assert opened is workspace
+        calls.append(argv)
+        if len(calls) == 2:
+            raise AgentWorkspaceError("Review revoked during namespace setup")
+
+    monkeypatch.setattr(common, "project_workspace_access", access)
+    with pytest.raises(AgentWorkspaceError, match = "Review revoked"):
+        supervisor.run_project_process(
+            workspace.project_id,
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            before_start = refuse_release,
+        )
+    assert len(calls) == 2
+    assert not marker.exists()
+    identity = (workspace.device_id, workspace.file_id)
+    assert mutation.acquire_workspace_mutation_slot(identity)
+    mutation.release_workspace_mutation_slot(identity)
+
+
 def test_supervisor_bounds_rendered_invalid_utf8(local_supervisor):
     workspace, _lease_active, _boundaries = local_supervisor
     streamed = []

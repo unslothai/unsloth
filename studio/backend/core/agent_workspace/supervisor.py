@@ -1274,6 +1274,7 @@ def run_project_process(
     output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT_BYTES,
     cancel_event: Optional[threading.Event] = None,
     output_callback = None,
+    before_start = None,
 ) -> ProjectProcessResult:
     """Run argv under the persisted project's lease and secure process boundary.
 
@@ -1283,6 +1284,10 @@ def run_project_process(
     boundary construction, and hard-link scanning are preparation. They either
     complete, fail with a preparation error, or honor ``cancel_event`` at their
     explicit cancellation points; they are not reported as command timeouts.
+
+    ``before_start`` is a trusted backend check of ``(workspace, argv)``. It runs
+    after queued preparation and again before releasing user code, allowing
+    callers to reject stale reviewed settings without changing containment.
     """
     return _run_project_process(
         _project_id(project_id),
@@ -1291,6 +1296,7 @@ def run_project_process(
         output_limit_bytes = output_limit_bytes,
         cancel_event = cancel_event,
         output_callback = output_callback,
+        before_start = before_start,
     )
 
 
@@ -1324,9 +1330,12 @@ def _run_project_process(
     output_limit_bytes: int,
     cancel_event: Optional[threading.Event],
     output_callback,
+    before_start = None,
 ) -> ProjectProcessResult:
     timeout = _timeout(timeout_seconds)
     limit = _output_limit(output_limit_bytes)
+    if before_start is not None and not callable(before_start):
+        raise AgentWorkspaceError("Project command preparation must be callable.")
     if cancel_event is not None and not isinstance(cancel_event, threading.Event):
         raise AgentWorkspaceError("Project command cancellation must use a threading event.")
     if cancel_event is not None and cancel_event.is_set():
@@ -1404,8 +1413,15 @@ def _run_project_process(
             lifecycle.after_spawn(spawned)
             spawn_ownership.after_spawn_done = True
 
+        def spawn_checked_process():
+            # Revalidate after the mutation-slot wait and lifetime-thread queue.
+            # This callback can refuse a command but cannot replace its boundary.
+            if before_start is not None:
+                before_start(workspace, command)
+            return subprocess.Popen(wrapped, **options)
+
         spawn_attempt = _SpawnAttempt(
-            lambda: subprocess.Popen(wrapped, **options),
+            spawn_checked_process,
             own_spawned_process,
         )
         spawn_state = spawn_attempt.wait(cancel_event, _SPAWN_WAIT_SECONDS)
@@ -1442,6 +1458,8 @@ def _run_project_process(
         descriptor = process.stdout.fileno()
         os.set_blocking(descriptor, False)
 
+        if bound_without_cancellation and before_start is not None:
+            before_start(workspace, command)
         if not bound_without_cancellation or not lifecycle.release(cancel_event):
             result_status = "cancelled"
         else:
