@@ -1133,7 +1133,12 @@ def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path,
     assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
 
 
-def _fake_editable(tmp_path, monkeypatch, source: str, top_level: str | None = None):
+def _fake_editable(
+    tmp_path,
+    monkeypatch,
+    source: str,
+    top_level: str | None = None,
+):
     """A dist-info recording an editable install, the way an installer writes it."""
     site_dir = tmp_path / "sitepkgs"
     info = site_dir / "demo-1.0.dist-info"
@@ -1230,9 +1235,7 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
         launch.cleanup()
 
 
-def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(
-    tmp_path, monkeypatch
-):
+def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
     """The spelling CPython actually reports, which the test above did not use.
 
     A venv invoked as <alias>/venv/bin/python reports sys.prefix = <alias>/venv,
@@ -1261,7 +1264,8 @@ def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(
         for leg in ("lib", "bin"):
             for spelling in (real / "venv" / leg, alias / "venv" / leg):
                 landed = [
-                    i for i in range(len(argv))
+                    i
+                    for i in range(len(argv))
                     if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
                 ]
                 # The LAST one is what stands: an earlier read-only bind is fine

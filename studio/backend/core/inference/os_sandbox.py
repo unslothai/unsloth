@@ -374,7 +374,9 @@ def _declared_names(distribution) -> frozenset[str]:
     return frozenset(name for name in names if name and "/" not in name and name != "..")
 
 
-def _importable_entries(project_root: str, declared: frozenset[str] = frozenset()) -> tuple[str, ...]:
+def _importable_entries(
+    project_root: str, declared: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
     """The importable entries under an editable checkout, not the checkout.
 
     direct_url.json names the PROJECT root, and a checkout holds more than its
