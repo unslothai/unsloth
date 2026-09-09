@@ -43,7 +43,7 @@ def _isolate_binary_discovery(tmp_path_factory, monkeypatch):
     Clearing ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH`` and patching ``Path.home`` is not enough:
     hop 3 goes through ``managed_install_root()``, which honors ``UNSLOTH_STUDIO_HOME`` /
     ``STUDIO_HOME`` and resolves to ``<studio home>/../stable-diffusion.cpp``. Anyone running the
-    suite with a Studio home set -- which is the documented way to run side-by-side Studios -- gets
+    suite with an Unsloth home set -- which is the documented way to run side-by-side Unsloth instances -- gets
     a real binary back and every "nothing is installed" assertion here fails. Hop 4 (the in-tree
     developer build) has the same problem for anyone who built sd.cpp in the checkout.
 
@@ -261,7 +261,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
     # loader with nothing identifying on either stream. That is a CompletedProcess, not an
     # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
     # against a file that never changed -- and installing the missing library would not get it
-    # re-probed until Studio restarted.
+    # re-probed until Unsloth restarted.
     _clear_env(monkeypatch)
     candidate = tmp_path / "sd"
     candidate.write_text("#!/bin/sh\n")
@@ -354,7 +354,7 @@ def test_identity_verdict_expires(tmp_path, monkeypatch):
 def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypatch):
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
-    # slow --help under disk or memory pressure -- Studio would have to be restarted to see it.
+    # slow --help under disk or memory pressure -- Unsloth would have to be restarted to see it.
     _clear_env(monkeypatch)
     candidate = tmp_path / "sd"
     candidate.write_text("#!/bin/sh\n")
@@ -625,6 +625,84 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     # the subprocess env carries the binary's dir on the library path
     var = eng._lib_path_var()
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
+
+
+@pytest.mark.parametrize(
+    "prompt, negative",
+    [
+        ("private prompt " * 40, "private negative prompt " * 20),
+        ("--mode=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--mode=private-negative-prompt"),
+        ("--diffusion-model=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--diffusion-model=private-negative-prompt"),
+    ],
+)
+def test_default_run_log_is_compact_and_omits_user_text_and_paths(
+    tmp_path, monkeypatch, caplog, prompt, negative
+):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: False)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "private-output.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/private/models/z.gguf"),
+        SdCppGenParams(
+            prompt = prompt,
+            negative_prompt = negative,
+            width = 768,
+            height = 512,
+            steps = 8,
+            seed = 7,
+        ),
+        output_path = str(out),
+    )
+
+    messages = [record.getMessage() for record in caplog.records if record.name == eng.__name__]
+    assert messages[0] == (
+        "sd-cli run started: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7"
+    )
+    assert messages[1].startswith(
+        "sd-cli run completed: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7 elapsed="
+    )
+    rendered = "\n".join(messages)
+    assert prompt not in rendered
+    assert negative not in rendered
+    assert "/private/models/z.gguf" not in rendered
+    assert str(out) not in rendered
+    cmd = _FakePopen.captured_cmd
+    assert cmd[cmd.index("--prompt") + 1] == prompt
+    assert cmd[cmd.index("--negative-prompt") + 1] == negative
+
+
+def test_verbose_run_log_keeps_argv_but_redacts_prompts(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: True)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/models/z.gguf"),
+        SdCppGenParams(prompt = "a private cat", negative_prompt = "a private dog"),
+        output_path = str(out),
+        extra_args = ["-p", "a second private cat", "-n=a second private dog"],
+    )
+
+    rendered = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == eng.__name__
+    )
+    assert "/models/z.gguf" in rendered
+    assert str(out) in rendered
+    assert "--prompt <redacted>" in rendered
+    assert "--negative-prompt <redacted>" in rendered
+    assert "-p <redacted>" in rendered
+    assert "-n=<redacted>" in rendered
+    assert "a private cat" not in rendered
+    assert "a private dog" not in rendered
+    assert "a second private cat" not in rendered
+    assert "a second private dog" not in rendered
 
 
 def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):

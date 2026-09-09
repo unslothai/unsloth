@@ -14,13 +14,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -573,7 +568,6 @@ else
     ok "an unpinned architecture declines so the fallback runs"
 fi
 
-
 # An interrupted install must not leave the pinned path's temporaries behind: the work
 # directory holds a ~40 MB unpacked archive, and the staging file sits inside a directory that
 # is on PATH. The helper's own cleanup only runs when it returns normally, so both have to be
@@ -1013,7 +1007,7 @@ else
 fi
 
 # A launcher on a UNC share is a remote script to PowerShell, and RemoteSigned refuses an
-# unsigned one, so a roaming profile would get a shortcut that exits without starting Studio.
+# unsigned one, so a roaming profile would get a shortcut that exits without starting Unsloth.
 # A mapped drive is the same share and the same zone, so it must take the same branch.
 _ps1="$SCRIPT_DIR/../../install.ps1"
 if grep -q '\$launcherIsRemote = \$launcherPs1 -like "\\\\\*"' "$_ps1" \

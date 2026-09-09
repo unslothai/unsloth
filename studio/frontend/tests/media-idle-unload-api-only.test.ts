@@ -2,26 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // "Only unload models loaded by the API" vetoes the media TTL outright: every resident image
-// or video model is one the user loaded from Studio, so there is nothing the setting would
+// or video model is one the user loaded from Unsloth, so there is nothing the setting would
 // let go of. The switch that lifts the veto used to render only while the CHAT idle unload
 // was active, so a user who had turned that off after enabling the option saw the media row
 // go straight to "paused" with no control anywhere to explain it or undo it -- the feature
 // was unusable without re-enabling chat unloading first.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const SECTION = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/settings/components/model-auto-switch-section.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SECTION = readSrc("features/settings/components/model-auto-switch-section.tsx");
 
 // The JSX guard the given row is rendered under: the nearest conditional above it at the
 // section's own indentation, so a `{settings.foo}` prop inside a neighbouring row is not

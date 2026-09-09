@@ -24,6 +24,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
@@ -59,17 +60,24 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  ArrowLeft01Icon,
   Delete02Icon,
   Download01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
-import { ArchivedMediaView } from "../components/archived-media-dialog";
+import {
+  type ArchivedMediaKind,
+  ArchivedMediaView,
+} from "../components/archived-media-dialog";
+import { ManageChatsView } from "../components/manage-chats-view";
+import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -87,6 +95,7 @@ const SUBPAGE_FOR_SHELF = {
   chats: "archived",
   images: "archived-images",
   videos: "archived-videos",
+  audio: "archived-audio",
 } as const;
 
 export function DataTab() {
@@ -103,7 +112,13 @@ export function DataTab() {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
-    "main" | "archived" | "archived-images" | "archived-videos" | "files"
+    | "main"
+    | "manage"
+    | "archived"
+    | "archived-images"
+    | "archived-videos"
+    | "archived-audio"
+    | "files"
   >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -474,6 +489,35 @@ export function DataTab() {
     }
   };
 
+  if (subpage === "manage") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ChevronLeftIcon className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.manageChats")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.manageChatsDescription")}
+          </p>
+        </div>
+        <ManageChatsView />
+      </div>
+    );
+  }
+
   if (subpage === "archived") {
     return (
       <div className="flex flex-col gap-6">
@@ -484,7 +528,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -527,8 +571,27 @@ export function DataTab() {
     );
   }
 
-  if (subpage === "archived-images" || subpage === "archived-videos") {
-    const isImages = subpage === "archived-images";
+  if (
+    subpage === "archived-images" ||
+    subpage === "archived-videos" ||
+    subpage === "archived-audio"
+  ) {
+    const kind: ArchivedMediaKind =
+      subpage === "archived-images"
+        ? "images"
+        : subpage === "archived-videos"
+          ? "videos"
+          : "audio";
+    const heading = {
+      images: t("settings.data.archivedImages"),
+      videos: t("settings.data.archivedVideos"),
+      audio: t("settings.data.archivedAudio"),
+    }[kind];
+    const description = {
+      images: t("settings.data.archivedImagesDescription"),
+      videos: t("settings.data.archivedVideosDescription"),
+      audio: t("settings.data.archivedAudioDescription"),
+    }[kind];
     return (
       <div className="flex flex-col gap-6">
         <header className="flex items-center gap-2">
@@ -538,31 +601,20 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {isImages
-              ? t("settings.data.archivedImages")
-              : t("settings.data.archivedVideos")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {isImages
-              ? t("settings.data.archivedImagesDescription")
-              : t("settings.data.archivedVideosDescription")}
-          </p>
+          <h2 className="text-sm font-semibold">{heading}</h2>
+          <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
             instance, and a showMore still awaiting the old shelf appends its rows to the new one,
             which then drives restore and delete through the wrong media API. */}
-        <ArchivedMediaView
-          key={subpage}
-          kind={isImages ? "images" : "videos"}
-        />
+        <ArchivedMediaView key={subpage} kind={kind} />
       </div>
     );
   }
@@ -577,7 +629,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -671,6 +723,19 @@ export function DataTab() {
         </SettingsRow>
 
         <SettingsRow
+          label={t("settings.data.manageChats")}
+          description={t("settings.data.manageChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("manage")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
           label={t("settings.data.archivedChats")}
           description={t("settings.data.archivedChatsDescription")}
         >
@@ -704,6 +769,19 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setSubpage("archived-videos")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.archivedAudio")}
+          description={t("settings.data.archivedAudioDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("archived-audio")}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -790,7 +868,7 @@ export function DataTab() {
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-56">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
                       <DropdownMenuItem
                         key={`${scope}-m-${fmt}`}
                         onSelect={() =>
@@ -900,6 +978,8 @@ export function DataTab() {
           </div>
         ) : null}
       </SettingsSection>
+
+      <DocumentsRagSection />
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">

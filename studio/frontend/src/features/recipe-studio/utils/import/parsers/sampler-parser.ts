@@ -59,6 +59,31 @@ function parseCategoryConditionalParams(
   return Object.keys(conditional).length > 0 ? conditional : undefined;
 }
 
+// The words buildSamplerParams reads as a mode rather than as a prefix.
+const UUID_RESERVED_FORMATS = new Set(["uuid4", "short", "short_form", "upper", "uppercase"]);
+
+// buildSamplerParams spreads a uuid format over the three fields data_designer
+// defines, so rebuild the single UI string from those rather than from a
+// `format` key nothing writes. A prefix whose own value is one of the reserved
+// words comes back in the builder's `prefix:` escaped form, so re-saving writes
+// the prefix again instead of turning it into a flag.
+function readUuidFormat(params: Record<string, unknown>): string {
+  const prefix = readString(params.prefix)?.trim();
+  if (prefix) {
+    const lowered = prefix.toLowerCase();
+    return UUID_RESERVED_FORMATS.has(lowered) || lowered.startsWith("prefix:")
+      ? `prefix:${prefix}`
+      : prefix;
+  }
+  if (params.short_form === true) {
+    return "short";
+  }
+  if (params.uppercase === true) {
+    return "upper";
+  }
+  return readString(params.format) ?? "";
+}
+
 export function parseSampler(
   column: Record<string, unknown>,
   name: string,
@@ -155,7 +180,7 @@ export function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       mean: readNumberString(params.mean),
-      std: readNumberString(params.std),
+      std: readNumberString(params.stddev ?? params.std),
     };
   }
 
@@ -229,7 +254,7 @@ export function parseSampler(
       // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       // biome-ignore lint/style/useNamingConvention: api schema
-      uuid_format: readString(params.format) ?? "",
+      uuid_format: readUuidFormat(params),
     };
   }
 

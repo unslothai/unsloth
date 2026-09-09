@@ -355,7 +355,7 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
-  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  const initPromiseRef = useRef<Promise<string> | null>(null);
   const initGenerationRef = useRef(0);
   const hadThreadIdRef = useRef(threadId !== null);
   useEffect(() => {
@@ -461,14 +461,10 @@ export function ThreadDocumentsBar({
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
-  const ensureThreadId = useCallback((): Promise<string | null> => {
+  const ensureThreadId = useCallback((): Promise<string> => {
     if (effectiveThreadId) {
       return requireStoredThread(effectiveThreadId).then(
         () => effectiveThreadId,
-        () => {
-          toast.error("Couldn't start a chat for these documents");
-          return null;
-        },
       );
     }
     const current = initPromiseRef.current;
@@ -497,10 +493,6 @@ export function ThreadDocumentsBar({
           setMaterializedId(remoteId);
         }
         return remoteId;
-      })
-      .catch(() => {
-        toast.error("Couldn't start a chat for these documents");
-        return null;
       });
     initPromiseRef.current = pending;
     const clear = () => {
@@ -526,12 +518,11 @@ export function ThreadDocumentsBar({
         );
         return;
       }
-      // The id as a promise, so upload() flips its in-flight guard before
-      // materialization re-renders us: on the first click `scope` is null.
-      const threadScope = ensureThreadId().then((id) =>
-        id ? ({ type: "thread", threadId: id } as const) : null,
-      );
-      void upload(items, threadScope);
+      // Filter duplicates before initializing the chat.
+      void upload(items, async () => ({
+        type: "thread",
+        threadId: await ensureThreadId(),
+      }));
     },
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
@@ -549,24 +540,23 @@ export function ThreadDocumentsBar({
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
-    // Hold the batch rather than draining it into the wrong scope. The intents
-    // stay in the store, so this runs again once the row has been read.
+    // Hold the batch rather than draining it before the chat's project scope is known.
     if (projectUnresolved) {
+      return;
+    }
+    const store = useNativeIntentStore.getState();
+    const intents = store.takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) {
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
-      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
       });
       return;
     }
-    const intents = useNativeIntentStore
-      .getState()
-      .takeAttachments(nativeAttachmentTargetKey);
-    if (intents.length === 0) return;
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
     if (!ragEnabled) {
       setRagSource({ type: "thread" });
@@ -678,6 +668,7 @@ export function ThreadDocumentsBar({
             filename={doc.filename}
             status={doc.status}
             progress={doc.progress}
+            stage={doc.stage}
             error={doc.error}
             shared={true}
             onRemove={
@@ -693,6 +684,7 @@ export function ThreadDocumentsBar({
             filename={doc.filename}
             status={doc.status}
             progress={doc.progress}
+            stage={doc.stage}
             error={doc.error}
             onRemove={
               doc.id.startsWith("pending_")

@@ -45,9 +45,6 @@ def _load_split_repo_variant():
 _split = _load_split_repo_variant()
 
 
-# ── HF-style repo:variant inputs -------------------------------------
-
-
 @pytest.mark.parametrize(
     "model_arg, expected",
     [
@@ -64,9 +61,6 @@ _split = _load_split_repo_variant()
 )
 def test_repo_variant_split(model_arg, expected):
     assert _split(model_arg) == expected
-
-
-# ── No variant suffix ------------------------------------------------
 
 
 @pytest.mark.parametrize(

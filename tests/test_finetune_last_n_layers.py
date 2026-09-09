@@ -1,7 +1,6 @@
-# Unsloth - 2x faster, 70% less memory LLM finetuning
-# Tests for the `finetune_last_n_layers` parity knob (translation helper only,
-# no CUDA / real checkpoint); mirrors unsloth-zoo's MLX layers_to_transform path.
-
+# Unsloth - 2x faster, 70% less memory LLM finetuning Tests for the `finetune_last_n_layers` parity knob (translation
+# helper only, no CUDA / real checkpoint);
+# mirrors unsloth-zoo's MLX layers_to_transform path.
 from __future__ import annotations
 
 import pytest
@@ -31,7 +30,7 @@ def test_get_total_transformer_layers_reads_text_config():
     class FakeModel:
         config = FakeConfig()
 
-    # No num_hidden_layers at top level — should fall through to text_config.
+    # No num_hidden_layers at top level - should fall through to text_config.
     assert _get_total_transformer_layers(FakeModel()) == 24
 
 

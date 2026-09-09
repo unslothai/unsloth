@@ -46,8 +46,7 @@ def _line_of(template: str, needle: str) -> int:
 
 
 def _signed_dir_lines(template: str) -> dict[str, int]:
-    # Each form is checked on its own. Only one resolves per bundler version, so
-    # taking the earliest would let the other drift below an include unnoticed.
+    # Each form is checked on its own.
     return {
         "env var": _line_of(template, ENV_FORM),
         "template var": _line_of(template, TEMPLATE_FORM),
@@ -56,9 +55,8 @@ def _signed_dir_lines(template: str) -> dict[str, int]:
 
 @pytest.mark.parametrize("form", ["env var", "template var"])
 def test_signed_plugin_dir_precedes_every_plugin_use(template: str, form: str) -> None:
-    # !addplugindir after a plugin call raises "conflicts with a plugin in
-    # another directory" at compile time, or silently loses to an already
-    # packed default.
+    # !addplugindir after a plugin call raises "conflicts with a plugin in another directory" at
+    # compile time, or silently loses to an already packed default.
     lines = template.splitlines()
     plugin_calls = [
         i

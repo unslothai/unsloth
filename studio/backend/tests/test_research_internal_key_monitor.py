@@ -58,14 +58,14 @@ def test_session_jwt_and_missing_header_are_not_api_traffic():
 
 
 def test_unknown_key_is_treated_as_third_party():
-    # An unrecognised key cannot be Studio's own, so it must keep its monitor attribution.
+    # An unrecognised key cannot be Unsloth's own, so it must keep its monitor attribution.
     assert auth_storage.is_internal_api_key("sk-unsloth-deadbeefdeadbeef") is False
     assert _request_used_api_key(_Request("Bearer sk-unsloth-deadbeefdeadbeef")) is True
 
 
-def test_probe_failure_keeps_the_row_attributed(monkeypatch):
+def test_probe_failure_suppresses_external_api_attribution(monkeypatch):
     def explode(_raw_key):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(auth_storage, "is_internal_api_key", explode)
-    assert _request_used_api_key(_Request("Bearer sk-unsloth-deadbeefdeadbeef")) is True
+    assert _request_used_api_key(_Request("Bearer sk-unsloth-deadbeefdeadbeef")) is False

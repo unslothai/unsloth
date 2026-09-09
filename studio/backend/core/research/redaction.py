@@ -15,8 +15,7 @@ import ipaddress
 import re
 
 
-# Wrapper delimiters used in the decision/synthesis prompts. Any occurrence inside
-# untrusted evidence is escaped so gathered content cannot close a block early.
+# Any occurrence inside untrusted evidence is escaped so gathered content cannot close a prompt block early.
 _PROMPT_DELIMITER_TAGS = re.compile(
     r"</?\s*(?:untrusted_web_evidence|untrusted_evidence|source_catalog"
     r"|document_source_catalog|conversation_context_json|research_question"
@@ -25,6 +24,9 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     r"|untrusted_synthesis_audit_json|synthesis_audit_json)\s*>",
     re.IGNORECASE,
 )
+# An unescaped copy could move the synthesis boundary and truncate the report; spelled out to avoid
+# importing prompts, and pinned by the hardening test.
+_REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
     |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
@@ -51,8 +53,7 @@ _QUERY_CREDENTIAL_SUFFIXES = (
     "token",
 )
 _QUERY_PUBLIC_ASSIGNMENT_SUFFIXES = ("designtoken", "cancellationtoken")
-# Bearer authorization tokens carry no key=value label, so the credential pattern above misses
-# them; the length floor keeps ordinary prose ("bearer of bad news") from matching.
+# Bearer tokens carry no key=value label; the length floor keeps ordinary prose ("bearer of bad news") from matching.
 _QUERY_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _QUERY_PRIVATE_ID = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
@@ -63,8 +64,8 @@ _QUERY_OPAQUE_TOKEN = re.compile(
     r"|hf_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}"
     r"|AKIA[A-Z0-9]{16})\b"
 )
-# International (+CC ...) or NANP-formatted phone numbers. Requires separators or a
-# leading ``+`` so bare numeric research terms are not redacted.
+# International (+CC) or NANP-formatted phone numbers: requires separators or a leading "+" so
+# bare numeric research terms are not redacted.
 _QUERY_PHONE = re.compile(
     r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
 )
@@ -131,14 +132,16 @@ def _escape_link_destination(url: str) -> str:
 
 
 def _shield_untrusted(text: str) -> str:
-    """Escape prompt-delimiter tags embedded in untrusted evidence so gathered web
-    or document content cannot close a wrapper block and inject model instructions."""
+    """Escape prompt-delimiter tags and the report boundary marker in untrusted evidence, so
+    gathered content cannot close a wrapper block to inject model instructions, nor move the
+    boundary that selects the published report."""
     if not text:
         return text
-    return _PROMPT_DELIMITER_TAGS.sub(
-        lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
-        text,
-    )
+
+    def escape(match: re.Match) -> str:
+        return match.group(0).replace("<", "&lt;").replace(">", "&gt;")
+
+    return _REPORT_BOUNDARY_TAG.sub(escape, _PROMPT_DELIMITER_TAGS.sub(escape, text))
 
 
 def _sanitize_public_query(query: str) -> str:

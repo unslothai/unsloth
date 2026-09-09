@@ -52,7 +52,10 @@ export function KeyRevealCard({
             : t("settings.apiKeys.copyAccessToken")
         }
       >
-        <code className="min-w-0 flex-1 break-all text-left text-foreground">
+        <code
+          className="min-w-0 flex-1 break-all text-left text-foreground"
+          data-reload-snapshot-sensitive
+        >
           {rawKey}
         </code>
         <HugeiconsIcon

@@ -77,8 +77,8 @@ def test_purge_state_preserves_active_legacy_when_deleting_inactive_cache(monkey
     removed = download_manifest.purge_state("model", "Org/Model", hub_cache = str(previous))
 
     assert removed is True
-    assert not scoped.is_file()  # the inactive cache's copy is gone
-    assert legacy.is_file()  # the active cache's legacy state survives
+    assert not scoped.is_file()
+    assert legacy.is_file()
 
 
 def test_purge_state_removes_legacy_owned_by_the_deleted_cache(monkeypatch, tmp_path):
@@ -100,7 +100,7 @@ def test_purge_state_removes_legacy_owned_by_the_deleted_cache(monkeypatch, tmp_
     removed = download_manifest.purge_state("model", "Org/Model", hub_cache = str(previous))
 
     assert removed is True
-    assert not legacy.is_file()  # owned by the deleted cache -> purged
+    assert not legacy.is_file()
 
 
 def test_scope_digest_is_shared_with_the_ownership_canonicalization(monkeypatch, tmp_path):
@@ -302,7 +302,7 @@ def test_windows_shaped_copy_cache_scope_survives_a_restart(monkeypatch, tmp_pat
     hub_cache = tmp_path / "Hub"
     snapshot = hub_cache / "models--Org--Model" / "snapshots" / "rev0"
     snapshot.mkdir(parents = True)
-    (snapshot / "model.gguf").write_bytes(b"x" * 16)  # a copy, not a symlink
+    (snapshot / "model.gguf").write_bytes(b"x" * 16)
     assert not (snapshot / "model.gguf").is_symlink()
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
@@ -741,14 +741,14 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
         metadata_resolver = lambda *a, **k: (33_000_000_000, frozenset()),
     )
     assert "cache_path" not in reading
-    # And it survives DownloadProgressResponse, which defaults cache_path to None and would
-    # otherwise reinstate the omission as an explicit "absent" before the frontend saw it.
+    # And it survives DownloadProgressResponse, which defaults cache_path to None and would otherwise reinstate
+    # the omission as an explicit "absent" before the frontend saw it.
     assert reading["cache_measured"] is False
     from hub.schemas.downloads import DownloadProgressResponse
 
-    # DECLARED on the response model, or FastAPI drops it before the frontend sees it: these
-    # readings are serialized through DownloadProgressResponse, whose cache_path defaults to
-    # None, so the omission alone was reinstated as an explicit "absent" on the wire.
+    # DECLARED on the response model, or FastAPI drops it before the frontend sees it: these readings
+    # serialize through DownloadProgressResponse, whose cache_path defaults to None, so the omission
+    # alone was reinstated as an explicit "absent".
     assert "cache_measured" in DownloadProgressResponse.__annotations__
     assert reading["downloaded_bytes"] == 0
 
@@ -772,7 +772,7 @@ def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_p
     ((variant, path),) = download_manifest.iter_variant_markers(
         "model", "Org/Model", hub_cache = str(hub_cache)
     )
-    assert variant == "@diffusion"  # intact while the payload is readable
+    assert variant == "@diffusion"
     assert "--variant--@sha256-" in path.name
 
     payload = json.loads(path.read_text(encoding = "utf-8"))
@@ -804,7 +804,7 @@ def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
 
     entry = tmp_path / "hub" / "models--unsloth--Model-GGUF"
     (entry / "blobs").mkdir(parents = True)
-    (entry / "blobs" / "sibling").write_bytes(b"x" * 32)  # Q8_0's, not ours
+    (entry / "blobs" / "sibling").write_bytes(b"x" * 32)
 
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *a, **k: [entry])
 

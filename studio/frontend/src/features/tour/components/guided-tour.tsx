@@ -4,7 +4,14 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, CheckmarkCircle01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  CheckmarkCircle01Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -356,7 +363,7 @@ export function GuidedTour({
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
-                          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                          <ChevronLeftIcon className="size-4" />
                           Back
                         </Button>
                         {isLast ? (
@@ -375,7 +382,7 @@ export function GuidedTour({
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
-                            <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+                            <ChevronRightIcon className="size-4" />
                           </Button>
                         )}
                       </div>

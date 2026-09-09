@@ -379,7 +379,6 @@ def test_snapshot_options_read_a_blob_symlink_the_cache_owns(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "records.jsonl").symlink_to(blobs / "abc123")
 
-    # The normal cache layout: every file is a link into blobs.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
@@ -388,8 +387,8 @@ def test_snapshot_options_leave_a_declared_card_to_its_own_configs(tmp_path):
     _card(snapshot, "configs:\n- config_name: foo\n  data_dir: foo\n")
     _rows(snapshot, "foo/records.jsonl", "test.jsonl")
 
-    # The card names the loader's configs, and inference cannot reproduce them, so the
-    # picker does not invent a default one beside them.
+    # The card names the loader's configs, and inference cannot reproduce them, so the picker does not
+    # invent a default one beside them.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -422,7 +421,6 @@ def test_snapshot_options_stay_empty_for_a_readme_only_cache(tmp_path):
     snapshot = _snapshot(tmp_path)
     (snapshot / "README.md").write_text("# Alpaca\n", encoding = "utf-8")
 
-    # The first #8140 negative: nothing to train on, so nothing is offered.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -431,7 +429,6 @@ def test_snapshot_options_stay_empty_for_a_licence_only_subdirectory(tmp_path):
     (snapshot / "legal").mkdir()
     (snapshot / "legal" / "LICENSE").write_text("MIT\n", encoding = "utf-8")
 
-    # The second #8140 negative.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -704,8 +701,8 @@ def test_snapshot_options_ignore_a_dangling_link_beside_a_good_file(tmp_path):
     _rows(snapshot, "train.jsonl")
     (snapshot / "train-missing.jsonl").symlink_to("../../blobs/gone")
 
-    # resolve_pattern keeps a link only when its target is a file, so the loader
-    # never sees this one and the surviving split still loads.
+    # resolve_pattern keeps a link only when its target is a file, so the loader never sees this one and the
+    # surviving split still loads.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 

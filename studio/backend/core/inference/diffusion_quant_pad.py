@@ -52,10 +52,10 @@ from torch import nn
 # ``_int_mm`` wants strictly more than 16 rows.
 INT_MM_MIN_M = 17
 
-# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles
-# better than 17, and it pins ONE compiled shape for every activation below it, so prompts of
-# differing token counts (H3's seven eval prompts run at M = 10..19) do not each trigger their
-# own inductor recompile.
+# pad to a warp-friendly 32 rather than exactly INT_MM_MIN_M
+# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles better than 17, and it pins
+# ONE compiled shape for every activation below it, so prompts of differing token counts (H3's seven eval prompts run at
+# M = 10..19) do not each trigger their own inductor recompile.
 DEFAULT_PAD_TO = 32
 
 
@@ -132,30 +132,30 @@ class PadToMinM(nn.Module):
         super().__init__()
         self.inner = inner
         self.min_m = int(min_m)
-        # pad_to may exceed min_m to buy tiling and shape stability; it may never be below it,
-        # or the "padded" activation would still be under the floor it exists to clear.
+        # pad_to may exceed min_m to buy tiling and shape stability; it may never be below it, or the "padded"
+        # activation would still be under the floor it exists to clear.
         self.pad_to = max(int(pad_to or min_m), self.min_m)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Deliberately free of call counters or any other mutable int attribute: dynamo treats an
-        # nn.Module's integer attributes as static and guards on their value, so a `+= 1` here
-        # would force a recompile on EVERY call until the recompile limit is hit, at which point
-        # the module silently drops back to eager. Instrumentation belongs outside.
+        # deliberately free of call counters: dynamo guards on an nn.Module's integer attributes
+        # Deliberately free of call counters or any other mutable int attribute: dynamo treats an nn.Module's integer
+        # attributes as static and guards on their value, so a `+= 1` here would force a recompile on EVERY call until
+        # the recompile limit is hit, at which point the module silently drops back to eager. Instrumentation belongs
+        # outside.
         lead = x.shape[:-1]
         flat = x.reshape(-1, x.shape[-1])
         m = flat.shape[0]
         if m == 0:
-            # No rows to project, and no row 0 to replicate from. torchao returns a zero-row
-            # input UNPROJECTED (a quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]),
-            # which then breaks a downstream width-sensitive add, so synthesise the empty result
-            # at the right width instead of calling through.
+            # torchao returns a zero-row input UNPROJECTED (a 1472 -> 2048 Linear maps [0, 1472] to [0, 1472])
+            # No rows to project, and no row 0 to replicate from. torchao returns a zero-row input UNPROJECTED (a
+            # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream width-sensitive
+            # add, so synthesise the empty result at the right width instead of calling through.
             return x.new_empty((*lead, self.inner.out_features))
         if m < self.pad_to:
-            # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing
-            # the floor takes only the latter, but pinning ONE row count means one inductor graph
-            # covers every prompt length in the range instead of one per length, and the extra
-            # rows are free at these sizes (measured on H3's 13 modules: 1.57 ms padded from
-            # M = 10 against 1.48 ms unpadded at M = 17, on a 2.4 s render).
+            # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
+            # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
+            # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
+            # ms padded from M = 10 against 1.48 ms unpadded at M = 17, on a 2.4 s render).
             flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim = 0)
             out = self.inner(flat)[:m]
         else:
@@ -163,12 +163,11 @@ class PadToMinM(nn.Module):
         return out.reshape(*lead, out.shape[-1])
 
     def __getattr__(self, name: str) -> Any:
-        # Callers reach THROUGH a Linear for weight / bias / in_features / out_features: diffusers'
-        # attention processors read `to_q.weight.dtype`, and H3's blocks read
-        # `context_embedder.weight`. Without this forward the wrapper is a drop-in only until the
-        # first such access, which fails at render time rather than at wrap time.
-        # nn.Module.__getattr__ runs first, so parameters, buffers and submodules registered on
-        # the wrapper itself still win.
+        # Callers reach THROUGH a Linear for weight / bias / in_features / out_features: diffusers' attention processors
+        # read `to_q.weight.dtype`, and H3's blocks read `context_embedder.weight`. Without this forward the wrapper is
+        # a drop-in only until the first such access, which fails at render time rather than at wrap time.
+        # nn.Module.__getattr__ runs first, so parameters, buffers and submodules registered on the wrapper itself still
+        # win.
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -269,12 +268,11 @@ def wrap_small_m_linears(
             parent = model.get_submodule(parent_name) if parent_name else model
             module = getattr(parent, leaf)
         except AttributeError:
-            # A family token that matches nothing on this checkpoint variant is not an error:
-            # the pruned and dense H3 trees differ, and callers pass a name list, not a promise.
+            # a family token matching nothing on this variant is not an error
             continue
-        # Skips a dense Linear (``F.linear`` has no row floor to clear, and there is no
-        # granularity to prove) and, by the same gate, an already-wrapped one: ``PadToMinM`` is
-        # not an ``nn.Linear``, so re-wrapping cannot nest the padding and double the row count.
+        # Skips a dense Linear (``F.linear`` has no row floor to clear, and there is no granularity to prove) and, by
+        # the same gate, an already-wrapped one: ``PadToMinM`` is not an ``nn.Linear``, so re-wrapping cannot nest the
+        # padding and double the row count.
         if not is_quantized_linear(module):
             continue
         if require_per_row and activation_granularity_is_per_row(module) is not True:

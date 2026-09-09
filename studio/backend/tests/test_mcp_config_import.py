@@ -41,6 +41,16 @@ def _disable(monkeypatch):
         ["uvx", "some-server", "--flag"],
         ["/usr/local/bin/my-server"],
         ["mcp-server-sqlite"],
+        [
+            "python",
+            "--url",
+            "https://example.com/value",
+            "a b",
+            "O'Reilly",
+            'say "hello"',
+            "trailing\\",
+            "",
+        ],
     ],
 )
 def test_join_parse_roundtrip_posix(monkeypatch, parts):
@@ -79,10 +89,37 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
         ["node", "'draft'"],
         ["node", "'open", "close'"],
         ["node", ""],
+        [
+            "python",
+            "--url",
+            "https://example.com/value",
+            "a b",
+            'say "hello"',
+            "C:\\path with spaces\\trailing\\",
+            "",
+        ],
     ],
 )
 def test_join_parse_roundtrip_win32(monkeypatch, parts):
     monkeypatch.setattr(sys, "platform", "win32")
+    joined = mcp_client.join_stdio_command(parts)
+    assert mcp_client.parse_stdio_command(joined) == parts
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("a\u00a0b", id = "nbsp"),
+        pytest.param("a\nb", id = "newline"),
+        pytest.param("a\rb", id = "carriage-return"),
+        pytest.param("a\vb", id = "vertical-tab"),
+        pytest.param("a\fb", id = "form-feed"),
+        pytest.param("a\u2003b", id = "em-space"),
+    ],
+)
+def test_join_parse_roundtrip_win32_preserves_non_delimiter_whitespace(monkeypatch, value):
+    monkeypatch.setattr(sys, "platform", "win32")
+    parts = ["python", "--value", value, 'say "hello"', "a b", ""]
     joined = mcp_client.join_stdio_command(parts)
     assert mcp_client.parse_stdio_command(joined) == parts
 
@@ -132,6 +169,14 @@ def test_parse_stdio_entry():
     assert entry.is_stdio is True
     assert entry.headers == {"K": "v"}
     assert mcp_client.parse_stdio_command(entry.url) == ["npx", "-y", "server", "/tmp"]
+
+
+@pytest.mark.parametrize("args", [None, "", 0, False, {}])
+def test_parse_rejects_explicit_non_list_args(args):
+    entries, errors = parse_mcp_config({"mcpServers": {"bad": {"command": "python", "args": args}}})
+
+    assert entries == []
+    assert errors == ["bad: 'args' must be a list of strings."]
 
 
 def test_parse_remote_entry():

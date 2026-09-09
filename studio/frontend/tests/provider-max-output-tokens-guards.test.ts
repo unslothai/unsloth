@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -26,6 +26,9 @@ const {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  externalMaxOutputTokensNeedsConnectionCap,
+  getGroundedExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
@@ -87,11 +90,65 @@ test("a documented per-model cap bounds the connection override", () => {
   }
 });
 
+test("every OpenAI family the picker admits carries its documented cap", () => {
+  // A missing or too-generous row turns a raised Max Tokens into a failed
+  // request; the 4,096 pair is under the 8,192 default, so those two fail on
+  // an untouched config. The bare `gpt-5` and `gpt-4` rows are last, so this
+  // also pins that a more specific family keeps its own cap.
+  const caps: Array<[string, number]> = [
+    ["gpt-5.6-sol", 128000],
+    ["gpt-5.5", 128000],
+    ["gpt-5.4", 65536],
+    ["gpt-5.3", 16384],
+    ["gpt-5.2", 128000],
+    ["gpt-5.1", 128000],
+    // The chat aliases cap at 16,384 whatever their family does.
+    ["gpt-5-chat-latest", 16384],
+    ["gpt-5.1-chat-latest", 16384],
+    ["gpt-5.2-chat-latest", 16384],
+    ["gpt-5.3-chat-latest", 16384],
+    ["gpt-5", 128000],
+    ["gpt-5-mini", 128000],
+    ["gpt-4.1", 32768],
+    ["gpt-4.1-mini", 32768],
+    ["gpt-4.5-preview", 16384],
+    ["gpt-4o", 16384],
+    ["gpt-4o-mini", 16384],
+    ["chatgpt-4o-latest", 16384],
+    ["gpt-3.5-turbo", 4096],
+    ["gpt-3.5-turbo-16k", 4096],
+    ["gpt-4-turbo", 4096],
+    ["gpt-4-turbo-preview", 4096],
+    ["gpt-4", 8192],
+  ];
+  for (const [modelId, cap] of caps) {
+    assert.equal(getExternalMaxOutputTokens("openai", modelId), cap);
+    assert.equal(getExternalMaxOutputTokens("openai", modelId, 1000000), cap);
+  }
+});
+
+test("the dated Anthropic ids carry their documented cap", () => {
+  // Opus 4.1 and Opus 4 sit at 32,000, under the 32,768 fallback, so without
+  // a row a raised Max Tokens overshoots them.
+  const caps: Array<[string, number]> = [
+    ["claude-opus-4-5-20251101", 64000],
+    ["claude-sonnet-4-5-20250929", 64000],
+    ["claude-haiku-4-5-20251001", 64000],
+    ["claude-sonnet-4-20250514", 64000],
+    ["claude-opus-4-1-20250805", 32000],
+    ["claude-opus-4-20250514", 32000],
+  ];
+  for (const [modelId, cap] of caps) {
+    assert.equal(getExternalMaxOutputTokens("anthropic", modelId), cap);
+    assert.equal(getExternalMaxOutputTokens("anthropic", modelId, 1000000), cap);
+  }
+});
+
 test("a model with no documented cap takes the connection override", () => {
   // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
     ["openrouter", "minimax/minimax-m3"],
-    ["openai", "gpt-4o"],
+    ["openai", "o3"],
     ["vllm", "some/local-model"],
     ["ollama", null],
     [LEGACY_CUSTOM_PROVIDER_TYPE, "any-model"],
@@ -188,21 +245,79 @@ test("an entry saved by an older install loads without gaining a cap", () => {
 // applied while the provider is unresolved would lower the value permanently. Source-level
 // assertions, since neither call site is reachable without a DOM.
 test("every clamp site waits for a resolved provider", () => {
-  const settings = readFileSync(
-    new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
-    "utf8",
-  );
+  const settings = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(
     settings,
     /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel \|\| activeExternalProvider == null\) return nextParams;/,
   );
 
-  const store = readFileSync(
-    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
-    "utf8",
-  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
     store,
     /if \(provider\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,
+  );
+});
+
+
+test("a grounded ceiling is only sent when something documents or overrides it", () => {
+  // The generic 32768 fallback is a guess: a 32k-context server holds the prompt too.
+  assert.equal(getExternalMaxOutputTokens("custom", "some-self-hosted-model", null), 32768);
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("custom", "some-self-hosted-model", null),
+    null,
+  );
+
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("custom", "some-self-hosted-model", 20000),
+    20000,
+  );
+
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("gemini", "gemini-3.6-flash", null),
+    getExternalMaxOutputTokens("gemini", "gemini-3.6-flash", null),
+  );
+});
+
+test("an openrouter model is not grounded by the direct provider's published cap", () => {
+  // The id resolves through the DIRECT provider's table; the router serves it far below.
+  assert.equal(
+    getExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", null),
+    384000,
+  );
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", null),
+    null,
+  );
+
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", 32000),
+    32000,
+  );
+});
+
+test("the grounding of a ceiling is reported alongside it", () => {
+  assert.equal(
+    externalMaxOutputTokensNeedsConnectionCap("custom", "some-self-hosted-model"),
+    true,
+  );
+  // A router id resolves through a table that does not describe the endpoint.
+  assert.equal(
+    externalMaxOutputTokensNeedsConnectionCap("openrouter", "deepseek/deepseek-r1-0528"),
+    true,
+  );
+  assert.equal(externalMaxOutputTokensNeedsConnectionCap("gemini", "gemini-3.6-flash"), false);
+});
+
+test("the published ceiling is reported without the override folded in", () => {
+  // A 65536 model capped at 8192 must stay distinguishable from one that stops at 8192.
+  assert.equal(getPublishedExternalMaxOutputTokens("gemini", "gemini-3.6-flash"), 65536);
+  assert.equal(
+    getExternalMaxOutputTokens("gemini", "gemini-3.6-flash", 8192),
+    8192,
+  );
+  assert.equal(getPublishedExternalMaxOutputTokens("custom", "some-self-hosted-model"), null);
+  assert.equal(
+    getPublishedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528"),
+    null,
   );
 });

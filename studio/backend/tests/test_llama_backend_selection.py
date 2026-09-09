@@ -131,7 +131,7 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
         # Written by this build.
         ({"backend": "rocm", "backend_request": "rocm"}, "rocm"),
         ({"backend": "cuda", "backend_request": "auto"}, "auto"),
-        # A choice from a newer Studio is returned verbatim, never as "auto":
+        # A choice from a newer Unsloth is returned verbatim, never as "auto":
         # "auto" would license this build to re-detect over it.
         ({"backend": "sycl", "backend_request": "sycl"}, "sycl"),
         ({"asset": "x.tar.gz", "llama_backend": "sycl"}, "sycl"),
@@ -460,7 +460,7 @@ def test_metadata_records_both_the_backend_and_the_choice(tmp_path):
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["backend"] == "vulkan"
     assert marker["backend_request"] == "vulkan"
-    # The superseded field stays, so an older Studio keeps re-asserting Vulkan.
+    # The superseded field stays, so an older Unsloth keeps re-asserting Vulkan.
     assert marker["llama_backend"] == "vulkan"
 
 

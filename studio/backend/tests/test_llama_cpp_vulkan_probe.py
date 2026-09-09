@@ -127,14 +127,84 @@ def _row(
     return f"{row}\t{name}" if name is not None else row
 
 
-def test_integrated_gpu_leaves_host_margin(tmp_path):
+def _host_memory(monkeypatch, *, available_mib, total_mib):
+    """Set deterministic host-memory bounds for iGPU tests."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: total_mib)
+    )
+
+
+def test_integrated_gpu_leaves_host_margin(tmp_path, monkeypatch):
     binary = _make_vulkan_install(tmp_path)
     # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target).
     # total stays 0: shared system RAM is not a VRAM budget for the fit.
+    _host_memory(monkeypatch, available_mib = 31 * 1024, total_mib = 32 * 1024)
     rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 30 * 1024 - 1024, 0)], gpus
+
+
+def test_integrated_gpu_host_bound_does_not_replace_planner_reading(tmp_path, monkeypatch):
+    """Placement keeps Vulkan free while admission caps its host-backed share."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 4000, total_mib = 31000)
+    # 512 MiB of UMA plus a GTT heap half the size of RAM
+    rows = [_row(0, 15900 * MIB, is_igpu = 1, total_bytes = 16012 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 15900 - 1024, 0)], gpus
+    assert LlamaCppBackend._igpu_backed_usable_mib(gpus[0][1]) == 4000 - 2048
+
+
+def test_integrated_gpu_keeps_a_heap_the_os_cannot_see(tmp_path, monkeypatch):
+    """Free memory above MemTotal is a conservative carve-out floor."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 13312, total_mib = 32154)
+    rows = [_row(0, 108782 * MIB, is_igpu = 1, total_bytes = 114507 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 108782 - 1024, 0)], gpus
+    expected = (108782 - 32154) + 13312 - 2048
+    assert LlamaCppBackend._igpu_backed_usable_mib(gpus[0][1]) == expected
+
+
+def test_a_carve_out_another_process_holds_is_not_credited(tmp_path, monkeypatch):
+    """Use free, not total, to exclude carve-out memory held elsewhere."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 4096, total_mib = 32768)
+    # The free reading does not exceed MemTotal, so no carve-out is credited.
+    rows = [_row(0, 22528 * MIB, is_igpu = 1, total_bytes = 114688 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 22528 - 1024, 0)], gpus
+    assert LlamaCppBackend._igpu_backed_usable_mib(gpus[0][1]) == 4096 - 2048
+
+
+def test_wsl_credits_no_heap_beyond_its_own_memtotal(tmp_path, monkeypatch):
+    """WSL MemTotal does not describe the adapter's host pool."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 6000, total_mib = 8192)
+    monkeypatch.setattr(_llama_mod, "_is_wsl", lambda: True)
+    rows = [_row(0, 11000 * MIB, is_igpu = 1, total_bytes = 12000 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 11000 - 1024, 0)], gpus
+    assert LlamaCppBackend._igpu_backed_usable_mib(gpus[0][1]) == 6000 - 2048
+
+
+def test_unreadable_host_memory_leaves_the_integrated_reading_alone(tmp_path, monkeypatch):
+    """Missing host readings leave the Vulkan value unchanged."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = None, total_mib = None)
+    rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 30 * 1024 - 1024, 0)], gpus
+    assert LlamaCppBackend._igpu_backed_usable_mib(gpus[0][1]) == 30 * 1024 - 1024
 
 
 def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
