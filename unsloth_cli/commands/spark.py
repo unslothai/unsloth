@@ -877,6 +877,13 @@ def train(
         "", "--save", help = "Directory for this stage's weights. Without it they are discarded."
     ),
     full_finetune: bool = typer.Option(False, "--full-finetune"),
+    grad_checkpoint: bool = typer.Option(
+        False,
+        "--grad-checkpoint",
+        help = "Recompute activations in the backward pass. `spark estimate` recommends this "
+        "for runs that otherwise exceed memory, and the pipeline has always supported it; "
+        "this is the option that reaches it.",
+    ),
     master_port: int = typer.Option(29500, "--master-port"),
     run: bool = typer.Option(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
@@ -923,6 +930,8 @@ def train(
             extra.append("--shard-load")
         if full_finetune:
             extra.append("--full-finetune")
+        if grad_checkpoint:
+            extra.append("--grad-checkpoint")
         argv = [
             "train",
             "--layer-split",
@@ -997,7 +1006,9 @@ def doctor(
         parity_rc = check_parity(peer_ip, deep = deep)
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        fastpath_rc = check_fastpath(peer_ip)
+        # Same ordering as `unsloth doctor`: --parity-only says no GPU work, so the runtime
+        # imports wait for --deep while the package comparison still runs.
+        fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
     if parity_only:
         _workload_guidance()
         _kernel_banner()

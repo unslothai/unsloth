@@ -4509,8 +4509,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
     if args.command == "train":
         if args.layer_split:
+            # argparse records --grad-checkpoint, and forwarding only --pipeline-args meant
+            # the stage process never saw it: the flag parsed, printed nothing, and did
+            # nothing. Appended rather than assumed, so an explicit one in --pipeline-args
+            # is not duplicated.
+            extra = args.pipeline_args or ""
+            if args.grad_checkpoint and "--grad-checkpoint" not in extra:
+                extra = f"{extra} --grad-checkpoint".strip()
             return _cmd_pipeline(
-                args.layer_split, port = args.master_port, extra = args.pipeline_args, run = args.run
+                args.layer_split, port = args.master_port, extra = extra, run = args.run
             )
         if not args.script:
             print("train needs --script <train.py>, or --layer-split <model>")

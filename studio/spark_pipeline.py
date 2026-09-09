@@ -39,6 +39,8 @@ _LAYER_PATHS = (
 # find_layers accepts OPT, GPT-2 and GPT-NeoX, so the stage wrapper must not assume Llama's
 # names. Getting this wrong is not always loud: OPT keeps its final normalisation in
 # `final_layer_norm`, so looking only for `norm` dropped it from the last stage silently.
+# One seed for the whole run, set before the model is built so it covers the parameters too.
+TRAIN_SEED = 3407
 _EMBED_NAMES = ("embed_tokens", "wte", "embed_in")
 _FINAL_NORM_NAMES = ("norm", "ln_f", "final_layer_norm")
 _LAYER_CONTAINER_NAMES = ("layers", "h")
@@ -436,8 +438,24 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         else snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
     )
 
+    shards = sorted(glob.glob(osp.join(snap, "*.safetensors")))
+    if not shards:
+        # Said plainly, and before the tensors are read. A .bin checkpoint left every
+        # parameter on meta and surfaced as `unmaterialised tensors remain`, which names the
+        # symptom and not the cause, after the model had already been allocated.
+        legacy = glob.glob(osp.join(snap, "*.bin"))
+        raise RuntimeError(
+            f"--shard-load reads safetensors, and {snap} has none"
+            + (
+                f" ({len(legacy)} .bin shard(s) instead). Convert the checkpoint to "
+                f"safetensors, or load it without --shard-load."
+                if legacy
+                else "."
+            )
+        )
+
     loaded, seen = {}, 0
-    for f in sorted(glob.glob(osp.join(snap, "*.safetensors"))):
+    for f in shards:
         with safe_open(f, framework = "pt", device = "cpu") as sf:
             for k in sf.keys():
                 if k in wanted:
@@ -1698,6 +1716,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would
     # remove layers this rank needs; the legacy interleaved path has no such set and keeps
     # the whole stack instead.
+    #
+    # Seeded HERE, before anything is constructed. `get_peft_model` initialises the LoRA A
+    # matrices the moment it is called, so a seed set after it made the run reproducible in
+    # its synthetic token ids and its dropout but not in the parameters actually being
+    # optimised: two torchrun processes, and two runs of the same command, started from
+    # different adapter weights while the code hard-codes a seed.
+    torch.manual_seed(TRAIN_SEED)
     model, cfg, _ = build_stage_model(
         args.model,
         rank,
@@ -1856,7 +1881,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)
 
-    torch.manual_seed(3407)
+    # Again, so the synthetic data does not depend on how many draws the model construction
+    # above happened to take.
+    torch.manual_seed(TRAIN_SEED)
     need = args.batch * args.steps
     if args.data:
         rows = [json.loads(l) for l in open(args.data, encoding = "utf-8")]

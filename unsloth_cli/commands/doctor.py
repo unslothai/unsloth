@@ -209,13 +209,15 @@ def _run_probe_peer(
     """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would. Not `ssh -t`,
     not `bash -lc`: a login shell reads /etc/profile.d, which is exactly where the CUDA PATH
     entry the real run never sees comes from, so it would report parity on a doomed pair."""
-    import os
     import shutil
     import subprocess
 
     if not shutil.which("ssh"):
         return None, "no ssh on this machine"
-    user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
+    # The same resolution every other SSH here uses. Reading only USER/USERNAME meant that
+    # from a service, a cron job or a container -- where neither is set -- the probes went to
+    # the literal account `nvidia` and reported UNKNOWN on a pair whose other SSH works.
+    user = _ssh_login()
     remote = _probe_wrapper(source)
     try:
         proc = subprocess.run(
@@ -428,8 +430,22 @@ def gate(name, code):
         g["gate_" + name] = "no (" + type(exc).__name__ + ")"
 
 
-gate("causal_conv1d_fn", "from causal_conv1d import causal_conv1d_fn")
-gate("fla_chunk_gated_delta_rule", "from fla.ops import chunk_gated_delta_rule")
+# The SAME import statements transformers uses, from the same module paths and in the same
+# groupings. Sampling one symbol out of a group reported a matching gate on a node where the
+# real import fails: modeling_qwen3_next.py takes `causal_conv1d_fn` and `causal_conv1d_update`
+# in one try, so a missing `_update` leaves BOTH None and the block falls back, and it reaches
+# the delta rule through `fla.ops.gated_delta_rule` rather than `fla.ops`, which is a different
+# module and can exist when the other does not.
+gate(
+    "causal_conv1d_fn",
+    "from causal_conv1d import causal_conv1d_fn, causal_conv1d_update",
+)
+gate(
+    "fla_chunk_gated_delta_rule",
+    "from fla.ops.gated_delta_rule import chunk_gated_delta_rule, "
+    "fused_recurrent_gated_delta_rule",
+)
+gate("fla_fused_rms_norm_gated", "from fla.modules import FusedRMSNormGated")
 gate("flash_attn_func", "from flash_attn import flash_attn_func")
 gate("triton", "import triton")
 gate("xformers_memory_efficient_attention", "from xformers.ops import memory_efficient_attention")
@@ -770,7 +786,11 @@ def doctor(
     # Inert without a peer: this check has nothing to say about one machine's package list.
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        fastpath_rc = check_fastpath(peer_ip)
+        # `--parity-only` promises no GPU work, and the runtime half of this probe imports
+        # torch and the native kernel packages on both nodes, which is minutes and a CUDA
+        # context. The package comparison still runs -- that IS a capability gate -- and
+        # `--deep` is the flag that asks for the imports.
+        fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
 
     if parity_only:
         _workload_guidance()
