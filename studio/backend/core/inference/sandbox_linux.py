@@ -87,6 +87,11 @@ _SYSTEM_ROOTS = (
     "/usr/local/sbin",
     "/usr/local/share",
     "/usr/share",
+    # /usr/local/bin is on the sanitized PATH and is commonly a directory of
+    # symlinks into an installation under /opt, which would otherwise dangle in
+    # here and fail an ordinary command with ENOENT. A parent directory, like the
+    # rest of this list and for the reason in the module docstring.
+    "/opt",
     # Headers, for the pip installs that have no wheel and build from source.
     # Read-only system paths like the rest of this list, and the executor they
     # replace had them: without them a source build fails at the first #include.
@@ -471,14 +476,27 @@ class _CacheMountpoints:
     def _mkdir(self, name: str) -> None:
         """``mkdir`` in the innermost directory, recorded only if it was made here.
 
-        An entry that already exists is opened with the same O_DIRECTORY and
-        O_NOFOLLOW the ancestors get, so a leaf a tool call left behind as a file
-        or a symlink is refused here rather than failing the --bind-try inside
-        bwrap, after Popen, where auto can no longer take its fallback.
+        An entry that already exists but is not a plain directory is REPLACED, not
+        refused. These are Studio's own mount points in a dot directory it created,
+        so there is nothing of the user's to lose, and refusing would hand tool
+        code the second half of the switch the workdir scan just stopped being: a
+        leaf a call leaves behind as a symlink would make the next preparation
+        raise, and ``auto`` answers a raise by running unisolated. Repairing keeps
+        the boundary on and keeps the O_NOFOLLOW guarantee, since what is opened
+        afterwards is a directory this call made.
         """
         try:
             os.mkdir(name, dir_fd = self._fds[-1])
         except FileExistsError:
+            if self._is_plain_directory(name):
+                return
+            os.unlink(name, dir_fd = self._fds[-1])
+            os.mkdir(name, dir_fd = self._fds[-1])
+        self._made.append((len(self._fds) - 1, name))
+
+    def _is_plain_directory(self, name: str) -> bool:
+        """Whether *name* in the innermost directory is a directory and not a link."""
+        try:
             os.close(
                 os.open(
                     name,
@@ -486,8 +504,9 @@ class _CacheMountpoints:
                     dir_fd = self._fds[-1],
                 )
             )
-            return
-        self._made.append((len(self._fds) - 1, name))
+        except OSError:
+            return False
+        return True
 
     def release(self) -> None:
         """Remove what this launch made, innermost first and only while empty."""

@@ -874,11 +874,13 @@ def test_a_cache_ancestor_replaced_during_the_launch_is_not_followed_on_the_way_
     assert (workdir / ".cache").is_symlink()
 
 
-def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
+def test_a_symlinked_cache_ancestor_is_replaced_rather_than_written_through(tmp_path, monkeypatch):
     """os.mkdir follows an intermediate symlink, and the workdir scan deliberately
     permits directory symlinks, so a .cache a previous call pointed at the user's
     home would have the mount points created out there, on the host, before bwrap
-    starts."""
+    starts. Replaced rather than refused: these are Studio's own mount points in a
+    dot directory it created, and a refusal is what auto answers by running the
+    next call unisolated."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
@@ -888,9 +890,14 @@ def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_p
     outside.mkdir()
     (workdir / ".cache").symlink_to(outside)
 
-    with pytest.raises(SandboxUnavailableError, match = "not a plain directory"):
-        sandbox_linux.prepare(_plan(workdir))
-    assert sorted(p.name for p in outside.iterdir()) == []
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        assert not (workdir / ".cache").is_symlink()
+        assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
+        # Nothing was created behind the link.
+        assert sorted(p.name for p in outside.iterdir()) == []
+    finally:
+        launch.cleanup()
 
 
 def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
@@ -1054,10 +1061,11 @@ def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller
         launch.cleanup()
 
 
-def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, monkeypatch):
+def test_a_cache_leaf_left_behind_as_a_file_is_replaced_at_preparation(tmp_path, monkeypatch):
     """--bind-try onto a leaf that is not a directory fails inside bwrap, after
-    Popen, so auto cannot fall back and the session stays broken. An existing leaf
-    gets the same O_DIRECTORY and O_NOFOLLOW check its ancestors get."""
+    Popen, so auto cannot fall back and the session stays broken. A tool call can
+    leave one there, so it is repaired rather than refused: refusing would be the
+    same switch-the-boundary-off move the workdir scan no longer offers."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
@@ -1065,5 +1073,8 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "huggingface" / "hub").write_text("not a directory")
 
-    with pytest.raises(SandboxUnavailableError, match = "not a plain directory"):
-        sandbox_linux.prepare(_plan(workdir))
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
+    finally:
+        launch.cleanup()
