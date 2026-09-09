@@ -117,13 +117,7 @@ def _resolve_load_dir(p, loader_id: Optional[str] = None):
 
 
 def _resolve_gguf_load_snapshot(p):
-    """Newest complete snapshot in this exact cache repo, or the selector fallback.
-
-    A later Hub revision can contain only a newly fetched companion such as an
-    MTP drafter or mmproj while the complete model weights remain in an older
-    snapshot. The generic resolver intentionally picks the newest snapshot, but
-    doing that for GGUF discovery makes the repo disappear from ``/v1/models``.
-    """
+    """Newest *complete* snapshot: a newer revision may hold only a companion, not weights."""
     snapshots = p / "snapshots"
     try:
         if not snapshots.is_dir():
@@ -131,8 +125,7 @@ def _resolve_gguf_load_snapshot(p):
     except OSError:
         return None
 
-    # Reuse the Hub inventory's selection rule, scoped to the row's exact repo
-    # directory so case-colliding repos cannot cross-load or trigger another root scan.
+    # Scoped to this exact repo dir so case-colliding repos cannot cross-load.
     from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
 
     selected = select_gguf_cache_snapshot_for_repo_dir(p)
@@ -142,13 +135,6 @@ def _resolve_gguf_load_snapshot(p):
 
 
 def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> tuple[str, ...]:
-    """Trusted sibling snapshots for a repo-level HF cache resolution.
-
-    The selected snapshot remains first so a colocated companion wins. Other
-    revisions are returned newest first for the case where a later download
-    contains only a compatible mmproj. Exact revision paths and paths outside
-    an exact ``models--*`` cache-repo layout never widen their companion search.
-    """
     from pathlib import Path
     from hub.utils.hf_cache_state import snapshot_selection_key
 
@@ -181,7 +167,6 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
 
 
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
-    """File metadata for trusted snapshots, including newly completed companions."""
     from pathlib import Path
 
     state = []
@@ -732,8 +717,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         entry = _local_servable_entry(loader_id, info)
         if entry is None:
             continue
-        # Repo and display aliases intentionally select across revisions. An inactive-cache row's absolute id and
-        # basename name one exact revision instead: index them only when that revision has its own complete weights.
+        # Path-shaped ids name one exact revision, so index them only if that revision has complete weights.
         path_alias_entry = entry
         if entry.repo_level_companions and _is_abs_path_id(raw_id):
             from types import SimpleNamespace

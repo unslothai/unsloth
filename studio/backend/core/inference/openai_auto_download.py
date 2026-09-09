@@ -54,7 +54,7 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
-# Probe the selected weight because speech GGUFs need not publish tokenizer sidecars.
+# Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
 _REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
 _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
@@ -780,7 +780,6 @@ async def _admit_and_start(
             default = (None, False),
         )
         if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
-            # Prefer the selected weight; use a supported sidecar only when it is inconclusive.
             sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
             probed_audio_type, probed_definitive = await _bounded_probe(

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from storage.studio_db import get_connection, is_sqlite_busy_error
+from utils.account_context import AccountContext, current_account, run_as
 
 
 # Kept aligned with the API monitor's defensive upper bound; the storage layer validates
@@ -174,6 +175,12 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     return inserted
 
 
+@dataclass(frozen = True, slots = True)
+class _QueuedReceipt:
+    account: AccountContext
+    receipt: ApiUsageReceipt
+
+
 _STOP = object()
 
 
@@ -197,7 +204,7 @@ class ApiUsageWriter:
         with self._state_lock:
             if self._stopped:
                 return False
-            self._queue.put_nowait(receipt)
+            self._queue.put_nowait(_QueuedReceipt(current_account(), receipt))
             return True
 
     def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
@@ -233,7 +240,7 @@ class ApiUsageWriter:
                 busy_failures = 0
                 while True:
                     try:
-                        self._sink(item)  # type: ignore[arg-type]
+                        run_as(item.account, self._sink, item.receipt)
                         break
                     except sqlite3.OperationalError as exc:
                         if not _is_busy_error(exc):

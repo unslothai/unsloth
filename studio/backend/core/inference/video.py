@@ -36,6 +36,7 @@ import inspect
 import os
 import tempfile
 import threading
+from utils.account_context import account_thread, current_account_id
 import time
 import types
 from dataclasses import dataclass
@@ -1057,6 +1058,7 @@ class VideoBackend:
         # Which job the flag belongs to. The flag alone cannot tell "my job" from "the job that replaced mine", so
         # finalising is keyed on this. Compared by identity.
         self._generate_job_token: Optional[object] = None
+        self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
 
@@ -1395,7 +1397,7 @@ class VideoBackend:
                 asset_repos = claimed_assets,
             )
 
-        threading.Thread(
+        account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
@@ -1646,6 +1648,9 @@ class VideoBackend:
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
+            if self._state is not None:
+                from .gpu_arbiter import VIDEO, restore_owner_account
+                restore_owner_account(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             try:
                 clear_gpu_cache()
@@ -5070,6 +5075,7 @@ class VideoBackend:
                 )
                 self._generate_job_active = True
                 self._generate_job_token = job_token
+                self._generate_job_account = current_account_id()
                 self._active_generate_cancel = cancel
                 self._gen_video_id = video_id
                 self._gen = {
@@ -5080,7 +5086,7 @@ class VideoBackend:
                     "eta_seconds": None,
                 }
                 break
-        worker = threading.Thread(
+        worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
             # valid generate() call, and callers replay them as one.
             target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
@@ -5132,6 +5138,9 @@ class VideoBackend:
             "fps": fps if fps is not None else getattr(fam, "default_fps", None),
             "model": getattr(state, "repo_id", None),
         }
+
+    def generate_job_account(self) -> Optional[str]:
+        return self._generate_job_account
 
     def _run_generate(
         self,
@@ -6201,10 +6210,16 @@ class VideoBackend:
             self._gen = {"active": False}
             return True
 
-    def cancel_generate(self, expected_video_id: Optional[str] = None) -> bool:
-        """Signal the in-flight generation to stop at its next step callback."""
+    def cancel_generate(
+        self,
+        expected_video_id: Optional[str] = None,
+        expected_account: Optional[str] = None,
+    ) -> bool:
+        """Signal the in-flight generation to stop; the expected_* arguments name the reservation the caller authorized, rechecked under begin_generate's lock so a cancel authorized against a finished job cannot set a successor's event."""
         with self._lock:
             if expected_video_id is not None and self._gen_video_id != expected_video_id:
+                return False
+            if expected_account is not None and self._generate_job_account != expected_account:
                 return False
             cancel = self._active_generate_cancel
             if cancel is None:
@@ -6360,3 +6375,11 @@ def generation_in_flight() -> bool:
     """Read the background-job marker without constructing or locking the backend."""
     backend = _backend
     return backend is not None and bool(backend._generate_job_active)
+
+
+def generation_account_in_flight() -> Optional[str]:
+    """The account whose video job is running, read without constructing the backend."""
+    backend = _backend
+    if backend is None or not backend._generate_job_active:
+        return None
+    return backend._generate_job_account

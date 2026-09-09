@@ -1856,8 +1856,8 @@ class TestPairedWritesAreInvalidatedTogether:
 
         mm._generation.clear()
         mm._invalidate(mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY)
-        assert mm._generation[mm.KEEP_RESIDENT_SETTING_KEY] == 1
-        assert mm._generation[mm.NO_RAM_RESERVE_SETTING_KEY] == 1
+        assert mm._generation[("owner", mm.KEEP_RESIDENT_SETTING_KEY)] == 1
+        assert mm._generation[("owner", mm.NO_RAM_RESERVE_SETTING_KEY)] == 1
 
     def test_one_acquisition_covers_every_key(self):
         import ast

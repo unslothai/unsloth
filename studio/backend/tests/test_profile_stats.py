@@ -35,7 +35,7 @@ from storage.profile_stats_db import compute_profile_stats, invalidate_profile_s
 def stats_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     invalidate_profile_stats_cache()
     yield
     invalidate_profile_stats_cache()
@@ -240,7 +240,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     assert after_insert["streak"]["current"] == 1
 
     # A fresh process/schema initialization still reads the same receipt.
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     invalidate_profile_stats_cache()
     after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     assert after_restart["totals"]["apiTokens"] == 50
@@ -624,7 +624,7 @@ def test_existing_database_gets_additive_api_usage_schema(stats_db):
     finally:
         legacy.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "kept"

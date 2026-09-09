@@ -5,9 +5,9 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from auth.storage import MIN_PASSWORD_LENGTH
+from auth.storage import MIN_PASSWORD_LENGTH, validate_account_username
 
 
 class AuthLoginRequest(BaseModel):
@@ -36,6 +36,20 @@ class AuthStatusResponse(BaseModel):
     default_username: str = Field(
         "unsloth",
         description = "Default admin username for first-boot UI prefill.",
+    )
+    login_mode: str = Field(
+        "single",
+        description = (
+            "'single' when one account exists, so the form posts default_username without asking; "
+            "'multi' when a username has to be entered. Never lists accounts."
+        ),
+    )
+    full_access: bool = Field(
+        True,
+        description = (
+            "Whether the unsandboxed tool modes (Full access, bypass permissions) may be "
+            "offered. False whenever another account exists, active or not."
+        ),
     )
     requires_password_change: bool = Field(
         ...,
@@ -110,3 +124,35 @@ class ApiKeyListResponse(BaseModel):
     """List of API keys for the authenticated user."""
 
     api_keys: list[ApiKeyResponse]
+
+
+class CreateAccountRequest(BaseModel):
+    username: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return validate_account_username(value)
+
+
+class AccountActiveRequest(BaseModel):
+    is_active: bool
+
+
+class AccountResponse(BaseModel):
+    account_id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: str
+    setup_code_pending: bool
+
+
+class AccountListResponse(BaseModel):
+    accounts: list[AccountResponse]
+
+
+class AccountSetupResponse(BaseModel):
+    account: AccountResponse
+    setup_code: str
+    setup_code_expires_at: str

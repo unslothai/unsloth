@@ -5915,7 +5915,7 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m")
 
     tool_name = "mcp__a3f9c1d2e4b6f807__create_issue"
@@ -5947,7 +5947,7 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py")

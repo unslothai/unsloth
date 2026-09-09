@@ -91,7 +91,7 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
@@ -99,12 +99,18 @@ async function redirectToAuth(): Promise<void> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+      const data = (await res.json()) as {
+        requires_password_change: boolean;
+        login_mode?: "single" | "multi";
+      };
+      // Public status describes the owner. A managed session carries its own requirement.
+      const requiresChange = data.login_mode === "multi"
+        ? passwordChangeRequired || mustChangePassword()
+        : data.requires_password_change;
+      if (requiresChange !== mustChangePassword()) {
+        setMustChangePassword(requiresChange);
       }
-      if (data.requires_password_change) target = "/change-password";
+      if (requiresChange) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -260,7 +266,7 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;

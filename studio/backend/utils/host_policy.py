@@ -186,13 +186,10 @@ def published_url_host(host: str) -> str:
 
 
 def dial_host(host: str) -> str:
-    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx
-    hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
+    """Authority host for a self-call. The IPv6 zone id stays literal: httpx hands RFC 6874 escaping straight to the resolver."""
     return f"[{host}]" if ":" in host else host
 
 
-# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so
-# loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
 LOOPBACK_FALLBACK_HOST = "127.0.0.1"
 
 
@@ -214,16 +211,13 @@ def scope_request_host(server) -> "str | None":
 
 
 def prefer_loopback(current: "str | None", candidate: str) -> str:
-    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived
-    on, and that address can change while the loopback it also serves stays valid."""
+    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived on."""
     if current is not None and is_loopback_host(current):
         return current
     return candidate
 
 
 def self_request_host(app_state, server = None) -> str:
-    """`server_request_host` is authoritative - run_server publishes it from the live listener
-    sockets; the scope pair covers running outside run_server."""
     published = getattr(app_state, "server_request_host", None)
     if isinstance(published, str) and published:
         return published

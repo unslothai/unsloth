@@ -42,6 +42,15 @@ from typing import (
 import functools
 import json
 import httpx
+from hub.services.models import account_access
+from hub.services.models.account_access import media_link_account, media_link_target
+from utils.account_context import (
+    OWNER_ACCOUNT_ID,
+    account_thread,
+    current_account,
+    current_account_id,
+    run_as,
+)
 from loggers import get_logger
 from loggers.media_progress import (
     log_media_generation_progress,
@@ -3100,7 +3109,7 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
-from auth import storage as auth_storage
+from auth import policy as auth_policy, storage as auth_storage
 from auth.authentication import API_KEY_PREFIX, get_current_subject
 from state import active_generations
 
@@ -3920,6 +3929,16 @@ def _passthrough_client_tools(payload):
     return payload.tools or None
 
 
+def _admit_tool_access(payload) -> None:
+    """Refuse full access at the door, before a stream opens and 400 is no longer possible."""
+    from state.tool_policy import require_tool_access
+    require_tool_access(
+        getattr(payload, "permission_mode", None),
+        bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
+        disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
+    )
+
+
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -4281,6 +4300,13 @@ _PENDING_CANCELS: dict[str, float] = {}
 _PENDING_CANCEL_TTL_S = 30.0
 
 
+def _account_cancel_key(key):
+    # Tuples cannot collide with the legacy string ids retained for one-account installs.
+    if account_access.managed_account():
+        return current_account_id(), key
+    return key
+
+
 def _prune_pending(now: float) -> None:
     for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
         _PENDING_CANCELS.pop(k, None)
@@ -4304,7 +4330,7 @@ class _TrackedCancel:
         kind = "chat",
     ):
         self.event = event
-        self.keys = tuple(k for k in keys if k)
+        self.keys = tuple(_account_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
@@ -4363,7 +4389,7 @@ def _cancel_by_keys(keys) -> int:
     with _CANCEL_LOCK:
         _prune_pending(time.monotonic())
         for k in keys:
-            bucket = _CANCEL_REGISTRY.get(k)
+            bucket = _CANCEL_REGISTRY.get(_account_cancel_key(k))
             if bucket:
                 events.update(bucket)
     for ev in events:
@@ -4374,6 +4400,7 @@ def _cancel_by_keys(keys) -> int:
 def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
     """Atomic lookup-or-stash; pairs with _TrackedCancel.__enter__ to
     close the TOCTOU race."""
+    cancel_id = _account_cancel_key(cancel_id)
     now = time.monotonic()
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
@@ -7003,7 +7030,11 @@ async def _lease_ollama_model_ref(
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
-        _OLLAMA_LEASE_EXECUTOR, acquire_ollama_model_ref, request.model_path
+        _OLLAMA_LEASE_EXECUTOR,
+        run_as,
+        current_account(),
+        acquire_ollama_model_ref,
+        request.model_path,
     )
     try:
         lease = await asyncio.shield(lease_future)
@@ -7167,9 +7198,15 @@ async def _wait_for_model_switch_idle(
     still be refused, so they must not shorten the protection they provide.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
+    from auth.policy import installation_is_multi_user
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from utils.account_context import current_account_id
 
+    account_id = current_account_id() if installation_is_multi_user() else None
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
+        if account_id is not None:
+            require_no_foreign_generations(account_id)
         queued_switches = _switch_waiter_count()
         if current_request_counted and queued_switches > 0:
             queued_switches -= 1
@@ -7178,7 +7215,12 @@ async def _wait_for_model_switch_idle(
             include_pending = False,
         )
         if cancel_pending:
-            active_others -= min(active_others, active_generations.count())
+            cancellable = (
+                active_generations.count(account_id)
+                if account_id is not None
+                else active_generations.count()
+            )
+            active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
         if deadline is not None and time.monotonic() >= deadline:
@@ -7300,7 +7342,7 @@ def _target_is_vision(
         return bool(
             is_vision_model(
                 load_path,
-                hf_token = os.environ.get("HF_TOKEN"),
+                hf_token = account_access.ambient_hf_token(),
                 gguf_variant = gguf_variant,
                 require_image = need_image,
                 gguf_companion_roots = gguf_companion_roots or None,
@@ -7324,7 +7366,7 @@ def _target_accepts_audio_input(load_path: str) -> bool:
         return is_audio_input_type(
             detect_audio_type(
                 load_path,
-                hf_token = os.environ.get("HF_TOKEN"),
+                hf_token = account_access.ambient_hf_token(),
                 local_files_only = True,
             )
         )
@@ -8280,7 +8322,7 @@ def _classify_and_probe_residency(
 def _innermost_indexed_owner(path: str) -> Optional[str]:
     """Longest catalog-listed model path containing *path*, or None if none does."""
     best = None
-    for info in _CATALOG_CACHE["models"] or ():
+    for info in _account_catalog_cache()["models"] or ():
         listed = getattr(info, "path", None)
         if not listed:
             continue
@@ -8448,6 +8490,35 @@ async def _reject_unservable_model(
     )
 
 
+async def _require_named_model_access(named_model: str) -> None:
+    """Authorize a named model; a path-free local id from /v1/models resolves through the account catalog."""
+    try:
+        await asyncio.to_thread(account_access.require_model_access, named_model)
+        return
+    except HTTPException as refusal:
+        if refusal.status_code != 404:
+            raise
+    from core.inference.openai_auto_download import split_model_ref
+
+    alias = (split_model_ref(named_model)[0] or "").strip().lower()
+    if alias:
+        await _cached_local_catalog()
+        if await asyncio.to_thread(_own_local_model_for_alias, alias) is not None:
+            return
+    raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def _own_local_model_for_alias(alias: str) -> Optional[str]:
+    for info in _account_catalog_cache()["models"] or ():
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        path = getattr(info, "path", None)
+        if not cid or not path or cid.strip().lower() != alias:
+            continue
+        if account_access.model_visible(path):
+            return path
+    return None
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -8492,6 +8563,24 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
+    # The reload-only sentinel means an omitted model to the account checks, not a name.
+    named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
+    if account_access.managed_account():
+        if named_model:
+            await _require_named_model_access(named_model)
+        elif account_access.resident_hidden("chat", _loaded_slot_ident()):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+
+    async def _refuse_foreign_resident() -> None:
+        """Serve a named model only if the resident is the caller's own or answers to the name."""
+        if not named_model or not account_access.managed_account():
+            return
+        if not account_access.resident_hidden("chat", _loaded_slot_ident()):
+            return
+        if await asyncio.to_thread(_loaded_identity_satisfies, named_model):
+            return
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
         get_model_override,
@@ -8584,6 +8673,7 @@ async def _maybe_auto_switch_model(
         # No switching to do, but a named model must still not be answered by another.
         # Reject first: a request that is turned away here must not claim the slot.
         await _reject_unservable_model(requested_model, fastapi_request)
+        await _refuse_foreign_resident()
         # Auto-switch off: this non-preview turn uses the resident model, claim it.
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -8800,6 +8890,10 @@ async def _maybe_auto_switch_model(
                 _set_preview_resident(None)
             _record_serving_alias()
             return
+        from core.inference.gpu_arbiter import require_no_foreign_generations
+
+        switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        require_no_foreign_generations(path = switch_path)
         # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
@@ -8954,6 +9048,7 @@ async def _maybe_auto_switch_model(
                                 _set_preview_resident(None)
                             _record_serving_alias()
                             return
+                        require_no_foreign_generations(path = switch_path)
                         # Apply the saved launch config so an API swap loads as the picker
                         # would. Order: variant-qualified keys before bare ids, and the
                         # load path before the advertised id, since the settings UI keys
@@ -9101,9 +9196,27 @@ async def _maybe_auto_switch_model(
             if waiter_noted:
                 _note_switch_waiter(key, -1)
 
-    await _resolve_and_switch()
+    try:
+        await _resolve_and_switch()
+    except HTTPException as exc:
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        if (
+            path
+            and path.startswith("/v1/")
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("error") == "gpu_busy"
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = error_body_for_path(
+                    path, exc.detail["message"], status = 409, code = "gpu_busy", param = "model"
+                ),
+                headers = exc.headers,
+            ) from exc
+        raise
     # The switch may have missed, so refuse rather than answer as whatever is resident.
     await _reject_unservable_model(requested_model, fastapi_request)
+    await _refuse_foreign_resident()
 
 
 async def _auto_switch_from_request_body(
@@ -9254,6 +9367,9 @@ def _claim_slot_for_non_preview(fastapi_request) -> None:
 async def load_model_for_preview(
     request: LoadRequest, fastapi_request: Request, current_subject: str
 ) -> None:
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    account_access.require_idle_other_accounts()
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
         note_preview_swap,
@@ -13495,11 +13611,23 @@ def _raise_or_cancel_active_generations(
     run ahead of preflight checks that can still reject the load (see
     _load_model_impl).
     """
-    if not active_generations.count():
+    scope = account_access.account_scope()
+    if not active_generations.count(scope):
         return 0
+    from auth.policy import installation_is_multi_user
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from utils.account_context import current_account_id
+
+    account_id = current_account_id() if installation_is_multi_user() else None
+    if account_id is not None:
+        if force and cancel:
+            cancelled = active_generations.cancel_all(account_id)
+            require_no_foreign_generations(account_id)
+            return cancelled
+        require_no_foreign_generations(account_id)
     if not force:
-        thread_ids = active_generations.active_thread_ids()
-        running = active_generations.count()
+        thread_ids = active_generations.active_thread_ids(scope)
+        running = active_generations.count(scope)
         raise HTTPException(
             status_code = 409,
             detail = {
@@ -13517,7 +13645,7 @@ def _raise_or_cancel_active_generations(
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
         return 0
-    cancelled = active_generations.cancel_all()
+    cancelled = active_generations.cancel_all(scope)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -13711,7 +13839,8 @@ async def get_active_generations(
     slot count actually in use, which the VRAM fit may have cut below the
     requested --parallel; chats beyond it queue rather than fail.
     """
-    entries = active_generations.snapshot()
+    scope = account_access.account_scope()
+    entries = active_generations.snapshot(scope)
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
@@ -13725,7 +13854,7 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(),
+        "thread_ids": active_generations.active_thread_ids(scope),
         "parallel_slots": max(1, int(slots)),
     }
 
@@ -13806,6 +13935,8 @@ def _prune_scoped_load_cancel_tombstones(now: float) -> None:
 
 
 def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLoadAttempt:
+    if account_access.account_scope() is not None:
+        current_subject = current_account_id()
     attempt = _ScopedLoadAttempt(
         token = uuid.uuid4().hex,
         request_id = request.load_request_id,
@@ -13848,6 +13979,8 @@ def _finish_load_attempt(attempt: _ScopedLoadAttempt) -> None:
 def _cancel_scoped_load_attempt(
     request: UnloadRequest, current_subject: str
 ) -> tuple[Optional[_ScopedLoadAttempt], bool]:
+    if account_access.account_scope() is not None:
+        current_subject = current_account_id()
     request_id = request.cancel_load_request_id
     if request_id is None:
         return None, False
@@ -13902,7 +14035,7 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
+        response = await _load_model_impl(
             request,
             fastapi_request,
             current_subject,
@@ -13910,6 +14043,10 @@ async def _run_tracked_load_model_impl(
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = attempt.cancel_event,
         )
+        account_access.note_resident_account(
+            "chat", request.model_path, getattr(response, "model", request.model_path)
+        )
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -13928,6 +14065,7 @@ async def _run_tracked_load_model_impl(
 
 
 @router.post("/load", response_model = LoadResponse)
+@account_access.gpu_busy_route
 async def load_model(
     request: LoadRequest,
     fastapi_request: Request,
@@ -14038,6 +14176,13 @@ async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bo
         return False
 
 
+def _require_resolved_base_access(config) -> None:
+    """Grants apply to the base an adapter's config names, so an owned adapter cannot pull another account's cached base."""
+    base = getattr(config, "base_model", None)
+    if account_access.managed_account() and isinstance(base, str) and base.strip():
+        account_access.require_model_access(base.strip())
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -14051,6 +14196,12 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -14159,7 +14310,7 @@ async def _load_model_impl(
         # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable; the
         # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
         from core.inference.gpu_arbiter import (
-            acquire_for,
+            acquire_for_request,
             current_owner,
             release,
             CHAT,
@@ -14233,7 +14384,7 @@ async def _load_model_impl(
                 # held) to correct a drifted owner. Unless the resident server is a confirmed
                 # zero-VRAM one, which coexists with an image/video pipeline.
                 if not llama_backend.holds_no_vram:
-                    await asyncio.to_thread(acquire_for, CHAT)
+                    await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
@@ -14268,7 +14419,7 @@ async def _load_model_impl(
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
                 # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
-                    await asyncio.to_thread(acquire_for, CHAT)
+                    await asyncio.to_thread(acquire_for_request, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -14340,6 +14491,7 @@ async def _load_model_impl(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+        await asyncio.to_thread(_require_resolved_base_access, config)
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -14437,6 +14589,7 @@ async def _load_model_impl(
 
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
+        account_access.require_idle_other_accounts()
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
@@ -14627,7 +14780,7 @@ async def _load_model_impl(
                 if not allow_gpu_owner_eviction:
                     handoff_kwargs["allow_evict"] = False
                 await asyncio.to_thread(
-                    acquire_for,
+                    acquire_for_request,
                     CHAT,
                     lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
                     **handoff_kwargs,
@@ -15116,6 +15269,8 @@ async def _load_model_impl(
         from core.inference.gpu_arbiter import GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
+        if isinstance(e, account_access.GpuBusyForAnotherAccountError):
+            raise account_access.gpu_busy_error() from e
         if isinstance(e, GpuOwnerBusyError):
             raise
         if isinstance(e, SidecarSwapInProgress):
@@ -15291,6 +15446,12 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
@@ -15795,6 +15956,19 @@ async def check_transformers_upgrade_route(
     """
     from utils.transformers_version import latest_tier_active_for
 
+    if account_access.managed_account():
+        for ref in (
+            request.model_name,
+            request.model_local_path,
+            request.model_snapshot_path,
+            request.model_snapshot_repo_id,
+        ):
+            if isinstance(ref, str) and ref:
+                await asyncio.to_thread(account_access.require_model_access, ref)
+        # None reads as ambient-authorized downstream and keeps the hub-cache fallback open.
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     model_name = request.model_name
     # Inspect what the load will open, not what the identifier resolves to today.
     load_target = await asyncio.to_thread(_upgrade_check_config_target, request)
@@ -15898,9 +16072,10 @@ async def check_transformers_upgrade_route(
     )
 
 
-# studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
 @studio_router.post(
-    "/install-latest-transformers", response_model = InstallLatestTransformersResponse
+    "/install-latest-transformers",
+    response_model = InstallLatestTransformersResponse,
+    dependencies = [Depends(get_current_subject), Depends(auth_policy.require_owner)],
 )
 async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
@@ -16243,6 +16418,8 @@ async def estimate_memory(
     fourfold on the cache dtype alone. Where the header cannot supply the dims this
     answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
 
@@ -16398,6 +16575,7 @@ async def estimate_memory(
 
 
 @router.post("/unload", response_model = UnloadResponse)
+@account_access.gpu_busy_route
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
     """Unload a model from memory.
 
@@ -16416,10 +16594,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
+    account_access.require_resident_control(
+        "chat", _loaded_slot_ident() if account_access.managed_account() else None
+    )
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+
     try:
         # Hidden Audio cleanup is cancellation, not a manual eject. Bind it to the
         # exact client load attempt so a delayed request can never stop a newer
@@ -16666,6 +16848,8 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
             _direct_llama_is_busy(),
         )
     )
+    if account_access.resident_hidden("chat", active_model):
+        active_model, context_length = None, None
     active_requests = api_monitor.active_count(subject = current_subject)
     # Slots the rows cannot see: direct llama calls (RAG caption/OCR) open no row, logging
     # may be off, and another subject's work is not counted here. The queue readout beside
@@ -16741,6 +16925,10 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
+    if account_access.managed_account() and await asyncio.to_thread(
+        lambda: account_access.resident_hidden("chat", _loaded_slot_ident())
+    ):
+        raise HTTPException(status_code = 404, detail = "Model not found")
     # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
     # preview loaded a different checkpoint while this native Unsloth request waited on the
     # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
@@ -17042,13 +17230,23 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
     """
+    if account_access.resident_hidden("chat"):
+        return account_access.hidden_resident_response()
     try:
         llama_backend = get_llama_cpp_backend()
+        if account_access.managed_account() and account_access.resident_hidden(
+            "chat", _loaded_slot_ident()
+        ):
+            return account_access.hidden_resident_response()
 
         # The cold subprocess and GitHub probes must not block the event loop or
         # consume the default executor used by local token streaming.
         _supports_mtp, _freshness = await asyncio.get_running_loop().run_in_executor(
-            _STATUS_PROBE_EXECUTOR, _probe_llama_cpp_status, llama_backend
+            _STATUS_PROBE_EXECUTOR,
+            run_as,
+            current_account(),
+            _probe_llama_cpp_status,
+            llama_backend,
         )
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
@@ -17269,6 +17467,8 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
     Returns an empty payload (``phase=null, bytes=0``) when no load is in
     flight. The frontend should stop polling once ``phase`` becomes ``ready``.
     """
+    if account_access.resident_hidden("chat"):
+        return account_access.hidden_resident_response()
     try:
         llama_backend = get_llama_cpp_backend()
         progress = llama_backend.load_progress()
@@ -17511,6 +17711,12 @@ async def audio_download_plan(
     request: LoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Stage native-audio checkpoints and companion codecs through Download Manager."""
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.native_audio import native_audio_download_plan
     from utils.native_path_leases import redact_native_paths
 
@@ -18095,7 +18301,12 @@ def _prepare_runtime_fallback_checkpoint(
     if stt_sidecar.is_model_downloaded(model):
         return
     try:
-        stt_sidecar.start_model_download(model, hf_token)
+        if account_access.account_scope() is None:
+            stt_sidecar.start_model_download(model, hf_token)
+        else:
+            _start_account_stt_download(
+                stt_sidecar, "transformers", model, account_access.account_hf_token(hf_token)
+            )
     except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
         # Another dictation model already downloading is the common case, and the caller
         # is about to report "not downloaded" anyway.
@@ -18142,6 +18353,124 @@ def _stt_lifecycle() -> tuple:
     return backend.load_stt_model, backend.unload_stt_model
 
 
+_stt_download_accounts: dict[str, str] = {}
+_stt_download_lock = threading.Lock()
+_stt_grant_pending: dict[str, threading.Event] = {}
+
+
+def _start_account_stt_download(
+    module,
+    engine,
+    model,
+    hf_token,
+    revision = None,
+):
+    args = (model, hf_token, revision) if engine == "transformers" else (model, hf_token)
+    if account_access.account_scope() is None:
+        return module.start_model_download(*args)
+    with _stt_download_lock:
+        if module.download_status().get("downloading"):
+            if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
+                raise HTTPException(
+                    status_code = 409, detail = {"error": "download_busy", "retry_after": 1}
+                )
+            return module.start_model_download(*args)
+        pending = _stt_grant_pending.get(engine)
+        if pending is not None and not pending.is_set():
+            raise HTTPException(
+                status_code = 409, detail = {"error": "download_busy", "retry_after": 1}
+            )
+        repo = _stt_repo_reference(model, engine)
+        account_access.authorize_download(repo, "model", hf_token)
+        module.start_model_download(*args)
+        _stt_download_accounts[engine] = current_account_id()
+        account = current_account_id()
+        settled = _stt_grant_pending[engine] = threading.Event()
+
+        def watch():
+            try:
+                while True:
+                    status = module.download_status()
+                    if not status.get("downloading"):
+                        break
+                    time.sleep(0.1)
+                if status.get("error") or status.get("cancelled"):
+                    return
+                with _stt_download_lock:
+                    if _stt_download_accounts.get(engine) != account:
+                        return
+                    downloaded = getattr(module, "is_model_downloaded", None)
+                    complete = (
+                        downloaded(model)
+                        if downloaded is not None
+                        else module._cached_model_path(model) is not None
+                    )
+                    if complete:
+                        account_access.record_model_grant(repo)
+
+            finally:
+                settled.set()
+
+        account_thread(target = watch, name = f"stt-grant-{engine}", daemon = True).start()
+
+
+def _cancel_account_stt_download(module, engine):
+    with _stt_download_lock:
+        if (
+            account_access.account_scope() is not None
+            and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id()
+        ):
+            return {"downloading": False, "cancelled": False}
+        cancelled = module.cancel_model_download()
+        return {**module.download_status(), "cancelled": cancelled}
+
+
+def _stt_repo_reference(model, engine):
+    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+
+    selected = _resolve_serving_stt_engine(engine)
+    if selected == "gguf":
+        return stt_ggml_sidecar.GGML_STT_REPOS.get(
+            model or stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL, model
+        )
+    if selected == "mtmd":
+        spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model)
+        return spec.repo if spec else model
+    return stt_sidecar.resolve_model_repo(model)
+
+
+def _stt_resolved_model_id(model, engine):
+    """The id the sidecar records for this request, resolved as its loader does."""
+    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+    try:
+        if engine == "gguf":
+            return stt_ggml_sidecar.resolve_ggml_model_id(model)
+        if engine == "mtmd":
+            return stt_mtmd_sidecar.resolve_mtmd_model_id(model)
+        return stt_sidecar.resolve_model_id(model)
+    except Exception:  # noqa: BLE001 - an id the loader would refuse is not what it loaded
+        return None
+
+
+def _account_stt_status(status):
+    for engine in ("transformers", "gguf", "mtmd"):
+        section = status[engine]
+        loaded = section.get("loaded_model")
+        if account_access.resident_hidden(f"stt:{engine}", loaded):
+            section["loaded_model"] = None
+            section["loaded"], section["yours"] = True, False
+            if engine == "transformers":
+                status["loaded_model"] = None
+        section["downloaded_models"] = [
+            model
+            for model in section.get("downloaded_models", [])
+            if account_access.model_visible(_stt_repo_reference(model, engine))
+        ]
+        if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
+            section["download"] = {"downloading": False}
+    return status
+
+
 @studio_router.get("/audio/stt/status")
 async def stt_status(
     model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
@@ -18151,6 +18480,10 @@ async def stt_status(
     ``model`` extends the Transformers ``downloaded_models`` check to a
     custom Hugging Face repository beyond the curated defaults.
     """
+    if account_access.managed_account() and model:
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(model, "transformers")
+        )
     from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
         DEFAULT_STT_MODEL,
@@ -18167,7 +18500,7 @@ async def stt_status(
     ]
     if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
         transformers_downloaded.append(model)
-    return JSONResponse(
+    response = JSONResponse(
         content = {
             "available": is_available(),
             "loaded_model": sidecar.loaded_model,
@@ -18223,6 +18556,11 @@ async def stt_status(
             },
         }
     )
+    if account_access.managed_account():
+        status = json.loads(response.body)
+        status = await asyncio.to_thread(_account_stt_status, status)
+        return JSONResponse(content = status)
+    return response
 
 
 @studio_router.post("/audio/stt/download")
@@ -18237,6 +18575,7 @@ async def stt_download(
     Hub's GGUF variant planner cannot express; a Transformers checkpoint is a
     whole snapshot). Progress is reported by /audio/stt/status.
     """
+    hf_token = account_access.account_hf_token(hf_token)
     from core.inference import stt_ggml_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
         SttModelCompatibilityError,
@@ -18256,13 +18595,17 @@ async def stt_download(
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
             await asyncio.to_thread(
-                module.start_model_download,
+                _start_account_stt_download,
+                module,
+                engine,
                 payload.model,
                 hf_token,
                 validated.get("revision"),
             )
         else:
-            await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+            await asyncio.to_thread(
+                _start_account_stt_download, module, engine, payload.model, hf_token
+            )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
@@ -18283,10 +18626,8 @@ async def stt_download_cancel(
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
     module = _stt_download_module(engine)
-    cancelled = await asyncio.to_thread(module.cancel_model_download)
-    # This request's result last: download_status() carries its own historical
-    # "cancelled", which would otherwise report a no-op as a cancellation.
-    return JSONResponse(content = {**module.download_status(), "cancelled": cancelled})
+    status = await asyncio.to_thread(_cancel_account_stt_download, module, engine)
+    return JSONResponse(content = status)
 
 
 @studio_router.post("/audio/stt/load")
@@ -18296,6 +18637,10 @@ async def stt_load(
     current_subject: str = Depends(get_current_subject),
 ):
     """Load the selected STT model after the user starts local dictation."""
+    if account_access.managed_account():
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(payload.model, payload.engine)
+        )
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
         SttModelBusyError,
@@ -18341,7 +18686,15 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-    return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
+    # The load lock is released; another account may have switched the engine, so claim only ours.
+    loaded = sidecar.loaded_model
+    if loaded is not None and loaded == _stt_resolved_model_id(payload.model, engine):
+        account_access.note_resident_account(f"stt:{engine}", loaded)
+    else:
+        loaded = None
+    return JSONResponse(
+        content = {"loaded_model": loaded, "device": sidecar.device if loaded else None}
+    )
 
 
 @studio_router.post("/audio/stt/validate")
@@ -18351,6 +18704,7 @@ async def stt_validate(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Verify a Hub repository is a Whisper checkpoint before downloading it."""
+    hf_token = account_access.account_hf_token(hf_token)
     from core.inference.stt_sidecar import (
         SttModelCompatibilityError,
         SttModelIdError,
@@ -18389,6 +18743,14 @@ async def stt_unload(
         # actually served by the Transformers fallback, so unload must target
         # that same engine or the resident model is never freed.
         engines = [_resolve_serving_stt_engine(engine)]
+    if account_access.managed_account():
+        engines = [
+            candidate
+            for candidate in (engines or ["transformers", "gguf", "mtmd"])
+            if not account_access.resident_hidden(
+                f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
+            )
+        ]
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
@@ -18434,6 +18796,10 @@ async def _transcribe_audio_result(
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
+    if account_access.managed_account():
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(model, engine)
+        )
     from core.inference.stt_sidecar import (
         SttAudioDecodeError,
         SttAudioTooLongError,
@@ -18477,6 +18843,9 @@ async def _transcribe_audio_result(
         await asyncio.to_thread(
             functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
         )
+        loaded = getattr(sidecar, "loaded_model", None)
+        if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
+            account_access.note_resident_account(f"stt:{serving_engine}", loaded)
         if cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
@@ -20478,7 +20847,9 @@ async def _proxy_to_external_provider(
             include_api_key = bool(studio_tool_payloads),
         )
         cancel_event = threading.Event()
-        cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+        cancel_keys = tuple(
+            _account_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
+        )
 
         async def _codex_stream():
             current_access_token = access_token
@@ -20546,7 +20917,11 @@ async def _proxy_to_external_provider(
                 _prune_pending(now)
                 for key in cancel_keys:
                     _CANCEL_REGISTRY.setdefault(key, set()).add(cancel_event)
-                if payload.cancel_id and _PENDING_CANCELS.pop(payload.cancel_id, None) is not None:
+                if (
+                    payload.cancel_id
+                    and _PENDING_CANCELS.pop(_account_cancel_key(payload.cancel_id), None)
+                    is not None
+                ):
                     should_cancel = True
             if should_cancel:
                 cancel_event.set()
@@ -21344,12 +21719,15 @@ class _DroppedFrameKeepalive:
 
 
 @router.post("/chat/completions")
+@account_access.gpu_busy_route
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _admit_tool_access(payload)
     from auth.authentication import request_admitted_without_credential
+
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
         request
     ):
@@ -25776,6 +26154,10 @@ def _openai_model_objects() -> list[dict]:
     Shared by the LIST and RETRIEVE handlers so both report the same ids and
     field shape.
     """
+    if account_access.managed_account() and account_access.resident_hidden(
+        "chat", _loaded_slot_ident()
+    ):
+        return []
     models: list[dict] = []
     _created = int(time.time())
 
@@ -25889,15 +26271,15 @@ def _advertised_local_path(model: str) -> Optional[str]:
     advertised a local model the resolver index has not picked up yet, which is
     evidence the name means something other than the resident one.
     """
-    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+    if _account_advertised_cache()["at"] != _account_catalog_cache()["at"]:
         paths = {}
-        for info in _CATALOG_CACHE["models"] or ():
+        for info in _account_catalog_cache()["models"] or ():
             cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
             path = getattr(info, "path", None)
             if cid and path:
                 paths.setdefault(cid.strip().lower(), path)
-        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
-    return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
+        _account_advertised_cache().update(at = _account_catalog_cache()["at"], paths = paths)
+    return _account_advertised_cache()["paths"].get(model.strip().lower())
 
 
 _CATALOG_TTL_S = 30.0
@@ -25907,6 +26289,23 @@ _CATALOG_TTL_S = 30.0
 # even when two loops each scan once.
 _catalog_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _catalog_locks_guard = threading.Lock()
+
+
+_managed_catalogs: dict[str, dict] = {}
+_managed_catalogs_lock = threading.Lock()
+
+
+def _account_catalog_cache():
+    if not account_access.managed_account():
+        return _CATALOG_CACHE
+    with _managed_catalogs_lock:
+        return _managed_catalogs.setdefault(current_account_id(), {"at": 0.0, "models": []})
+
+
+def _account_advertised_cache():
+    if not account_access.managed_account():
+        return _ADVERTISED_CACHE
+    return _account_catalog_cache().setdefault("advertised", {"at": None, "paths": {}})
 
 
 def _catalog_lock() -> asyncio.Lock:
@@ -25946,12 +26345,17 @@ def _media_owner(task: str) -> str:
 
 
 def _resident_media_status(task: str) -> Optional[dict]:
+    if account_access.resident_hidden(_media_owner(task)):
+        return None
     from core.inference.media_keepwarm import engine_if_imported
+
     try:
         engine = engine_if_imported(_media_owner(task))
         status = engine.status() if engine is not None else None
     except Exception as exc:  # noqa: BLE001
         logger.debug("%s status unavailable for /v1/models: %s", task, exc)
+        return None
+    if status and account_access.resident_hidden(_media_owner(task), status.get("repo_id")):
         return None
     return status if status and status.get("loaded") else None
 
@@ -26033,6 +26437,10 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
     for task in _MEDIA_MODEL_TASKS:
         status = _resident_media_status(task)
         for model_id, pick, local in picks_by_task.get(task, ()):
+            if account_access.managed_account() and not account_access.model_visible(
+                pick.model_path
+            ):
+                continue
             loaded = bool(status) and satisfied_by(status, model_id, pick)
             if not loaded and not local:
                 continue
@@ -26172,6 +26580,13 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
             quant = extract_quant_token(spec.model_file)
             if quant:
                 obj["quant"] = quant
+        if account_access.managed_account():
+            repo = spec.repo if spec is not None else model_id
+            if not account_access.model_visible(repo):
+                continue
+            engine = "mtmd" if spec is not None else "transformers"
+            if account_access.resident_hidden(f"stt:{engine}", model_id):
+                obj["loaded"] = False
         objects.append(obj)
     return objects
 
@@ -26188,24 +26603,27 @@ async def _cached_local_catalog() -> list:
     # Validity is keyed on "at" (set only after a scan), not on list contents, so
     # an empty/errored scan is still cached instead of rescanning on every poll.
     now = time.monotonic()
-    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
-        return _CATALOG_CACHE["models"]
+    if _account_catalog_cache()["at"] and (now - _account_catalog_cache()["at"]) <= _CATALOG_TTL_S:
+        return _account_catalog_cache()["models"]
     async with _catalog_lock():
         now = time.monotonic()
-        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
-            return _CATALOG_CACHE["models"]
+        if (
+            _account_catalog_cache()["at"]
+            and (now - _account_catalog_cache()["at"]) <= _CATALOG_TTL_S
+        ):
+            return _account_catalog_cache()["models"]
         try:
             from routes.models import collect_local_models
-            _CATALOG_CACHE["models"] = await asyncio.to_thread(
+            _account_catalog_cache()["models"] = await asyncio.to_thread(
                 lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
-            _CATALOG_CACHE["models"] = []
+            _account_catalog_cache()["models"] = []
         # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
         # would otherwise leave the cache already expired, so every waiter rescans.
-        _CATALOG_CACHE["at"] = time.monotonic()
-    return _CATALOG_CACHE["models"]
+        _account_catalog_cache()["at"] = time.monotonic()
+    return _account_catalog_cache()["models"]
 
 
 # One tuple, published in a single assignment: the fast path below reads it without the
@@ -26384,10 +26802,14 @@ async def _openai_catalog_objects() -> list[dict]:
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
-    catalog_at = _CATALOG_CACHE["at"]
+    if account_access.managed_account():
+        catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
+    catalog_at = _account_catalog_cache()["at"]
     for info, is_gguf, quants, loaded in await asyncio.to_thread(
         _servable_catalog_rows, catalog, catalog_at
     ):
+        if account_access.resident_hidden("chat"):
+            loaded = False
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -26416,8 +26838,8 @@ async def _openai_catalog_objects() -> list[dict]:
 
     media = await asyncio.to_thread(
         lambda: (
-            _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
-            + _stt_model_objects(_created, _CATALOG_CACHE["at"])
+            _media_model_objects(catalog, _created, _account_catalog_cache()["at"])
+            + _stt_model_objects(_created, _account_catalog_cache()["at"])
         )
     )
     for obj in media:
@@ -26535,6 +26957,7 @@ def _completions_prompt_present(body: dict) -> bool:
 
 
 @router.post("/completions")
+@account_access.gpu_busy_route
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible text completions endpoint (non-chat).
@@ -27254,6 +27677,7 @@ def _embeddings_input_present(body: dict) -> bool:
 
 
 @router.post("/embeddings")
+@account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Studio's configured embedding model."""
@@ -29527,6 +29951,7 @@ async def _responses_stream(
 
 
 @router.post("/responses")
+@account_access.gpu_busy_route
 async def openai_responses(
     payload: ResponsesRequest,
     request: Request,
@@ -29539,6 +29964,7 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    _admit_tool_access(payload)
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
@@ -30168,6 +30594,10 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
+    if account_access.managed_account() and await asyncio.to_thread(
+        lambda: account_access.resident_hidden("chat", _loaded_slot_ident())
+    ):
+        raise HTTPException(status_code = 404, detail = "Model not found")
     # Admitted only while nothing generates, and stood down at the next checkpoint if that changes:
     # admission is not atomic with the work, and true mutual exclusion would put a lock in front of
     # generation startup, which is the cost this avoids. Refusing here also covers the second tab or
@@ -30530,6 +30960,7 @@ def _set_or_prepend_system_message(
 
 
 @router.post("/messages")
+@account_access.gpu_busy_route
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -30543,6 +30974,7 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _admit_tool_access(payload)
     llama_backend = get_llama_cpp_backend()
 
     # Default-off parity: with no automatic load possible and nothing loaded, 503
@@ -34923,6 +35355,17 @@ async def diffusion_download_plan(
 
     Validates the same way /images/load does, so an unloadable pick fails here rather than
     after a multi-GB download."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -35066,6 +35509,7 @@ def _assert_native_precision_unset(
 
 
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
+@account_access.gpu_busy_route
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -35083,6 +35527,18 @@ async def load_diffusion_model_gated(
     Media auto-switch awaits this rather than the route so the idle unload can tell an
     API-loaded pipeline from one the user picked on the Images page.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    account_access.require_idle_other_accounts()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -35100,7 +35556,12 @@ async def load_diffusion_model_gated(
         predict_engine,
         select_and_activate_engine,
     )
-    from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.gpu_arbiter import (
+        acquire_for_request,
+        require_no_foreign_generations,
+        release,
+        DIFFUSION,
+    )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
@@ -35204,6 +35665,9 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
+        # Engine activation can unload the previous image engine, so guard before it too.
+        if needs_gpu:
+            require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
@@ -35277,7 +35741,7 @@ async def load_diffusion_model_gated(
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
                 with _diffusion_training_admission():
-                    return acquire_for(DIFFUSION, _begin_load)
+                    return acquire_for_request(DIFFUSION, _begin_load)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
@@ -35292,10 +35756,19 @@ async def load_diffusion_model_gated(
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             user_action = user_initiated,
         )
+        account_access.note_resident_account("diffusion", request.model_path)
+        account_access.note_resident_components(
+            "diffusion",
+            request.model_path,
+            request.base_repo,
+            *account_access.media_adapter_references(request),
+        )
         reset_media_load_progress("image")
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except account_access.GpuBusyForAnotherAccountError as exc:
+        raise account_access.gpu_busy_error() from exc
     except RuntimeError as exc:
         # A load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
@@ -35346,6 +35819,7 @@ def _generate_failure_detail(message: str) -> str:
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
+@account_access.gpu_busy_route
 async def generate_diffusion_image(
     request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -35354,58 +35828,78 @@ async def generate_diffusion_image(
     from core.inference.diffusion_families import (
         DIFFUSION_CANCELLED_MSG,
         DIFFUSION_NOT_LOADED_MSG,
+        DiffusionModelReplacedError,
+        load_identity,
     )
 
     backend = get_active_diffusion_engine()
-    # Ahead of the run, like the video route: milestones are keyed on the previous poll, so a
-    # run starting at or above where the last one stopped would read as it and log nothing.
-    reset_media_generation_progress("image")
-    try:
-        result = await asyncio.to_thread(
-            backend.generate,
-            prompt = request.prompt,
-            negative_prompt = request.negative_prompt,
-            width = request.width,
-            height = request.height,
-            steps = request.steps,
-            guidance = request.guidance,
-            seed = request.seed,
-            batch_size = request.batch_size,
-            prompts = request.prompts,
-            seeds = request.seeds,
-            init_image = request.init_image,
-            mask_image = request.mask_image,
-            strength = request.strength,
-            upscale = request.upscale,
-            reference_images = request.reference_images,
-            loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
-            controlnet = (
-                (
-                    request.controlnet.id,
-                    request.controlnet.image,
-                    request.controlnet.control_type,
-                    request.controlnet.strength,
-                    request.controlnet.guidance_start,
-                    request.controlnet.guidance_end,
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_adapters, request)
+    result = None
+    for attempt in range(2):
+        expected_load = None
+        if account_access.managed_account():
+            status = backend.status()
+            await asyncio.to_thread(
+                account_access.require_media_generation_access, status, "diffusion"
+            )
+            if status.get("loaded"):
+                expected_load = load_identity(
+                    status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
-                if request.controlnet
-                else None
-            ),
-        )
-    except ValueError as exc:
-        # Bad client input (undecodable image/mask, or an unsupported workflow): a 400 with the reason, not a generic 500.
-        raise HTTPException(status_code = 400, detail = str(exc))
-    except RuntimeError as exc:
-        # Only "no model loaded" / user-cancelled are client-state (409); both engines raise these two EXACT messages. The
-        # native engine also raises RuntimeError for failures whose text embeds the sd-cli tail, so match the sentinels exactly.
-        msg = str(exc)
-        if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
-            raise HTTPException(status_code = 409, detail = msg)
-        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
-    except Exception as exc:
-        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+        # Ahead of the run: milestones are keyed on the previous poll, so a run starting at or above where the last one stopped would log nothing.
+        reset_media_generation_progress("image")
+        try:
+            with account_access.media_generation("diffusion"):
+                result = await asyncio.to_thread(
+                    backend.generate,
+                    expected_load = expected_load,
+                    prompt = request.prompt,
+                    negative_prompt = request.negative_prompt,
+                    width = request.width,
+                    height = request.height,
+                    steps = request.steps,
+                    guidance = request.guidance,
+                    seed = request.seed,
+                    batch_size = request.batch_size,
+                    prompts = request.prompts,
+                    seeds = request.seeds,
+                    init_image = request.init_image,
+                    mask_image = request.mask_image,
+                    strength = request.strength,
+                    upscale = request.upscale,
+                    reference_images = request.reference_images,
+                    loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
+                    controlnet = (
+                        (
+                            request.controlnet.id,
+                            request.controlnet.image,
+                            request.controlnet.control_type,
+                            request.controlnet.strength,
+                            request.controlnet.guidance_start,
+                            request.controlnet.guidance_end,
+                        )
+                        if request.controlnet
+                        else None
+                    ),
+                )
+            break
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc))
+        except DiffusionModelReplacedError as exc:
+            if attempt > 0:
+                raise HTTPException(status_code = 409, detail = str(exc))
+            continue
+        except RuntimeError as exc:
+            # Both engines raise these two EXACT client-state messages (409); the native engine also raises RuntimeError for sd-cli failures, so match exactly.
+            msg = str(exc)
+            if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
+                raise HTTPException(status_code = 409, detail = msg)
+            logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
+        except Exception as exc:
+            logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -35487,7 +35981,8 @@ async def generate_diffusion_image(
     global _diffusion_persist_active
     _diffusion_persist_active += 1
     try:
-        records = await asyncio.to_thread(_persist)
+        with account_access.media_generation("diffusion"):
+            records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
@@ -35758,10 +36253,16 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
 
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
+@account_access.gpu_busy_route
 async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
+    account_access.require_resident_control("diffusion")
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
+    if account_access.managed_account():
+        account_access.require_resident_control(
+            "diffusion", get_active_diffusion_engine().status().get("repo_id")
+        )
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
@@ -35776,8 +36277,14 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
+    if account_access.resident_hidden("diffusion"):
+        return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import active_status
-    return DiffusionStatusResponse(**active_status())
+
+    status_dict = active_status()
+    if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
+        return account_access.hidden_resident_response()
+    return DiffusionStatusResponse(**status_dict)
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)
@@ -35792,8 +36299,14 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
+    if account_access.resident_hidden("diffusion"):
+        return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
+    if account_access.managed_account() and account_access.resident_hidden(
+        "diffusion", get_active_diffusion_engine().status().get("repo_id")
+    ):
+        return account_access.hidden_resident_response()
     progress = get_active_diffusion_engine().load_progress()
     log_media_load_progress("image", progress.get("phase"), progress.get("fraction"))
     return DiffusionLoadProgressResponse(**progress)
@@ -35801,7 +36314,21 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+        return account_access.hidden_resident_response()
+    mine = account_access.generation_is_mine("diffusion")
+    if not mine and account_access.resident_hidden("diffusion"):
+        return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    if (
+        not mine
+        and account_access.managed_account()
+        and account_access.resident_hidden(
+            "diffusion", get_active_diffusion_engine().status().get("repo_id")
+        )
+    ):
+        return account_access.hidden_resident_response()
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
@@ -35821,11 +36348,30 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
     running, so the page can settle its button back to Generate rather than wait for a
     generation that already finished."""
+    if account_access.generation_is_foreign("diffusion"):
+        return {"cancelled": False}
+    mine = account_access.generation_is_mine("diffusion")
+    if not mine and (
+        account_access.foreign_work_active() or account_access.resident_hidden("diffusion")
+    ):
+        return {"cancelled": False}
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    cancelled = await asyncio.get_running_loop().run_in_executor(
-        _CANCEL_EXECUTOR, get_active_diffusion_engine().cancel_generate
-    )
+    if (
+        not mine
+        and account_access.managed_account()
+        and account_access.resident_hidden(
+            "diffusion", get_active_diffusion_engine().status().get("repo_id")
+        )
+    ):
+        return {"cancelled": False}
+
+    # The slot can change hands between the checks above and the executor callback, so the engine rechecks under the lock that binds the cancel event.
+    expected = account_access.tracked_generation_account()
+    cancel = get_active_diffusion_engine().cancel_generate
+    if expected is not None:
+        cancel = functools.partial(cancel, expected_account = expected)
+    cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
     return {"cancelled": cancelled}
 
 
@@ -35869,7 +36415,7 @@ _IMAGE_LINK_SECRET = _secrets.token_bytes(32)
 
 def _sign_image_id(image_id: str) -> str:
     exp = int(time.time()) + _IMAGE_LINK_TTL
-    payload = f"{image_id}.{exp}"
+    payload = f"{media_link_target(image_id)}.{exp}"
     sig = _hmac.new(_IMAGE_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -35911,9 +36457,10 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     authenticated route, and the token names the single image it may serve."""
     from core.inference import image_gallery
 
-    if _verify_image_link_token(token) != image_id:
+    account = media_link_account(_verify_image_link_token(token), image_id)
+    if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired image link.")
-    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    path = await asyncio.to_thread(run_as, account, image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(path.read_bytes)
@@ -35929,6 +36476,7 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     response_model = ImageGenerationResponse,
     response_model_exclude_none = True,
 )
+@account_access.gpu_busy_route
 async def openai_image_generations(
     body: ImageGenerationRequest,
     request: Request,
@@ -36022,6 +36570,11 @@ async def _generate_openai_images(
             # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
 
+        if account_access.managed_account():
+            await asyncio.to_thread(
+                account_access.require_media_generation_access, status, "diffusion"
+            )
+
         # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
         workflows = status.get("workflows") or []
         if workflows and "txt2img" not in workflows:
@@ -36039,18 +36592,19 @@ async def _generate_openai_images(
         steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
         reset_media_generation_progress("image")
         try:
-            result = await asyncio.to_thread(
-                backend.generate,
-                prompt = body.prompt,
-                width = width,
-                height = height,
-                steps = steps,
-                guidance = guidance,
-                batch_size = body.n,
-                expected_load = load_identity(
-                    status.get("repo_id"), status.get("base_repo"), status.get("family")
-                ),
-            )
+            with account_access.media_generation("diffusion"):
+                result = await asyncio.to_thread(
+                    backend.generate,
+                    prompt = body.prompt,
+                    width = width,
+                    height = height,
+                    steps = steps,
+                    guidance = guidance,
+                    batch_size = body.n,
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    ),
+                )
             break
         except DiffusionModelReplacedError:
             if attempt > 0:
@@ -36135,7 +36689,8 @@ async def _generate_openai_images(
     global _diffusion_persist_active
     _diffusion_persist_active += 1
     try:
-        data = await asyncio.to_thread(_persist)
+        with account_access.media_generation("diffusion"):
+            data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")

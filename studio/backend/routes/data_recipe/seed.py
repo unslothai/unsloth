@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
 import json
@@ -23,6 +24,7 @@ from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
 from utils.utils import hf_env_offline
 from loggers import get_logger
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
 from utils.upload_limits import (
@@ -67,8 +69,8 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
-SEED_UPLOAD_DIR = seed_uploads_root()
-UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
+SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
+UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
 # since those directories can be shared by several recipes.
@@ -208,6 +210,7 @@ def _decode_base64_payload(content_base64: str) -> bytes:
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
+    account_path(path)
     try:
         import pandas as pd
     except ImportError as exc:
@@ -260,6 +263,7 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
 def _read_preview_rows_from_unstructured_file(
     *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
+    account_path(path)
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -346,7 +350,7 @@ def inspect_seed_dataset(
     # the ambient fallback from UI sessions too.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not managed_account(),
     )
     preview_size = int(payload.preview_size)
     if is_anonymous(token) and hf_env_offline():
@@ -513,6 +517,7 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     except NativePathLeaseError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    account_path(grant.canonical_path)
     _require_unstructured_ext(grant.canonical_path.name)
     try:
         size_bytes = grant.canonical_path.stat().st_size
@@ -810,5 +815,7 @@ def get_github_env_token_status() -> dict:
     The value is never returned; the UI uses this to tell the user they
     can leave the token field blank.
     """
+    if managed_account():
+        return {"has_token": False}
     has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
     return {"has_token": has_token}
