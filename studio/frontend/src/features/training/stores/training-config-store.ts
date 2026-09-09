@@ -92,6 +92,7 @@ const _loraParamEditGenerations: Record<LoraParamKey, number> = {
 let _modelDefaultsEditBaseline: {
   modelName: string;
   editGeneration: number;
+  loraParamEditGenerations: Record<LoraParamKey, number>;
 } | null = null;
 
 function canReapplyModelDefaults(modelName: string): boolean {
@@ -162,15 +163,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _modelDefaultsEditGeneration;
         const requestedTargetModulesEditGeneration =
           _targetModulesEditGeneration;
-        const requestedLoraParamEditGenerations = {
-          ..._loraParamEditGenerations,
-        };
         if (applyTrainingDefaults) {
           _modelDefaultsEditBaseline = {
             modelName,
             editGeneration: requestedModelDefaultsEditGeneration,
+            loraParamEditGenerations: { ..._loraParamEditGenerations },
           };
         }
+        // Cache reconciliation aborts the in-flight request and restarts it with
+        // applyTrainingDefaults: false, so a fresh snapshot here would forget the
+        // edits made before the restart and overwrite them. Measure against the
+        // selection's own baseline whenever the restart is for the same model.
+        const requestedLoraParamEditGenerations =
+          _modelDefaultsEditBaseline?.modelName === modelName
+            ? { ..._modelDefaultsEditBaseline.loraParamEditGenerations }
+            : { ..._loraParamEditGenerations };
         const requestedKnownCached =
           requestState.selectedModel === modelName &&
           requestState.modelKnownCached;
@@ -384,11 +391,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...cptTargetProvenanceRefresh,
               ...cptLoraProvenanceRefresh,
             };
+            // The target half stays behind applyTrainingDefaults because it also
+            // writes the live target modules. The LoRA half writes provenance
+            // only, and a metadata-only refresh still names a model the snapshot
+            // has to follow, so it runs regardless; the per-field generations
+            // above are what protect an edit.
             const cptFallbackProvenanceRefresh = {
               ...(shouldApplyCptTargetDefaults
                 ? cptTargetProvenanceRefresh
                 : {}),
-              ...(applyTrainingDefaults ? cptLoraProvenanceRefresh : {}),
+              ...cptLoraProvenanceRefresh,
             };
 
             set({
