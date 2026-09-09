@@ -4355,7 +4355,7 @@ def peer_home(peer_ip: str, user: str) -> Optional[str]:
     not be ours, so nothing here may assume the two homes have the same path."""
     try:
         out = subprocess.run(
-            ["ssh", "-n", *_SSH_OPTS, f"{user}@{peer_ip}", "printf %s \"$HOME\""],
+            ["ssh", "-n", *_SSH_OPTS, f"{user}@{peer_ip}", 'printf %s "$HOME"'],
             capture_output = True,
             text = True,
             timeout = 30,
@@ -4504,7 +4504,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # launch collide with a job nobody is watching. `setsid` makes it a process group leader,
     # so the negative kill takes torchrun's children with it.
     remote = (
-        f"cd \"$HOME\" && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
+        f'cd "$HOME" && setsid nohup bash -c \'[ -f {activate} ] && . {activate}; '
         f"{env}; exec {node1}' > {log_peer} 2>&1 < /dev/null & "
         f"echo $! > {_PEER_STAGE_PID}"
     )

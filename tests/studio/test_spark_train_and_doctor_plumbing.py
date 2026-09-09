@@ -302,7 +302,9 @@ def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_p
     assert copied == ["/home/bob/.cache/huggingface/hub/models--org--m"]
 
 
-def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(cluster, monkeypatch, tmp_path) -> None:
+def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(
+    cluster, monkeypatch, tmp_path
+) -> None:
     """No regression: a repo id the peer can fetch for itself needs nothing staged."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
@@ -315,7 +317,9 @@ def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(cluster, monkey
     assert "--model org/m" in rewritten
 
 
-def test_a_failed_stage_is_reported_and_not_silently_skipped(cluster, monkeypatch, tmp_path) -> None:
+def test_a_failed_stage_is_reported_and_not_silently_skipped(
+    cluster, monkeypatch, tmp_path
+) -> None:
     data = tmp_path / "rows.jsonl"
     data.write_text("{}\n", encoding = "utf-8")
     monkeypatch.setattr(cluster, "_rsync_to_peer", lambda *a: "permission denied")
@@ -325,7 +329,9 @@ def test_a_failed_stage_is_reported_and_not_silently_skipped(cluster, monkeypatc
     assert staged == [] and failed and "permission denied" in failed[0]
 
 
-def test_the_peer_stages_are_collected_after_a_successful_run(cluster, monkeypatch, tmp_path) -> None:
+def test_the_peer_stages_are_collected_after_a_successful_run(
+    cluster, monkeypatch, tmp_path
+) -> None:
     """`spark merge` reads every stage from ONE local directory and says it needs no second
     Spark, while rank 1 wrote its stage on the peer."""
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
