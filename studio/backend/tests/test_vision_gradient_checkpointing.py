@@ -111,7 +111,12 @@ def run_vision_training(monkeypatch):
     monkeypatch.setattr(tmod, "SFTConfig", _capture_sft_config)
     monkeypatch.setattr(tmod, "is_bfloat16_supported", lambda: False)
 
-    def _run(gradient_checkpointing, *, is_audio_vlm = False, use_lora = True):
+    def _run(
+        gradient_checkpointing,
+        *,
+        is_audio_vlm = False,
+        use_lora = True,
+    ):
         t = tmod.UnslothTrainer()
         t.model = _FakeModel()
         t.tokenizer = types.SimpleNamespace()
