@@ -2163,13 +2163,10 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
         return [], True
     for di in dist_infos:
         name = di.name.split("-")[0]
-        # An optional package's leftovers are not damage to the sidecar: an interrupted
-        # tiktoken install leaves a dist-info whose RECORD names files that never landed,
-        # and reading that as damage wiped and rebuilt the whole sidecar on every check,
-        # for a package the rebuild is allowed to fail to add again. The top-up in setup
-        # (and the optional rule in _ensure_venv_dir) is what repairs it.
-        if _sidecar_package_is_optional(name):
-            continue
+        # An optional package (tiktoken) may be absent, and _venv_dir_is_valid accepts
+        # that; present, its RECORD is held to the same standard as every other. A
+        # native extension left over from an older interpreter, or a file an interrupted
+        # install never landed, is a tokenizer that fails at import, not a spare part.
         try:
             record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
@@ -2433,9 +2430,46 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
+# (venv_dir, package) pairs this process already tried to top up, so a package whose
+# wheel is unavailable is asked for once per session, not on every tier activation.
+_OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
+
+
+def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
+    name = pkg_spec.split("==")[0].replace("-", "_")
+    return not any(
+        (Path(venv_dir) / d / "__init__.py").is_file() for d in (name, name.replace("_", "-"))
+    )
+
+
+def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
+    """Add an optional package a valid sidecar is missing, without touching the rest.
+
+    _venv_dir_is_valid accepts a sidecar without tiktoken, so a transient failure while
+    the sidecar was built (the latest sidecar in particular, which no setup top-up
+    visits) left Qwen tokenizers broken until the user deleted the directory. Best
+    effort and non-destructive: a failure is logged and not retried in this process.
+    """
+    for pkg in packages:
+        if not _sidecar_package_is_optional(pkg) or not _optional_package_absent(venv_dir, pkg):
+            continue
+        key = (os.path.normcase(os.path.abspath(venv_dir)), pkg)
+        if key in _OPTIONAL_TOP_UP_ATTEMPTED:
+            continue
+        _OPTIONAL_TOP_UP_ATTEMPTED.add(key)
+        logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
+        if not _install_to_dir(pkg, venv_dir):
+            logger.warning(
+                "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
+                pkg,
+                venv_dir,
+            )
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+        _top_up_optional_packages(venv_dir, packages)
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
@@ -2951,6 +2985,7 @@ def ensure_latest_transformers_venv(
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
+        _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
         return True
     return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)
 
