@@ -158,6 +158,24 @@ def local_supervisor(tmp_path, monkeypatch):
     # spawning thread, so a short-lived fixture worker would kill the child as
     # soon as Popen returned and invalidate every process-behavior assertion.
     monkeypatch.setattr(supervisor, "_start_quarantine_retry_owner", lambda: None)
+    if os.name == "nt":
+        # Portable output/ownership unit tests use a local lifecycle double.
+        # Native Windows command tests still require refusal before Popen.
+        fence = threading.Lock()
+
+        def acquire_test_fence(_fence_id, cancel_event, deadline):
+            while not fence.acquire(timeout = 0.01):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("cancelled")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("fence still held")
+            return 0
+
+        monkeypatch.setattr(supervisor, "_acquire_project_execution_fence", acquire_test_fence)
+        monkeypatch.setattr(
+            supervisor, "_release_project_execution_fence", lambda _fd: fence.release()
+        )
+
     _LocalLifecycle.instances.clear()
     monkeypatch.setattr(supervisor, "_BubblewrapLifecycle", _LocalLifecycle)
     return workspace, lease_active, boundaries
