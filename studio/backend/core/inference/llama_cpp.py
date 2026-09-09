@@ -9262,7 +9262,18 @@ class LlamaCppBackend:
         _cuda_compute_caps bails out in that situation; rather than lose the
         tuning on every host that never set the variable, an inexact mapping
         instead demands that the WHOLE matrix be uniformly NV#, which makes the
-        conclusion true under any permutation."""
+        conclusion true under any permutation.
+
+        Two explicit overrides come first, for the host this cannot read
+        correctly in either direction: UNSLOTH_DISABLE_DC_P2P=1 drops P2P while
+        KEEPING the FP32-accum flag (the all-or-nothing UNSLOTH_DISABLE_DC_TUNING
+        throws away a tuning that is not implicated), and UNSLOTH_FORCE_DC_P2P=1
+        opts back in for someone whose fabric is real but whose topology we
+        cannot parse -- scripts/p2p_integrity_probe.py is how they check."""
+        if os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1":
+            return "disabled by UNSLOTH_DISABLE_DC_P2P=1"
+        if os.environ.get("UNSLOTH_FORCE_DC_P2P") == "1":
+            return None
         if not cls._all_selected_gpus_match(cls._NVLINK_FABRIC_GPU_RE, gpu_indices):
             return "no NVLink-capable part in the selection, so peer copies would cross PCIe"
 
@@ -9333,34 +9344,52 @@ class LlamaCppBackend:
     # off; only absence is off. Same trap as GGML_CUDA_ENABLE_UNIFIED_MEMORY (#8651).
     _FALSY_ENV_VALUES = frozenset({"", "0", "false", "off", "no"})
 
+    # One standing property of the host, not of the model being loaded, so the
+    # "no verified NVLink" warning is emitted once rather than per launch.
+    _warned_no_nvlink = False
+
     @staticmethod
-    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
+    def _sanitize_p2p_env(env: dict) -> Optional[str]:
+        """Drop an inherited GGML_CUDA_P2P whose value reads as OFF; return the
+        removed value for logging, else None.
+
+        Presence is truth upstream, so honouring the user's intent means deleting
+        the variable, not passing "0" through. Belongs at the call site, on EVERY
+        launch path: env is inherited from os.environ, so a consumer-GPU user who
+        set the flag off by hand is misled exactly as much as a datacenter one,
+        and that user's box never reaches the datacenter gate at all (#10613)."""
+        value = env.get("GGML_CUDA_P2P")
+        if value is None:
+            return None
+        if str(value).strip().lower() in LlamaCppBackend._FALSY_ENV_VALUES:
+            del env["GGML_CUDA_P2P"]
+            return value
+        return None
+
+    @staticmethod
+    def _apply_datacenter_env(env: dict, gpu_indices = None, p2p_opted_out = False) -> bool:
         """Inject DC llama.cpp tuning into env in place via setdefault (user
         values win); return whether the box qualified. Opt out with
         UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
         (consumer/ROCm/CPU/error are a no-op). Sets GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F
         for any qualifying GPU (FP32 accum: ~0% cost on B200, real cost on GeForce).
 
-        GGML_CUDA_P2P + CUDA_SCALE_LAUNCH_QUEUES=4x (+33-51% pp tensor-split,
-        +8-16% pipeline split on B200) additionally require a CONFIRMED NVLink
-        fabric across the selection, see _p2p_veto_reason: on multi-GPU parts with
-        no NVLink the peer copy is silently discarded and every model emits
-        garbage (#10613). Logs the exact variables set, and the signal that
-        vetoed P2P when it is withheld -- the old message named neither, which
-        cost the reporter most of a day."""
-        # Presence-not-value: honour a user's "off" by REMOVING the variable, and
-        # remember it so the default below cannot put it straight back. Runs ahead
-        # of every gate: passing "0" through is just as wrong on a box that never
-        # qualifies for the tuning at all.
-        p2p_opted_out = (
-            str(env.get("GGML_CUDA_P2P", "1")).strip().lower()
-            in LlamaCppBackend._FALSY_ENV_VALUES
-        )
-        if p2p_opted_out and env.pop("GGML_CUDA_P2P", None) is not None:
-            logger.info(
-                "GGML_CUDA_P2P opted out: unset it (ggml tests presence, so a "
-                "falsy value would have ENABLED peer copies)"
-            )
+        GGML_CUDA_P2P (+33-51% pp tensor-split on B200) additionally requires a
+        CONFIRMED NVLink fabric across the selection, see _p2p_veto_reason: on
+        multi-GPU parts with no NVLink the peer copy is silently discarded and
+        every model emits garbage (#10613). CUDA_SCALE_LAUNCH_QUEUES=4x (+8-16%
+        pipeline split) is NOT gated with it: it sizes a command buffer, moves no
+        data across the bus, and #10613 measured it clean in isolation on the
+        affected host, so gating it would cost every non-NVLink DC box a free win
+        for no safety gain.
+
+        p2p_opted_out records that the call site already removed a falsy
+        user-supplied GGML_CUDA_P2P (see _sanitize_p2p_env), so the default below
+        must not put it straight back.
+
+        Logs the exact variables set, and the signal that vetoed P2P when it is
+        withheld -- the old message named neither, which cost the reporter most of
+        a day."""
         if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
             return False
         if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
@@ -9373,26 +9402,33 @@ class LlamaCppBackend:
 
         applied = [_apply("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")]
         if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
+            # Moves no data between GPUs, so it is not gated on the fabric.
+            applied.append(_apply("CUDA_SCALE_LAUNCH_QUEUES", "4x"))
             veto = LlamaCppBackend._p2p_veto_reason(gpu_indices)
             if veto is None:
-                # The launch-queue depth is unrelated to peer copies, so it still
-                # applies to someone who turned only P2P off.
                 if not p2p_opted_out:
                     applied.append(_apply("GGML_CUDA_P2P", "1"))
-                applied.append(_apply("CUDA_SCALE_LAUNCH_QUEUES", "4x"))
-            else:
-                logger.info(
-                    "Data-center GPU detected: withholding GGML_CUDA_P2P and "
-                    "CUDA_SCALE_LAUNCH_QUEUES (%s). A peer copy without a confirmed "
-                    "NVLink fabric can be discarded while still reporting success, "
-                    "which surfaces as garbled model output (#10613).",
+            elif "GGML_CUDA_P2P" in env:
+                # Truthy and user-supplied: setdefault semantics mean their value
+                # stands, but they are steering into the #10613 failure.
+                logger.warning(
+                    "GGML_CUDA_P2P is set in the environment (%s), so peer copies stay "
+                    "ON despite: %s. Unset it entirely -- not =0, which reads as ON "
+                    "upstream -- if model output is garbled (#10613).",
+                    env["GGML_CUDA_P2P"],
                     veto,
                 )
-                if "GGML_CUDA_P2P" in env:
-                    logger.warning(
-                        "GGML_CUDA_P2P is set in the environment, so peer copies stay "
-                        "ON despite that. Unset it (not =0) if output is garbled."
-                    )
+            elif not LlamaCppBackend._warned_no_nvlink:
+                LlamaCppBackend._warned_no_nvlink = True
+                logger.warning(
+                    "Multi-GPU data-center box without a confirmed NVLink fabric: %s. "
+                    "Leaving GGML_CUDA_P2P unset. A PCIe peer copy can be discarded "
+                    "silently while CUDA still reports success, which surfaces as "
+                    "garbled output rather than an error (#10613). Verify with "
+                    "scripts/p2p_integrity_probe.py; if it passes, set "
+                    "UNSLOTH_FORCE_DC_P2P=1 to opt back in.",
+                    veto,
+                )
         logger.info(
             "Data-center GPU detected: applied DC llama.cpp env tuning (%s)",
             ", ".join(applied),
@@ -23992,12 +24028,29 @@ class LlamaCppBackend:
                     forced_cpu = _arch_gate_forced_cpu,
                 )
 
-                # DC NVIDIA GPUs: FP32 accum, plus P2P / launch queues once a
+                # An inherited GGML_CUDA_P2P=0 means OFF to the user but ON to
+                # llama.cpp, which tests the variable for presence and not value.
+                # Honour it on every backend, Vulkan and consumer cards included:
+                # those boxes never reach the datacenter block below, and they are
+                # misled by the same trap (#10613).
+                _removed_p2p = self._sanitize_p2p_env(env)
+                if _removed_p2p is not None:
+                    logger.info(
+                        "Dropped inherited GGML_CUDA_P2P=%r: llama.cpp tests this "
+                        "variable for presence, not value, so passing it through "
+                        "would have ENABLED peer copies (#10613)",
+                        _removed_p2p,
+                    )
+
+                # DC NVIDIA GPUs: FP32 accum and launch queues, plus P2P once a
                 # multi-GPU selection has a CONFIRMED NVLink fabric (#10613).
                 # _apply_datacenter_env names the variables it sets and the signal
-                # that withheld P2P; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
+                # that withheld P2P; opt out with UNSLOTH_DISABLE_DC_TUNING=1, or
+                # UNSLOTH_DISABLE_DC_P2P=1 for the peer flag alone.
                 if not is_vulkan_backend:
-                    self._apply_datacenter_env(env, gpu_indices)
+                    self._apply_datacenter_env(
+                        env, gpu_indices, p2p_opted_out = _removed_p2p is not None
+                    )
 
                 # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).
                 # On ROCm, narrowing only CUDA_VISIBLE_DEVICES leaves the AMD child

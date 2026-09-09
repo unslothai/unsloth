@@ -110,8 +110,14 @@ def _isolate_host_topology(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_running_virtualized", staticmethod(lambda: False)
     )
+    # Both explicit overrides off by default, and the once-per-process warning
+    # latch reset, so neither the host's environment nor test ordering leaks in.
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_DC_P2P", raising = False)
+    LlamaCppBackend._warned_no_nvlink = False
     yield
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._warned_no_nvlink = False
 
 
 def _use_topo(monkeypatch, text, returncode = 0):
@@ -534,7 +540,13 @@ def test_apply_env_rtx_6000_ada_gets_fp32_but_not_p2p(monkeypatch):
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
-    assert env == {"GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1"}
+    assert "GGML_CUDA_P2P" not in env
+    # The launch-queue depth moves no data across the bus and #10613 measured it
+    # clean on the affected host, so it is deliberately NOT gated with P2P.
+    assert env == {
+        "GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1",
+        "CUDA_SCALE_LAUNCH_QUEUES": "4x",
+    }
 
 
 def test_apply_env_l40s_multi_gpu_gets_fp32_but_not_p2p(monkeypatch):
@@ -543,28 +555,82 @@ def test_apply_env_l40s_multi_gpu_gets_fp32_but_not_p2p(monkeypatch):
     _use_topo(monkeypatch, TOPO_PCIE_2X)
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1, 2, 3]) is True
-    assert env == {"GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1"}
+    assert "GGML_CUDA_P2P" not in env
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
 
 
-def test_apply_env_falsy_user_p2p_is_removed(monkeypatch):
+def test_sanitize_falsy_user_p2p_is_removed():
     """ggml tests GGML_CUDA_P2P for presence, so passing a user's "0" through
     ENABLES peer copies. The documented opt-out has to unset it instead."""
+    for value in ("0", "false", "OFF", "no", "", " 0 "):
+        env = {"GGML_CUDA_P2P": value, "OTHER": "kept"}
+        assert LlamaCppBackend._sanitize_p2p_env(env) == value
+        assert env == {"OTHER": "kept"}, value
+
+
+def test_sanitize_leaves_a_truthy_user_p2p_alone():
+    env = {"GGML_CUDA_P2P": "1"}
+    assert LlamaCppBackend._sanitize_p2p_env(env) is None
+    assert env == {"GGML_CUDA_P2P": "1"}
+
+
+def test_opted_out_p2p_is_not_reintroduced_by_the_default(monkeypatch):
+    # The call site strips the falsy value; the DC block must not put it back on
+    # an NVLink box that would otherwise qualify. The rest of the tuning stands.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
-    for value in ("0", "false", "OFF", "no", ""):
-        env = {"GGML_CUDA_P2P": value}
-        assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
-        assert "GGML_CUDA_P2P" not in env, value
-        assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"  # the rest still applies
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(
+        env, [0, 1], p2p_opted_out = True
+    ) is True
+    assert "GGML_CUDA_P2P" not in env
+    assert env["CUDA_SCALE_LAUNCH_QUEUES"] == "4x"
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
 
 
-def test_apply_env_falsy_user_p2p_removed_even_when_tuning_disabled(monkeypatch):
-    # Passing "0" through is just as wrong on a box that never qualifies.
-    monkeypatch.setenv("UNSLOTH_DISABLE_DC_TUNING", "1")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA GeForce RTX 4090"] * 2))
+def test_disable_dc_p2p_drops_peer_flag_but_keeps_fp32(monkeypatch):
+    # UNSLOTH_DISABLE_DC_TUNING is all-or-nothing and throws away a tuning that
+    # is not implicated; this is the surgical opt-out the #10613 reporter wanted.
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
+    assert "GGML_CUDA_P2P" not in env
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
+
+
+def test_force_dc_p2p_opts_back_in_over_an_unreadable_topology(monkeypatch):
+    # For the host whose fabric is real but whose topology we cannot parse, after
+    # they have confirmed it with scripts/p2p_integrity_probe.py.
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
+    monkeypatch.setenv("UNSLOTH_FORCE_DC_P2P", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
+    assert env["GGML_CUDA_P2P"] == "1"
+
+
+def test_disable_dc_p2p_beats_force_dc_p2p(monkeypatch):
+    # Both set: the safe direction wins.
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
+    monkeypatch.setenv("UNSLOTH_FORCE_DC_P2P", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
+    assert "GGML_CUDA_P2P" not in env
+
+
+def test_sanitize_applies_to_a_consumer_box_that_never_reaches_the_dc_gate():
+    # A 2x RTX 3090 user who set GGML_CUDA_P2P=0 by hand never matches the
+    # datacenter allowlist, so only the call-site sanitizer protects them.
     env = {"GGML_CUDA_P2P": "0"}
-    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is False
+    assert LlamaCppBackend._sanitize_p2p_env(env) == "0"
     assert env == {}
 
 
@@ -595,7 +661,8 @@ def test_apply_env_multi_dc_without_nvidia_smi_withholds_p2p(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
-    assert env == {"GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "1"}
+    assert "GGML_CUDA_P2P" not in env
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
 
 
 # ---------------------------------------------------------------------------
