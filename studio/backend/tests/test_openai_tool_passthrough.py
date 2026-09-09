@@ -5046,7 +5046,9 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
-    def test_reasoning_capable_gguf_stream_keeps_think_tags_visible_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_stream_keeps_think_tags_visible_when_disabled(
+        self, monkeypatch
+    ):
         answer = "Use <think>hi</think> in your prompt."
 
         def _generate(**_kwargs):
