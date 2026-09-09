@@ -196,14 +196,14 @@ export function MemoryEstimateRow({
     estimate.drafterRuntimeBytes,
   );
   return (
-    <div className="flex flex-col gap-4 border-b border-border/60 pb-3.5">
+    <div className="flex flex-col border-b border-border/60 pb-3.5">
       <button
         type="button"
         onClick={() => onExpandedChange(!expanded)}
         aria-expanded={expanded}
         aria-controls={contentId}
         aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="group mb-3 flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -252,7 +252,7 @@ export function MemoryEstimateRow({
           />
         )}
       </div>
-      <div id={contentId} hidden={!expanded} className="space-y-3">
+      <div id={contentId} hidden={!expanded} className="mt-4 space-y-3">
         <MemoryBreakdownLine
           label="Weights"
           value={formatMemoryGb(estimate.weightsBytes)}
@@ -292,7 +292,7 @@ export function MemoryEstimateRow({
       </div>
       {advisory && (
         <p
-          className={`text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`mt-4 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {advisory.text}
         </p>
