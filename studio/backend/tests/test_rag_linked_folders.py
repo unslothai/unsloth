@@ -2352,8 +2352,7 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
     survivor = folder_sync.get_folder(folder["id"])
     assert survivor is not None
-    # untouched, not just undeleted: a retired row keeps auto_sync off and makes create_folder
-    # refuse that path for good, so an abort that leaves one behind is not an abort
+    # untouched, not just undeleted: a retired row left behind is not an abort
     assert (survivor["status"], survivor["auto_sync"], survivor["last_error"]) == (
         folder["status"],
         folder["auto_sync"],

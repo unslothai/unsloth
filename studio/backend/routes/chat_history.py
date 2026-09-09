@@ -1146,17 +1146,16 @@ def _delete_project_rag_sources(project_id: str) -> None:
         owned = folder_sync.linked_folder_ids(scope)
         if get_chat_project(project_id) is not None:
             return
-        # Tombstone first, folder rows after one more look. The tombstone alone already stops
-        # new links and uploads, and it is the only half that can be taken back: retiring the
-        # rows overwrites status, auto_sync and last_error that nobody recorded, and a retired
-        # row also makes create_folder refuse that path forever.
+        # Tombstone first, rows after one more look: the tombstone already stops new links and
+        # uploads and is the only half `unretire_scope` can take back, while a retired row
+        # keeps auto_sync off and makes create_folder refuse that path for good.
         folder_sync.retire_scope(scope, owned, rows = False)
         if get_chat_project(project_id) is not None:
             folder_sync.unretire_scope(scope)
             return
         folder_sync.retire_scope(scope, owned)
-        # The purge deletes every folder and document under the scope, `owned` or not, so
-        # bounding retirement buys nothing unless the purge is skipped as well.
+        # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
+        # unless the purge is skipped too.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 

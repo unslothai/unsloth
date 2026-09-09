@@ -627,10 +627,9 @@ def retire_scope(
 ) -> None:
     """Stop all future work, even when the vector extension cannot load.
 
-    `rows = False` writes only the tombstone, which is already enough to stop new links and
-    uploads, and is the only half a caller can take back: `unretire_scope` deletes it, while
-    the folder and job updates overwrite state nobody recorded. A caller whose ownership check
-    can still go stale takes the tombstone first and comes back for the rest.
+    `rows = False` writes only the tombstone: enough on its own to stop new links and uploads,
+    and the only half a caller can take back, since the folder and job updates overwrite state
+    nobody recorded. A caller whose ownership check can still go stale takes it first.
     """
     conn = _retirement_connection()
     try:
