@@ -138,7 +138,7 @@ const ADVISORY_TEXTS = {
   singlePoolExceeds:
     "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
   singlePoolPressure:
-    "Memory is tight. Free memory or try Auto context.",
+    "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
   hostShareExceeds:
     "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
   totalExceeds:
@@ -146,9 +146,9 @@ const ADVISORY_TEXTS = {
   gpuExceeds:
     "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
   hostPressure:
-    "System RAM is tight. Free memory or use fewer CPU layers.",
+    "Fits system RAM, but little is free right now. Free memory or use fewer CPU layers.",
   gpuPressure:
-    "GPU memory is tight. Free memory or try Auto context.",
+    "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
 };
 
 test("D1: a single-pool host under memory pressure now says so", () => {
@@ -193,7 +193,7 @@ test("a tight reading warns without claiming the load exceeds available memory",
   );
   assert.equal(result.freeGpuFit, "tight");
   assert.equal(result.usableHostFit, "tight");
-  assert.match(result.advisory?.text ?? "", /Memory is tight/);
+  assert.match(result.advisory?.text ?? "", /little memory is free right now/);
   assert.doesNotMatch(result.advisory?.text ?? "", /not what is free|will be|refused/);
 });
 

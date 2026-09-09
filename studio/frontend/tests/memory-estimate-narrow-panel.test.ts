@@ -125,7 +125,7 @@ test("a RAM-only load shows one figure with CPU-appropriate guidance", () => {
   });
   assert.match(html, />RAM<\/span>/);
   assert.match(html, /aria-label="RAM: 5\.50 GiB"/);
-  assert.match(html, /RAM is tight/);
+  assert.match(html, /Fits system RAM, but little is free right now/);
   assert.doesNotMatch(html, />GPU<\/span>|>Total<\/span>|fewer CPU layers/);
 });
 
@@ -133,7 +133,7 @@ test("zero free VRAM keeps the GPU figure and its warning", () => {
   const html = render({ freeGpuCapacityGb: 0, freeGpuCapacityKnown: true });
   assert.match(html, />GPU<\/span>/);
   assert.match(html, />Total<\/span>/);
-  assert.match(html, /GPU memory is tight/);
+  assert.match(html, /little VRAM is free right now/);
 });
 
 test("memory figures are keyboard targets with the full value as their name", () => {

@@ -266,7 +266,7 @@ export function resolveMemoryAdvisory(
     if (verdicts.hostPressured) {
       return {
         tone: "muted",
-        text: "RAM is tight. Free memory or try a shorter context or smaller model.",
+        text: "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
       };
     }
     return null;
@@ -283,7 +283,7 @@ export function resolveMemoryAdvisory(
     if (verdicts.hostPressured || verdicts.gpuPressured) {
       return {
         tone: "muted",
-        text: "Memory is tight. Free memory or try Auto context.",
+        text: "Fits this machine, but little memory is free right now. Free memory or try Auto context.",
       };
     }
     return null;
@@ -312,13 +312,13 @@ export function resolveMemoryAdvisory(
   if (verdicts.hostPressured) {
     return {
       tone: "muted",
-      text: "System RAM is tight. Free memory or use fewer CPU layers.",
+      text: "Fits system RAM, but little is free right now. Free memory or use fewer CPU layers.",
     };
   }
   if (verdicts.rawGpuFit === "fits" && verdicts.gpuPressured) {
     return {
       tone: "muted",
-      text: "GPU memory is tight. Free memory or try Auto context.",
+      text: "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
     };
   }
   return null;
