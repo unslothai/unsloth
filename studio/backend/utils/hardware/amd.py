@@ -13,6 +13,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -969,6 +970,104 @@ def _is_a_32_bit_icd_name(path: str) -> bool:
     return stem.endswith("32") or any(n in stem for n in _VULKAN_ICD_32_BIT_NEEDLES)
 
 
+def _icd_library_path(path: str) -> "str | None":
+    """The library file a manifest points at, when it can be found on disk.
+
+    Separate from _icd_manifest_is_usable, which asks whether the loader has SOMETHING to
+    load: this asks which file, so the file itself can be read.
+    """
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            library = (json.load(handle).get("ICD") or {}).get("library_path")
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(library, str) or not library.strip():
+        return None
+    library = library.strip()
+    if os.path.isabs(library) or "/" in library or "\\" in library:
+        if not os.path.isabs(library):
+            library = os.path.join(os.path.dirname(path), library)
+        try:
+            return library if os.path.isfile(library) else None
+        except OSError:
+            return None
+    for _directory in _dynamic_loader_search_dirs():
+        _candidate = os.path.join(_directory, library)
+        try:
+            if os.path.isfile(_candidate):
+                return _candidate
+        except OSError:
+            continue
+    return None
+
+
+def _icd_manifest_declares_32_bit(path: str) -> "bool | None":
+    """The manifest's own architecture claim, or None where it makes none.
+
+    ICD.library_arch is the loader's own field, a string "32" or "64", and the loader reads
+    it for exactly this purpose: to skip a driver whose bitness cannot match the process
+    before trying to open it. Optional, and Debian strips it back out of Mesa's manifests
+    to keep one file across architectures, so its absence is ordinary and decides nothing.
+    """
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            declared = (json.load(handle).get("ICD") or {}).get("library_arch")
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(declared, str):
+        return None
+    declared = declared.strip()
+    if declared == "32":
+        return True
+    if declared == "64":
+        return False
+    return None
+
+
+def _library_file_is_32_bit(path: str) -> "bool | None":
+    """The ELF class of a library file, or None where the file does not say.
+
+    e_ident[EI_CLASS] is byte 4 of every ELF file and is 1 for 32-bit, 2 for 64-bit. Read
+    rather than inferred, so a manifest that declares nothing and is named neutrally is
+    still answered by the object itself.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(5)
+    except OSError:
+        return None
+    if len(header) < 5 or header[:4] != b"\x7fELF":
+        return None
+    if header[4] == 1:
+        return True
+    if header[4] == 2:
+        return False
+    return None
+
+
+def _an_icd_is_32_bit(path: str) -> bool:
+    """Whether this manifest registers a driver a 64-bit process cannot load.
+
+    Three sources in order of how much they know. The manifest's declared library_arch is
+    the loader's own answer. Failing that the library's ELF class is the object's own, which
+    covers the case a filename cannot: Mesa's manifests carry no marker once Debian has
+    rewritten them. The filename needles are the last resort, and the only one the installer
+    has, since it decides this before any library is resolvable.
+
+    A 64-bit process is assumed, which is what Studio ships; on a 32-bit build the question
+    inverts, and no build of that shape exists here.
+    """
+    declared = _icd_manifest_declares_32_bit(path)
+    if declared is not None:
+        return declared
+    library = _icd_library_path(path)
+    if library is not None:
+        _elf = _library_file_is_32_bit(library)
+        if _elf is not None:
+            return _elf
+    return _is_a_32_bit_icd_name(path)
+
+
 def _vulkan_icd_search_dirs() -> "list[str]":
     """The icd.d directories the loader would search, in its own order.
 
@@ -1066,7 +1165,7 @@ def _loadable_icd_manifests() -> "list[str]":
         for path in _vulkan_icd_manifest_paths()
         # A 32-bit manifest is registered beside the 64-bit one and this binary cannot load
         # it, so it is neither evidence of an AMD driver nor of another vendor's.
-        if not _is_a_32_bit_icd_name(path)
+        if not _an_icd_is_32_bit(path)
         and _vulkan_loader_allows(path)
         and _icd_manifest_is_usable(path)
     ]
@@ -1444,6 +1543,23 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
     return False
 
 
+def _shell_word(value: str) -> str:
+    """``value`` as a single shell word, for a command the user is going to paste.
+
+    NSS names are not identifiers: winbind hands back DOMAIN\\user, and a group name may
+    carry whitespace or a metacharacter, so interpolating one raw lets the shell de-escape,
+    split or expand it -- and usermod then names an account that is not the one holding the
+    node shut, or runs something nobody typed under the sudo the line already carries.
+    shlex.quote leaves an ordinary name exactly as it was, so the common command is
+    unchanged; install.sh's _shell_quote is the same safe set for the same reason.
+    """
+    if value == "$USER":
+        # The placeholder the no-passwd fallback emits on a platform with no pwd module,
+        # and the one value here that is meant to be expanded rather than named.
+        return value
+    return shlex.quote(value)
+
+
 def _repair_account() -> Optional[str]:
     """The account the usermod commands must name, or None when there is no such account.
 
@@ -1516,7 +1632,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             joined = ",".join(groups)
             plural = "group" if len(groups) == 1 else "groups"
             if user is None:
-                _joins = " ".join(f"--group-add {_g}" for _g in groups)
+                _joins = " ".join(f"--group-add {_shell_word(_g)}" for _g in groups)
                 parts.append(
                     f"This uid has no entry in the passwd database, so usermod has no "
                     f"account to name: recreate the container passing {_joins}, or run it "
@@ -1525,7 +1641,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             else:
                 parts.append(
                     f"Add the account to the {joined} {plural} and then log out and back "
-                    f"in: sudo usermod -a -G {joined} {user}"
+                    f"in: sudo usermod -a -G {_shell_word(joined)} {_shell_word(user)}"
                 )
         if unnamed:
             _gids = ", ".join(str(_g) for _g in unnamed)
@@ -1550,7 +1666,8 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # group at a different GID, an unchained usermod would SUCCEED against the wrong
             # group and leave the node shut, having reported success.
             _pairs = "; ".join(
-                f"sudo groupadd -g {_g} amdgpu{_g} && sudo usermod -a -G amdgpu{_g} {user}"
+                f"sudo groupadd -g {_g} amdgpu{_g} && "
+                f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
                 for _g in unnamed
             )
             if user is None:

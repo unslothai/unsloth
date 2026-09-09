@@ -3392,20 +3392,49 @@ _amd_gpu_present_via_pci() {
 # NVIDIA-only box has the same closed list and none of the problem (CUDA opens
 # /dev/nvidia* instead), and the group advice would be wrong there. sysfs is
 # world-readable, so ownership is answered without the access being tested for.
+# The nodes the enumeration below looks at. Extracted so a test can name its own set:
+# the paths are absolute, so a harness cannot otherwise reach this rule at all.
+_amd_candidate_nodes() {
+    printf '%s\n' /dev/kfd /dev/dri/renderD*
+}
+
+# The PCI vendor a render node reports, or a non-zero exit when sysfs will not say.
+# Mirrors utils/hardware/amd.py::_render_node_vendor, including the distinction that
+# matters: unreadable is not the same answer as "not AMD".
+_amd_render_node_vendor() {
+    _arnv_file="/sys/class/drm/${1##*/}/device/vendor"
+    [ -r "$_arnv_file" ] || return 1
+    read -r _arnv_vendor < "$_arnv_file" 2>/dev/null || return 1
+    printf '%s' "$_arnv_vendor"
+}
+
 _amd_nodes_closed_to_this_user() {
-    for _node in /dev/kfd /dev/dri/renderD*; do
+    _anctu_amd_in_topology=""
+    _amd_candidate_nodes | while IFS= read -r _node; do
         [ -e "$_node" ] || continue
         { [ -r "$_node" ] && [ -w "$_node" ]; } && continue
         if [ "$_node" = /dev/kfd ]; then
             # vendor_id 4098 = 0x1002, the same AMD guard _has_amd_rocm_gpu uses:
             # NVIDIA's open kernel module registers KFD nodes of its own.
-            awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
-                /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null || continue
-        else
-            _vendor_file="/sys/class/drm/${_node##*/}/device/vendor"
-            [ -r "$_vendor_file" ] || continue
-            read -r _node_vendor < "$_vendor_file" 2>/dev/null || continue
+            _kfd_topology_has_an_amd_gpu || continue
+        elif _node_vendor=$(_amd_render_node_vendor "$_node"); then
             [ "$_node_vendor" = "0x1002" ] || continue
+        else
+            # A vendor sysfs will not name is not a vendor that is not AMD, and a container
+            # mapping /dev/dri while hiding those attributes is the very shape this
+            # diagnosis exists for: dropping the node printed no render-node repair at all,
+            # while _amd_render_node_present reads the same unknown as PRESENT and withdraws
+            # the missing-node sentence. The KFD topology is world-readable and names the
+            # vendor, so it answers for the node here. Same rule, same reason, as
+            # utils/hardware/amd.py::amd_nodes_closed_to_this_user.
+            if [ -z "$_anctu_amd_in_topology" ]; then
+                if _kfd_topology_has_an_amd_gpu; then
+                    _anctu_amd_in_topology=yes
+                else
+                    _anctu_amd_in_topology=no
+                fi
+            fi
+            [ "$_anctu_amd_in_topology" = yes ] || continue
         fi
         printf '%s\n' "$_node"
     done
@@ -3470,6 +3499,21 @@ _amd_render_node_present() {
 #   mode:PATH   the mode denies the group too (a udev rule leaving one root:render 0600),
 #               so no membership opens it.
 # "render,video" is not universally right and sometimes no group is the answer at all.
+# A value as a single shell word, for a command the user is going to paste. NSS names are
+# not identifiers -- winbind hands back DOMAIN\user and a group name may carry whitespace or
+# a metacharacter -- so an unquoted one is de-escaped, split or expanded by the shell, and
+# usermod then names an account that is not the one holding the node shut. The safe set is
+# Python shlex.quote's, so the two halves quote identically and an ordinary name is left
+# alone.
+_shell_quote() {
+    case "$1" in
+        "") printf "''" ;;
+        *[!A-Za-z0-9_@%+=:,./-]*)
+            printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 _amd_node_repairs() {
     for _anr_node in $1; do
         # acl(5): with an access ACL present the mode's group bits are the ACL MASK
@@ -5822,8 +5866,11 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         _closed_amd_groups="render,video"
     fi
     if [ -n "$_closed_amd_groups" ] && [ -z "$_amd_repair_user" ]; then
-        _closed_amd_group_adds=$(printf '%s' "$_closed_amd_groups" | tr ',' '\n' \
-            | sed 's/^/--group-add /' | tr '\n' ' ' | sed 's/ *$//')
+        _closed_amd_group_adds=$(printf '%s\n' "$_closed_amd_groups" | tr ',' '\n' \
+            | while IFS= read -r _cga_name; do
+                  [ -n "$_cga_name" ] || continue
+                  printf -- '--group-add %s ' "$(_shell_quote "$_cga_name")"
+              done | sed 's/ *$//')
         substep "  This uid has no passwd entry, so usermod has no account to name:" "$C_WARN"
         substep "  recreate the container passing $_closed_amd_group_adds, or run it"
         substep "  as an account this system knows."
@@ -5833,7 +5880,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
             *)   substep "  Add yourself to the $_closed_amd_groups group, then log out" ;;
         esac
         substep "  and back in:"
-        substep "  sudo usermod -a -G $_closed_amd_groups $_amd_repair_user"
+        substep "  sudo usermod -a -G $(_shell_quote "$_closed_amd_groups") $(_shell_quote "$_amd_repair_user")"
     fi
     if [ -n "$_closed_amd_gids" ]; then
         # One flag per GID, as docker/run.sh does and as the Python half already emits:
@@ -5865,7 +5912,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
                 # SUCCEEDS against the wrong group and leaves the node exactly as shut,
                 # having reported success. && stops there, and the error names the cause.
                 substep "  sudo groupadd -g $_amd_gid $_amd_gid_name && \\"
-                substep "    sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
+                substep "    sudo usermod -a -G $_amd_gid_name $(_shell_quote "$_amd_repair_user")"
             done
             substep "  or recreate the container passing $_closed_amd_gid_adds."
         else

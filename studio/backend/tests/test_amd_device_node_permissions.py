@@ -591,6 +591,10 @@ def _kernel_stack_hint_runs(
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             # The route gate. True by default for the same reason the two probes are
             # stubbed: this harness asks about the closed-node reasoning, and the route
             # has its own tests below.
@@ -1034,7 +1038,10 @@ def _install_sh_hint(
             # the ordinary shape of `docker run --user 1234`, and the case the container
             # repair exists for.
             (
-                f'id() {{ case "$1" in -un) echo {id_user} ;; '
+                # printf with the value single-quoted, not echo: a name carrying a
+                # backslash is de-escaped by the stub itself otherwise, and the arm testing
+                # how such a name is QUOTED then never sees one.
+                f'id() {{ case "$1" in -un) printf %s\\\\n {shlex.quote(id_user or "")} ;; '
                 f'-G) echo "{self_gids}" ;; *) echo {self_uid} ;; esac; }}'
                 if id_user is not None
                 else f'id() {{ case "$1" in -un) return 1 ;; '
@@ -1064,6 +1071,10 @@ def _install_sh_hint(
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             # The real derivation by default. An override stands in only where the case
             # cannot be built on disk -- a node whose GID has no entry in the group
             # database -- and _amd_node_repairs has its own tests either way.
@@ -1405,6 +1416,10 @@ def _installer_index_summary(
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
         ]
@@ -2260,6 +2275,10 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             block,
         ]
     )
@@ -2358,6 +2377,10 @@ def _install_sh_missing_kfd(
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
             # Two ways to answer the ROCm probe. Stubbed, when the arm is about something
             # else and only needs a verdict; run for real over stubbed command lookups when
@@ -2728,6 +2751,10 @@ def _install_sh_kfd_scope(
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "\n".join(lines[_filter_start : _filter_end + 1]),
             "\n".join(lines[block_start : end + 1]),
@@ -4270,6 +4297,10 @@ def _nvidia_probe_calls(backend = None):
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
+            # The block quotes every name it interpolates into a pasted command through
+            # this. Lifted rather than stubbed: without it the substitutions come back
+            # EMPTY and the arms below read as commands that name nobody.
+            _shell_fn(lines, "_shell_quote"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "for _i in 1 2 3 4; do _run_may_open_kfd; _run_may_open_a_gpu_node; done",
             'echo "$_probe_calls"',
@@ -4901,3 +4932,251 @@ def test_the_named_group_repair_is_still_one_command(tmp_path):
     assert "groupadd" not in out
     _line = next(l for l in out.splitlines() if "usermod" in l)
     assert "&&" not in _line
+
+
+def _install_sh_closed_nodes(nodes, *, vendors, topology: bool) -> "list[str]":
+    """The installer's closed-node enumeration, run over a named set of files.
+
+    The real one reads /dev and /sys, which no test can reach, so the two seams it now has
+    are stubbed and the node files themselves are real: the mode tests are the rule under
+    test and must run against actual permissions.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    _vendor_cases = " ".join(
+        f"{shlex.quote(str(_path))}) printf %s {shlex.quote(_vendor)} ;;"
+        for _path, _vendor in vendors.items()
+    )
+    script = "\n".join(
+        [
+            "_amd_candidate_nodes() { printf '%s\\n' "
+            + " ".join(shlex.quote(str(_n)) for _n in nodes)
+            + "; }",
+            f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
+            # A vendor sysfs will not name exits non-zero, which is the case under test.
+            '_amd_render_node_vendor() { case "$1" in ' + _vendor_cases + " *) return 1 ;; esac; }",
+            _shell_fn(lines, "_amd_nodes_closed_to_this_user"),
+            "_amd_nodes_closed_to_this_user",
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def _a_closed_node_file(tmp_path, name):
+    """A file standing in for a device node this account cannot open."""
+    node = tmp_path / name
+    node.write_bytes(b"")
+    node.chmod(0o000)
+    return node
+
+
+def test_the_installer_keeps_a_closed_node_whose_vendor_is_hidden(tmp_path):
+    """A container can map /dev/dri and hide the sysfs attribute naming its vendor, which
+    is the shape #10466 is about. Dropping the node left the installer printing no
+    render-node repair at all, while _amd_render_node_present reads the same unknown as
+    PRESENT and withdraws the missing-node sentence -- so that host got no diagnosis.
+
+    Fails before the fix, which required a readable vendor. The Python half has answered
+    this since round twenty-five; this is the installer catching up."""
+    if os.geteuid() == 0:
+        pytest.skip("root can open a mode 000 node, so nothing here is closed")
+    node = _a_closed_node_file(tmp_path, "renderD128")
+    assert _install_sh_closed_nodes([node], vendors = {}, topology = True) == [str(node)]
+
+
+def test_the_installer_drops_a_hidden_vendor_when_no_amd_gpu_is_in_the_topology(tmp_path):
+    """The control, and the reason the vendor guard exists at all: render nodes are
+    root:render for EVERY vendor, so an NVIDIA-only box has the same closed list and none
+    of the problem. Without it the fallback would hand that host AMD group advice."""
+    if os.geteuid() == 0:
+        pytest.skip("root can open a mode 000 node, so nothing here is closed")
+    node = _a_closed_node_file(tmp_path, "renderD128")
+    assert _install_sh_closed_nodes([node], vendors = {}, topology = False) == []
+
+
+def test_the_installer_still_drops_a_node_that_names_another_vendor(tmp_path):
+    """The second control: a vendor that IS readable and is not AMD stays excluded however
+    the topology reads, since positive evidence beats the fallback. A mixed box has an
+    NVIDIA render node beside the AMD one and must not be told to chgrp it."""
+    if os.geteuid() == 0:
+        pytest.skip("root can open a mode 000 node, so nothing here is closed")
+    node = _a_closed_node_file(tmp_path, "renderD129")
+    assert _install_sh_closed_nodes([node], vendors = {node: "0x10de"}, topology = True) == []
+
+
+def test_the_installer_keeps_a_node_that_names_amd(tmp_path):
+    """The third control, the ordinary host: a readable AMD vendor is kept, which is what
+    the whole enumeration is for."""
+    if os.geteuid() == 0:
+        pytest.skip("root can open a mode 000 node, so nothing here is closed")
+    node = _a_closed_node_file(tmp_path, "renderD128")
+    assert _install_sh_closed_nodes([node], vendors = {node: "0x1002"}, topology = False) == [str(node)]
+
+
+def _icd_manifest_with(
+    tmp_path,
+    name,
+    *,
+    library = None,
+    arch = None,
+    elf = None,
+):
+    """An ICD manifest with a declared architecture, an ELF library, or neither."""
+    import json
+
+    icd = {"api_version": "1.3.0"}
+    if library is not None:
+        lib = tmp_path / library
+        if elf is not None:
+            # e_ident: magic, then EI_CLASS 1 for 32-bit and 2 for 64-bit.
+            lib.write_bytes(b"\x7fELF" + bytes([1 if elf == 32 else 2]) + b"\x00" * 11)
+        else:
+            lib.write_bytes(b"")
+        icd["library_path"] = str(lib)
+    else:
+        icd["library_path"] = "libvulkan_radeon.so"
+    if arch is not None:
+        icd["library_arch"] = arch
+    path = tmp_path / name
+    path.write_text(json.dumps({"file_format_version": "1.0.1", "ICD": icd}), encoding = "utf-8")
+    return str(path)
+
+
+def test_a_manifest_that_declares_32_bit_is_not_loadable(monkeypatch, linux, tmp_path):
+    """library_arch is the loader's own field and the loader reads it for exactly this
+    purpose: to skip a driver whose bitness cannot match the process. A neutrally named
+    32-bit registration passed the filename test and credited a driver this binary cannot
+    open.
+
+    Fails before the fix, which asked the filename alone."""
+    manifest = _icd_manifest_with(tmp_path, "radeon_icd.json", library = "a.so", arch = "32")
+    assert amd._an_icd_is_32_bit(manifest) is True
+
+
+def test_a_declared_64_bit_manifest_wins_over_its_own_filename(monkeypatch, linux, tmp_path):
+    """The control that proves the field is read rather than the name: a manifest named
+    i686 that declares 64 is loadable, because the declaration is the loader's answer and
+    the name is only ever a guess at it."""
+    manifest = _icd_manifest_with(tmp_path, "radeon_icd.i686.json", library = "b.so", arch = "64")
+    assert amd._an_icd_is_32_bit(manifest) is False
+
+
+def test_the_elf_class_answers_when_the_manifest_declares_nothing(monkeypatch, linux, tmp_path):
+    """library_arch is optional and Debian strips it back out of Mesa's manifests to keep
+    one file across architectures, so its absence is ordinary. The object itself still
+    says: EI_CLASS is byte 4 of every ELF."""
+    manifest = _icd_manifest_with(tmp_path, "radeon_icd.json", library = "c.so", elf = 32)
+    assert amd._an_icd_is_32_bit(manifest) is True
+
+
+def test_a_64_bit_elf_with_a_neutral_name_stays_loadable(monkeypatch, linux, tmp_path):
+    """Its control, and the ordinary case for every stripped manifest on the host."""
+    manifest = _icd_manifest_with(tmp_path, "radeon_icd.json", library = "d.so", elf = 64)
+    assert amd._an_icd_is_32_bit(manifest) is False
+
+
+def test_the_filename_still_answers_when_nothing_else_can(monkeypatch, linux, tmp_path):
+    """The last resort, unchanged: no declaration and no library to read leaves the name,
+    which is also all the installer ever has."""
+    manifest = _icd_manifest_with(tmp_path, "radeon_icd.i686.json")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [])
+    assert amd._an_icd_is_32_bit(manifest) is True
+
+
+def test_a_declared_32_bit_manifest_reaches_the_empty_probe_reason(monkeypatch, linux, tmp_path):
+    """What the classification decides: with the only other registration 32-bit, that
+    vendor's open render node is not a path this binary has, so the closed AMD node stays
+    the answer rather than being demoted."""
+    _theirs = _icd_manifest_with(tmp_path, "nvidia_icd.json", library = "libGLX_nvidia.so", arch = "32")
+    _ours = _icd_manifest(tmp_path, "radeon_icd.x86_64.json")
+    reason = _vulkan_reason_under_icd_list(monkeypatch, os.pathsep.join([_theirs, _ours]))
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_a_name_the_shell_would_mangle_is_quoted(monkeypatch, linux):
+    """These are commands to paste. NSS names are not identifiers -- winbind hands back
+    DOMAIN\\user -- so an unquoted one is de-escaped by the shell and usermod then names an
+    account that does not exist, leaving the node shut.
+
+    Fails before the fix, which interpolated the name raw."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_repair_account", lambda: "DOMAIN\\ada")
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G render 'DOMAIN\\ada'" in hint
+
+
+def test_a_group_name_that_carries_a_space_is_quoted_too(monkeypatch, linux):
+    """The other half of the same command, and the one that would silently split into two
+    arguments rather than failing outright."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["gpu users"], [], [], [], [], [], [])
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G 'gpu users' ada" in hint
+
+
+def test_an_ordinary_name_is_left_alone(monkeypatch, linux):
+    """The control, and why shlex.quote rather than unconditional quoting: the command a
+    user actually sees on a normal host must not grow quotes it does not need."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G render ada" in hint
+    assert "'" not in hint
+
+
+def test_the_installer_quotes_the_account_the_same_way(tmp_path):
+    """The shell twin: the installer prints the same command from the same kind of name,
+    so a host whose account carries a backslash must not get an unquoted one there either."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), id_user = "DOMAIN\\ada", env_user = "DOMAIN\\ada")
+    assert "'DOMAIN\\ada'" in out
+
+
+def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
+    """Both halves print the same command, so a value one quotes and the other does not is
+    a host where the two disagree about what the user should paste. Run against the real
+    shell function rather than a restatement of it."""
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    helper = _shell_fn(lines, "_shell_quote")
+    for value in (
+        "ada",
+        "render",
+        "DOMAIN\\ada",
+        "gpu users",
+        "ada;reboot",
+        "a'b",
+        "user@host",
+        "",
+    ):
+        out = subprocess.run(
+            ["bash", "-c", helper + '\n_shell_quote "$1"', "_", value],
+            capture_output = True,
+            text = True,
+        )
+        assert out.returncode == 0, out.stderr
+        # What actually matters, asked of the shell rather than of the spelling: each
+        # quoting has to be ONE word that comes back as the name it started as.
+        for _quoted in (out.stdout, shlex.quote(value)):
+            _back = subprocess.run(
+                ["bash", "-c", "printf %s " + _quoted], capture_output = True, text = True
+            )
+            assert _back.returncode == 0, _back.stderr
+            assert _back.stdout == value, (value, _quoted, _back.stdout)
+        # And the printed text is identical too, so the two halves show the same command.
+        # An embedded quote is the one place the spellings differ ('"'"' against \\''), and
+        # both are correct, so that case is carried by the round trip above alone.
+        if "'" not in value:
+            assert out.stdout == shlex.quote(value), (value, out.stdout)
