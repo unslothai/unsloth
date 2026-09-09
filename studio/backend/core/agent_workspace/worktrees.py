@@ -19,7 +19,7 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -57,6 +57,19 @@ _MARKER_LIMIT = 16 * 1024
 _RECONCILE_LIMIT = 1024
 _SCAN_LIMIT = 8192
 _ACTIVE_STATUSES = frozenset({"creating", "active", "removing", "needs_attention"})
+
+TASK_WORKTREE_GUARD_PROTOCOL = 1
+
+
+def _task_worktree_guard(project_id: str, worktree_id: str):
+    try:
+        from .task_workspaces import worktree_idle_guard
+    except ModuleNotFoundError as exc:
+        if exc.name != __package__ + ".task_workspaces":
+            raise
+        return nullcontext()
+    return worktree_idle_guard(project_id, worktree_id)
+
 
 _OPERATION_CONDITION = threading.Condition()
 _PROJECT_ACTIVE: dict[str, int] = {}
@@ -612,7 +625,7 @@ def cleanup_worktree(project_id: str, worktree_id: str) -> dict:
         raise AgentWorkspaceError(
             "Secure worktree operations are disabled on Windows until a boundary test passes."
         )
-    with _project_operation(project_id):
+    with _project_operation(project_id), _task_worktree_guard(project_id, worktree_id):
         record = get_worktree(worktree_id)
         if record is None or record["projectId"] != project_id:
             raise AgentWorkspaceError("Studio worktree not found.")
@@ -693,7 +706,10 @@ def merge_owned_worktree(
         )
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", expected_target_head):
         raise AgentWorkspaceError("Expected target head is invalid.")
-    with _project_operation(project_id):
+    with (
+        _project_operation(project_id),
+        nullcontext() if _fenced else _task_worktree_guard(project_id, worktree_id),
+    ):
         record = get_worktree(worktree_id)
         if record is None or record["projectId"] != project_id:
             raise AgentWorkspaceError("Studio worktree not found.")
