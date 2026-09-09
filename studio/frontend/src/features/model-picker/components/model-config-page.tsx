@@ -1758,6 +1758,7 @@ export function ModelConfigPage({
   const loadedLlamaExtraArgs = useChatRuntimeStore((s) => s.loadedLlamaExtraArgs);
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
+  const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2543,6 +2544,7 @@ export function ModelConfigPage({
       ids: runtimeConfig.selectedGpuIds ?? null,
       indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
     },
+    loadedCpuFallback,
   );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();

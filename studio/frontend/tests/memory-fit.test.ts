@@ -597,6 +597,18 @@ test("compact estimates retain units and never round a lower bound up", () => {
   assert.ok(memoryFigureCandidates(2048 * GB, false).includes("2 TiB"));
 });
 
+test("the primary lower-bound label also rounds down", () => {
+  assert.equal(memoryFigureCandidates(25.619 * GB, true)[0], "≥ 25.61 GiB");
+  assert.equal(memoryFigureCandidates(25.619 * GB, false)[0], "25.62 GiB");
+  for (const gib of [0.009, 25.619, 1024.999, 2048.129]) {
+    for (const label of memoryFigureCandidates(gib * GB, true)) {
+      const [, amount, unit] = label.split(" ");
+      const scaled = Number(amount) * (unit === "TiB" ? 1024 : 1);
+      assert.ok(scaled <= gib, `${label} exceeds ${gib} GiB`);
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The resident copy's own bytes, credited back to the free-memory questions.
 //
@@ -631,7 +643,7 @@ test("reloading an unchanged config does not warn about the memory it is about t
 });
 
 test("growing the context past what the resident copy returns still warns", () => {
-  // Context raised: 40 GB wanted, 25 GB coming back. The 15 GB of GROWTH is still a real question.
+  // 40 GiB wanted, with 12 GiB free and 25 GiB returning on unload.
   const result = fit(
     { gpuBytes: 40 * GB, totalBytes: 40 * GB },
     {
@@ -644,6 +656,53 @@ test("growing the context past what the resident copy returns still warns", () =
   );
   assert.ok(result.gpuPressured || result.hostPressured);
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.singlePoolPressure);
+});
+
+test("reclaimed memory preserves pressure thresholds in every pool", () => {
+  for (const [wanted, expected] of [[34, "fits"], [35, "tight"], [40, "tight"], [41, "exceeds"]] as const) {
+    const gpu = fit({ gpuBytes: wanted * GB, totalBytes: wanted * GB }, {
+      freeGpuCapacityGb: 30,
+      reclaimableTotalBytes: 10 * GB,
+      reclaimableGpuBytes: 10 * GB,
+    });
+    assert.equal(gpu.freeGpuFit, expected);
+    const host = fit({ gpuBytes: 0, totalBytes: wanted * GB }, {
+      usableSystemRamGb: 30,
+      reclaimableTotalBytes: 10 * GB,
+    });
+    assert.equal(host.usableHostFit, expected);
+    const shared = fit({ gpuBytes: wanted * GB, totalBytes: wanted * GB }, {
+      freeGpuCapacityGb: 30,
+      usableSystemRamGb: 30,
+      reclaimableTotalBytes: 10 * GB,
+      reclaimableGpuBytes: 10 * GB,
+    }, APPLE);
+    assert.equal(shared.freeGpuFit, expected);
+    assert.equal(shared.usableHostFit, expected);
+  }
+});
+
+test("reclaimed memory does not turn missing free-memory readings into known ones", () => {
+  for (const available of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const result = fit({ gpuBytes: 9 * GB, totalBytes: 9 * GB }, {
+      freeGpuCapacityGb: available,
+      usableSystemRamGb: available,
+      reclaimableTotalBytes: 10 * GB,
+      reclaimableGpuBytes: 10 * GB,
+    }, APPLE);
+    assert.equal(result.freeGpuFit, "unknown");
+    assert.equal(result.usableHostFit, "unknown");
+  }
+  const exhausted = fit({ gpuBytes: 9 * GB, totalBytes: 9 * GB }, {
+    freeGpuCapacityGb: 0,
+    usableSystemRamGb: 0,
+    freeGpuCapacityKnown: true,
+    usableSystemRamKnown: true,
+    reclaimableTotalBytes: 10 * GB,
+    reclaimableGpuBytes: 10 * GB,
+  }, APPLE);
+  assert.equal(exhausted.freeGpuFit, "tight");
+  assert.equal(exhausted.usableHostFit, "tight");
 });
 
 test("the credit never improves a CAPACITY verdict, only a free-memory one", () => {
@@ -731,6 +790,31 @@ test("excluded VRAM credit never becomes extra RAM credit", () => {
   assert.equal(result.hostPressured, true);
 });
 
+test("CPU fallback and unmodelled experts withhold uncertain VRAM credit", () => {
+  const pool = { ids: null, indexKind: null };
+  for (const cpuFallback of [false, true]) {
+    const credit = resolveReclaimableMemoryCredit(
+      {
+        gpuBytes: 20 * GB,
+        totalBytes: 40 * GB,
+        moeOffloadUnmodelled: !cpuFallback,
+      },
+      pool,
+      pool,
+      cpuFallback,
+    );
+    assert.deepEqual(credit, { gpuBytes: 0, totalBytes: 20 * GB });
+    const result = fit({ gpuBytes: 20 * GB, totalBytes: 30 * GB }, {
+      freeGpuCapacityGb: 4,
+      usableSystemRamGb: 4,
+      reclaimableTotalBytes: credit.totalBytes,
+      reclaimableGpuBytes: credit.gpuBytes,
+    });
+    assert.equal(result.gpuPressured, true);
+    assert.equal(result.hostPressured, false);
+  }
+});
+
 test("a GPU credit larger than its own total cannot inflate the host share", () => {
   // GPU share above its own total. Clamping keeps the host credit at zero instead of negative.
   const result = fit(
@@ -747,7 +831,7 @@ test("a GPU credit larger than its own total cannot inflate the host share", () 
   assert.ok(Number.isFinite(result.hostShareBytes));
 });
 
-test("a garbage credit is ignored rather than subtracted", () => {
+test("a garbage credit cannot increase available memory", () => {
   for (const credit of [
     Number.NaN,
     Number.POSITIVE_INFINITY,
@@ -772,7 +856,7 @@ test("a garbage credit is ignored rather than subtracted", () => {
   }
 });
 
-test("an unmeasurable footprint stays unknown rather than becoming a credited zero", () => {
+test("an unmeasurable footprint stays unknown with reclaimed capacity", () => {
   const result = fit(
     { gpuBytes: Number.NaN, totalBytes: Number.NaN },
     {

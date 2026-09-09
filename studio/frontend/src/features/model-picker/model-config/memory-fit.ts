@@ -39,7 +39,7 @@ export function memoryFigureCandidates(
 ): string[] {
   const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
   const prefix = bounded ? "≥ " : "";
-  const candidates = [`${prefix}${formatMemoryGb(safe)}`];
+  const candidates: string[] = bounded ? [] : [formatMemoryGb(safe)];
   for (const [index, unit] of ["GiB", "TiB", "PiB", "EiB"].entries()) {
     const amount = safe / 1024 ** (index + 3);
     if (index > 0 && amount < 1) break;
@@ -99,17 +99,19 @@ export interface MemoryFitCapacity {
   reclaimableGpuBytes?: number;
 }
 
-/** A credit is positive and finite or it is nothing: a negative or NaN one would INFLATE the
- *  footprint it is subtracted from. */
+/** Ignore invalid or negative credits. */
 function reclaimableBytes(value: number | undefined): number {
   return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 0;
 }
 
-/** Keep host credit; credit aggregate VRAM only when its whole pool remains usable. */
+/** Keep known host credit; require modelled placement in the requested pool for VRAM. */
 export function resolveReclaimableMemoryCredit(
-  estimate: Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> | null,
+  estimate: (Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> & {
+    moeOffloadUnmodelled?: boolean;
+  }) | null,
   residentPool: ReconciledGpuSelection,
   requestedPool: ReconciledGpuSelection,
+  cpuFallback = false,
 ): { totalBytes: number; gpuBytes: number } {
   const total = reclaimableBytes(estimate?.totalBytes);
   const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
@@ -120,15 +122,12 @@ export function resolveReclaimableMemoryCredit(
       residentPool.indexKind != null &&
       residentPool.indexKind === requestedPool.indexKind &&
       residentPool.ids.every((id) => requestedPool.ids!.includes(id)));
-  // Partial overlap has no safe per-card estimate.
-  const gpuCredit = includesResidentPool ? gpu : 0;
+  // Partial overlap and unmodelled CPU placement cannot establish reclaimed VRAM.
+  const gpuCredit =
+    includesResidentPool && !cpuFallback && !estimate?.moeOffloadUnmodelled
+      ? gpu
+      : 0;
   return { totalBytes: total - gpu + gpuCredit, gpuBytes: gpuCredit };
-}
-
-/** Bytes still to find after the credit. A non-finite footprint passes through, so it stays
- *  "unknown" rather than becoming a confident 0. */
-function afterReclaim(bytes: number, credit: number): number {
-  return Number.isFinite(bytes) ? Math.max(0, bytes - credit) : bytes;
 }
 
 export interface MemoryFitResult {
@@ -138,7 +137,7 @@ export interface MemoryFitResult {
   rawGpuFit: MemoryFitVerdict;
   /** What the GPU figure is coloured with: rawGpuFit, nudged to tight under pressure. */
   gpuFit: MemoryFitVerdict;
-  /** The pool against what is free right now, capped at a warning by its caller. */
+  /** The footprint against post-unload availability, capped at a warning by its caller. */
   freeGpuFit: MemoryFitVerdict;
   gpuPressured: boolean;
   /** Bytes this placement pins outside the GPU. */
@@ -186,11 +185,10 @@ export function resolveMemoryFit(
   // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
   // alone let a partly CPU-offloaded load on a Vulkan iGPU look comfortable.
   const freeGpuFit = classifyAvailableMemory(
-    singleMemoryPool
-      ? afterReclaim(estimate.totalBytes, reclaimableTotal)
-      : afterReclaim(estimate.gpuBytes, reclaimableGpu),
+    singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
     capacity.freeGpuCapacityGb,
     capacity.freeGpuCapacityKnown,
+    singleMemoryPool ? reclaimableTotal : reclaimableGpu,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
   // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
@@ -201,11 +199,10 @@ export function resolveMemoryFit(
       : 0;
   // Same question for the other pool, with the same credit. See the two notes above.
   const usableHostFit = classifyAvailableMemory(
-    singleMemoryPool
-      ? afterReclaim(estimate.totalBytes, reclaimableTotal)
-      : afterReclaim(hostShareBytes, reclaimableTotal - reclaimableGpu),
+    singleMemoryPool ? estimate.totalBytes : hostShareBytes,
     capacity.usableSystemRamGb,
     capacity.usableSystemRamKnown,
+    singleMemoryPool ? reclaimableTotal : reclaimableTotal - reclaimableGpu,
   );
   const hostPressured =
     usableHostFit === "exceeds" || usableHostFit === "tight";
@@ -271,10 +268,20 @@ function classifyAvailableMemory(
   bytes: number,
   availableGb: number,
   known = false,
+  reclaimedBytes = 0,
 ): MemoryFitVerdict {
-  if (known && availableGb === 0 && Number.isFinite(bytes) && bytes > 0)
+  if (
+    !Number.isFinite(availableGb) ||
+    availableGb < 0 ||
+    (availableGb === 0 && !known)
+  ) {
+    return "unknown";
+  }
+  // Pressure is a fraction of post-unload availability, not just allocation growth.
+  const afterUnloadGb = availableGb + reclaimedBytes / 1024 ** 3;
+  if (known && afterUnloadGb === 0 && Number.isFinite(bytes) && bytes > 0)
     return "exceeds";
-  return classifyMemoryFit(bytes, availableGb);
+  return classifyMemoryFit(bytes, afterUnloadGb);
 }
 
 /** At most one note, most actionable first. An unsizable cache outranks any verdict drawn from
