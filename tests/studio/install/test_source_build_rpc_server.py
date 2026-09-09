@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The llama.cpp source-build fallback ships ggml-rpc-server (setup.sh / setup.ps1).
 
 Both scripts pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build the RPC
