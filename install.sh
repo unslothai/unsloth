@@ -3328,13 +3328,12 @@ _ensure_rocm_probe_env() {
     fi
 }
 
-# Whether ROCm can see an AMD GPU. Most callers are choosing a torch index, where a
-# usable NVIDIA card wins, so the NVIDIA short-circuit is the default; a diagnosis that
-# has already established the run opens AMD nodes passes "ignore-nvidia" to skip it.
-# The veto lives INSIDE this function rather than in a wrapper around a private helper:
-# every tests/sh harness lifts probes out of this file one function at a time by name
-# (sed -n '/^_name()/,/^}/p'), so a wrapper whose helper is not also lifted calls an
-# undefined function, and the ROCm branch falls silently through to the CPU wheel index.
+# Whether ROCm can see an AMD GPU. A usable NVIDIA card wins by default; a diagnosis that
+# has already established the run opens AMD nodes passes "ignore-nvidia" to skip that.
+# The veto is inside this function rather than in a wrapper, because every tests/sh harness
+# lifts probes one function at a time by name (sed -n '/^_name()/,/^}/p'), and a wrapper
+# whose helper is not also lifted calls nothing: the ROCm branch would then fall silently
+# through to the CPU wheel index.
 _has_amd_rocm_gpu() {
     _ensure_rocm_probe_env
     if [ "${1:-}" != "ignore-nvidia" ] && _has_usable_nvidia_gpu; then
@@ -3349,14 +3348,11 @@ _has_amd_rocm_gpu() {
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
-        # vendor_id 4098 = 0x1002 (AMD) marks a GPU node: the KFD CPU node
-        # reports vendor_id 0, so any 4098 node is an AMD GPU. NVIDIA's open
-        # kernel module (driver 560+) registers KFD nodes as vendor_id 4318
-        # (0x10DE), so this never false-positives on NVIDIA-only hosts.
-        # The prior check also required a gpu_id line, but gpu_id is a SIBLING
-        # sysfs file, not a line in properties -- it never matched, so the
-        # fallback silently missed every ROCm-less AMD host (issue: fresh
-        # Arch/CachyOS boxes reporting "no GPU detected").
+        # vendor_id 4098 = 0x1002 (AMD) marks a GPU node: the KFD CPU node reports 0,
+        # and NVIDIA's open kernel module (driver 560+) registers 4318 (0x10DE), so this
+        # never false-positives on an NVIDIA-only host. No gpu_id test: gpu_id is a
+        # SIBLING sysfs file rather than a line in properties, so requiring it here never
+        # matched and missed every ROCm-less AMD host (fresh Arch/CachyOS boxes).
         return 0
     fi
     return 1
@@ -3379,17 +3375,6 @@ _amd_gpu_present_via_pci() {
     return 1
 }
 
-# Prints the AMD device nodes that exist but this user cannot open, one per line.
-# On a stock distribution /dev/kfd and /dev/dri/renderD* are root:render mode 0660,
-# so an account outside that group passes every -e test above and then cannot open
-# the device: HIP counts no devices, the Vulkan loader enumerates none, and the
-# install looks like a host with no GPU (#10466). -r and -w, matching what the
-# runtimes need; root sees everything and prints nothing.
-#
-# AMD-owned nodes only. Render nodes are root:render for EVERY vendor, so an
-# NVIDIA-only box has the same closed list and none of the problem (CUDA opens
-# /dev/nvidia* instead), and the group advice would be wrong there. sysfs is
-# world-readable, so ownership is answered without the access being tested for.
 # The nodes the enumeration below looks at. Extracted so a test can name its own set:
 # the paths are absolute, so a harness cannot otherwise reach this rule at all.
 _amd_candidate_nodes() {
@@ -3406,6 +3391,16 @@ _amd_render_node_vendor() {
     printf '%s' "$_arnv_vendor"
 }
 
+# Prints the AMD device nodes that exist but this user cannot open, one per line. On a
+# stock distribution /dev/kfd and /dev/dri/renderD* are root:render mode 0660, so an
+# account outside that group passes every -e test and then cannot open the device: HIP
+# counts no devices, the Vulkan loader enumerates none, and the install looks like a host
+# with no GPU (#10466). -r and -w, matching what the runtimes need; root prints nothing.
+#
+# AMD-owned nodes only. Render nodes are root:render for EVERY vendor, so an NVIDIA-only
+# box has the same closed list and none of the problem (CUDA opens /dev/nvidia* instead),
+# and the group advice would be wrong there. sysfs is world-readable, so ownership is
+# answered without the access being tested for.
 _amd_nodes_closed_to_this_user() {
     _anctu_amd_in_topology=""
     _amd_candidate_nodes | while IFS= read -r _node; do
@@ -3418,13 +3413,12 @@ _amd_nodes_closed_to_this_user() {
         elif _node_vendor=$(_amd_render_node_vendor "$_node"); then
             [ "$_node_vendor" = "0x1002" ] || continue
         else
-            # A vendor sysfs will not name is not a vendor that is not AMD, and a container
-            # mapping /dev/dri while hiding those attributes is the very shape this
-            # diagnosis exists for: dropping the node printed no render-node repair at all,
-            # while _amd_render_node_present reads the same unknown as PRESENT and withdraws
-            # the missing-node sentence. The KFD topology is world-readable and names the
-            # vendor, so it answers for the node here. Same rule, same reason, as
-            # utils/hardware/amd.py::amd_nodes_closed_to_this_user.
+            # A vendor sysfs will not name is not a vendor that is not AMD, and a
+            # container mapping /dev/dri while hiding those attributes is the shape this
+            # diagnosis exists for: dropping the node printed no repair at all, while
+            # _amd_render_node_present reads the same unknown as PRESENT and withdraws the
+            # missing-node sentence. The world-readable KFD topology answers instead.
+            # Mirrors utils/hardware/amd.py::amd_nodes_closed_to_this_user.
             if [ -z "$_anctu_amd_in_topology" ]; then
                 if _kfd_topology_has_an_amd_gpu; then
                     _anctu_amd_in_topology=yes
@@ -3438,11 +3432,10 @@ _amd_nodes_closed_to_this_user() {
     done
 }
 
-# Whether SOME AMD render node on this host is open to this account. The mirror image of
-# the enumeration above, and the same vendor guard: a second card, or a second node on the
-# same one, that this account can already open means the closed ones do not stop every GPU
-# backend on the box -- only the card behind them. utils/hardware/amd.py's
-# an_amd_render_node_is_open is the same rule, and the two claims are worded alike.
+# Whether SOME AMD render node on this host is open to this account: the mirror of the
+# enumeration above, same vendor guard. A node this account can already open means the
+# closed ones do not stop every GPU backend on the box, only the card behind them.
+# Mirrors utils/hardware/amd.py::an_amd_render_node_is_open.
 _an_amd_render_node_is_open() {
     for _anro_node in /dev/dri/renderD*; do
         [ -e "$_anro_node" ] || continue
@@ -3455,24 +3448,22 @@ _an_amd_render_node_is_open() {
     return 1
 }
 
-# Whether any AMD render node is PRESENT, whatever this account can do with it. A
-# container given --device /dev/kfd and not --device /dev/dri passes the probe above
-# and still cannot initialise ROCm, since ROCr opens a render node to reach amdgpu;
-# docker/run.sh passes both devices for that reason, and no group creates one.
-# Whether KFD enumerates an AMD GPU node, the vendor-owned AMD-presence signal that
-# survives a host with no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node
-# reports 0 and NVIDIA's open kernel module registers 4318, so this names AMD. Mirrors
+# Whether KFD enumerates an AMD GPU node, the AMD-presence signal that survives a host
+# with no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node reports 0 and
+# NVIDIA's open kernel module registers 4318. Mirrors
 # utils/hardware/amd.py::_kfd_topology_has_an_amd_gpu.
 _kfd_topology_has_an_amd_gpu() {
     awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
         /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null
 }
 
-# A node whose vendor cannot be READ is not a node that is absent. A container mapping
-# /dev/dri while hiding or denying its sysfs attributes is the permission shape this whole
-# diagnosis exists for, and calling it absence sent the user to recreate a container with
-# the device it already has. Unknown counts as present, which keeps the closed-node
-# diagnosis reachable; mirrors utils/hardware/amd.py::_amd_render_node_exists.
+# Whether any AMD render node is PRESENT, whatever this account can do with it: ROCr opens
+# one to reach amdgpu, so a container given --device /dev/kfd alone still cannot start ROCm
+# and no group creates the node (docker/run.sh passes both devices for that reason).
+# A vendor that cannot be READ is not a vendor that is absent -- calling it absence sent
+# the user to recreate a container with the device it already has -- so unknown counts as
+# present, keeping the closed-node diagnosis reachable. Mirrors
+# utils/hardware/amd.py::_amd_render_node_exists.
 _amd_render_node_present() {
     _arnp_unknown=false
     for _arnp_node in /dev/dri/renderD*; do
@@ -3488,21 +3479,11 @@ _amd_render_node_present() {
     [ "$_arnp_unknown" = true ]
 }
 
-# How to open the given nodes, one classified line each, read from the nodes themselves:
-#   join:NAME   membership WOULD open it -- the group has read and write on the node
-#   gid:N       no group entry for that GID, the container case docker/run.sh documents,
-#               where --group-add passes the host's numeric gids and no name matches.
-#               usermod cannot take a bare GID (shadow 4.13: "group '993' does not exist",
-#               exit 6), so these are reported rather than prescribed.
-#   mode:PATH   the mode denies the group too (a udev rule leaving one root:render 0600),
-#               so no membership opens it.
-# "render,video" is not universally right and sometimes no group is the answer at all.
 # A value as a single shell word, for a command the user is going to paste. NSS names are
-# not identifiers -- winbind hands back DOMAIN\user and a group name may carry whitespace or
-# a metacharacter -- so an unquoted one is de-escaped, split or expanded by the shell, and
-# usermod then names an account that is not the one holding the node shut. The safe set is
-# Python shlex.quote's, so the two halves quote identically and an ordinary name is left
-# alone.
+# not identifiers -- winbind hands back DOMAIN\user, and a group name may carry whitespace
+# or a metacharacter -- so an unquoted one is de-escaped, split or expanded by the shell,
+# and usermod then names an account that is not the one holding the node shut. The safe set
+# is Python shlex.quote's, so the two halves quote identically.
 _shell_quote() {
     case "$1" in
         "") printf "''" ;;
@@ -3512,13 +3493,21 @@ _shell_quote() {
     esac
 }
 
+# How to open the given nodes, one classified line each, read from the nodes themselves:
+#   join:NAME   membership WOULD open it -- the group has read and write on the node
+#   gid:N       no group entry for that GID, the container case docker/run.sh documents,
+#               where --group-add passes the host's numeric gids and no name matches.
+#               usermod cannot take a bare GID (shadow 4.13: "group '993' does not exist",
+#               exit 6), so these are reported rather than prescribed.
+#   mode:PATH   the mode denies the group too (a udev rule leaving one root:render 0600),
+#               so no membership opens it.
+# "render,video" is not universally right and sometimes no group is the answer at all.
 _amd_node_repairs() {
     for _anr_node in $1; do
-        # acl(5): with an access ACL present the mode's group bits are the ACL MASK
-        # rather than the owning group's grant, so the group digit below is an upper
-        # bound and prescribing membership from it is a promise this cannot keep. ls
-        # marks such a node with a trailing "+"; getfacl is not installed everywhere
-        # this runs.
+        # acl(5): with an access ACL present the mode's group bits are the ACL MASK, not
+        # the owning group's grant, so the group digit below is an upper bound and
+        # prescribing membership from it is a promise this cannot keep. ls marks such a
+        # node with a trailing "+"; getfacl is not installed everywhere this runs.
         case "$(ls -ld "$_anr_node" 2>/dev/null | cut -c11)" in
             +) printf 'acl:%s\n' "$_anr_node"; continue ;;
         esac
@@ -3527,34 +3516,31 @@ _amd_node_repairs() {
               -v mygids=" $(id -G 2>/dev/null) " '
         /^acl:/ { print; next }
         {
-            # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
-            # this account owns the group bits are never consulted and joining the group
-            # cannot open it however they read. The repair there is the mode.
+            # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a
+            # node this account owns the group bits are never consulted and no membership
+            # opens it however they read. The repair there is the mode.
             if (self != -1 && $5 + 0 == self + 0) { print "owner:" $4; next }
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
             if (g != 6 && g != 7) { print "mode:" $4; next }
-            # Joining one of these would open the node and hand over a great deal besides,
-            # so a device node owned by one is a udev misconfiguration to report rather
-            # than a membership to prescribe. gid 0 as well as the name, since a renamed
-            # root group is still root. Mirrors _PRIVILEGED_GROUPS in utils/hardware/amd.py.
-            # ABOVE the unnamed test, not below it: stat prints UNKNOWN for a gid the group
-            # database cannot name, so in a minimal container with no entry for gid 0 the
-            # node was filed as an ordinary unnamed GID and the repair became groupadd -g 0
-            # plus a usermod into the root group -- the grant this test exists to refuse.
+            # Joining one of these hands over a great deal besides the GPU, so a node
+            # owned by one is a udev misconfiguration to report, not a membership to
+            # prescribe. gid 0 as well as the name, since a renamed root group is still
+            # root. Mirrors _PRIVILEGED_GROUPS in utils/hardware/amd.py. ABOVE the unnamed
+            # test: stat prints UNKNOWN for a gid the group database cannot name, so a
+            # minimal container with no entry for gid 0 filed the node as an ordinary
+            # unnamed GID and prescribed groupadd -g 0 plus usermod into root.
             if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow|docker|lxd)$/) {
                 pname = $2
                 if (pname == "" || pname ~ /^UNKNOWN/) { pname = "root" }
                 if (!pseen[pname]++) print "privileged:" pname
                 next
             }
-            # os.access already said the node is shut, so a group this account is
-            # ALREADY in is not what is denying it: a container device cgroup or an LSM
-            # is, and usermod would exit 0 and leave the node exactly as closed. Read
-            # from `id -G` with the list space-padded so 100 cannot match 1001. Above the
-            # unnamed branch too, since groupadd plus --group-add is the same empty
-            # promise for a numeric owner this account already carries.
+            # The node is already known shut, so a group this account is ALREADY in is
+            # not what denies it: a container device cgroup or an LSM is, and usermod
+            # would exit 0 and change nothing. Read from `id -G`, space-padded so 100
+            # cannot match 1001. Above the unnamed branch for the same reason.
             if (mygids ~ (" " $3 " ")) {
                 held = $2
                 if (held == "" || held ~ /^UNKNOWN/) { held = $3 }
@@ -5613,45 +5599,33 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# Both of the diagnoses below are answered after the whole case, for the same reason:
-# they are properties of the HOST, and the arm the index lands in is not. This one lived
-# in the */cpu arm, where a runtime-less host with an inferable arch never saw it -- the
-# per-arch reroute rewrites exactly that host's cpu index to a */gfx* one, so it took the
-# other arm and was told only to join a group, which cannot create a device node.
-#
-# Suppressed by a closed /dev/kfd, not by any closed node: that node existing is the
-# evidence the kernel stack IS loaded, and is what makes this the wrong repair. A host
-# whose /dev/kfd is ABSENT while a render node is closed needs both, and gets both.
-# Both are also gated on the route, which is the other half of moving them out of the
-# arm: the case above has arms for */cpu and */rocm*|*/gfx* and nothing else, so a CUDA
-# index used to reach neither diagnosis and must not start reaching them now.
-# _has_amd_rocm_gpu returns false on ANY host with a usable NVIDIA GPU, so on a CUDA
-# route the condition below is true for every hybrid box that also has an AMD card on
+# The diagnoses below sit after the whole case because they are properties of the HOST,
+# not of the arm the index landed in, and both are gated on the route: the case has arms
+# for */cpu and */rocm*|*/gfx* only, so a CUDA index reached neither and must not start.
+# That gate also matters because _has_amd_rocm_gpu returns false on ANY host with a usable
+# NVIDIA GPU, which would make the condition true for every hybrid box with an AMD card on
 # the bus -- and someone correctly installing CUDA wheels is not helped by being told to
 # install the ROCm kernel stack for a card this install does not use.
-# The runtime half's needs_kfd, for the installer. /dev/kfd is opened by ROCm and by
-# nothing else, so a run that will install neither ROCm torch nor a ROCm llama.cpp bundle
-# has no use for it and must not be sent after a group for it. SKIP_TORCH alone is NOT
-# that run: --no-torch still installs a GGUF bundle, and the ROCm bundle opens /dev/kfd
-# exactly as torch would, which is the #10466 shape. Only an explicit backend request
-# settles it, since the bundle itself is chosen later, in setup.sh. The three named here
-# are the REQUESTABLE_BACKENDS that are not ROCm (utils/prebuilt/llama_backend.py); "hip"
-# normalises to rocm and "auto" is not a decision, so both correctly fall through.
-# Normalized the way the bundle selector normalizes it (studio/setup.sh, `awk '{$1=$1}'`:
-# trim and collapse, never delete). Deleting internal whitespace made "vul kan" match here
-# and suppress the diagnosis, while setup.sh rejects that value and falls back to automatic
-# selection -- which may install ROCm and need the very nodes this went quiet about.
-# Whether the TORCH this run installs can open an AMD device node, which only a ROCm wheel
-# does. Asked positively rather than as "anything that is not the cpu leaf": that read a
-# CUDA index as a KFD consumer, which was harmless only while _amd_node_diag_route dropped
-# every non-ROCm index one layer up. The explicit-backend arm below now keeps the route for
-# a vulkan or rocm request, so a CUDA wheel beside a Vulkan bundle reached here and told a
-# healthy hybrid host to repair /dev/kfd permissions for a node neither of them opens.
 #
-# The same classification the route case uses, so the two cannot disagree: a leaf this does
-# not recognise as ROCm is one the route would have dropped anyway. "cpu" is still kept
-# there because the GGUF bundle may be the ROCm one, which is what the backend request and
-# the automatic-bundle check below settle.
+# The kernel-stack hint is suppressed by a closed /dev/kfd, not by any closed node: that
+# node existing is the evidence the stack IS loaded. A host whose /dev/kfd is ABSENT while
+# a render node is closed needs both repairs, and gets both.
+#
+# The runtime half's needs_kfd, for the installer: /dev/kfd is opened by ROCm and nothing
+# else. SKIP_TORCH alone does not settle it, since --no-torch still installs a GGUF bundle
+# and the ROCm bundle opens /dev/kfd exactly as torch would -- the #10466 shape. Only an
+# explicit backend request does, the bundle itself being chosen later in setup.sh. The
+# three named are the REQUESTABLE_BACKENDS that are not ROCm
+# (utils/prebuilt/llama_backend.py); "hip" normalises to rocm and "auto" is not a decision.
+# Normalized as the bundle selector normalizes it (studio/setup.sh, `awk '{$1=$1}'`: trim
+# and collapse, never delete) -- deleting internal whitespace let "vul kan" match and go
+# quiet here while setup.sh rejects it and may fall back to installing ROCm.
+
+# Whether the TORCH this run installs can open an AMD device node, which only a ROCm wheel
+# does. Asked positively, not as "anything that is not the cpu leaf": that read a CUDA
+# index as a KFD consumer, and told a healthy hybrid host to repair /dev/kfd permissions
+# for a node neither its CUDA wheel nor its Vulkan bundle opens. Classified exactly as the
+# route case classifies, so the two cannot disagree.
 _torch_opens_amd_nodes() {
     [ "$SKIP_TORCH" = true ] && return 1
     _toan_leaf=$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")
@@ -5672,19 +5646,17 @@ _torch_opens_amd_nodes() {
 # node, and the AMD-evidence gates cannot tell: the card IS there and its nodes ARE shut,
 # they are simply nothing this install will use.
 #
-# Listed as the values that ARE decisions rather than the two that are not. setup.sh warns
-# "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside this set and the installer
-# normalises it away (is_requestable_backend -> None -> auto), so an unrecognised value --
-# "vul kan", a typo -- lands on the automatic route above and has to be treated as one.
+# Listed as the values that ARE decisions rather than the two that are not: setup.sh warns
+# "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside this set and normalises it
+# away (is_requestable_backend -> None -> auto), so a typo lands on the automatic route.
 _auto_bundle_opens_amd_nodes() {
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | awk '{$1=$1; print tolower($0)}')" in
         cpu|cuda|rocm|hip|vulkan) return 0 ;;
     esac
-    # Memoized: _has_usable_nvidia_gpu shells out to `nvidia-smi -L` on every call and the
-    # two scope predicates below ask this question repeatedly, so an NVIDIA-less host paid
-    # one bounded probe per gate. Nothing it reads -- the driver's sysfs, CUDA_VISIBLE_DEVICES
-    # -- changes within a run.
+    # Memoized: _has_usable_nvidia_gpu shells out to `nvidia-smi -L` and the two scope
+    # predicates below ask repeatedly, so an NVIDIA-less host paid one probe per gate.
+    # Nothing it reads changes within a run.
     if [ -z "${_amd_auto_nvidia_cached:-}" ]; then
         if _has_usable_nvidia_gpu; then
             _amd_auto_nvidia_cached=yes
@@ -5708,8 +5680,8 @@ _run_may_open_kfd() {
 
 # One layer wider, for the diagnoses that are not about /dev/kfd. A Vulkan bundle opens a
 # render node, so those still apply to it; a CPU or CUDA bundle beside --no-torch opens no
-# AMD node at all -- CUDA opens /dev/nvidia* -- and telling that install to join the render
-# group or fix its device mapping describes a card nothing in the run was going to touch.
+# AMD node at all, and telling that install to join the render group describes a card
+# nothing in the run was going to touch.
 _run_may_open_a_gpu_node() {
     _torch_opens_amd_nodes && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
@@ -5723,20 +5695,18 @@ _run_may_open_a_gpu_node() {
 # Read from the LEAF, and through the same _is_pip_rocm_family_leaf every other index
 # classifier here uses: a whole-URL */rocm*|*/gfx* glob also matches a custom pin whose
 # final segment merely STARTS with one ("gfx-mirror", "rocm7.2-private"), which that helper
-# exists to reject, and a hybrid host on such a pin then got kernel, mapping and group
-# repairs for a card its wheels have nothing to do with. Recomputed from TORCH_INDEX_URL
-# rather than reusing $_torch_index_leaf, because the per-arch reroutes rewrite the URL
-# after that variable is set and this gate has to describe the index actually installed.
-# repo.radeon.com is named on its own: its leaf is rocm-rel-X.Y, which is a real ROCm route
-# and not a pip family, so the family test alone would drop it.
+# exists to reject, and a hybrid host on such a pin then got repairs for a card its wheels
+# have nothing to do with. Recomputed from TORCH_INDEX_URL rather than reusing
+# $_torch_index_leaf, since the per-arch reroutes rewrite the URL after that is set.
+# repo.radeon.com is named separately: its leaf is rocm-rel-X.Y, a real ROCm route that is
+# not a pip family, so the family test alone would drop it.
 _amd_node_diag_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL")
 case "$_amd_node_diag_leaf" in
-    # A repo.radeon.com leaf is rocm-rel-X.Y or rocm-rel-X.Y.Z and nothing else, so anchor
-    # it the way the sibling rocm[0-9]* arm of _is_pip_rocm_family_leaf already anchors its
-    # own: a pin that merely STARTS with it (rocm-rel-7.0-private) is somebody's mirror and
-    # may serve wheels that open no AMD node. The gfx family is deliberately NOT narrowed
-    # this way -- AMD's own indexes are gfx110X-all, gfx120X-all, gfx103X-all, so a suffix
-    # there is the convention rather than a sign of a custom pin.
+    # A repo.radeon.com leaf is rocm-rel-X.Y[.Z] and nothing else, anchored the way
+    # _is_pip_rocm_family_leaf anchors its own rocm[0-9]* arm: a pin that merely STARTS
+    # with it (rocm-rel-7.0-private) is somebody's mirror. The gfx family is deliberately
+    # NOT narrowed this way, since AMD's own indexes are gfx110X-all, gfx120X-all,
+    # gfx103X-all, where a suffix is the convention rather than a custom pin.
     rocm-rel-*[!0-9.]*) _amd_node_diag_route=false ;;
     cpu|rocm-rel-[0-9]*) _amd_node_diag_route=true ;;
     *)
@@ -5748,12 +5718,9 @@ case "$_amd_node_diag_leaf" in
         ;;
 esac
 # ... but only when a wheel is actually being installed. TORCH_INDEX_URL is resolved
-# unconditionally above, SKIP_TORCH or not, so --no-torch on a hybrid or CUDA-pinned host
-# read as a CUDA route and silenced all three diagnoses below for a run whose Vulkan or
-# ROCm bundle opens the very nodes they are about. _torch_opens_amd_nodes already draws
-# exactly this line for the two scope predicates; this was the one place left reading an
-# index nothing will install from. `auto` is deliberately included: the AMD-evidence gates
-# below (closed AMD nodes, the KFD topology, _amd_gpu_present_via_pci) are what keep an
+# unconditionally above, so --no-torch on a hybrid or CUDA-pinned host read as a CUDA route
+# and silenced all three diagnoses for a run whose bundle opens the very nodes they are
+# about. `auto` is deliberately included: the AMD-evidence gates below are what keep an
 # NVIDIA-only host silent, so routing here fails closed rather than guessing a backend.
 if [ "$SKIP_TORCH" = true ]; then
     if _run_may_open_a_gpu_node; then
@@ -5764,24 +5731,20 @@ if [ "$SKIP_TORCH" = true ]; then
 fi
 # ... and an EXPLICIT GPU bundle request opens AMD nodes whatever the wheels do. The route
 # above is derived from the torch index alone, so a CUDA or custom-pinned index asked for
-# the rocm or vulkan bundle read as false and silenced all three diagnoses for a run whose
-# bundle needs the very nodes they are about -- the SKIP_TORCH override could not catch it,
-# since it only runs when no wheel is installed at all. This only ever turns the route ON:
-# a cpu or cuda request is still settled by the two scope predicates below, which is where
-# a bundle that opens no AMD node belongs.
+# the rocm or vulkan bundle read as false, and the SKIP_TORCH override could not catch it
+# because that only runs when no wheel is installed. This only ever turns the route ON: a
+# cpu or cuda request is still settled by the two scope predicates below.
 case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
         | awk '{$1=$1; print tolower($0)}')" in
     rocm|hip|vulkan) _amd_node_diag_route=true ;;
 esac
-# The two diagnoses are separate branches, not one branch with an inner test, because
-# they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
-# amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
-# answers from `amd-smi list`, which reads the driver over sysfs and libdrm and therefore
-# SUCCEEDS in a container given only --device /dev/dri, where HIP has no /dev/kfd to open.
-# llama_cpp.py's _rocm_hip_is_reachable records the same disagreement. Behind that probe
-# the mapping warning was suppressed on exactly the container shape it was written for,
-# and the two later diagnostics stay silent too: the render node is open, so nothing is
-# closed and nothing is missing.
+# Separate branches, not one branch with an inner test, because they need DIFFERENT
+# evidence. The mapping one is gated on the KFD topology, the amdkfd driver's own sysfs, so
+# it must not sit behind _has_amd_rocm_gpu: that probe answers from `amd-smi list`, which
+# reads the driver over sysfs and libdrm and so SUCCEEDS in a container given only
+# --device /dev/dri, where HIP has no /dev/kfd to open (llama_cpp.py's
+# _rocm_hip_is_reachable records the same disagreement). Behind that probe the warning was
+# suppressed on exactly the container shape it was written for.
 if [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    [ ! -e /dev/kfd ] && _kfd_topology_has_an_amd_gpu; then
