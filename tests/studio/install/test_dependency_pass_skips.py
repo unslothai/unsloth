@@ -384,10 +384,18 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
         "python/triton_kernels",
     )
 
+    # A branch is never evidence (see below); the installed-ref comparison is exercised
+    # with a commit, which is the only ref that cannot move under the requirements text.
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    req.write_text(
+        f"triton_kernels @ git+https://example.invalid/triton.git@{commit}"
+        "#subdirectory=python/triton_kernels\n",
+        encoding = "utf-8",
+    )
     recorded = {
         "url": "https://example.invalid/triton.git",
         "subdirectory": "python/triton_kernels",
-        "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"},
+        "vcs_info": {"vcs": "git", "requested_revision": commit},
     }
 
     class _Dist:
@@ -414,6 +422,56 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
     ):
         monkeypatch.setattr(importlib.metadata, "distribution", _distribution(broken))
         assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+
+def test_a_mutable_git_ref_is_never_installed_evidence(tmp_path, monkeypatch) -> None:
+    """release/3.6.x advances without the requirements text changing, and
+    direct_url.json records the commit that landed, not whether the branch still points
+    at it. A requested_revision match on a branch would stop the step forever; the
+    step runs instead, as it did before any evidence existed."""
+    req = tmp_path / "t.txt"
+    req.write_text(
+        "triton_kernels @ git+https://example.invalid/triton.git@release/3.6.x"
+        "#subdirectory=python/triton_kernels\n",
+        encoding = "utf-8",
+    )
+    recorded = {
+        "url": "https://example.invalid/triton.git",
+        "subdirectory": "python/triton_kernels",
+        "vcs_info": {
+            "vcs": "git",
+            "requested_revision": "release/3.6.x",
+            "commit_id": "0123456789abcdef0123456789abcdef01234567",
+        },
+    }
+
+    class _Dist:
+        def read_text(self, _name):
+            return json.dumps(recorded)
+
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist())
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+
+def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
+    """uv applies UV_OVERRIDE to every step and its versions replace requirements
+    outright; the gate digests only the bundled macOS file, so a caller's own file is
+    an input the evidence cannot see."""
+    payload, req_root = manifest
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    foreign = req_root / "my-overrides.txt"
+    foreign.write_text("numpy==1.0\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(foreign))
+    assert _plan() is None
+    # The module's own setting, in either spelling, is the tracked input and not foreign.
+    monkeypatch.setenv("UV_OVERRIDE", str(stack._MLX_OVERRIDES))
+    assert _plan() is not None
+    monkeypatch.setenv("UV_OVERRIDE", stack._uv_safe_path(stack._MLX_OVERRIDES))
+    assert _plan() is not None
+    monkeypatch.delenv("UV_OVERRIDE")
+    assert _plan() is not None
 
 
 def test_userinfo_in_a_git_url_is_not_mistaken_for_a_ref(tmp_path) -> None:

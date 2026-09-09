@@ -8057,6 +8057,26 @@ def _may_skip_on_evidence() -> bool:
     return _PASS_EVIDENCE is not None and not _full_deps_requested()
 
 
+def _foreign_uv_override_in_effect() -> bool:
+    """Whether UV_OVERRIDE names a file other than the bundled macOS arm64 overrides."""
+    value = (os.environ.get("UV_OVERRIDE") or "").strip()
+    if not value:
+        return False
+
+    def _canonical(path: str) -> str:
+        try:
+            return os.path.normcase(os.path.realpath(path))
+        except (OSError, ValueError):
+            return path
+
+    bundled = {_canonical(str(_MLX_OVERRIDES))}
+    try:
+        bundled.add(_canonical(_uv_safe_path(_MLX_OVERRIDES)))
+    except Exception:  # noqa: BLE001 - the short-path form is an optimisation, not evidence
+        pass
+    return _canonical(value) not in bundled
+
+
 def _refuse_evidence(reason: str) -> None:
     """Say why last run's evidence is not usable, then answer "none".
 
@@ -8081,6 +8101,13 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     # is not the tree the manifest describes, and its digests describe neither.
     if local_repo or ci_source_overlay or package_name != "unsloth":
         return _refuse_evidence("development install shape")
+    # uv applies UV_OVERRIDE to every step it runs, and an override's versions replace
+    # the requirements outright. The module sets it to the bundled macOS arm64 file, whose
+    # digest the gate below tracks; a caller's own file (the module keeps a value it finds
+    # in the environment) is an input no recorded digest covers, so nothing may be skipped
+    # under it.
+    if _foreign_uv_override_in_effect():
+        return _refuse_evidence("a caller-supplied UV_OVERRIDE is in effect")
     try:
         manifest = install_manifest.read_manifest()
         # setup.ps1 drops the live manifest before pip, torch and triton are replaced,
@@ -8393,6 +8420,9 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
     return None
 
 
+_COMMIT_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+
+
 def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     """Whether the resident *dist_name* came from the ref *req* names.
 
@@ -8405,6 +8435,13 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     if wanted is None:
         return False
     url, revision, subdirectory = wanted
+    # Only a commit is evidence. A branch or tag ref (release/3.6.x, the ref shipped)
+    # moves without the requirements text changing, and direct_url.json records the
+    # commit that landed, not whether the ref still points at it; answering that needs
+    # the network, which is what the step itself does. So a mutable ref is never
+    # satisfied here and its step runs on every pass, as it did before the evidence.
+    if not _COMMIT_REVISION_RE.fullmatch(revision):
+        return False
     try:
         from importlib.metadata import distribution
         recorded = distribution(dist_name).read_text("direct_url.json")
