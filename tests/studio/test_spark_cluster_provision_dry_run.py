@@ -223,7 +223,7 @@ def test_the_peer_rank_is_stopped_however_the_measurement_ends(
     assert probe.cleaned_up(), f"fail={fail!r}: the peer rank was left running"
 
 
-def test_the_stop_uses_the_recorded_pid_not_a_name_match() -> None:
+def test_the_stop_uses_the_recorded_pid_not_a_name_match(monkeypatch) -> None:
     """A pattern kill on a shared machine can take out something else that matches."""
     cluster = _cluster()
     sent = []
@@ -234,7 +234,10 @@ def test_the_stop_uses_the_recorded_pid_not_a_name_match() -> None:
             sent.append(" ".join(str(c) for c in cmd))
             return sp.CompletedProcess(cmd, 0)
 
-    cluster.subprocess.run = _R()
+    # Through monkeypatch: `cluster.subprocess` IS the stdlib module, so a bare assignment
+    # replaced `subprocess.run` for the rest of the session and every later test that shells
+    # out silently got a stub that reports success and does nothing.
+    monkeypatch.setattr(cluster.subprocess, "run", _R())
     assert cluster.stop_peer_nccl_probe("192.0.2.7", "someuser", []) is True
     joined = " ".join(sent)
     assert "spark_nccl_probe.pid" in joined and "kill -TERM" in joined, joined

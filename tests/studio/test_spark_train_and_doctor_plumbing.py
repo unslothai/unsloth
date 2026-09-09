@@ -174,6 +174,86 @@ def test_the_peer_probe_resolves_the_login_like_every_other_ssh(doctor, monkeypa
     assert "alice@192.168.200.13" in seen["argv"]
 
 
+# ── the peer launch ─────────────────────────────────────────────────────────────
+
+
+def test_a_custom_studio_home_with_a_space_stays_one_shell_word(cluster, monkeypatch, tmp_path) -> None:
+    """Bare, `[ -f {act} ] && . {act}` split it into words, the peer venv was not activated,
+    and the launch failed on a torchrun that a non-interactive SSH PATH does not have."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "my studio"))
+    quoted = cluster.venv_activate_sh()
+    assert quoted.startswith('"') and quoted.endswith('"')
+    fragment = f"[ -f {quoted} ] && . {quoted}"
+    # What the peer's shell sees, inside the `bash -c '...'` the callers build.
+    assert subprocess.run(["bash", "-c", f"{fragment}; true"]).returncode == 0
+    words = subprocess.run(
+        ["bash", "-c", f'set -- {quoted}; echo $#'], capture_output = True, text = True
+    )
+    assert words.stdout.strip() == "1", words.stdout
+
+
+def test_the_default_still_expands_home_on_the_peer(cluster, monkeypatch) -> None:
+    """No regression: the default is deliberately `$HOME/...`, resolved on the PEER."""
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    quoted = cluster.venv_activate_sh()
+    out = subprocess.run(
+        ["bash", "-c", f"HOME=/somewhere; echo {quoted}"], capture_output = True, text = True
+    )
+    assert out.stdout.strip() == "/somewhere/.unsloth/studio/unsloth_studio/bin/activate"
+
+
+def test_the_peer_stage_is_stopped_when_the_local_one_fails(cluster, monkeypatch) -> None:
+    """It was launched under `setsid nohup` and abandoned, so it held its model and CUDA
+    context until the distributed timeout and the next provision refused the peer as busy."""
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
+    monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
+    monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    stopped = []
+    monkeypatch.setattr(
+        cluster,
+        "stop_peer_by_pidfile",
+        lambda ip, user, opts, pid_file: stopped.append(pid_file) or True,
+    )
+
+    class _Done:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **k: _Done(0 if "ssh" in a[0] else 1))
+    plan = {"env": {}, "node0": "true", "node1": "true", "peer_ip": "192.0.2.7"}
+    assert cluster.run_pipeline(plan) == 1
+    assert stopped == [cluster._PEER_STAGE_PID]
+
+
+def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> None:
+    """Rank 1 writes its own stage under --save after the last step; killing it there would
+    truncate the half of the checkpoint it owns."""
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
+    monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
+    monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
+    stopped = []
+    monkeypatch.setattr(
+        cluster,
+        "stop_peer_by_pidfile",
+        lambda ip, user, opts, pid_file: stopped.append(pid_file) or True,
+    )
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **k: _Done())
+    plan = {"env": {}, "node0": "true", "node1": "true", "peer_ip": "192.0.2.7"}
+    assert cluster.run_pipeline(plan) == 0
+    assert stopped == []
+
+
+def test_the_launch_records_the_pid_it_would_stop() -> None:
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
+    launch = source.split("def run_pipeline(")[1].split("\ndef ")[0]
+    assert "echo $! > " in launch and "_PEER_STAGE_PID" in launch
+
+
 def test_parity_only_does_not_run_the_runtime_imports() -> None:
     """`--parity-only` is documented as "No GPU work, no NCCL run", and the runtime half of
     the fast-path probe imports torch and the native kernel packages on both nodes."""

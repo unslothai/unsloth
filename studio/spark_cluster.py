@@ -1458,7 +1458,7 @@ def nccl_bandwidth(
     )
     # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the
     # peer, so it never starts and the local side hangs at the rendezvous.
-    activate = venv_activate()
+    activate = venv_activate_sh()
     # The pid is recorded so every exit below can stop this rank. setsid makes it a process
     # group leader, so the negative kill takes the torchrun children with it.
     peer_cmd = (
@@ -1510,15 +1510,15 @@ _NCCL_PROBE_LOG = "/tmp/spark_nccl_probe.log"
 _NCCL_PROBE_PID = "/tmp/spark_nccl_probe.pid"
 
 
-def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
-    """Stop the detached probe rank on the peer, by the pid it recorded for us.
+def stop_peer_by_pidfile(peer_ip: str, user: str, ssh_opts, pid_file: str) -> bool:
+    """Stop a detached rank on the peer, by the pid it recorded for us.
 
     By pid, never by name: a pattern kill on a shared machine can take out something else that
     happens to match. A dead pid makes this a no-op, so it is safe on the success path too."""
     command = (
-        f"p=$(cat {_NCCL_PROBE_PID} 2>/dev/null); "
+        f"p=$(cat {pid_file} 2>/dev/null); "
         f'if [ -n "$p" ]; then kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; fi; '
-        f"rm -f {_NCCL_PROBE_PID}"
+        f"rm -f {pid_file}"
     )
     try:
         subprocess.run(
@@ -1530,6 +1530,10 @@ def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
         return True
     except Exception:
         return False
+
+
+def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
+    return stop_peer_by_pidfile(peer_ip, user, ssh_opts, _NCCL_PROBE_PID)
 
 
 def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
@@ -1590,7 +1594,7 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
             "print('yes' if os.path.isfile(p) else 'no')\n"
         )
         b64 = base64.b64encode(probe.encode()).decode()
-        activate = venv_activate()
+        activate = venv_activate_sh()
         remote = f"[ -f {activate} ] && . {activate}; " f"echo {b64} | base64 -d | python3 -"
         try:
             r = subprocess.run(
@@ -1713,7 +1717,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         import base64
 
         b64 = base64.b64encode(probe.encode()).decode()
-        act = venv_activate()
+        act = venv_activate_sh()
         cmd = (
             f"[ -f {act} ] && . {act}; nvidia-smi -L >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; "
             f"echo {b64} | base64 -d | python3 -"
@@ -1961,6 +1965,22 @@ def venv_activate() -> str:
     if root == _DEFAULT_STUDIO_ROOT:
         return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
     return str(root / "unsloth_studio" / "bin" / "activate")
+
+
+def venv_activate_sh() -> str:
+    """`venv_activate()` as ONE shell word, for the fragments that interpolate it.
+
+    A custom UNSLOTH_STUDIO_HOME containing a space was returned bare into
+    `[ -f {act} ] && . {act}`, so the test and the source command each split it into several
+    words: the peer venv was not activated, and the launch failed on a `torchrun` that is not
+    on a non-interactive SSH PATH. Double quotes rather than shlex.quote, because every call
+    site sits inside `bash -c '...'` where a single-quoted word would end the outer quoting,
+    and because `$HOME` in the default form still has to expand on the peer."""
+    path = venv_activate()
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    if not path.startswith("$HOME"):
+        escaped = escaped.replace("$", "\\$")
+    return f'"{escaped}"'
 
 
 # Below this a process is a CUDA context and scratch, not somebody's job.
@@ -3937,7 +3957,8 @@ def _cmd_setup(
     # success while the rails still carry no address -- `spark up --yes` then failed its own
     # `cluster_state() == "configured"` check immediately after setup said it was done, with
     # nothing naming the step in between.
-    if cluster_state() != "configured":
+    current = cabled_rails()
+    if not current or not all(r["ipv4"] for r in current):
         print("\n  NOT YET CONFIGURED: the rails still have no address, because the netplan")
         print("  above has to be applied by you. Run the numbered commands on both Sparks,")
         print("  then re-run `unsloth spark setup` to provision the peer.")
@@ -4220,18 +4241,30 @@ def _local_launch(command: str) -> str:
     return command
 
 
+_PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
+
+
 def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.log") -> int:
     """Actually launch a layer-split run on both Sparks. Without `ssh -f` the launcher is
     held open and the head rank never starts; without the peer log its errors are lost, since
     the head only ever reports `DistStoreError: 1/2 clients joined`."""
     user = _ssh_user()
-    activate = venv_activate()
+    ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
+    activate = venv_activate_sh()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
     # `cd $HOME`, not the local cwd: provisioning copies the venv and the caches, never the
     # project directory, so the same absolute path need not exist on the peer.
+    #
+    # The pid is recorded, as the NCCL probe does, so a local failure or a Ctrl-C can stop
+    # rank 1. Nothing did: it was launched under `setsid nohup` and then abandoned, so it sat
+    # in rendezvous or a collective holding its model and CUDA context until the distributed
+    # timeout, which makes the next provisioning run refuse the peer as busy and the next
+    # launch collide with a job nobody is watching. `setsid` makes it a process group leader,
+    # so the negative kill takes torchrun's children with it.
     remote = (
         f"cd \"$HOME\" && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
-        f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null &"
+        f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null & "
+        f"echo $! > {_PEER_STAGE_PID}"
     )
     try:
         peer = subprocess.run(
@@ -4261,7 +4294,20 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     time.sleep(6)  # let the peer reach the rendezvous first
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
-    return subprocess.run(_local_launch(plan["node0"]), shell = True, env = child_env).returncode
+    try:
+        rc = subprocess.run(
+            _local_launch(plan["node0"]), shell = True, env = child_env
+        ).returncode
+    except BaseException:
+        # Ctrl-C included, which is the common way this ends.
+        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)
+        raise
+    if rc != 0:
+        # Only on failure. A successful run leaves rank 1 writing its own stage under --save,
+        # and killing it there would truncate the half of the checkpoint it owns.
+        print(f"  local stage exited {rc}; stopping the peer stage")
+        stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)
+    return rc
 
 
 def _cmd_pipeline(
