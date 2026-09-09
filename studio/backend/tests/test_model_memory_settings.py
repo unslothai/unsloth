@@ -2719,7 +2719,8 @@ class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
         arm = src[src.index("_mem_host_resident = self._weights_in_host_memory(") :]
         arm = arm[: arm.index("fit_active =")]
         compact = "".join(arm.split())
-        assert "probe_vulkan=_mem_should_mlockor(_mem_dio_possibleand_mem_no_reserve)" in compact
+        assert "probe_vulkan=_mem_should_mlockor_mem_probe_for_dio" in compact
+        assert "_mem_probe_for_dio = _mem_dio_possible and _mem_no_reserve" in src
 
     def test_the_probe_gate_and_the_flags_read_one_snapshot(self):
         """Gating the probe on its own read of the toggles lets a save landing in
@@ -3032,3 +3033,116 @@ class TestAShadowedPairIsNotPolicyActivity:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert _lsa.resolve_effective_direct_io(list(_lsa.MANAGED_DIO_FLAGS), {}) is True
         assert not memory_state_satisfies_settings((False, False), True, False)
+
+
+class TestTheArchRetryRestoresBeforeStripping:
+    """The snapshot describes `cmd` while it still carried the pair, so restoring
+    it on top of the strip puts back the applicability and the activity the strip
+    just cleared, and the retry runs without the pair while recorded as owing it."""
+
+    def test_the_strip_follows_the_restore(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        restore = src.index(") = _mem_policy_for_cmd")
+        strip = src.index("_dio_left_cmd = bool(self._memory_dio_flags)")
+        assert restore < strip, "the restore must come first or it undoes the strip"
+
+    def test_the_snapshot_still_carries_the_applicability(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.count("self._memory_dio_applicable,") == 3
+
+
+class TestAnUnlookedPlacementIsNotSettled:
+    """With no-reserve off the Vulkan probe is skipped, so the placement answer is
+    the conservative host-resident one. Recording that as "not applicable" let a
+    later save read as already satisfied and never apply the policy."""
+
+    def test_the_launch_treats_an_unlooked_vulkan_placement_as_possibly_owed(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert (
+            "_mem_dio_placement_unlooked = bool(\n"
+            "                    _mem_dio_possible and is_vulkan_backend "
+            "and not _mem_probe_for_dio\n                )" in src
+        )
+        arm = src[src.index("self._memory_dio_applicable = managed_dio_applies(") :]
+        arm = arm[: arm.index("self._fit_load_mode_flags = (")]
+        compact = "".join(arm.split())
+        assert "_mem_gpu_offload_confirmedor_mem_dio_placement_unlooked" in compact
+        # Still gated on the deference and the shadowing, so it cannot ask for a
+        # reload that would change nothing.
+        assert "and_mem_dio_survives_chain" in compact
+
+
+class TestAnUnansweredVulkanProbeDeclines:
+    """_vulkan_targets_are_igpus folds "probe failed" into "not an iGPU", which is
+    safe where it only skips a page-lock and wrong for choosing a loader: an
+    iGPU's VRAM is system RAM."""
+
+    def test_no_rows_declines(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: [])
+        )
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+
+    def test_a_raising_probe_declines(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        def boom(binary = None):
+            raise OSError("probe timed out")
+
+        monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(boom))
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+
+    def test_an_igpu_in_play_declines(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        monkeypatch.setattr(
+            LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
+        )
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server", [0])
+        assert LlamaCppBackend._vulkan_offload_is_discrete("llama-server", [1])
+
+    def test_the_confirmation_requires_it_on_vulkan(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("_mem_gpu_offload_confirmed = bool(") :]
+        arm = arm[: arm.index("_mem_managed, _mem_extras = apply_model_memory_policy(")]
+        compact = "".join(arm.split())
+        assert "notis_vulkan_backendorself._vulkan_offload_is_discrete(binary,gpu_indices)" in compact
+
+
+class TestAnUnreadableBundleIsNotACpuOnlyBuild:
+    """A statically linked or custom build ships no ggml-*.dll beside llama-server.
+    Reading that as "no GPU backend" suppressed the policy forever on a real card."""
+
+    def test_no_sidecars_defers_to_the_device_check(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_ggml_backends",
+            staticmethod(lambda binary = None: frozenset()),
+        )
+        assert LlamaCppBackend._build_offers_gpu_backend("llama-server")
+
+    def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_ggml_backends",
+            staticmethod(lambda binary = None: frozenset({"base", "cpu"})),
+        )
+        assert not LlamaCppBackend._build_offers_gpu_backend("llama-server")

@@ -8411,6 +8411,26 @@ class LlamaCppBackend:
         return stripped
 
     @staticmethod
+    def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
+        """True only when the probe ANSWERED and every device in play is discrete.
+
+        ``_vulkan_targets_are_igpus`` folds "probe failed" into "not an iGPU",
+        which is the safe direction for its own caller (that one only skips a
+        page-lock) and the wrong one here: an iGPU's VRAM is system RAM, so
+        confirming an offload we could not read hands DirectIO to weights that
+        are really host-backed. Absence of an answer declines.
+        """
+        try:
+            rows = LlamaCppBackend._run_vulkan_probe(binary)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        wanted = set(gpu_indices) if gpu_indices else None
+        selected = [r for r in rows if wanted is None or r["index"] in wanted]
+        return bool(selected) and not any(r["is_igpu"] for r in selected)
+
+    @staticmethod
     def _build_offers_gpu_backend(binary: Optional[str] = None) -> bool:
         """Whether the installed prebuilt ships a GPU backend at all.
 
@@ -8419,10 +8439,19 @@ class LlamaCppBackend:
         anything reaches a device. Reads the ggml libs beside llama-server, like
         ``_is_vulkan_backend``. Windows and Linux only, which is where the
         prebuilts are single-backend; Metal is not among the names.
+
+        An unreadable or sidecar-less install answers True and leaves the decision
+        to the device enumeration: this exists to reject a managed CPU-only bundle,
+        not to require the layout a managed bundle happens to have.
         """
-        return bool(
-            LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}
-        )
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        # Absence of evidence is not evidence: a statically linked or custom build
+        # ships no ggml-*.dll beside llama-server, and reading that as "no GPU"
+        # suppressed the policy on a real discrete card indefinitely. Only a bundle
+        # we could actually enumerate, and that has no GPU backend in it, is one.
+        if not backends:
+            return True
+        return bool(backends & {"cuda", "hip", "vulkan"})
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -23356,6 +23385,7 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     gpu_offload_confirmed = True,
                 )
+                _mem_probe_for_dio = _mem_dio_possible and _mem_no_reserve
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
@@ -23368,7 +23398,7 @@ class LlamaCppBackend:
                     # An unprobed Vulkan device answers the conservative True, and
                     # should_mlock() is always False under no-reserve, so gating on it
                     # alone made the DirectIO branch unreachable on the Vulkan build.
-                    probe_vulkan = _mem_should_mlock or (_mem_dio_possible and _mem_no_reserve),
+                    probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
@@ -23398,6 +23428,12 @@ class LlamaCppBackend:
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary)
                     and (_detected_gpus or gpu_indices)
+                    # A probe that did not answer declines rather than confirms; see
+                    # _vulkan_offload_is_discrete.
+                    and (
+                        not is_vulkan_backend
+                        or self._vulkan_offload_is_discrete(binary, gpu_indices)
+                    )
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
@@ -23474,9 +23510,21 @@ class LlamaCppBackend:
                     [*MANAGED_DIO_FLAGS, *_load_mode_managed, *_mem_extras],
                     _fit_load_mode_env_view,
                 )
+                # "We did not look" is not "not applicable". With no-reserve off the
+                # Vulkan probe is skipped, so the placement answer is the conservative
+                # host-resident one; recording that as settled let a LATER save read as
+                # already satisfied and never apply the policy at all. Treat an unlooked
+                # placement as possibly owed, so the save asks for the relaunch that does
+                # probe and settles it either way. The env deference and the shadowing
+                # check still apply, so this cannot ask for a reload that changes nothing.
+                _mem_dio_placement_unlooked = bool(
+                    _mem_dio_possible and is_vulkan_backend and not _mem_probe_for_dio
+                )
                 self._memory_dio_applicable = managed_dio_applies(
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                    gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                    gpu_offload_confirmed = (
+                        _mem_gpu_offload_confirmed or _mem_dio_placement_unlooked
+                    ),
                     env = _fit_load_mode_env_view,
                 ) and _mem_dio_survives_chain
                 # Only when the FIT chose it: a user's own pick survives every fallback
@@ -25183,12 +25231,6 @@ class LlamaCppBackend:
                             )
                         # Same for the managed DirectIO, and for the same reason:
                         # the placement it was chosen for is the one that crashed.
-                        _dio_left_cmd = bool(self._memory_dio_flags)
-                        cmd = self._drop_managed_dio(
-                            cmd,
-                            "the arch-crash retry runs on a different device set "
-                            "than the offload was confirmed against",
-                        )
                         # This respawn starts from `cmd`, but the crashed launch may
                         # have taken _spawn_and_wait's --fit retry, which appends a
                         # page-lock to its OWN argv and records it. `cmd` never carried
@@ -25204,6 +25246,17 @@ class LlamaCppBackend:
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
+                        # AFTER the restore, never before: the snapshot describes `cmd`
+                        # while it still carried the pair, so restoring on top of the
+                        # strip put back the applicability and the activity the strip
+                        # had just cleared, leaving a retry that runs without the pair
+                        # recorded as still owing it.
+                        _dio_left_cmd = bool(self._memory_dio_flags)
+                        cmd = self._drop_managed_dio(
+                            cmd,
+                            "the arch-crash retry runs on a different device set "
+                            "than the offload was confirmed against",
+                        )
                         # ...except the load-mode pair just removed: the snapshot was
                         # taken while `cmd` still carried it, so restoring it would
                         # record a reservation this respawn no longer makes. From the
