@@ -1132,35 +1132,68 @@ def _unsloth_package_dirs() -> list[Path]:
     return unique
 
 
-def _unsloth_quant_mappers() -> list[dict]:
-    """The repo substitution tables in `unsloth.models.mapper`, read without importing unsloth.
+def _module_literal(path: Path, name: str) -> object:
+    """A module-level literal assignment, read without running the file.
 
-    That module is plain data with no imports of its own, so it loads straight from the
-    package directory; importing `unsloth` would pull in torch to answer a dict lookup.
+    The last binding wins, matching how the module would have ended up had it run.
+    """
+    found = None
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        targets = getattr(node, "targets", [])
+        if not any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            continue
+        try:
+            found = ast.literal_eval(node.value)
+        except Exception:
+            continue
+    return found
+
+
+def _unsloth_quant_mappers() -> list[dict]:
+    """What repo the loader may swap for another, per install, read without running anything.
+
+    `mapper.py` is discovered on `sys.path`, which can include the directory the CLI was
+    started in -- `unsloth start` opens a coding agent on a repository that is not
+    necessarily trusted -- so the file is parsed for its data and never imported. The
+    package makes the same distinction itself: `build_mappers` exists so that a mapper
+    fetched from GitHub "only ever supplies data".
+
+    Only `__INT_TO_FLOAT_MAPPER` is read, and every name in one of its entries is treated
+    as swappable for every other, since they are one model at different precisions. That
+    is the relation the derived tables express, without re-deriving them.
     """
     global _QUANT_MAPPERS
     if _QUANT_MAPPERS is None:
         _QUANT_MAPPERS = []
-        for index, directory in enumerate(_unsloth_package_dirs()):
+        for directory in _unsloth_package_dirs():
             path = directory / "models" / "mapper.py"
             try:
                 if not path.is_file():
                     continue
-                module_spec = importlib.util.spec_from_file_location(
-                    f"unsloth_cli._quant_mappers_{index}", path
-                )
-                module = importlib.util.module_from_spec(module_spec)
-                module_spec.loader.exec_module(module)
-                # Every table except the fp8 ones: nothing in the inference path passes
-                # `load_in_fp8`, so an fp8 repo can never be what the worker fetches, and
-                # polling it would only cost the downloading server a request per poll.
-                _QUANT_MAPPERS.extend(
-                    value
-                    for name, value in vars(module).items()
-                    if not name.startswith("_")
-                    and "fp8" not in name.lower()
-                    and isinstance(value, dict)
-                )
+                source = _module_literal(path, "__INT_TO_FLOAT_MAPPER")
+                if not isinstance(source, dict):
+                    continue
+                relation: dict = {}
+                for key, values in source.items():
+                    names: set = set()
+                    _flattened_repo_ids(key, names)
+                    _flattened_repo_ids(values, names)
+                    # Nothing in the inference path passes `load_in_fp8`, so an fp8 repo is
+                    # never what the worker fetches and polling it would only cost requests.
+                    names = {name for name in names if "fp8" not in name.lower()}
+                    for name in names:
+                        # Both spellings on both sides: `__get_model_name` looks the base
+                        # up lower-cased and returns whatever that entry holds, so the repo
+                        # it names can differ in case from the one written here.
+                        others = {
+                            spelling
+                            for other in names - {name}
+                            for spelling in (other, other.lower())
+                        }
+                        for spelling in (name, name.lower()):
+                            relation.setdefault(spelling, set()).update(others)
+                if relation:
+                    _QUANT_MAPPERS.append({k: tuple(v) for k, v in relation.items()})
             except Exception:
                 # Nothing here is required; the recorded base alone is still worth polling.
                 continue

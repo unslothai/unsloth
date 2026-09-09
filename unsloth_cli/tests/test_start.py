@@ -4311,6 +4311,28 @@ def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
     assert not [repo for repo in candidates if "fp8" in repo.lower()]
 
 
+def test_quant_mappers_never_execute_the_discovered_file(monkeypatch, tmp_path):
+    # `unsloth start` opens a coding agent on a repository that is not necessarily trusted,
+    # and mapper.py is found on sys.path, which can include that repository. The file is
+    # read for its data; running it would hand it the user's privileges.
+    planted = tmp_path / "unsloth" / "models"
+    planted.mkdir(parents = True)
+    sentinel = tmp_path / "executed"
+    (planted / "mapper.py").write_text(
+        "import pathlib\n"
+        f"pathlib.Path({str(sentinel)!r}).write_text('x')\n"
+        '__INT_TO_FLOAT_MAPPER = {"owner/model-bnb-4bit": ("owner/model",)}\n'
+    )
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", None)
+    monkeypatch.setattr(start, "_unsloth_package_dirs", lambda: [tmp_path / "unsloth"])
+
+    tables = start._unsloth_quant_mappers()
+
+    assert not sentinel.exists()
+    # The data still came through.
+    assert "owner/model" in tables[0]["owner/model-bnb-4bit"]
+
+
 def test_quant_mappers_load_without_importing_unsloth():
     # Only whether THIS call pulls torch in: another test in the session may have already
     # imported it, and that is not this function's doing.
