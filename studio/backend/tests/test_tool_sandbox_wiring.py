@@ -798,7 +798,9 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
     "the call ran on the host with the boundary silently off".
     """
     backend = importlib.import_module(
-        "core.inference.sandbox_linux" if sys.platform == "linux" else "core.inference.sandbox_macos"
+        "core.inference.sandbox_linux"
+        if sys.platform == "linux"
+        else "core.inference.sandbox_macos"
     )
 
     def full_disk(plan):

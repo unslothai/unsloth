@@ -619,9 +619,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # isolate, and it must not be treated as one. Left raw it would reach
         # tools.py's general `except Exception`, which answers `auto` by running
         # with software safeguards; typed, it lands on the branch that refuses.
-        raise SandboxBuildError(
-            f"the sandbox could not be built on this host: {exc}"
-        ) from exc
+        raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc
     prepared.execution_record = _record(
         plan,
         capability,
