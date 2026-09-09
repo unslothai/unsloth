@@ -5975,6 +5975,11 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
             shutil.rmtree(dist_info)
         except OSError:
             continue
+        # A record pip was reading a moment ago is gone: what is installed, and what
+        # `pip check` and the constraint audit see, both just changed. Counted here
+        # rather than at entry so the usual case -- nothing to purge -- still lets the
+        # cached constraint answer and the skipped `pip check` stand.
+        _count_install_action()
         cleared.append(dist_info.name)
     return cleared
 
@@ -6827,6 +6832,13 @@ def _repair_duplicate_core_metadata(
                 )
                 return False
             if invalid_paths or backups:
+                # Metadata was rewritten in place, or pip's leftover backup was moved
+                # out of the tree. Neither goes through _uninstall_distribution or
+                # pip_install*, and both change what importlib.metadata reports, so the
+                # constraint cache has to be retired here -- at the mutation, not at
+                # function entry, where a repair with no duplicates to fix would pay for
+                # a `pip check` and a constraint re-read on every no-op update.
+                _count_install_action()
                 importlib.invalidate_caches()
                 record_count = len(install_manifest.installed_versions(name))
             # A backup names a payload pip has already renamed away, so once it is
@@ -6871,6 +6883,10 @@ def _repair_duplicate_core_metadata(
 
             removed_any = False
             while record_count:
+                # As _uninstall_distribution: counted BEFORE the command, because a
+                # `pip uninstall` that exits non-zero can still have removed files, and
+                # the unwind below reinstalls over whatever it left.
+                _count_install_action()
                 if not _run_ok(
                     f"Removing an installed metadata record for {name}",
                     [sys.executable, "-m", "pip", "uninstall", "-y", name],

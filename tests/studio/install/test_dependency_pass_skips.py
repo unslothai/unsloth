@@ -578,16 +578,139 @@ def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
 
 def test_every_install_entry_point_is_counted() -> None:
     """`pip check` and the metadata patch are gated on this counter, so a new install
-    site that does not increment it makes both skip a venv that just changed."""
+    site that does not increment it makes both skip a venv that just changed.
+
+    The two repairs are here for the same reason and were the ones that got missed:
+    neither installs anything through pip_install*, and both leave the environment
+    different from the one the cached constraint answer describes.
+    """
     source = STACK_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source)
-    counted = {"pip_install", "pip_install_try", "_uninstall_distribution"}
+    counted = {
+        "pip_install",
+        "pip_install_try",
+        "_uninstall_distribution",
+        "_purge_recordless_distributions",
+        "_repair_duplicate_core_metadata",
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in counted:
             body = ast.dump(node)
             assert "_count_install_action" in body, node.name
             counted.discard(node.name)
     assert not counted, f"install entry points are gone: {counted}"
+
+
+@pytest.fixture
+def counting(monkeypatch):
+    """A zeroed counter and a constraint answer that is already cached against it."""
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "_CONSTRAINTS_CACHE", None)
+    answers = iter([["numpy"], [], [], []])
+    monkeypatch.setattr(
+        stack.install_manifest, "violated_constraints", lambda *a, **k: next(answers)
+    )
+    monkeypatch.setattr(stack, "_safe_print", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    assert stack._violated_constraints() == ["numpy"]
+    return monkeypatch
+
+
+def _site_with_recordless_dist(monkeypatch, tmp_path):
+    site = tmp_path / "site-packages"
+    (site / "ghost-1.0.dist-info").mkdir(parents = True)
+    monkeypatch.setattr(stack.sysconfig, "get_path", lambda name: str(site))
+    return site
+
+
+_PIP_REFUSED = "Cannot uninstall ghost 1.0, RECORD file not found: no RECORD file was found"
+
+
+def test_purging_a_half_written_record_counts_as_an_install_action(counting, tmp_path) -> None:
+    """It rmtree's a dist-info pip was reading a moment ago. Nothing else on that path
+    touches the counter, so a constraint answer cached before it would survive it and
+    let a gated step skip on evidence about an environment that no longer exists."""
+    _site_with_recordless_dist(counting, tmp_path)
+    assert stack._purge_recordless_distributions(_PIP_REFUSED) == ["ghost-1.0.dist-info"]
+    assert stack._INSTALL_ACTIONS == 1
+    assert stack._violated_constraints() == []
+
+
+def test_a_purge_that_deletes_nothing_leaves_the_cache_alone(counting, tmp_path) -> None:
+    """The other direction, and the reason this is counted at the rmtree rather than at
+    the top of the function: `pip check` is gated on the same counter, so a spurious
+    increment buys a full metadata resolve of the venv on every no-op update."""
+    site = _site_with_recordless_dist(counting, tmp_path)
+    assert stack._purge_recordless_distributions("") == []
+    assert stack._purge_recordless_distributions("some unrelated pip failure") == []
+    # Named, but complete: whatever failed, it was not this.
+    (site / "ghost-1.0.dist-info" / "RECORD").write_text("", encoding = "utf-8")
+    assert stack._purge_recordless_distributions(_PIP_REFUSED) == []
+    assert stack._INSTALL_ACTIONS == 0
+    assert stack._violated_constraints() == ["numpy"], "the cached answer was discarded"
+
+
+class _ScriptedVersions:
+    """installed_versions(), draining a scripted sequence of record counts."""
+
+    def __init__(self, counts) -> None:
+        self.counts = list(counts)
+
+    def __call__(self, name, *args, **kwargs):
+        count = self.counts.pop(0) if len(self.counts) > 1 else self.counts[0]
+        return ["1.0"] * count
+
+
+def _metadata_repair_stubs(
+    monkeypatch,
+    counts,
+    *,
+    invalid = (),
+):
+    monkeypatch.setattr(stack.install_manifest, "installed_versions", _ScriptedVersions(counts))
+    monkeypatch.setattr(stack.install_manifest, "pip_backup_metadata_paths", lambda *a, **k: [])
+    monkeypatch.setattr(
+        stack.install_manifest, "invalid_metadata_paths", lambda *a, **k: list(invalid)
+    )
+    monkeypatch.setattr(
+        stack.install_manifest, "installed_version_probe", lambda *a, **k: ("1.0", False)
+    )
+    monkeypatch.setattr(stack, "_rewrite_minimal_metadata", lambda path, name: True)
+    monkeypatch.setattr(stack, "_stage_replacement", lambda name: "/staged")
+    monkeypatch.setattr(stack, "_run_ok", lambda label, cmd: True)
+    monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: True)
+
+
+def test_removing_a_duplicate_metadata_record_counts_as_an_install_action(counting) -> None:
+    """The uninstall loop goes through _run_ok, not _uninstall_distribution, so it was
+    the one removal path the counter never saw."""
+    _metadata_repair_stubs(counting, [2, 1, 0])
+    assert stack._repair_duplicate_core_metadata(("unsloth",)) is True
+    assert stack._INSTALL_ACTIONS == 2, "one per pip uninstall, as _uninstall_distribution"
+    assert stack._violated_constraints() == []
+
+
+def test_rewriting_unreadable_metadata_counts_even_if_the_repair_then_aborts(
+    counting, tmp_path
+) -> None:
+    """The rewrite happens before anything is staged and is not undone by returning
+    False: what importlib.metadata reports has already changed."""
+    _metadata_repair_stubs(counting, [2, 0], invalid = [str(tmp_path)])
+    assert stack._repair_duplicate_core_metadata(("unsloth",)) is False
+    assert stack._INSTALL_ACTIONS == 1
+    assert stack._violated_constraints() == []
+
+
+def test_a_repair_with_nothing_to_repair_leaves_the_cache_alone(counting) -> None:
+    """One readable record each and no damage: both repairs are pure inspection, and
+    an update that does nothing must not pay for a `pip check` because they ran."""
+    _metadata_repair_stubs(counting, [1])
+    monkeypatch = counting
+    monkeypatch.setattr(stack.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+    assert stack._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
+    assert stack._repair_damaged_core_payload(("unsloth", "unsloth-zoo")) is True
+    assert stack._INSTALL_ACTIONS == 0
+    assert stack._violated_constraints() == ["numpy"], "the cached answer was discarded"
 
 
 def test_the_pass_state_is_reset_per_call() -> None:
