@@ -16,6 +16,7 @@ import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
 from utils.hf_probe import hf_file_definitely_absent
+import huggingface_hub
 
 
 def _http_error(name: str, *, fallback: str | None = None) -> Exception:
@@ -65,7 +66,6 @@ def _raise(exc):
 
 
 def _patch_metadata(monkeypatch, behavior):
-    import huggingface_hub
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", behavior)
 
 
@@ -153,8 +153,6 @@ def test_the_probe_writes_nothing_to_the_cache(monkeypatch, tmp_path):
 
 
 def test_the_lora_base_probe_skips_the_download_when_the_file_is_absent(monkeypatch):
-    import huggingface_hub
-
     from utils.models import model_config
 
     calls = []
@@ -170,8 +168,6 @@ def test_the_lora_base_probe_skips_the_download_when_the_file_is_absent(monkeypa
 
 
 def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path):
-    import huggingface_hub
-
     from utils.models import model_config
 
     cfg = tmp_path / "adapter_config.json"
@@ -184,8 +180,6 @@ def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path)
 
 def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypatch):
     """The existing path lookup must gate absent template downloads."""
-    import huggingface_hub
-
     from picker import service
 
     listed: list[str] = []

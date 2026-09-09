@@ -1143,12 +1143,21 @@ def _delete_project_rag_sources(project_id: str) -> None:
     # a project id is reusable, and the tombstone outlives the scope, so retiring one that
     # another client already recreated would permanently disable RAG for the new project
     with folder_sync.scope_lock(scope):
-        checked_at = folder_sync.now_iso()
+        owned = folder_sync.linked_folder_ids(scope)
         if get_chat_project(project_id) is not None:
             return
-        folder_sync.retire_scope(scope, checked_at)
-    if rag_db.rag_available():
-        folder_sync.delete_retired_scope(scope)
+        # Tombstone first, rows after one more look: the tombstone already stops new links and
+        # uploads and is the only half `unretire_scope` can take back, while a retired row
+        # keeps auto_sync off and makes create_folder refuse that path for good.
+        folder_sync.retire_scope(scope, owned, rows = False)
+        if get_chat_project(project_id) is not None:
+            folder_sync.unretire_scope(scope)
+            return
+        folder_sync.retire_scope(scope, owned)
+        # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
+        # unless the purge is skipped too.
+        if rag_db.rag_available():
+            folder_sync.delete_retired_scope(scope)
 
 
 @router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)

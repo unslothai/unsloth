@@ -9,11 +9,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PASS=0
-FAIL=0
 SKIP=0
 
 {
@@ -82,15 +81,6 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
 # Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.

@@ -176,6 +176,74 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
     }
 
 
+def test_compat_inventory_lists_hermes_downloads(tmp_path):
+    # /api/models/local and /v1/models are served by this scan, not the hub inventory, so
+    # the recipe picker, the chat auto-load and the OpenAI catalog see only what it returns.
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(hermes / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(hermes_dirs = (hermes,))
+
+    rows = models_route.collect_local_models(
+        models_root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {("hermes", weight)}
+    assert rows[0].display_name == "Qwen3.8-27B-UD-Q4_K_M"
+
+
+def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tmp_path):
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    # Something else the user keeps in that folder stays a custom row.
+    extra = _touch(hermes / "extra" / "Other-Q4_K_M.gguf")
+    sources = _empty_compat_sources(tmp_path)._replace(hermes_dirs = (hermes,))
+
+    rows = models_route.collect_local_models(
+        models_root,
+        custom_folders = [{"path": str(hermes)}],
+        sources = sources,
+    )
+
+    assert sorted((row.source, Path(row.path)) for row in rows) == [
+        ("custom", extra.parent),
+        ("hermes", weight),
+    ]
+
+
+def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
+    # The scanner builds the Hub inventory's row class; this route answers with its own, so a
+    # Hermes row must cross that boundary or the route is a 500 for anyone with a download.
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    sources = models_route._CompatLocalInventorySources(
+        hf_cache_dir = models_dir,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        known_hf_caches = (),
+        hermes_dirs = (hermes,),
+    )
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    response = asyncio.run(
+        models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
+    )
+
+    assert response.hermes_dirs == [str(hermes)]
+    assert [(m.source, Path(m.path)) for m in response.models] == [("hermes", weight)]
+
+
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     root = tmp_path / "ollama"
     digest = "sha256-model"
@@ -462,6 +530,7 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
 
 # ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
+from hub.services.models import catalog_classification as classification
 
 
 def _local(
@@ -510,8 +579,6 @@ def test_windows_cloud_recall_attributes_are_not_local():
 
 def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
     """Fully present files retain architecture-based task detection."""
-    from hub.services.models import catalog_classification as classification
-
     gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
     reads = []
     monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: True)
@@ -534,7 +601,6 @@ def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
 
 def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
     """Cloud placeholders stay discoverable by name without opening their data."""
-    from hub.services.models import catalog_classification as classification
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("local GGUF listing touched placeholder contents")
@@ -560,7 +626,6 @@ def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypa
     comes back None, which for a placeholder is every time, and that probe reads an
     architecture of its own. Asserting on ``_local_model_task`` alone leaves the listing
     hydrating exactly the files it stopped classifying, a folder row once per sibling."""
-    from hub.services.models import catalog_classification as classification
     from utils.models import gguf_metadata
 
     single = _touch(tmp_path / "single" / "generic-Q4_K_M.gguf")
@@ -585,8 +650,6 @@ def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypa
 
 
 def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
-    from hub.services.models import catalog_classification as classification
-
     repo = tmp_path / "models--unsloth--csm-1b"
     snapshot = repo / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
@@ -635,7 +698,6 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
     """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
     is not reachable from the one page whose pick would pull it down, and lists in Chat
     instead. The filename carries the family, and it is read without opening the file."""
-    from hub.services.models import catalog_classification as classification
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
@@ -663,7 +725,6 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
     segment of it. With an architecture that mismatch only picks the wrong family; for a
     placeholder the name is the entire case, so a shelf named after a family would file every
     chat GGUF stored under it as an image or video model."""
-    from hub.services.models import catalog_classification as classification
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
@@ -873,7 +934,6 @@ def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
     from types import SimpleNamespace
 
     from core.inference.video_families import detect_video_family
-    from hub.services.models import catalog_classification as classification
 
     repo_id = "Lightricks/LTX-Video"
     assert detect_video_family(repo_id) is not None, "fixture assumes a known video family"

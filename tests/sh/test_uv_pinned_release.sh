@@ -14,13 +14,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -572,7 +567,6 @@ if grep -q '^rc=0$' "$WORK/out_arch"; then
 else
     ok "an unpinned architecture declines so the fallback runs"
 fi
-
 
 # An interrupted install must not leave the pinned path's temporaries behind: the work
 # directory holds a ~40 MB unpacked archive, and the staging file sits inside a directory that

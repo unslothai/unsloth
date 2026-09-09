@@ -8,6 +8,14 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const STARTUP_DELAY_MS = 5_000;
 const PERIODIC_INTERVAL_MS = 60 * 60 * 1_000;
+const BUNDLE_POLL_MS = 500;
+const BUNDLE_WAIT_MS = 10 * 60 * 1_000;
+
+interface BundleState {
+  version: string | null;
+  downloaded: boolean;
+  downloading: boolean;
+}
 
 type UpdateController = {
   checkForUpdate: () => Promise<void>;
@@ -18,14 +26,14 @@ type Listener = EventListenerOrEventListenerObject;
 
 interface HookHarnessOptions {
   failCheckAt?: number;
-  holdPreparation?: boolean;
   noUpdateAt?: number;
-  rejectDiscard?: boolean;
   tauri?: boolean;
-  // Records the install path's side effects in call order.
   trace?: string[];
-  // Lets the install reach start_backend_update instead of failing at listen().
-  listenSucceeds?: boolean;
+  flushSettings?: () => Promise<void>;
+  /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
+  backendUpdate?: "completes" | "fails";
+  /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
+  bundleStates?: BundleState[];
 }
 
 function createEventTarget() {
@@ -190,6 +198,7 @@ function createHookReact() {
   const effects: Array<() => unknown> = [];
   const cleanups: Array<() => void> = [];
   const statusUpdates: string[] = [];
+  const progressUpdates: number[] = [];
   let stateIndex = 0;
   return {
     react: {
@@ -200,6 +209,7 @@ function createHookReact() {
           (next: unknown) => {
             if (index === 0 && typeof next === "string")
               statusUpdates.push(next);
+            if (typeof next === "number") progressUpdates.push(next);
           },
         ];
       },
@@ -219,6 +229,7 @@ function createHookReact() {
     unmount(): void {
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
+    progressUpdates,
     statusUpdates,
   };
 }
@@ -227,12 +238,12 @@ function hookHarness(
   t: TestContext,
   {
     failCheckAt,
-    holdPreparation = false,
     noUpdateAt,
-    rejectDiscard = false,
     tauri = true,
-    trace,
-    listenSucceeds = false,
+    trace = [],
+    flushSettings = async () => undefined,
+    backendUpdate = "fails",
+    bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
 ) {
   const browser = installBrowserClock();
@@ -242,10 +253,25 @@ function hookHarness(
     browser.restore();
   });
   let checks = 0;
-  const initialPreparation = {
-    shell: "pending",
-    backend: "pending",
-    shellProgress: 0,
+  let polls = 0;
+  let relaunches = 0;
+  const events = new Map<string, Set<(event: { payload: unknown }) => void>>();
+  const emit = (name: string, payload?: unknown) => {
+    for (const callback of events.get(name) ?? []) callback({ payload });
+  };
+  // What the hook does with the download it is only watching, not running.
+  const download: {
+    attached: string[];
+    released: number;
+    started: number;
+    report: (percent: number) => void;
+  } = {
+    attached: [],
+    released: 0,
+    started: 0,
+    report: () => {
+      throw new Error("no download listener is attached");
+    },
   };
   const hook = loadWithStubs<{
     useTauriUpdate: () => UpdateController;
@@ -253,20 +279,16 @@ function hookHarness(
     react: host.react,
     "@/features/chat": {
       flushPendingChatSettings: async () => {
-        trace?.push("flush");
+        trace.push("flush:start");
+        await flushSettings();
+        trace.push("flush:done");
       },
     },
-    "@/features/training": {
-      isTrainingStartPending: () => false,
-      useTrainingRuntimeStore: { getState: () => ({}) },
-    },
-    "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: tauri },
+    "@/lib/api-base": { isTauri: tauri },
     "@/lib/tauri-diagnostics": {
       copySupportDiagnostics: async () => ({ copied: true }),
     },
     "@/lib/tauri-updater": {
-      adoptStagedUpdate: () => Promise.resolve({}),
-      cancelStagedUpdate: () => Promise.resolve(),
       checkDesktopUpdate: () => {
         checks += 1;
         if (checks === failCheckAt) throw new Error("update check failed");
@@ -277,41 +299,33 @@ function hookHarness(
           rawJson: {},
         });
       },
-      desktopUpdateBundleStatus: () =>
-        holdPreparation
-          ? new Promise(() => {})
-          : Promise.resolve({ downloaded: false }),
-      discardStagedUpdate: () =>
-        rejectDiscard
-          ? Promise.reject(new Error("discard failed"))
-          : Promise.resolve(),
-      downloadDesktopUpdate: () => Promise.resolve(),
+      desktopUpdateBundleStatus: () => {
+        const state = bundleStates[Math.min(polls, bundleStates.length - 1)];
+        polls += 1;
+        return Promise.resolve(state);
+      },
+      downloadDesktopUpdate: () => {
+        download.started += 1;
+        return Promise.resolve();
+      },
       installDesktopUpdate: () => Promise.resolve(),
-      stagedUpdateStatus: () => Promise.resolve({ staging: false }),
-      startStagedUpdate: () => Promise.resolve(),
-      waitForDesktopUpdateDownload: () => Promise.resolve(),
+      listenDesktopUpdateDownload: (
+        version: string,
+        onProgress: (percent: number) => void,
+      ) => {
+        download.attached.push(version);
+        download.report = onProgress;
+        return Promise.resolve(() => {
+          download.released += 1;
+        });
+      },
+      sameUpdateVersion: (left: string | null | undefined, right: string) =>
+        Boolean(left) && left === right,
     },
     "@/lib/toast": { toast: { error: () => undefined } },
-    "@/lib/update-preparation": {
-      INITIAL_PREPARATION: initialPreparation,
-      backendIdle: () => true,
-      desktopDownloadDecision: () => "ready",
-      preparationStatus: (preparation: typeof initialPreparation) =>
-        preparation.shell === "done" && preparation.backend === "skipped"
-          ? "ready"
-          : "preparing",
-      restartPlan: () => "classic",
-      sameUpdateVersion: () => true,
-      settleWithin: async () => null,
-      stagingDecision: () => "skip",
-      waitForBackendIdle: async () => "cancelled",
-    },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
-        trace?.push(`invoke:${command}`);
-        if (command === "start_backend_update") {
-          throw new Error("backend update failed");
-        }
+        trace.push(`invoke:${command}`);
         if (command === "desktop_update_policy") {
           return {
             mode: "in_app",
@@ -320,13 +334,35 @@ function hookHarness(
           };
         }
         if (command === "desktop_update_cleanup_armed") return true;
+        if (command === "start_backend_update") {
+          // The command itself decides the backend step, rather than a stub that happens to throw.
+          if (backendUpdate === "fails")
+            throw new Error("backend update failed");
+          queueMicrotask(() => emit("update-complete"));
+          return undefined;
+        }
+        if (command === "set_renderer_activity") return undefined;
+        if (command === "mark_in_app_relaunch") return undefined;
         throw new Error(`unexpected invoke: ${command}`);
       },
     },
     "@tauri-apps/api/event": {
-      listen: async () => {
-        if (!listenSucceeds) throw new Error("backend update failed");
-        return () => undefined;
+      listen: async (
+        name: string,
+        callback: (event: { payload: unknown }) => void,
+      ) => {
+        const registered =
+          events.get(name) ?? new Set<(event: { payload: unknown }) => void>();
+        registered.add(callback);
+        events.set(name, registered);
+        return () => {
+          registered.delete(callback);
+        };
+      },
+    },
+    "@tauri-apps/plugin-process": {
+      relaunch: async () => {
+        relaunches += 1;
       },
     },
   });
@@ -336,7 +372,11 @@ function hookHarness(
     browser,
     checks: () => checks,
     controller,
+    download,
     host,
+    polls: () => polls,
+    progressUpdates: host.progressUpdates,
+    relaunches: () => relaunches,
     statusUpdates: host.statusUpdates,
   };
 }
@@ -344,6 +384,33 @@ function hookHarness(
 function settle(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("desktop update and retry await the settings flush before starting the backend", async (t) => {
+  const trace: string[] = [];
+  let release!: () => void;
+  const flushing = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hook = hookHarness(t, { trace, flushSettings: () => flushing });
+  await hook.controller.checkForUpdate();
+  trace.length = 0;
+
+  const updating = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(trace, ["flush:start"]);
+  release();
+  await updating;
+  assert.ok(
+    trace.indexOf("flush:done") < trace.indexOf("invoke:start_backend_update"),
+  );
+
+  trace.length = 0;
+  await hook.controller.installUpdate();
+  assert.equal(trace.filter((event) => event === "flush:done").length, 1);
+  assert.ok(
+    trace.indexOf("flush:done") < trace.indexOf("invoke:start_backend_update"),
+  );
+});
 
 test("the desktop hook checks at startup and every hour", async (t) => {
   const hook = hookHarness(t);
@@ -378,17 +445,16 @@ test("a manual check suppresses only the startup check", async (t) => {
   assert.equal(hook.checks(), 2);
 });
 
-test("a periodic recheck preserves a prepared update", async (t) => {
+test("a periodic recheck keeps an offered update available", async (t) => {
   const hook = hookHarness(t);
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
-  await hook.controller.installUpdate();
-  await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.statusUpdates.at(-1), "available");
 
   hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
   await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.equal(hook.checks(), 2);
+  assert.equal(hook.statusUpdates.at(-1), "available");
 });
 
 test("a failed periodic recheck preserves an untouched offer", async (t) => {
@@ -403,8 +469,8 @@ test("a failed periodic recheck preserves an untouched offer", async (t) => {
   assert.equal(hook.statusUpdates.at(-1), "available");
 });
 
-test("a cleanup failure does not restore a withdrawn offer", async (t) => {
-  const hook = hookHarness(t, { noUpdateAt: 2, rejectDiscard: true });
+test("a withdrawn offer goes back to idle", async (t) => {
+  const hook = hookHarness(t, { noUpdateAt: 2 });
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
@@ -415,30 +481,15 @@ test("a cleanup failure does not restore a withdrawn offer", async (t) => {
   assert.equal(hook.statusUpdates.at(-1), "idle");
 });
 
-test("scheduled checks wait for update preparation", async (t) => {
-  const hook = hookHarness(t, { holdPreparation: true });
-  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
-  await settle();
-  await hook.controller.installUpdate();
-  assert.equal(hook.statusUpdates.at(-1), "preparing");
-
-  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
-  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
-  hook.browser.fireWindow("focus");
-  await settle();
-  assert.equal(hook.checks(), 1);
-  assert.equal(hook.statusUpdates.at(-1), "preparing");
-});
-
-test("scheduled checks preserve update recovery", async (t) => {
+test("scheduled checks leave a failed install in its error state", async (t) => {
   const hook = hookHarness(t);
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+
+  // start_backend_update itself refuses, which is the failure the classic path reports.
   await hook.controller.installUpdate();
   await settle();
-  assert.equal(hook.statusUpdates.at(-1), "ready");
-
-  await hook.controller.installUpdate();
   assert.equal(hook.statusUpdates.at(-1), "error");
 
   hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
@@ -449,26 +500,61 @@ test("scheduled checks preserve update recovery", async (t) => {
   assert.equal(hook.statusUpdates.at(-1), "error");
 });
 
-test("a desktop update flushes chat settings before it touches the backend", async (t) => {
-  const trace: string[] = [];
-  const hook = hookHarness(t, { listenSucceeds: true, trace });
+test("a bundle download the update did not start reports its progress", async (t) => {
+  const hook = hookHarness(t, {
+    backendUpdate: "completes",
+    // A webview reload left a native download running, and a second one would be refused.
+    bundleStates: [
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: true, downloading: false },
+    ],
+  });
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
-  await hook.controller.installUpdate();
-  await settle();
-  trace.length = 0;
 
-  await hook.controller.installUpdate();
+  const installing = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+  hook.download.report(40);
+
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  await installing;
+
+  assert.equal(hook.polls(), 3);
+  assert.equal(hook.download.started, 0);
+  assert.equal(hook.download.released, 1);
+  assert.ok(hook.progressUpdates.includes(40));
+  assert.equal(hook.progressUpdates.at(-1), 100);
+  assert.equal(hook.relaunches(), 1);
+});
+
+test("waiting out a bundle download the update did not start is bounded", async (t) => {
+  const hook = hookHarness(t, {
+    backendUpdate: "completes",
+    // Stuck: the flag never clears, so without the bound the update waits forever.
+    bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
+  });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
 
-  const flush = trace.indexOf("flush");
-  const backendUpdate = trace.indexOf("invoke:start_backend_update");
-  assert.ok(flush >= 0, "the install path did not flush chat settings");
-  assert.ok(backendUpdate >= 0, "the install path never started the update");
-  assert.ok(
-    flush < backendUpdate,
-    `the flush must precede the backend update: ${trace.join(", ")}`,
-  );
+  const installing = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+
+  hook.browser.advance(BUNDLE_WAIT_MS);
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  await installing;
+
+  // Handed back to the real download, which is what surfaces the failure.
+  assert.equal(hook.download.started, 1);
+  assert.equal(hook.download.released, 1);
 });
 
 test("restoring an overdue hidden window checks immediately", async (t) => {
