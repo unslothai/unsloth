@@ -12,34 +12,20 @@
 // source, since the node suite has no DOM to mount two panels into.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   type MonitorFrame,
   useMonitorFrameStore,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
-const PANEL_SOURCE = readFileSync(
-  fileURLToPath(
-    new URL("../src/components/floating-monitor.tsx", import.meta.url),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
 
-const ROOT_SOURCE = readFileSync(
-  fileURLToPath(new URL("../src/app/routes/__root.tsx", import.meta.url)),
-  "utf8",
-);
-const SETTINGS_MOUNT_SOURCE = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/settings/settings-dialog-mount.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
+const PANEL_SOURCE = readSrc("components/floating-monitor.tsx");
+
+const ROOT_SOURCE = readSrc("app/routes/__root.tsx");
+const SETTINGS_MOUNT_SOURCE = readSrc(
+  "features/settings/settings-dialog-mount.tsx",
 );
 
 /** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
@@ -192,15 +178,7 @@ test("dropping one publisher leaves the other's box intact", () => {
 // A composer that is hidden measures 0x0, and publishing that would pull the
 // union out to the top-left corner and pin the stack there.
 test("the publish hook drops an unmeasurable box rather than publishing it", () => {
-  const HOOK = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/settings/hooks/use-published-frame.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const HOOK = readSrc("features/settings/hooks/use-published-frame.ts");
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
   assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
   assert.match(
@@ -211,15 +189,7 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
 });
 
 test("closed lazy settings surfaces cannot leave load failures on screen", () => {
-  const mount = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/settings/settings-dialog-mount.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const mount = readSrc("features/settings/settings-dialog-mount.tsx");
   // Keep rejected boundaries mounted for a later retry, but only show their errors while the user is
   // still asking for that surface. A slow rejected chunk must not outlive a quick Open -> Close.
   for (const [open, testId] of [

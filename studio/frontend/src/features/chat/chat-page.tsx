@@ -16,7 +16,7 @@ import {
   isServedByMlx,
   loadedContextFields,
   modelConfigHandoffForDestination,
-  resolveInitialConfig,
+  resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
@@ -2433,7 +2433,10 @@ export function ChatPage({
       source?: string;
     }) => {
       if (selection.source === "external") return null;
-      const resolved = resolveInitialConfig(selection.id, selection.ggufVariant);
+      const resolved = resolveResidentInitialConfig(
+        selection.id,
+        selection.ggufVariant,
+      );
       return resolved.remembered ? resolved.config : null;
     },
     [],

@@ -924,7 +924,11 @@ export const hi = {
         currentStreak: "मौजूदा स्ट्रीक",
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
-        activityDescription: "अवधि: {weeks} · {total}",
+        activityDescription: {
+          daily: "अवधि: {weeks} · {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
+          cumulative: "पिछले {weeks} में कुल {total}",
+        },
         mode: {
           daily: "दैनिक",
           weekly: "साप्ताहिक",
@@ -1902,6 +1906,7 @@ export const hi = {
       sourceHfCache: "HF कैश",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "कस्टम फ़ोल्डर",
       sourceLocalModel: "स्थानीय मॉडल",
       vramOomBadge: "OOM",
@@ -2149,6 +2154,7 @@ export const hi = {
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
       notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
+      doraNeedsVisionLayersOff: "DoRA उपयोग करने के लिए विज़न लेयर्स ट्रेनिंग बंद करें",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",

@@ -899,7 +899,11 @@ export const zhCN = {
         currentStreak: "当前连续天数",
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
-        activityDescription: "过去{weeks}共{total}",
+        activityDescription: {
+          daily: "过去{weeks}共{total}",
+          weekly: "峰值周 {total} · 最近{weeks}",
+          cumulative: "过去{weeks}累计{total}",
+        },
         mode: {
           daily: "按天",
           weekly: "按周",
@@ -1814,6 +1818,7 @@ export const zhCN = {
       sourceHfCache: "HF 缓存",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "自定义文件夹",
       sourceLocalModel: "本地模型",
       scanningLocal: "正在扫描本地模型…",
@@ -2070,6 +2075,7 @@ export const zhCN = {
       memoryEfficient: "节省内存",
       weightDecomposed: "权重分解",
       notSupportedAppleSilicon: "Apple 芯片暂不支持",
+      doraNeedsVisionLayersOff: "关闭视觉层训练以使用 DoRA",
       optimization: "优化",
       schedule: "计划",
       memory: "内存",

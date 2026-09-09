@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   llamaReleaseChanged,
@@ -11,6 +10,8 @@ import {
   llamaUpdateToastMessage,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const SWITCH_STARTED_AT = "2026-08-12T15:00:00Z";
 
@@ -127,10 +128,7 @@ test("a release change still needs both tags to name it", () => {
 });
 
 test("the banner asks the helper rather than comparing the two tags itself", () => {
-  const banner = readFileSync(
-    new URL("../src/components/llama-update-banner.tsx", import.meta.url),
-    "utf8",
-  );
+  const banner = readSrc("components/llama-update-banner.tsx");
   assert.match(banner, /const versionChanged = llamaReleaseChanged\(/);
   assert.doesNotMatch(banner, /installedTag !== latestTag/);
 });
