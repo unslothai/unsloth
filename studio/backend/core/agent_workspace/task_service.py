@@ -58,8 +58,13 @@ def submit(
     child_limit: int = 2,
     child_budget: int = 8192,
     timeout: int = 900,
+    allow_commands: bool = False,
 ) -> dict:
     require_prerequisites()
+    if not isinstance(allow_commands, bool):
+        raise state.TaskStateError("Command opt-in must be a boolean.")
+    if allow_commands:
+        _require_commands()
     runtime = capture_runtime(kind, model, provider_id)
     workspace = capture_workspace(project_id)
     project = studio_db.get_chat_project(project_id)
@@ -67,6 +72,7 @@ def submit(
         raise state.TaskStateError("Project not found.")
     snapshot = {
         "runtime": runtime,
+        "commandsEnabled": allow_commands,
         "workspace": workspace,
         "instructions": str(project.get("instructions") or "")[:24000],
     }
@@ -100,6 +106,7 @@ def public_task(
     snapshot = task["snapshot"]
     result = {key: value for key, value in task.items() if key != "snapshot"}
     runtime = snapshot.get("runtime", {})
+    result["commandsEnabled"] = snapshot.get("commandsEnabled", False)
     result["runtime"] = {key: runtime.get(key) for key in ("kind", "model", "providerId")}
     record = binding(task["projectId"], task["id"]) if owned is None else owned.get(task["id"])
     result["worktreeId"] = record["worktree_id"] if record else None
@@ -110,8 +117,18 @@ def public_task(
     return result
 
 
+def _require_commands():
+    try:
+        from .task_commands import require_support
+    except ImportError:
+        raise state.TaskStateError("Task command support is not installed.") from None
+    require_support()
+
+
 def retry(project_id: str, task_id: str) -> dict:
     task = state.get_task(project_id, task_id)
+    if task["snapshot"].get("commandsEnabled"):
+        _require_commands()
     validate_runtime(task["snapshot"]["runtime"])
     validate_workspace(project_id, task["snapshot"]["workspace"])
     return public_task(runner().retry(project_id, task_id))

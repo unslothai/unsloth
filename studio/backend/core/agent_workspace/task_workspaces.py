@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from storage.studio_db import get_connection
 from .task_state import TaskStateError
 
+TASK_COMMAND_BINDING_PROTOCOL = 1
+
 
 def acquire_task_project_fence(
     project_id: str,

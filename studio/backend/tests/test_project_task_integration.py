@@ -622,3 +622,20 @@ def test_task_results_respect_shared_model_cap(repository, integration, monkeypa
         result = task_executor.TaskTools(context, workspace)(name, arguments)
         assert len(result) < 320
         assert "[truncated," in result
+
+
+def test_command_capability_is_unavailable_without_optional_module(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(project_tasks, "get_chat_project", lambda _: {"id": "project"})
+    monkeypatch.setitem(sys.modules, "core.agent_workspace.task_commands", None)
+    response = _client().get("/api/agent/projects/project/tasks/capabilities")
+    assert response.status_code == 200 and response.json()["commands"]["available"] is False
+
+
+def test_command_opt_in_is_strict_and_does_not_accept_runtime_authority():
+    response = _client().post(
+        "/api/agent/projects/project/tasks",
+        json = {"instruction": "Check", "kind": "local", "model": "m", "allowCommands": "true"},
+    )
+    assert response.status_code == 422

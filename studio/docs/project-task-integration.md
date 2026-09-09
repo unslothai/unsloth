@@ -43,7 +43,8 @@ are labelled unavailable. Incomplete previews say so. Bound task worktrees are
 preserved after completion, cancellation or failure. A checkout whose setup fails
 before binding is rolled back only when Git can prove ownership and that it is
 clean; otherwise its Git record remains available for recovery. No commit, merge,
-publication or command execution occurs automatically. The existing Git panel
+publication or command execution occurs automatically unless command execution
+was explicitly enabled for the task. The existing Git panel
 can show the owned checkout location for further inspection and explicit Git work.
 
 ## Execution and boundaries
@@ -61,8 +62,9 @@ can show the owned checkout location for further inspection and explicit Git wor
   Every task tool result is capped before model replay using the shared
   `UNSLOTH_TOOL_RESULT_MAX_CHARS` setting, including file reads, listings and child
   results. Truncated reads cannot supply the exact whole-file contents required
-  for replacement. Task tools cannot access shell/Python, network tools, Git
-  metadata, arbitrary roots or interactive-chat permission overrides.
+  for replacement. Task tools cannot access network tools, Git metadata,
+  arbitrary roots or interactive-chat permission overrides. An optional command
+  layer adds bounded test/build execution for opted-in implementer children.
 - Each model turn reserves at most 1,024 output tokens before dispatch, also
   respecting the saved provider output-token cap, with no refunds for absent
   usage metadata. Changing that cap invalidates queued runtime snapshots. The sum of requested caps is bounded by the
@@ -104,3 +106,15 @@ toolchain: main `191b69c12` measured 1,620,018 bytes and the integration measure
 1,620,213 bytes, both with 82 eager chunks. The existing 1,620,000-byte ceiling was
 already exceeded by 18 bytes on that baseline. The budget increases by 1 KiB;
 the task panel, API code and review controls remain in a separate lazy chunk.
+
+
+## Optional command layer
+
+The command capability is off by default and remains unavailable without the
+separate task-command implementation and a supported Linux host. The API captures
+`allowCommands` in the server snapshot; only implementers receive its tool, and
+retries recheck support. The panel reads bounded command evidence separately from
+model-generated task results, including after cancellation. Command count, output,
+timeout, confinement and provenance are enforced by that optional source layer.
+Existing Git and retirement process fences protect quarantined commands; no extra
+nested project flock is introduced by these hooks.

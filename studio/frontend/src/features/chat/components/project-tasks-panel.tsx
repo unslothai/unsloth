@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  getTaskCapabilities, listTaskCommands, getTaskCommand, commandStatusLabel, type TaskCommand,
   cancelProjectTask, getProjectTask, getProjectTaskReview, listProjectTasks, retryProjectTask, submitProjectTask,
   taskCanCancel, taskCanRetry, type ProjectTask, type TaskSelection, type TaskReview,
 } from "../api/project-tasks-api";
@@ -59,8 +60,66 @@ function TaskResult({ projectId, task }: { projectId: string; task: ProjectTask 
   </details>;
 }
 
+function TaskCommands({ projectId, task }: { projectId: string; task: ProjectTask }) {
+  const [open, setOpen] = useState(false);
+  const [commands, setCommands] = useState<TaskCommand[]>([]);
+  const [full, setFull] = useState<Record<string, TaskCommand>>({});
+  const [error, setError] = useState<string | null>(null);
+  const lifetime = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    lifetime.current = controller;
+    setCommands([]); setFull({}); setError(null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      try {
+        const rows = await listTaskCommands(projectId, task.id, controller.signal);
+        if (!controller.signal.aborted) { setCommands(rows); setError(null); }
+      } catch (cause) {
+        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not load command evidence.");
+      } finally {
+        if (!controller.signal.aborted && ["queued", "running", "cancelling"].includes(task.status)) timer = setTimeout(() => void refresh(), 2000);
+      }
+    }
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [open, projectId, task.id, task.status]);
+  async function showFull(id: string) {
+    const controller = lifetime.current;
+    if (!controller || controller.signal.aborted) return;
+    try {
+      const value = await getTaskCommand(projectId, task.id, id, controller.signal);
+      if (!controller.signal.aborted) setFull((current) => ({ ...current, [id]: value }));
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not load captured output.");
+    }
+  }
+  return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary className="cursor-pointer text-sm">Test and build results</summary>
+    {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+    {open ? <div className="mt-2 space-y-3">
+      <p className="text-xs text-muted-foreground">Command outcomes are separate from the task’s completion. A passing command verifies only that invocation. Worktree files may change afterward.</p>
+      {!commands.length && !error ? <p className="text-sm">No command evidence recorded yet.</p> : null}
+      {commands.map((summary) => {
+        const command = full[summary.id] ?? summary;
+        return <div key={command.id} className="rounded-lg border p-3">
+          <p className="text-sm font-medium">Command {command.sequence} · {commandStatusLabel(command.status)}{command.exitCode !== null ? ` · Exit ${command.exitCode}` : ""}</p>
+          <pre className="overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(command.argv)}</pre>
+          <p className="text-xs text-muted-foreground">{command.timeout}s limit · {command.outputBytes.toLocaleString()} output bytes observed</p>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">{command.output || "No output captured."}</pre>
+          {command.outputTruncated ? <p className="text-xs">Output exceeded the capture limit; this evidence is incomplete.</p> : null}
+          {command.previewTruncated && command.status !== "running" ? <Button size="sm" variant="outline" onClick={() => void showFull(command.id)}>Show captured output</Button> : null}
+        </div>;
+      })}
+    </div> : null}
+  </details>;
+}
+
 export function ProjectTasksPanel({ projectId, selection }: { projectId: string; selection: TaskSelection }) {
   const [instruction, setInstruction] = useState("");
+  const [allowCommands, setAllowCommands] = useState(false);
+  const [commandSupport, setCommandSupport] = useState<{ available: boolean; reason: string | null } | null>(null);
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -71,6 +130,12 @@ export function ProjectTasksPanel({ projectId, selection }: { projectId: string;
   useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
+    setAllowCommands(false); setCommandSupport(null); setPending(false);
+    void getTaskCapabilities(projectId, controller.signal).then((value) => {
+      if (!controller.signal.aborted) setCommandSupport(value.commands);
+    }).catch(() => {
+      if (!controller.signal.aborted) setCommandSupport({ available: false, reason: "Command availability could not be checked." });
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function refresh() {
       const version = ++requestVersion.current;
@@ -120,11 +185,13 @@ export function ProjectTasksPanel({ projectId, selection }: { projectId: string;
     <section className="mt-8 space-y-5" aria-label="Project tasks">
       <div className="space-y-3 rounded-2xl border p-5">
         <h2 className="font-semibold">Run a project task</h2>
-        <p className="text-sm text-muted-foreground">The coordinator can read this project and delegate up to two reviewers or implementers. Each attempt starts from the project’s current commit. Implementers can edit their own worktrees. Changes stay there for your review. Commands and automatic merges are unavailable.</p>
+        <p className="text-sm text-muted-foreground">The coordinator can read this project and delegate up to two reviewers or implementers. Each attempt starts from the project’s current commit. Implementers can edit their own worktrees. Changes stay there for your review. Automatic merges are unavailable.</p>
         <p className="text-sm">Model: {selection.model || "Select a model in Chat first"}</p>
         <p className="text-xs text-muted-foreground">15 minute deadline · 8,192 coordinator output tokens · 8,192 shared child output tokens. Uses a saved tool-capable provider or a loaded GGUF model. Subscription and safetensors runtimes are not supported yet.</p>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={allowCommands} disabled={pending || !commandSupport?.available} onChange={(event) => setAllowCommands(event.target.checked)} />Allow implementers to run tests and builds</label>
+        <p className="text-xs text-muted-foreground">{commandSupport?.available ? "Up to six commands per attempt, two minutes each, with 64 KiB captured output. Commands can change their checkout, have no network access, and require dependencies already available on the host." : commandSupport?.reason ?? "Checking command availability…"}</p>
         <Textarea aria-label="Task instruction" placeholder="Describe the change or review, including relevant file paths…" value={instruction} maxLength={16000} onChange={(e) => setInstruction(e.target.value)} disabled={pending} />
-        <Button disabled={pending || !loaded || !instruction.trim() || !selection.model} onClick={() => void mutate((signal) => submitProjectTask(projectId, instruction.trim(), selection, signal), true)}>Start task</Button>
+        <Button disabled={pending || !loaded || !instruction.trim() || !selection.model} onClick={() => void mutate((signal) => submitProjectTask(projectId, instruction.trim(), selection, signal, allowCommands), true)}>Start task</Button>
       </div>
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
       {!loaded && !error ? <p role="status">Loading tasks…</p> : null}
@@ -144,6 +211,7 @@ export function ProjectTasksPanel({ projectId, selection }: { projectId: string;
           <p className="text-xs text-muted-foreground">{task.runtime.model} · {task.maxOutputTokens.toLocaleString()} output tokens{task.role === "root" ? ` · Children reserved ${task.childAllocated.toLocaleString()} / ${task.childBudget.toLocaleString()}` : ""}</p>
           {task.worktreeId ? <p className="break-all text-xs">Owned worktree: {task.worktreeId}. Inspect it in Git &amp; worktrees before committing or merging.</p> : null}
           {task.worktreeId && ["completed", "failed", "cancelled", "interrupted"].includes(task.status) ? <TaskChanges projectId={projectId} taskId={task.id} /> : null}
+          {task.commandsEnabled && task.role === "implementer" ? <TaskCommands projectId={projectId} task={task} /> : null}
           {task.error ? <p className="text-sm text-destructive">{task.error}</p> : null}
           {task.result?.output ? <TaskResult projectId={projectId} task={task} /> : null}
         </article>

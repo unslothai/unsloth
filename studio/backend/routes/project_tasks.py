@@ -60,6 +60,7 @@ class SubmitTask(BaseModel):
     childLimit: int = Field(default = 2, ge = 0, le = 8)
     childBudget: int = Field(default = 8192, ge = 0, le = 131072)
     timeout: int = Field(default = 900, ge = 1, le = 3600)
+    allowCommands: bool = False
 
 
 def project(project_id: str):
@@ -71,6 +72,8 @@ def invoke(call):
     module = service()
     try:
         return call(module)
+    except HTTPException:
+        raise
     except module.state.TaskStateError as exc:
         raise HTTPException(409, str(exc)) from None
     except Exception:
@@ -101,6 +104,45 @@ def submit_task(project_id: str, request: SubmitTask):
             child_limit = request.childLimit,
             child_budget = request.childBudget,
             timeout = request.timeout,
+            allow_commands = request.allowCommands,
+        )
+    )
+
+
+def command_module():
+    try:
+        return importlib.import_module("core.agent_workspace.task_commands")
+    except ImportError:
+        raise HTTPException(503, "Task command support is not installed.") from None
+
+
+@router.get("/capabilities")
+def task_capabilities(project_id: str):
+    project(project_id)
+    try:
+        return {"commands": command_module().availability()}
+    except HTTPException:
+        return {
+            "commands": {"available": False, "reason": "Task command support is not installed."}
+        }
+
+
+@router.get("/{task_id}/commands")
+def task_commands(project_id: str, task_id: str):
+    project(project_id)
+    return invoke(
+        lambda m: command_module().list_commands(
+            project_id, m.state.get_task(project_id, task_id)["id"]
+        )
+    )
+
+
+@router.get("/{task_id}/commands/{command_id}")
+def task_command_detail(project_id: str, task_id: str, command_id: str):
+    project(project_id)
+    return invoke(
+        lambda m: command_module().get_command(
+            project_id, m.state.get_task(project_id, task_id)["id"], command_id
         )
     )
 
