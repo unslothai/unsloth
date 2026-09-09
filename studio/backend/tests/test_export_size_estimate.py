@@ -247,6 +247,20 @@ def _write(path: Path, size: int) -> None:
     path.write_bytes(b"\0" * size)
 
 
+def _write_index(path: Path, shards: dict) -> None:
+    import json
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(
+        json.dumps(
+            {
+                "metadata": {"total_size": sum(shards.values())},
+                "weight_map": {f"layer.{i}.weight": name for i, name in enumerate(sorted(shards))},
+            }
+        )
+    )
+
+
 def test_dual_format_repo_counts_safetensors_only(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "original" / "consolidated.00.pth", 1200)
@@ -346,6 +360,70 @@ def test_sharded_optimizer_state_is_bookkeeping(tmp_path):
     _write(tmp_path / "rng_state_0.pth", 100)
     _write(tmp_path / "rng_state_1.pth", 100)
     assert _get_local_weight_size_bytes(str(tmp_path)) == 7000
+
+
+def test_precision_variant_beside_canonical_weights_charges_one_copy(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "model.fp16.safetensors", 500)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.safetensors", 3440)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.fp16.safetensors", 1720)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.bin", 3440)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.fp16.bin", 1720)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4440
+
+
+def test_sharded_precision_variant_is_held_back_by_the_index(tmp_path):
+    shards = {"model-00001-of-00002.safetensors": 600, "model-00002-of-00002.safetensors": 400}
+    for name, size in shards.items():
+        _write(tmp_path / name, size)
+    _write_index(tmp_path / "model.safetensors.index.json", shards)
+    _write(tmp_path / "model.fp16-00001-of-00002.safetensors", 300)
+    _write(tmp_path / "model.fp16-00002-of-00002.safetensors", 200)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_variant_after_the_shard_counter_is_the_same_archive(tmp_path):
+    shards = {"model-00001-of-00002.safetensors": 600, "model-00002-of-00002.safetensors": 400}
+    for name, size in shards.items():
+        _write(tmp_path / name, size)
+    _write_index(tmp_path / "model.safetensors.index.json", shards)
+    _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
+    _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_diffusers_sharded_component_is_charged_by_its_index_once(tmp_path):
+    # genmo/mochi-1-preview: a sharded denoiser with bf16 twins beside the default shards,
+    # and single-file components carrying their own variants and a .bin spelling.
+    shards = {
+        "diffusion_pytorch_model-00001-of-00002.safetensors": 3000,
+        "diffusion_pytorch_model-00002-of-00002.safetensors": 2000,
+    }
+    for name, size in shards.items():
+        _write(tmp_path / "transformer" / name, size)
+    _write_index(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json", shards)
+    _write(tmp_path / "transformer" / "diffusion_pytorch_model-00001-of-00002.bf16.safetensors", 1500)
+    _write(tmp_path / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors", 1000)
+    _write(tmp_path / "vae" / "diffusion_pytorch_model.safetensors", 320)
+    _write(tmp_path / "vae" / "diffusion_pytorch_model.fp16.safetensors", 160)
+    _write(tmp_path / "vae" / "diffusion_pytorch_model.bin", 320)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 5320
+
+
+def test_an_unrelated_index_json_is_never_opened(tmp_path, monkeypatch):
+    from utils.hardware import hardware
+
+    _write(tmp_path / "model.safetensors", 1000)
+    (tmp_path / "search.index.json").write_text('{"weight_map": {"x": "model.safetensors"}}')
+    opened = []
+    real = hardware._index_targets
+    def spy(index, directory):
+        opened.append(index.name)
+        return real(index, directory)
+
+    monkeypatch.setattr(hardware, "_index_targets", spy)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+    assert "search.index.json" not in opened
 
 
 def test_variant_only_shards_are_summed(tmp_path):

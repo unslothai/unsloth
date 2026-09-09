@@ -5696,12 +5696,19 @@ _TRAINER_BOOKKEEPING = re.compile(
     r"^(?:optimizer|scheduler|scaler|rng_state|training_args|trainer_state)"
     r"(?:[-_]\d+(?:-of-\d+)?)?$"
 )
+# A precision variant of an archive: model.fp16.safetensors, model-00001-of-00002.fp16.safetensors
+# or model.fp16-00001-of-00002.safetensors are these weights again, and a load passing no
+# variant never opens them.
+_WEIGHT_VARIANT = re.compile(r"\.(fp16|bf16|fp32|non_ema)$")
 # The order from_pretrained tries, the direct file ahead of the index within each spelling.
+# diffusers resolves one name per component, its index or the direct file, safetensors first.
 _MODEL_ARCHIVES = (
     ("model", ".safetensors"),
     ("pytorch_model", ".bin"),
     ("consolidated", ".safetensors"),
     ("consolidated", ".pth"),
+    ("diffusion_pytorch_model", ".safetensors"),
+    ("diffusion_pytorch_model", ".bin"),
 )
 # peft's own order, in a table of its own: an adapter is not another spelling of the base
 # model but a second payload loaded on top of it, so it never stands in for one.
@@ -5710,6 +5717,19 @@ _ADAPTER_ARCHIVES = (
     ("adapter_model", ".bin"),
 )
 _WEIGHT_ARCHIVES = _MODEL_ARCHIVES + _ADAPTER_ARCHIVES
+# The only indexes a load resolves; any other *.index.json in the folder is never opened.
+_WEIGHT_INDEX_NAMES = frozenset(f"{base}{ext}.index.json" for base, ext in _WEIGHT_ARCHIVES)
+
+
+def _archive_stem(stem: str) -> tuple:
+    """``(base, variant)`` of a weight stem, the shard counter and the precision variant
+    stripped in either order: model-00001-of-00002.fp16 and model.fp16-00001-of-00002 are
+    both ``("model", "fp16")``; consolidated.00 is ``("consolidated", None)``."""
+    stem = _WEIGHT_COUNTER.sub("", stem)
+    variant = _WEIGHT_VARIANT.search(stem)
+    if variant is None:
+        return stem, None
+    return _WEIGHT_COUNTER.sub("", stem[: variant.start()]), variant.group(1)
 
 
 def _index_targets(index: Path, directory: Path) -> set:
@@ -5747,12 +5767,16 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
     for base, ext in table:
         direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
         indexed, all_indexed = _indexed_archive(directories, base, ext, tree)
-        # No index names these, but a pruned or unwritten index is still that model.
-        counted = {
-            path: size
-            for path, size in pool.items()
-            if path.suffix == ext and _WEIGHT_COUNTER.sub("", path.stem) == base
-        }
+        # No index names these, but a pruned or unwritten index is still that model. A
+        # precision variant is held back with the rest of the spelling, never opened.
+        counted: dict = {}
+        variants: dict = {}
+        for path, size in pool.items():
+            if path.suffix != ext:
+                continue
+            stem, variant = _archive_stem(path.stem)
+            if stem == base:
+                (variants if variant else counted)[path] = size
         # A stale index names other files and the direct one is opened instead. An index
         # that names the direct file is not stale: it is saying that file is one part of
         # the archive, so it decides, and a head stored beside the weights (the MTP file
@@ -5761,7 +5785,9 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
         opens = indexed if names_the_direct_file else (direct or indexed)
         if opens or counted:
             # Held back: the rest of a spelling is these same weights, never a component.
-            candidates.append((opens or counted, bool(opens), {**direct, **all_indexed, **counted}))
+            candidates.append(
+                (opens or counted, bool(opens), {**direct, **all_indexed, **counted, **variants})
+            )
     return candidates
 
 
@@ -5859,7 +5885,7 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
             except OSError:
                 continue
             found.append(rel_parent / file.name)
-        elif file.name.endswith(".index.json"):
+        elif file.name in _WEIGHT_INDEX_NAMES:
             index_files.append(file)
             indexed_dirs.append(home)
 
