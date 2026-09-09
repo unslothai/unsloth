@@ -432,6 +432,39 @@ def test_an_unrelated_index_json_is_never_opened(tmp_path, monkeypatch):
     assert "search.index.json" not in opened
 
 
+def test_a_variant_only_spelling_is_held_beside_the_loadable_one(tmp_path):
+    _write(tmp_path / "model.fp16.safetensors", 500)
+    _write(tmp_path / "pytorch_model.bin", 1000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_a_same_stem_copy_of_the_archive_is_not_a_component(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "model.pt", 1000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_a_diffusers_index_outranks_the_direct_file_beside_it(tmp_path):
+    shards = {
+        "diffusion_pytorch_model-00001-of-00002.safetensors": 3000,
+        "diffusion_pytorch_model-00002-of-00002.safetensors": 2000,
+    }
+    for name, size in shards.items():
+        _write(tmp_path / "unet" / name, size)
+    _write_index(tmp_path / "unet" / "diffusion_pytorch_model.safetensors.index.json", shards)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.safetensors", 100)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 5000
+
+
+def test_a_transformers_direct_file_still_outranks_a_stale_index(tmp_path):
+    shards = {"model-00001-of-00002.safetensors": 3000, "model-00002-of-00002.safetensors": 2000}
+    for name, size in shards.items():
+        _write(tmp_path / name, size)
+    _write_index(tmp_path / "model.safetensors.index.json", shards)
+    _write(tmp_path / "model.safetensors", 100)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 100
+
+
 def test_variant_only_shards_are_summed(tmp_path):
     _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
     _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)

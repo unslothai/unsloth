@@ -5761,9 +5761,11 @@ def _indexed_archive(directories: list, base: str, ext: str, tree: dict) -> tupl
     return chosen, every
 
 
-def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple) -> list:
-    """Every spelling of the weights present here, in the order from_pretrained tries them."""
+def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple) -> tuple:
+    """Every spelling of the weights present here, in the order from_pretrained tries them,
+    and every file those spellings account for, a variant-only spelling included."""
     candidates = []
+    held: dict = {}
     for base, ext in table:
         direct = {path: size for path, size in pool.items() if path.name == f"{base}{ext}"}
         indexed, all_indexed = _indexed_archive(directories, base, ext, tree)
@@ -5782,23 +5784,26 @@ def _archive_candidates(directories: list, pool: dict, tree: dict, table: tuple)
         # the archive, so it decides, and a head stored beside the weights (the MTP file
         # next to model.safetensors in Qwen's NVFP4 repos) is charged with them.
         names_the_direct_file = bool(direct) and set(direct) <= set(indexed)
-        opens = indexed if names_the_direct_file else (direct or indexed)
+        # diffusers is the other way round: its index settles a component whenever it exists,
+        # and the direct file is only tried when there is none.
+        index_first = names_the_direct_file or base == "diffusion_pytorch_model"
+        opens = indexed if (indexed and index_first) else (direct or indexed)
+        # Held back: the rest of a spelling is these same weights, never a component, and a
+        # spelling present only as a variant is one no default load opens at all.
+        held.update({**direct, **all_indexed, **counted, **variants})
         if opens or counted:
-            # Held back: the rest of a spelling is these same weights, never a component.
-            candidates.append(
-                (opens or counted, bool(opens), {**direct, **all_indexed, **counted, **variants})
-            )
-    return candidates
+            candidates.append((opens or counted, bool(opens)))
+    return candidates, held
 
 
 def _selected_archive(homes: list, sizes: dict, tree: dict, vendor: set, table: tuple) -> tuple:
     """The one archive from ``table`` these folders open, and every spelling of it."""
     directories = [folder for folder, _ in homes]
-    candidates = _archive_candidates(directories, sizes, tree, table)
+    candidates, held = _archive_candidates(directories, sizes, tree, table)
     # A vendor copy never outranks weights a directory has of its own, and its folder drops out
     # whole: an index is one archive, so half of one must not outrank a complete candidate.
     native_pool = {path: size for path, size in sizes.items() if path not in vendor}
-    native = _archive_candidates(
+    native, _ = _archive_candidates(
         [f for f, is_vendor in homes if not is_vendor], native_pool, tree, table
     )
 
@@ -5809,7 +5814,8 @@ def _selected_archive(homes: list, sizes: dict, tree: dict, vendor: set, table: 
             archive = (opens or choices)[0][0]
             break
 
-    return archive, {path for *_, held in candidates for path in held}
+    # Nothing selected, nothing held: a folder of variant shards alone still counts as weights.
+    return archive, (set(held) if archive else set())
 
 
 def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -> tuple:
@@ -5825,7 +5831,11 @@ def _directory_weight_bytes(homes: list, sizes: dict, tree: dict, vendor: set) -
     adapter, adapter_held = _selected_archive(homes, sizes, tree, vendor, _ADAPTER_ARCHIVES)
     archive = {**model, **adapter}
 
+    # A same-stem file under an unlisted extension (model.pt beside model.safetensors) is that
+    # archive serialized again, the same call the component loop below makes for two components.
     alternatives = model_held | adapter_held
+    archive_stems = {(path.parent, path.stem) for path in archive}
+    alternatives |= {path for path in sizes if (path.parent, path.stem) in archive_stems}
     rest = {path: size for path, size in sizes.items() if path not in alternatives}
     if archive:
         rest = {p: s for p, s in rest.items() if not _TRAINER_BOOKKEEPING.match(p.stem)}
