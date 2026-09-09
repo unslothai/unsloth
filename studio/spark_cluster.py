@@ -4295,9 +4295,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
     try:
-        rc = subprocess.run(
-            _local_launch(plan["node0"]), shell = True, env = child_env
-        ).returncode
+        rc = subprocess.run(_local_launch(plan["node0"]), shell = True, env = child_env).returncode
     except BaseException:
         # Ctrl-C included, which is the common way this ends.
         stop_peer_by_pidfile(plan["peer_ip"], user, ssh_opts, _PEER_STAGE_PID)

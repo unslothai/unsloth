@@ -177,7 +177,9 @@ def test_the_peer_probe_resolves_the_login_like_every_other_ssh(doctor, monkeypa
 # ── the peer launch ─────────────────────────────────────────────────────────────
 
 
-def test_a_custom_studio_home_with_a_space_stays_one_shell_word(cluster, monkeypatch, tmp_path) -> None:
+def test_a_custom_studio_home_with_a_space_stays_one_shell_word(
+    cluster, monkeypatch, tmp_path
+) -> None:
     """Bare, `[ -f {act} ] && . {act}` split it into words, the peer venv was not activated,
     and the launch failed on a torchrun that a non-interactive SSH PATH does not have."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "my studio"))
@@ -187,7 +189,7 @@ def test_a_custom_studio_home_with_a_space_stays_one_shell_word(cluster, monkeyp
     # What the peer's shell sees, inside the `bash -c '...'` the callers build.
     assert subprocess.run(["bash", "-c", f"{fragment}; true"]).returncode == 0
     words = subprocess.run(
-        ["bash", "-c", f'set -- {quoted}; echo $#'], capture_output = True, text = True
+        ["bash", "-c", f"set -- {quoted}; echo $#"], capture_output = True, text = True
     )
     assert words.stdout.strip() == "1", words.stdout
 
