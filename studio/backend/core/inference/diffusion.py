@@ -6412,6 +6412,15 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
+        # Process-wide state the NVFP4 flashinfer path leaves behind: the per-device PDL ordering
+        # barrier and the autotuned GEMM shape set. Dropped with the graph pool and for the same
+        # reason -- a buffer allocated under this model's allocator state must not be inherited by
+        # the next model's capture.
+        try:
+            from .diffusion_nvfp4_linear import reset_nvfp4_state
+            reset_nvfp4_state()
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
             from .diffusion_eager_patches import uninstall_patches

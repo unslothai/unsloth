@@ -62,6 +62,21 @@ def reset_tuned_shapes() -> None:
     _TUNED_SHAPES.clear()
 
 
+def reset_nvfp4_state() -> None:
+    """Drop every piece of process-wide NVFP4 state a loaded model left behind.
+
+    One entry point rather than three call sites, because the thing that goes wrong here is
+    forgetting one of them. Called from the unload paths next to the CUDA graph teardown, and for
+    the same reason: the PDL barrier is allocated outside any capture and must not be inherited by
+    the next model's graph pool. Everything reset here is cheap to rebuild, so a spurious reset
+    costs a warm-up and a missed one costs a pointer into a freed pool.
+    """
+    from . import diffusion_nvfp4_ops as _ops
+
+    reset_tuned_shapes()
+    _ops.reset_barriers()
+
+
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
     """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free.

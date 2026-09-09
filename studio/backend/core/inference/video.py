@@ -6608,6 +6608,15 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
+            # Process-wide state the NVFP4 flashinfer path leaves behind: the per-device PDL
+            # ordering barrier and the autotuned GEMM shape set. Dropped with the graph pool and
+            # for the same reason -- a buffer allocated under this model's allocator state must not
+            # be inherited by the next model's capture.
+            try:
+                from .diffusion_nvfp4_linear import reset_nvfp4_state
+                reset_nvfp4_state()
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
             del state
             clear_gpu_cache()
 

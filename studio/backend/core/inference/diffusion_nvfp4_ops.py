@@ -70,6 +70,10 @@ _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
+# The PDL ordering barrier, one 1-element bf16 buffer per device index. See ``_fire_barrier``.
+_BARRIER_LOCK = threading.Lock()
+_BARRIERS: dict[int, Any] = {}
+
 
 def _swizzled_sf_numel(
     rows: int,
@@ -119,6 +123,75 @@ def _zero_buffer_enabled() -> bool:
     return os.environ.get(NVFP4_ZERO_BUFFER_ENV, "").strip().lower() in _TRUE_TOKENS
 
 
+def _device_index(device: Any) -> int:
+    """The integer index of ``device``, resolving a bare ``cuda`` to the current one."""
+    import torch
+
+    index = getattr(device, "index", None)
+    return torch.cuda.current_device() if index is None else int(index)
+
+
+def _is_capturing() -> bool:
+    """Whether the current stream is capturing a CUDA graph. False on a torch that cannot say."""
+    try:
+        import torch
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a torch without the query is a torch without capture here
+        return False
+
+
+def _barrier(device: Any):
+    """The process-wide 1-element bf16 buffer for ``device``, allocated at most once.
+
+    Returns an UNCACHED buffer while the current stream is capturing and none exists yet: an
+    allocation made inside a capture comes from the graph's private memory pool and dies with the
+    graph, so caching it would hand every later call a pointer into a freed pool. Capture is not
+    the steady state -- the three prewarm forwards run before any capture and leave every device
+    warm -- so this branch is a safety net, not a path with a cost that matters.
+    """
+    import torch
+
+    index = _device_index(device)
+    buf = _BARRIERS.get(index)
+    if buf is not None:
+        return buf
+    fresh = torch.empty(1, device = device, dtype = torch.bfloat16)
+    if _is_capturing():
+        return fresh
+    with _BARRIER_LOCK:
+        return _BARRIERS.setdefault(index, fresh)
+
+
+def _fire_barrier(device: Any):
+    """Launch the ordering kernel that has to sit between the quantiser and the GEMM.
+
+    A ``zero_`` on one bf16 element. What protects the GEMM is a kernel EXISTING between the
+    producer and it, not that kernel writing M x N bytes (see ``_mm_impl`` for the 50-iteration
+    trigger table, where a bare allocation protects nothing and a one-element kernel is as good as
+    the full memset), so this is the cheapest launch that buys the whole guarantee.
+
+    The buffer is persistent and the FILL is what is per call, which is the distinction the earlier
+    per-call ``torch.zeros(1)`` blurred: that allocated a new buffer every GEMM purely to get the
+    kernel that came with it. The forward-33 objection does not apply. It was about caching the
+    GEMM's OUTPUT, where one transient bad write latches into every later render; nothing is ever
+    read out of this buffer, by this module or by the kernel, so its contents cannot reach a
+    result. It is written and never read, on purpose.
+    """
+    buf = _barrier(device)
+    buf.zero_()
+    return buf
+
+
+def reset_barriers() -> None:
+    """Drop every cached barrier. Call on unload, with the CUDA graph pool.
+
+    A barrier allocated under one model's allocator state must not be handed to the next one's
+    graph pool, and the buffer is one element, so rebuilding it costs nothing worth keeping.
+    """
+    with _BARRIER_LOCK:
+        _BARRIERS.clear()
+
+
 def global_scale(t: Any):
     """The NVFP4 global scale of a tensor: ``6 * 448 / amax``, as a 1-element fp32 tensor."""
     return (FP4_MAX * FP8_MAX / t.float().abs().amax().clamp(min = 1e-8)).reshape(1).to(t.device)
@@ -164,13 +237,12 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
 
     The ``empty only`` arm is the discriminator: identical allocation, no kernel, no protection. So
     a 1-element fill buys the whole guarantee and the memset was paying M x N to get it.
-    ``torch.zeros(1)`` both allocates and launches the fill.
 
-    The buffer is allocated per call, never cached. A cached one was tried and rejected: the kernel
-    also misfires on its own occasionally, writing NaN over part of a correct-looking output, and a
-    reused buffer turns one transient event into a permanent one for every later call with the same
-    token count (measured on flux.1: one bad forward at number 33 made every later 512px render
-    black while 1024px renders, with their own buffer, stayed clean).
+    The barrier buffer is PERSISTENT per device (``_fire_barrier``) and only the fill is per call.
+    The earlier form, ``torch.zeros(1)`` every GEMM, allocated a fresh buffer purely to obtain the
+    kernel that came with it. The forward-33 objection that argued for a fresh buffer was about
+    caching the GEMM's OUTPUT -- one transient NaN write latching into every later render with the
+    same token count -- and does not reach here, because nothing ever reads this buffer.
 
     ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset. It is strictly slower and no safer
     against the mechanism established above, but the residual forward-33 misfire has no confirmed
@@ -186,7 +258,7 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.zeros(m, n, device = xq.device, dtype = torch.bfloat16)
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
-            torch.zeros(1, device = xq.device, dtype = torch.bfloat16)
+            _fire_barrier(xq.device)
         return flashinfer.mm_fp4(
             xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
         )

@@ -369,3 +369,201 @@ def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zer
     torch.cuda.synchronize(1)
     assert bool(torch.isfinite(got).all())
     assert torch.equal(got, want)
+
+
+# ── T-BARRIER-1: the persistent PDL ordering barrier ──────────────────────────────────────────
+
+
+def _mm_once(
+    device_index = 1,
+    m = 4096,
+    n = 12288,
+    k = 3072,
+):
+    device = _FakeDevice(device_index)
+    return ops._mm_impl(
+        _FakeTensor((m, k // 2), device),
+        _FakeTensor((n, k // 2), device),
+        _FakeTensor((m, k // 16), device),
+        _FakeTensor((n, k // 16), device),
+        _FakeTensor((1,), device),
+        n,
+        "cutlass",
+    )
+
+
+@pytest.fixture(autouse = True)
+def _clean_barriers():
+    ops.reset_barriers()
+    yield
+    ops.reset_barriers()
+
+
+def test_the_barrier_is_allocated_once_per_device(stub_kernels):
+    for _ in range(5):
+        _mm_once(1)
+    for _ in range(5):
+        _mm_once(0)
+    # The whole point of the change: ten GEMMs, two allocations. ``empty`` for the M x N output is
+    # per call and stays per call; the 1-element barrier is not.
+    barrier_allocs = [1 for name, _ in stub_kernels.launches if name == "empty"]
+    assert len(barrier_allocs) == 12, stub_kernels.launches
+    assert sorted(ops._BARRIERS) == [0, 1]
+    assert ops._BARRIERS[0] is not ops._BARRIERS[1]
+
+
+def test_the_barrier_fill_precedes_every_gemm(stub_kernels):
+    """The correctness invariant, and the reason the op bodies are callable as plain functions.
+
+    FlashInfer launches the cutlass FP4 GEMM with PDL while the griddepcontrol instructions that
+    make PDL safe are compiled out of its build, so a kernel MUST exist between the activation
+    quantiser and the GEMM. From outside an opaque custom op that ordering is invisible.
+    """
+    for _ in range(3):
+        _mm_once(1)
+    order = [name for name, _ in stub_kernels.launches if name in ("zero_", "mm_fp4")]
+    assert order == ["zero_", "mm_fp4"] * 3
+
+
+def test_the_barrier_is_not_cached_when_the_stream_is_capturing(stub_kernels, monkeypatch):
+    """An allocation made inside a capture belongs to the graph's private pool and dies with it."""
+    monkeypatch.setattr(ops, "_is_capturing", lambda: True)
+    _mm_once(1)
+    assert ops._BARRIERS == {}
+    # It still fires: an uncached buffer is a cost, a missing barrier is a wrong answer.
+    order = [name for name, _ in stub_kernels.launches if name in ("zero_", "mm_fp4")]
+    assert order == ["zero_", "mm_fp4"]
+
+    # Once a barrier exists, capture reuses it rather than allocating: that is what makes the
+    # buffer's data_ptr stable across a capture, and the prewarm is what leaves it warm.
+    monkeypatch.setattr(ops, "_is_capturing", lambda: False)
+    _mm_once(1)
+    warm = ops._BARRIERS[1]
+    monkeypatch.setattr(ops, "_is_capturing", lambda: True)
+    _mm_once(1)
+    assert ops._BARRIERS[1] is warm
+
+
+def test_reset_barriers_drops_them(stub_kernels):
+    _mm_once(1)
+    assert list(ops._BARRIERS) == [1]
+    ops.reset_barriers()
+    assert ops._BARRIERS == {}
+    _mm_once(1)
+    assert list(ops._BARRIERS) == [1]
+
+
+def test_the_zero_buffer_env_restores_the_full_memset(stub_kernels, monkeypatch):
+    monkeypatch.setenv(ops.NVFP4_ZERO_BUFFER_ENV, "1")
+    _mm_once(1)
+    names = [name for name, _ in stub_kernels.launches]
+    # The M x N zeros IS the barrier in this mode, so there is no separate fill and no buffer.
+    assert "zeros" in names and "zero_" not in names
+    assert ops._BARRIERS == {}
+
+
+def test_the_barrier_is_not_an_op_argument():
+    """A mutable tensor input would go through ``auto_functionalized`` and be CLONED per call.
+
+    Which is the whole cost this change removes, so the buffer is reached from inside the op body
+    and never appears in the schema.
+    """
+    schema = "(Tensor xq, Tensor wq, Tensor x_sf, Tensor w_sf, Tensor alpha, int n, str backend)"
+    import inspect
+
+    assert schema.count("Tensor") == 5
+    params = list(inspect.signature(ops._mm_impl).parameters)
+    assert params == ["xq", "wq", "x_sf", "w_sf", "alpha", "n", "backend"]
+
+
+# ── T-CUDA-9: the barrier on real hardware ────────────────────────────────────────────────────
+
+
+def _nvfp4_cuda_or_skip():
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    if tuple(torch.cuda.get_device_capability(0)) not in ops.NVFP4_FLASHINFER_CAPS:
+        pytest.skip("this device has no flashinfer NVFP4 kernels")
+    pytest.importorskip("flashinfer")
+    pytest.importorskip("torchao")
+    return torch
+
+
+def _real_operands(
+    torch,
+    m,
+    k,
+    n,
+    seed = 0,
+):
+    import flashinfer
+
+    torch.manual_seed(seed)
+    with torch.cuda.device(0):
+        x = torch.randn(m, k, device = "cuda", dtype = torch.bfloat16) * 0.05
+        w = torch.randn(n, k, device = "cuda", dtype = torch.bfloat16) * 0.02
+        a_gsf, w_gsf = ops.global_scale(x), ops.global_scale(w)
+        xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
+        wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
+        alpha = (1.0 / (a_gsf * w_gsf)).float()
+    return xq, wq, x_sf, w_sf, alpha
+
+
+def test_the_persistent_barrier_is_bit_identical_to_the_per_call_one():
+    """50 iterations, because the fault the barrier prevents is intermittent by nature."""
+    torch = _nvfp4_cuda_or_skip()
+    ops.reset_barriers()
+    xq, wq, x_sf, w_sf, alpha = _real_operands(torch, 4096, 3072, 12288)
+
+    with torch.inference_mode():
+        reference = None
+        for _ in range(50):
+            out = ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 12288, ops.DEFAULT_MM_BACKEND)
+            assert bool(torch.isfinite(out).all())
+            if reference is None:
+                reference = out.clone()
+            else:
+                assert torch.equal(out, reference)
+        # The barrier survives all 50 and the buffer never moves.
+        pointer = ops._BARRIERS[0].data_ptr()
+        for _ in range(10):
+            ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 12288, ops.DEFAULT_MM_BACKEND)
+        assert ops._BARRIERS[0].data_ptr() == pointer
+    ops.reset_barriers()
+
+
+def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
+    """A buffer allocated inside a capture comes from the graph pool and dies with the graph.
+
+    So the shipped shape is: warm the barrier OUTSIDE the capture (which the prewarm does), then
+    capture, and assert the captured GEMM is still firing the same buffer afterwards.
+    """
+    torch = _nvfp4_cuda_or_skip()
+    ops.reset_barriers()
+    xq, wq, x_sf, w_sf, alpha = _real_operands(torch, 512, 3072, 3072, seed = 5)
+
+    with torch.cuda.device(0), torch.inference_mode():
+        eager = ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 3072, ops.DEFAULT_MM_BACKEND).clone()
+        before = ops._BARRIERS[0].data_ptr()
+        torch.cuda.synchronize(0)
+
+        pool = torch.cuda.graph_pool_handle()
+        graph = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 3072, ops.DEFAULT_MM_BACKEND)
+        torch.cuda.current_stream().wait_stream(stream)
+        with torch.cuda.graph(graph, pool = pool):
+            captured = ops._mm_impl(xq, wq, x_sf, w_sf, alpha, 3072, ops.DEFAULT_MM_BACKEND)
+        # Nothing was allocated for the barrier during the capture.
+        assert ops._BARRIERS[0].data_ptr() == before
+        for _ in range(5):
+            graph.replay()
+            torch.cuda.synchronize(0)
+            assert torch.equal(captured, eager)
+        assert ops._BARRIERS[0].data_ptr() == before
+    del graph
+    ops.reset_barriers()
