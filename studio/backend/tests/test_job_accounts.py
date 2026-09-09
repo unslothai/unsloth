@@ -717,6 +717,24 @@ def test_research_claim_skips_an_account_whose_database_fails(monkeypatch):
     assert supervisor._claim_account_run() == (BOB, {"id": "bob-run"})
 
 
+def test_research_claim_rotates_across_accounts(monkeypatch):
+    """A busy account must not starve the next one; the supervisor runs one run at a time."""
+    from core import research_runs
+
+    monkeypatch.setattr(research_runs, "job_accounts", lambda: [ALICE, BOB])
+    queued = {ALICE.account_id: ["alice-1", "alice-2", "alice-3"], BOB.account_id: ["bob-1"]}
+
+    def claim(worker_id):
+        pending = queued[current_account().account_id]
+        return {"id": pending.pop(0)} if pending else None
+
+    monkeypatch.setattr(research_runs.db, "claim_next", claim)
+    supervisor = research_runs.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    claimed = [supervisor._claim_account_run() for _ in range(3)]
+    assert [account for account, _ in claimed] == [ALICE, BOB, ALICE]
+    assert [run["id"] for _, run in claimed] == ["alice-1", "bob-1", "alice-2"]
+
+
 def test_folder_sync_claim_carries_account_data(monkeypatch):
     from core.rag import folder_sync
 

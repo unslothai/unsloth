@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import weakref
 from core.training.account_jobs import account_is_retired, account_key, job_accounts
-from utils.account_context import arun_as, run_as
+from utils.account_context import arun_as, current_account, run_as
 import asyncio
 import json
 import os
@@ -1079,6 +1079,7 @@ class ResearchSupervisor:
         self._task: asyncio.Task | None = None
         self._cancel_events: dict[str, threading.Event] = {}
         self._lost_leases: set[str] = set()
+        self._last_claim_account: str | None = None
 
     def start(self) -> None:
         for account in job_accounts():
@@ -1290,7 +1291,15 @@ class ResearchSupervisor:
                 await asyncio.sleep(1)
 
     def _claim_account_run(self):
-        for account in job_accounts():
+        # Round robin from the account after the last claim: runs are processed one at a time.
+        accounts = job_accounts()
+        start = 0
+        for index, account in enumerate(accounts):
+            if account.account_id == self._last_claim_account:
+                start = index + 1
+                break
+        for offset in range(len(accounts)):
+            account = accounts[(start + offset) % len(accounts)]
             try:
                 run = run_as(account, db.claim_next, self.worker_id)
             except Exception:
@@ -1298,6 +1307,7 @@ class ResearchSupervisor:
                 logger.exception("research.claim_failed_for_account")
                 continue
             if run is not None:
+                self._last_claim_account = account.account_id
                 return account, run
         return None, None
 
@@ -1501,6 +1511,7 @@ class ResearchSupervisor:
             datetime.now(timezone.utc) + timedelta(seconds = _MODEL_CALL_KEY_LIFETIME_SECONDS)
         ).isoformat()
         key_minted = asyncio.get_running_loop().time()
+        account = current_account()
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
@@ -1509,6 +1520,8 @@ class ResearchSupervisor:
             name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
+            # Pinned to the claiming account: the username could name a recreated namesake.
+            account_id = None if account.is_owner else account.account_id,
         )
         config = run["config"]
         inference = config.get("inferenceRequest") or {}

@@ -144,13 +144,11 @@ def media_generation_slot(modality: str):
 
 
 def tracked_generation_account() -> Optional[str]:
-    if not policy.installation_is_multi_user():
-        return None
-    return current_account_id()
+    return account_scope()
 
 
 def generation_is_mine(modality: str) -> bool:
-    if not policy.installation_is_multi_user():
+    if account_scope() is None:
         return False
     account_id = current_account_id()
     with _generation_lock:
@@ -161,7 +159,8 @@ def generation_is_mine(modality: str) -> bool:
 
 
 def generation_is_foreign(modality: str) -> bool:
-    if not policy.installation_is_multi_user():
+    # account_scope, not the login mode: a deactivated account's job keeps running and stays foreign.
+    if account_scope() is None:
         return False
     account_id = current_account_id()
     with _generation_lock:

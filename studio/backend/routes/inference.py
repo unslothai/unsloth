@@ -13632,10 +13632,8 @@ def _raise_or_cancel_active_generations(
 
     account_id = current_account_id() if installation_is_multi_user() else None
     if account_id is not None:
-        if force and cancel:
-            cancelled = active_generations.cancel_all(account_id)
-            require_no_foreign_generations(account_id)
-            return cancelled
+        # Before the cancel below: a foreign generation refuses the swap, so cancelling
+        # first would end the caller's chats for nothing.
         require_no_foreign_generations(account_id)
     if not force:
         thread_ids = active_generations.active_thread_ids(scope)

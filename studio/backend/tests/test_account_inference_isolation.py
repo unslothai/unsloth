@@ -143,6 +143,24 @@ def test_forced_swap_cancels_only_callers_registrations():
         assert mine.is_set()
 
 
+def test_forced_swap_checks_foreign_work_before_cancelling_the_caller():
+    """A force refused for another account must leave the caller's chats running."""
+    mine, theirs = threading.Event(), threading.Event()
+    with (
+        run_as(ALICE, active_generations.ActiveGeneration, mine),
+        run_as(BOB, active_generations.ActiveGeneration, theirs),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            run_as(
+                ALICE,
+                inference._raise_or_cancel_active_generations,
+                force = True,
+                action = "Installing a new transformers version",
+            )
+        assert exc.value.detail["error"] == "gpu_busy"
+        assert not mine.is_set() and not theirs.is_set()
+
+
 def test_active_generation_and_cancel_id_routes_are_scoped(monkeypatch):
     monkeypatch.setattr(inference, "_openai_llama_admission_capacity", lambda *a: 2)
     mine, theirs = threading.Event(), threading.Event()

@@ -195,7 +195,8 @@ def test_sim_stop_and_delete_cancel_only_the_target(sim, route, deleting):
         with pytest.raises(HTTPException) as refused:
             run_as(ALICE, route._raise_or_cancel_active_generations, force = True, action = "Load")
         assert refused.value.detail["error"] == "gpu_busy"
-    assert a.is_set() and not b.is_set()
+    # Delete cancels Alice's own run; a refused force leaves it running.
+    assert a.is_set() == deleting and not b.is_set()
     assert generations.foreign_count(BOB.account_id) == 1  # cancellation is not completion
     sim.finish("a")
     assert generations.count(BOB.account_id) == 1
@@ -233,7 +234,8 @@ def test_route_preflight_and_force_respect_accounts(route, sim, force, cancel):
         )
     assert refused.value.status_code == 409
     assert refused.value.detail["error"] == "gpu_busy"
-    assert mine.is_set() == (force and cancel)
+    # Refused for a foreign generation, so the caller's chats are never cancelled.
+    assert not mine.is_set()
     assert not theirs.is_set()
     body = str(refused.value.detail)
     for private in (BOB.account_id, "same-client-id", "shared"):
