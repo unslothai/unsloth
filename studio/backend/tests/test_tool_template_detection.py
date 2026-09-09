@@ -195,6 +195,10 @@ def test_published_templates_render_studios_tool_argument(name, emits_schema):
     ],
 )
 def test_alias_and_macro_detection_matches_rendered_catalog(template, expected):
+    _assert_catalog_rendering(template, expected)
+
+
+def _assert_catalog_rendering(template, expected):
     from core.inference.llama_cpp import detect_reasoning_flags
 
     render = Environment().from_string(template)
@@ -203,6 +207,83 @@ def test_alias_and_macro_detection_matches_rendered_catalog(template, expected):
     with_tools = render.render(tools = tools, **common)
     without_tools = render.render(tools = [], **common)
     assert ("get_weather" in with_tools) is expected
-    assert (with_tools != without_tools) is expected
+    if expected:
+        assert with_tools != without_tools
     assert template_supports_tools(template) is expected
     assert detect_reasoning_flags(template)["supports_tools"] is expected
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        ("{% set catalog=[] %}{{ catalog|tojson }}{% set catalog=tools %}", False),
+        ("{% set catalog=tools %}{% set catalog=[] %}{{ catalog|tojson }}", False),
+        ("{% set catalog=tools %}{% set catalog=catalog|list %}{{ catalog|tojson }}", True),
+        ("{% set catalog=tools|length %}{{ catalog }}", False),
+        ("{% set tools=[] %}{{ tools|tojson }}", False),
+        (
+            "{% if tools %}{% set catalog=tools|list %}{% endif %}"
+            "{{ catalog|default([])|tojson }}",
+            True,
+        ),
+        ("{% set catalog=tools|default([])|list %}{{ catalog|tojson }}", True),
+        ("{% set catalog=tools or [] %}{{ catalog|tojson }}", True),
+        (
+            "{% set catalog=tools %}{% if tools %}{% set catalog=[] %}"
+            "{% else %}{% set catalog=[] %}{% endif %}{{ catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set catalog=[] %}{% with catalog=tools, output=catalog %}"
+            "{{ output|tojson }}{% endwith %}",
+            False,
+        ),
+        ("{% set catalog %}{{ tools|tojson }}{% endset %}{{ catalog }}", True),
+        ("{% set catalog %}{{ tools|tojson }}{% endset %}", False),
+        ("{% set catalog=[] if tools else [] %}{{ catalog|tojson }}", False),
+        ("{% set catalog=tools and [] %}{{ catalog|tojson }}", False),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% set ns.catalog=[] %}"
+            "{{ ns.catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set ns=namespace(catalog=tools) %}{% set ns=namespace(catalog=[]) %}"
+            "{{ ns.catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set catalog=tools %}{% if true %}{% set catalog=[] %}{% endif %}"
+            "{{ catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set catalog=tools %}{% if false %}{% set catalog=[] %}{% endif %}"
+            "{{ catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set catalog=[] %}{% macro show() %}{{ catalog|tojson }}{% endmacro %}"
+            "{{ show() }}{% set catalog=tools %}",
+            False,
+        ),
+        (
+            "{% set catalog=[] %}{% macro show() %}{{ catalog|tojson }}{% endmacro %}"
+            "{% set catalog=tools %}{{ show() }}",
+            True,
+        ),
+        (
+            "{% set catalog=[] %}{% for item in tools %}{% set catalog=item %}{% endfor %}"
+            "{{ catalog|tojson }}",
+            False,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}"
+            "{% for item in tools %}{% set ns.catalog=item %}{% endfor %}"
+            "{{ ns.catalog|tojson }}",
+            True,
+        ),
+    ],
+)
+def test_alias_assignment_flow_matches_rendered_catalog(template, expected):
+    _assert_catalog_rendering(template, expected)
