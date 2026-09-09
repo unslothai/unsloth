@@ -15,6 +15,8 @@ filesystem root.
 2. `git_service.py` uses the same trusted Git executable, private environment,
    empty hooks directory, and executable-driver overrides for mutations.
    Included configuration and linked-worktree configuration are inspected.
+   Repository-local settings apply; system/global Git configuration is not
+   inherited, including global line-ending conversion and ignore files.
    Output is bounded while the process runs. Git helpers, filters, external
    diffs, signing, automatic maintenance, and network protocols are disabled.
 3. `git_guard.py` holds project storage, the shared secure-tools mutation slot

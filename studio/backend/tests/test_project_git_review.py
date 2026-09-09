@@ -35,6 +35,9 @@ def _git(
 def _repository(root: Path) -> Path:
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
+    # Stage exact fixture bytes on Windows too. The production Git session
+    # intentionally does not inherit the runner's global autocrlf setting.
+    _git(root, "config", "core.autocrlf", "false")
     _git(root, "config", "user.email", "review@example.test")
     _git(root, "config", "user.name", "Review Test")
     return root
