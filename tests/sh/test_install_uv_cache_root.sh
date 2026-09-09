@@ -6,13 +6,8 @@
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-ok() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-
 HELPERS=$(awk '
     /^_configure_uv_cache\(\) \{/ { grab = 1 }
     /^_prepare_studio_uv_cache_for_launch\(\) \{/ { grab = 1 }
@@ -366,7 +361,6 @@ RELWD
     else
         bad "$shell: recorded [$_rw], wanted [$CASE/uvdir/relcache]"
     fi
-
 
     # The marker describes the environment, so a rolled-back install puts it back.
     ROLLBACK_PROBE="$WORK/$shell rollback.sh"

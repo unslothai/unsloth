@@ -420,7 +420,11 @@
   ],
   "core.inference.native_audio.native_audio_security_targets": [
     "tests/test_chat_load_during_training.py",
-    "tests/test_chat_load_during_training.py"
+    "tests/test_chat_load_during_training.py",
+    "tests/test_hub_token_caller_identity.py",
+    "tests/test_hub_token_caller_identity.py",
+    "tests/test_hub_token_caller_identity.py",
+    "tests/test_hub_token_caller_identity.py"
   ],
   "core.inference.native_audio.sys.version_info": [
     "tests/test_native_audio.py"
@@ -496,6 +500,7 @@
     "tests/test_web_fetch_extraction.py"
   ],
   "core.inference.tools.build_rag_autoinject": [
+    "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
@@ -591,30 +596,6 @@
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_tool_loop_preempt_resume.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
@@ -629,6 +610,8 @@
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_parallel_round_divides_room_among_launched_calls.py",
+    "tests/test_tool_calls_within_one_turn_overlap.py",
+    "tests/test_tool_calls_within_one_turn_overlap.py",
     "tests/test_tool_calls_within_one_turn_overlap.py",
     "tests/test_tool_output_streaming.py",
     "tests/test_truncated_answer_continuation.py"
@@ -916,6 +899,9 @@
   "hub.utils.hf_cache_state.repo_cache_dir_has_incomplete_blobs": [
     "tests/test_offline_embedding_minimal.py"
   ],
+  "hub.utils.hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S": [
+    "tests/test_hub_token_caller_identity.py"
+  ],
   "hub.utils.inventory_scan.invalidate_hf_cache_scans": [
     "tests/test_hf_cache_settings.py"
   ],
@@ -1036,6 +1022,7 @@
     "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py",
+    "tests/test_local_model_format.py",
     "tests/test_local_model_format.py",
     "tests/test_mtp_drafter_companion.py",
     "tests/test_openai_auto_switch.py",
@@ -1429,6 +1416,7 @@
     "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
+    "tests/test_hub_token_caller_identity.py",
     "tests/test_rag_embeddings.py",
     "tests/test_rag_embeddings.py",
     "tests/test_rag_embeddings.py",
@@ -1582,6 +1570,10 @@
     "tests/test_vision_cache.py",
     "tests/test_vision_cache.py",
     "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config.cache_reads_authorized": [
+    "tests/test_capability_detection.py",
+    "tests/test_capability_detection.py"
   ],
   "utils.models.model_config.detect_audio_type": [
     "tests/test_trained_model_scan.py"
@@ -1747,6 +1739,9 @@
     "tests/test_file_security.py",
     "tests/test_file_security.py",
     "tests/test_file_security.py"
+  ],
+  "utils.security.remote_code_scan.external_auto_map_repos": [
+    "tests/test_hub_token_caller_identity.py"
   ],
   "utils.security.security_load_subdirs": [
     "tests/test_training_cached_start.py",
@@ -1941,6 +1936,8 @@
     "tests/test_offline_gguf_cache_fallback.py"
   ],
   "utils.utils.hf_env_offline": [
+    "tests/test_hub_token_caller_identity.py",
+    "tests/test_hub_token_caller_identity.py",
     "tests/test_hub_token_caller_identity.py",
     "tests/test_hub_token_caller_identity.py",
     "tests/test_training_cached_start.py",

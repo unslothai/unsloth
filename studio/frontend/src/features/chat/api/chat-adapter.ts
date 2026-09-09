@@ -2089,6 +2089,13 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  *  first, then cached safetensors. */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+// A refused preflight costs no load attempt, so without its own cap a device holding many blocked
+// repos (trust-remote-code, security review) POSTs /validate once per cached repo and never stops.
+// Counted are the preflights that do NOT go on to spend a load attempt: a refusal, and a rejection
+// (dead backend, dismissed token dialog). A preflight that PASSES is deliberately not counted, since
+// it reaches loadAttempts on the very next statement and MAX_AUTO_LOAD_ATTEMPTS already bounds it;
+// charging it here would only cut the sweep short before it reached a model it can actually load.
+const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2388,10 +2395,12 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 ]);
 
 // ollama stays out by policy: local_model_resolver.py skips its scanner, so auto-loading one
-// promises an API identity that cannot be reached.
+// promises an API identity that cannot be reached. hermes is in: its scan is read-only, so the
+// resolver indexes it like LM Studio, and the name Hermes asks for resolves.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "hermes",
   "custom",
 ]);
 
@@ -2956,6 +2965,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  // Per cascade, like loadAttempts: a module-level counter would leave the second auto-load of the
+  // session with a spent budget.
+  let validateFailures = 0;
   const skippedAutoLoadCandidates = new Set<string>();
   // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
@@ -3008,12 +3020,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
+    // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+    }).catch((error: unknown) => {
+      // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
+      // The sweep keeps going after a transport failure on purpose, so without this a dead backend
+      // POSTs /validate once per cached repo, which is the runaway this budget exists to stop.
+      validateFailures += 1;
+      throw error;
     });
     options?.abortSignal?.throwIfAborted();
     // A background auto-load never runs custom code or Hub-flagged unsafe files; both need the
@@ -3023,11 +3042,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      validateFailures += 1;
       return false;
     }
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
       hadNonTrustFailure = true;
+      validateFailures += 1;
       return false;
     }
     return true;
@@ -3062,7 +3083,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (
+      autoLoadCancelled ||
+      loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+      validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+    ) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
@@ -3531,7 +3556,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // row resolved nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
-      if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      if (
+        autoLoadCancelled ||
+        loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+        validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+      ) {
+        break;
+      }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
       const isRemembered = lastLoaded
@@ -3548,7 +3579,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         // A repo can hold several downloaded quants: each failure marks that quant tried, so one
         // corrupt file does not cost the whole repo.
-        while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        while (
+          !autoLoadCancelled &&
+          loadAttempts < MAX_AUTO_LOAD_ATTEMPTS &&
+          validateFailures < MAX_AUTO_VALIDATE_FAILURES
+        ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,

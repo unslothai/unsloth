@@ -9,7 +9,7 @@ from typing import Optional
 
 
 def hf_error_status(exc: Exception) -> Optional[int]:
-    # Client-side HF errors should surface as 4xx, not a generic 500.
+    # Client-side HF errors should surface as the status they mean, not a generic 500.
     name = type(exc).__name__
     if name in (
         "RepositoryNotFoundError",
@@ -17,6 +17,11 @@ def hf_error_status(exc: Exception) -> Optional[int]:
         "EntryNotFoundError",
     ):
         return 404
+    # "I could not ask" is not "it is not there": these two say the Hub was unreachable or
+    # offline was forced, which is transient and retryable. Answering 404 told callers the
+    # repository was missing, and openai_auto_download caches that verdict for ten minutes.
+    if name in ("LocalEntryNotFoundError", "OfflineModeIsEnabled"):
+        return 503
     if name == "GatedRepoError":
         return 403
     if name == "HFValidationError":

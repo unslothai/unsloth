@@ -4162,7 +4162,9 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         # and a profile that aliases uv or python would break setup.ps1.
         powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            powershell_args.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
+            # Match install.rs: avoid the Hidden/Bypass detection pair.
+            # CREATE_NO_WINDOW below already hides the console.
+            powershell_args.extend(["-NoLogo", "-NonInteractive"])
         # Use -Command + `*>&1` (not -File) so setup.ps1's Write-Host output
         # (Information stream #6) merges into stdout. -File drops it when
         # stdout is a pipe, e.g. `unsloth studio update --local 2>&1 | tee`.
@@ -4363,7 +4365,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden"])
+            # Avoid the same Hidden/Bypass detection pair as setup above;
+            # both local and fetched runners set CREATE_NO_WINDOW.
+            ps_argv.extend(["-NoLogo", "-NonInteractive"])
 
         # Stops at the first candidate that launched; only an unlaunchable one moves on.
         if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
