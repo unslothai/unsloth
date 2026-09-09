@@ -299,6 +299,12 @@ def main(argv = None) -> int:
     p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
+    p.add_argument(
+        "--base-id",
+        default = None,
+        help = "base model id to stamp into the checkpoint when --base is a local directory; the "
+        "loader compares its base against this id, so a local mirror must declare the repo it mirrors",
+    )
     p.add_argument("--upload-revision", default = None)
     p.add_argument(
         "--upload-filename",
@@ -343,7 +349,7 @@ def main(argv = None) -> int:
         if refusal:
             print(f"error: {refusal}", flush = True)
             return 2
-    fam = resolve_build_family(args.base, override = args.family, modality = args.modality)
+    fam = resolve_build_family(args.base_id or args.base, override = args.family, modality = args.modality)
     if fam is None:
         print(
             f"error: unknown family '{args.family}' (modality {args.modality})",
@@ -428,7 +434,7 @@ def main(argv = None) -> int:
     # Over the SAVED state dict, so it describes the bytes that go to disk rather than the module they came from.
     fingerprint = packed_weight_fingerprint(state_dict)
     metadata = {
-        "base_model_id": args.base,
+        "base_model_id": args.base_id or args.base,
         "family": fam.name,
         "scheme": scheme,
         # Which denoiser this is. Both A14B experts share a family, a scheme, a base and a key set, so every other
