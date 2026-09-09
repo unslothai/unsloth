@@ -98,8 +98,6 @@ class _Stub:
     # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
     # unified-memory answer on the CUDA side, exercised deliberately below.
     _integrated_cuda = False
-    # A generative model by default, which is every existing case here. The
-    # --embedding server has no decode phase at all and is exercised below.
     is_embedding_gguf = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
@@ -136,10 +134,9 @@ class _Stub:
         *,
         all_shards = False,
     ):
-        """Stand in for the GGUF read: the seam's job is to decline or to hand
-        the planner well-formed inputs, not to parse a file. ``ffn = None``
-        stands for an unreadable model, which must abstain. ``sharded`` stands
-        for a multi-part GGUF, whose first shard alone reads as incomplete."""
+        """Stand in for the GGUF read: the seam's job is to decline or to hand the planner
+        well-formed inputs, not to parse a file.
+        """
         self._layout_all_shards = all_shards
         if self._ffn_weight_bytes is None or not model_path:
             return None
@@ -161,24 +158,6 @@ class _Stub:
             lm_head_bytes = self._lm_head_bytes or 0,
             token_embd_bytes = 512 * MIB,
             # 96 KiB per token, i.e. 3 GiB at the 32768 these tests plan at.
-            # RE-ANCHORED, deliberately, and not to make a particular assertion
-            # pass. At the old 64 KiB the stub's dense cell sat inside the cost
-            # gate's 10% near-tie band at EVERY budget, so whether a plumbing
-            # test got a spill back was decided by the +/-1 block that
-            # _select_blocks and the fallback's layer loop each round off, not by
-            # anything the test was about: sweeping free VRAM by the GiB gave
-            # S S D D S S S D S S D D, a comb with no trend in it. Two changes
-            # landed on that comb at once -- lm_head is no longer charged to the
-            # fitter's host side (it never leaves the device on a partial fit),
-            # and the fitter's moved cache is now priced at the calibrated cache
-            # rate -- and re-rolled it.
-            #
-            # A cache this size is what a 64-layer dense model with 6 KV heads at
-            # head_dim 256 actually reserves at 32K, and it puts the planner's
-            # KV-residency advantage clear of the rounding, so these tests go back
-            # to asserting what the seam HANDS the planner. It does not make the
-            # gate lenient: 3, 4, 5 and 16 GiB still decline, the first three
-            # because spilling nearly everything really does lose to the fitter.
             kv_bytes_per_token_f16 = 98304,
             n_ctx_train = 262144,
             is_moe = bool(self.n_moe_layers),
@@ -192,8 +171,6 @@ class _Stub:
 
 def _inputs(
     model_size = 30 * GIB,
-    # Matches the layout's own 96 KiB per token at 32768 above, so the floor the
-    # seam passes and the product the layout computes describe one cache.
     kv = 3 * GIB,
     free_mib = 24 * 1024,
     indices = None,
@@ -396,23 +373,7 @@ def test_a_load_that_needs_ffn_spilled_gets_the_ffn_pattern():
 
 
 def test_a_moe_load_is_declined_because_the_fitter_places_it_the_same_way():
-    """On MoE the seam now declines, and the numbers say why.
-
-    llama.cpp's fitter moves the trailing layers' expert tensors through
-    blk.<il>.ffn_(up|down|gate_up|gate)_(ch|)exps (fit.cpp:434-440) and keeps
-    every layer -- and so the whole cache -- on the device. That is the planner's
-    own strategy, so the two placements come out byte-identical and the gate
-    reports an exact tie rather than a near one. Measured the same way: 33.65
-    against 34.77 t/s on generation, 1.03x.
-
-    The pattern SHAPE this used to assert is a planner-level claim and is
-    asserted there, ungated, by test_offload_planner.py.
-
-    At n_ctx 16384 rather than the helper's 32768: one slot at 32768 tokens is the
-    long-prompt operating point where the MoE gate now fires BEFORE the ranking,
-    on a measurement the ranking cannot see (see the sibling below). The tie is
-    the property this test is about, and it is the same tie at 16384.
-    """
+    """On MoE the seam now declines, and the numbers say why."""
     got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, n_ctx = 16384)
     assert got is not None
     assert not got.spills_anything
@@ -422,11 +383,9 @@ def test_a_moe_load_is_declined_because_the_fitter_places_it_the_same_way():
 
 
 def test_a_moe_load_at_a_long_prompt_is_left_to_the_fitter_before_it_is_ranked():
-    """The same cell one slot at 32768 tokens declines on the MEASURED long-prompt
-    loss, not on the ranking: -ot lost to llama.cpp's layerwise fit at a 32K
-    prompt on 5 cells, 2 models and 3 hosts, and the cost model cannot see that
-    because both arms spill through the same mechanism. The reason therefore
-    carries no millisecond figures at all."""
+    """The same cell one slot at 32768 tokens declines on the MEASURED long-prompt loss, not
+    on the ranking: the cost model cannot see it because both arms spill through the same
+    mechanism, so the reason carries no millisecond figures at all."""
     got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
     assert got is not None
     assert not got.spills_anything
@@ -437,21 +396,8 @@ def test_a_moe_load_at_a_long_prompt_is_left_to_the_fitter_before_it_is_ranked()
 def test_lm_head_is_only_spilled_after_ffn():
     """43% of generation on its own, 16% on top of an already host-bound step, so
     it is never the first rung."""
-    # Stated over a sweep rather than at one hand-picked card size, because the
-    # cost gate can decline any given one and a single fixture would then retire
-    # its own assertion silently, looking like a pass.
-    #
-    # Through the SEAM the lm_head rung is currently unreachable on this model,
-    # and that is a real consequence of the gate rather than a gap in the sweep:
-    # under 4 GiB the load does not fit even with everything spilled, from 4 to
-    # 8 GiB the gate declines (20536 ms against 18307 ms at 4096, narrowing to
-    # 11634 against 12333 at 8192), and by 12 GiB a plain FFN spill covers the
-    # deficit without ever reaching lm_head. Reaching for lm_head means the
-    # deficit is large, and a large deficit is exactly where the fitter wins --
-    # it frees a moved layer's cache share as well as its weights, where -ot
-    # frees only the bytes it moves. The ORDER is still the claim, so it is
-    # asserted of every plan the seam produces, and the ungated ladder ordering
-    # is pinned directly in test_offload_planner.py.
+    # Stated over a sweep rather than at one hand-picked card size, because the cost gate can
+    # decline any given one and a single fixture would then retire its own assertion silently.
     spilled_anything = False
     for free_mib in (4096, 4608, 5632, 6144, 8192, 10240, 12288, 14336):
         plan = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = free_mib)
@@ -536,16 +482,8 @@ def test_the_measured_cache_floors_the_planners_own_estimate():
 
 
 def test_the_seam_hands_the_planner_studios_cache_size():
-    """The byte-accurate number is computed at the call site and was previously
-    only tested for nonzero. A bigger measured cache has to reach the planner.
-
-    Measured as predicted cost rather than as blocks spilled. Those agreed until
-    the cost gate landed, and now do not: the 10 GiB cache leaves a deficit so
-    large that spilling FFN alone has to move 9.3 GiB, where llama.cpp's own
-    fitter reaches the same target moving 5.7 GiB -- because a moved LAYER frees
-    its share of the cache too, and a moved FFN tensor does not. So the big-cache
-    case is declined, and counting its blocks would now read as the cache not
-    having arrived at all. The cost is the honest witness either way.
+    """The byte-accurate number is computed at the call site and was previously only tested for
+    nonzero.
     """
     small = _plan(_Stub(), kv = 2 * GIB, free_mib = 14 * 1024)
     large = _plan(_Stub(), kv = 10 * GIB, free_mib = 14 * 1024)
@@ -671,8 +609,6 @@ def test_a_spill_plan_startup_failure_can_revoke_the_plan():
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
-    # The revocation goes through _revoke_spill_plan, which drops the plan AND
-    # puts back the locals its in-place rewrites moved.
     helper = src[src.index("def _revoke_spill_plan") : src.index("def _spawn_and_wait")]
     assert "_drop_tensor_spill" in helper
     body = src[src.index("def _spawn_and_wait") :]
@@ -745,10 +681,9 @@ def test_tensor_parallel_split_still_declines(extra_args):
     [["--split_mode=row"], ["--split_mode", "row"]],
 )
 def test_the_underscore_spelling_of_split_mode_is_read(extra_args):
-    """llama.cpp folds an underscore in any long option to a dash before looking the
-    name up (common/arg.cpp:821, :1214), so --split_mode row IS -sm row to the child.
-    Matched raw, it read as no split mode at all and the row-split guard planned a
-    tensor-parallel launch as a layer split."""
+    """llama.cpp folds an underscore in any long option to a dash before looking the name up
+    (common/arg.cpp:821, :1214), so --split_mode row IS -sm row to the child. Matched raw, it
+    read as no split mode and the row-split guard planned a tensor-parallel launch as a layer split."""
     from core.inference.llama_cpp import _extra_args_split_mode
 
     assert _extra_args_split_mode(extra_args, {}) == "row"
@@ -882,10 +817,8 @@ def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
     -ot overrides, and then appends --fit off over the result.
     """
     stub = _Stub()
-    # 12 and 11 GiB, not 14 and 13: at 13 the gate declines on its own merits
-    # (see the cache re-anchor on _Stub), and this test is about which NUMBER the
-    # seam hands the planner, so both arms have to be on the planning side of the
-    # gate for the block counts to be comparable at all.
+    # 12 and 11 GiB, not 14 and 13: at 13 the gate declines on its own merits, and this test
+    # is about which NUMBER the seam hands the planner, so both arms must be on the plan side.
     on_free = _plan(stub, free_mib = 12 * 1024)
     on_budget = _plan(stub, free_mib = 12 * 1024, usable_mib = 11 * 1024)
 
@@ -947,11 +880,7 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
 
 
 def test_the_cache_estimator_reaches_the_planner(monkeypatch):
-    """The snapshot half is pinned in the launch suite; this is the other end. A
-    callable that re-prices the cache at an arbitrary context is the one term that
-    knows a fixed recurrent state, an MLA latent and an iSWA split, none of which the
-    planner's own ratio rules can follow, so it has to arrive on PlanOptions and not
-    merely in the dict."""
+    """The snapshot half is pinned in the launch suite; this is the other end."""
     from core.inference import offload_planner
 
     seen = {}
@@ -966,7 +895,6 @@ def test_the_cache_estimator_reaches_the_planner(monkeypatch):
     assert seen["opts"].kv_bytes_at is not None
     assert seen["opts"].kv_bytes_at(4096, 1) == 7 * MIB
 
-    # Not supplied is not a callable: the planner keeps the rules it always had.
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024)
     assert seen["opts"].kv_bytes_at is None
@@ -1139,17 +1067,7 @@ def test_a_pinned_draft_device_declines_the_plan():
 
 
 def test_a_pass_through_parallel_that_resizes_the_cache_declines_the_plan():
-    """Slots are sizing, not placement. Unsloth's --parallel is emitted first and
-    the extras are appended after it, so a pass-through wins at the child while
-    every byte here was priced for Unsloth's own count.
-
-    LARGER grows the cache under a deficit computed for the smaller count -- too
-    few blocks spilled, then pinned with --fit off. SMALLER used to be waved
-    through as over-reservation, which was safe while the plan only had to be
-    feasible; now that the plan is SCORED against llama.cpp's own fitter, the
-    stale kv_bytes_floor rides into _fit_fallback_placement and inflates that arm
-    alone, so a smaller count buys spills the fitter beats. Neither is priceable
-    here, so both decline. Matching the priced count is not an override."""
+    """Slots are sizing, not placement."""
     stub = _Stub()
     assert _plan(stub, n_parallel = 1, extra_args = ["--parallel", "8"]) is None
     assert _plan(stub, n_parallel = 1, extra_args = ["-np", "4"]) is None
@@ -1412,13 +1330,9 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
         model_size = 21 * GIB,
         kv = 2 * GIB,
         extra_gpu = 3 * GIB,
-        # 9 GiB, not 10: the split reserve is charged once for the SECOND card
-        # now rather than to both, so the old pair left a deficit a PARTIAL spill
-        # covered, and a partial multi-GPU spill abstains before it ever reaches
-        # the per-device check this test is about. The second card carries its
-        # own pipeline reserve on top of its two rows, so 3 GiB flat is a
-        # per-device shortfall on its own; 3.25 GiB keeps the control about the
-        # drafter and not about the card.
+        # 9 GiB, not 10: the split reserve is charged once for the SECOND card now rather than to
+        # both, so the old pair left a deficit a PARTIAL spill covered, and a partial multi-GPU
+        # spill abstains before it ever reaches the per-device check this test is about.
         gpus = [(0, 9 * 1024), (1, 3 * 1024 + 256)],
     )
     # Before this abstain the same inputs produced a real plan -- every block
@@ -1427,21 +1341,14 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
     # that card's layers actually go.
     assert _plan(stub, separate_draft = True, **two_cards) is None
 
-    # Only the drafter is refused. The control is the REASON, not the outcome:
-    # the same two cards without a drafter also decline now, but on cost, and a
-    # cost decline would satisfy a "did it abstain" control while proving nothing
-    # about the drafter. Distinguishing the two is the whole point of a control.
+    # Only the drafter is refused.
     without = _plan(stub, **two_cards)
     assert without is not None, "the drafter is what the seam refuses, not the cards"
     if not without.spills_anything:
-        # It may still decline -- on this pair the spill does not beat the fitter
-        # by the margin -- but it must decline for THAT reason. A per-device
-        # decline here would mean the cards were the problem all along and the
-        # drafter assertion above proved nothing.
+        # here would mean the cards were the problem and the assertion above proved nothing.
         assert "not worth it" in without.reason, without.reason
         assert "device by device" not in without.reason, without.reason
 
-    # Single card is unchanged: there the flat charge IS the right one.
     one_card = _plan(_Stub(), free_mib = 14 * 1024, separate_draft = True)
     assert one_card is not None and one_card.spills_anything
 
@@ -1847,9 +1754,7 @@ def test_a_single_card_pays_no_split_reserve():
     assert _usable_vram([card, card], opts, short) == 2 * card - 1 * GIB
     assert _usable_vram([card, card, card], opts, short) == 3 * card - 2 * GIB
 
-    # And the context-linear term is charged on every card, at or below the free context not at
-    # all. Pinned here beside the split arithmetic because the two are easy to confuse: one is
-    # charged (n - 1) times and the other n times, and swapping them is invisible at n = 1.
+    # And the context-linear term is charged on every card.
     over = 4096
     step = over * opts.overhead_bytes_per_token
     assert _usable_vram([card], opts, short + over) == card - step
@@ -2360,16 +2265,7 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
 
 
 def test_the_seam_scores_at_the_micro_batch_that_launches():
-    """rank() amortises the spilled-weight stream over ONE ubatch.
-
-    The launch already resolves the Studio field, the extras, LLAMA_ARG_UBATCH
-    and the slot-dependent floor into ``_effective_ubatch`` and then emits it, so
-    scoring at PlanOptions' 512 default while the child runs ``-ub 64`` prices
-    prefill eight times too cheap. Measured on the head of this branch before the
-    fitter model was corrected, that alone flipped 66 cells of a dense-27B sweep
-    from spill to abstain, i.e. the gate returned the opposite placement from the
-    one the launch actually gets.
-    """
+    """rank() amortises the spilled-weight stream over ONE ubatch."""
     seen = {}
 
     def _capture(*args, **kwargs):
@@ -2391,14 +2287,10 @@ def test_the_seam_scores_at_the_micro_batch_that_launches():
 
 
 def test_an_embedding_server_is_scored_without_a_decode_phase():
-    """``--embedding`` returns the pooled vector; there is no generation at all.
-
-    So a spill's decode advantage -- which on a routed MoE is its ENTIRE
-    advantage, since experts are charged ``n_expert_used / n_expert`` for
-    generation but full bytes for prefill -- is winnings this workload can never
-    collect. On the head of this branch, scoring 256 phantom generated tokens
-    flipped 452 cells of a dense-27B sweep from abstain to spill.
-    """
+    """``--embedding`` returns the pooled vector; there is no generation at all, so a spill's
+    decode advantage, which on a routed MoE is its ENTIRE advantage since experts are charged
+    ``n_expert_used / n_expert`` for generation but full bytes for prefill, is winnings this
+    workload can never collect."""
     seen = {}
 
     def _capture(*args, **kwargs):
@@ -2424,9 +2316,6 @@ def test_an_embedding_server_is_scored_without_a_decode_phase():
         assert seen["opts"].workload_prompt_tokens > 0, "prefill is the whole workload here"
     finally:
         planner_mod.plan_placement = real
-
-
-# ------------------------------------------------- the planner's own rungs 0-2
 
 
 def _captured_opts(monkeypatch, stub, **kw):
@@ -2462,12 +2351,9 @@ def _captured_opts(monkeypatch, stub, **kw):
     ],
 )
 def test_the_may_run_predicate_agrees_with_the_seam_on_every_decline(env, extra_args):
-    """load_model asks the pure predicate BEFORE the priced inputs exist, so it
-    can hand the planner the decisions it would otherwise make ahead of it. The
-    two must answer alike: a launch the seam declines is one the predicate must
-    refuse too, or load_model prices the pre-cap context and moves the projector
-    for a planner that then never runs.
-    """
+    """load_model asks the pure predicate BEFORE the priced inputs exist, so the two must
+    answer alike: a launch the seam declines is one the predicate must refuse too, or
+    load_model prices the pre-cap context and moves the projector for a planner that never runs."""
     assert LlamaCppBackend._planner_may_run(extra_args, env) is False
     assert _Stub()._planned_tensor_spill(_inputs(), extra_args = extra_args, env = env) is None
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}) is True
@@ -2515,12 +2401,7 @@ def test_min_parallel_never_exceeds_the_priced_count(monkeypatch):
 
 
 def test_a_movable_projector_is_taken_out_of_the_fused_terms(monkeypatch):
-    """The projector's file bytes ride in extra_gpu_bytes and its runtime
-    surcharge in soft_overhead. When the planner may move it, both leave those
-    terms and arrive as ONE number it can give back whole. When it may not, the
-    file bytes stay where they were and the surcharge, one allocation on the
-    main device, is charged there once: left in the per-device term it was
-    invented on every card of a layer split."""
+    """The projector's file bytes ride in extra_gpu_bytes and its runtime surcharge in soft_overhead."""
     common = dict(
         free_mib = 14 * 1024,
         extra_gpu = 3 * GIB,
@@ -2541,10 +2422,9 @@ def test_a_movable_projector_is_taken_out_of_the_fused_terms(monkeypatch):
 
 
 def test_a_droppable_draft_is_a_separate_term_with_the_excluded_blocks(monkeypatch):
-    """extra_gpu_bytes folds in the reserve at the LAUNCHED context; the planner
-    gets the one priced at ITS context, plus the nextn blocks an engaging draft
-    turns resident, as a term it may drop. When it may not, the same bytes are
-    charged resident, so the deficit is what it always was."""
+    """extra_gpu_bytes folds in the reserve at the LAUNCHED context; the planner gets the one priced
+    at ITS context, plus the nextn blocks an engaging draft turns resident, as a term it may drop.
+    """
     stub = _Stub()
     stub._excluded_bytes = 200 * MIB
     common = dict(
@@ -2572,10 +2452,9 @@ def test_a_draft_that_cannot_be_dropped_because_it_has_no_bytes_is_not_droppable
 
 
 def test_a_knob_only_plan_earns_the_pin_and_never_a_load_mode():
-    """A plan that spilled nothing but reshaped the launch is still Unsloth's
-    placement: every layer stays on a GPU, so it takes the same pin the proved
-    arm does. The load mode is NOT among its tokens: that pair must only ever
-    reach the argv through _fit_load_mode_flags, or a retry's strip misses it."""
+    """A plan that spilled nothing but reshaped the launch is still Unsloth's placement: every
+    layer stays on a GPU, so it takes the same pin the proved arm does.
+    """
     flags = LlamaCppBackend._spill_plan_flags_for
     assert flags(Plan(changed = True, n_parallel = 2)) == ["-ngl", "-1", "--fit", "off"]
     assert flags(Plan(changed = True, mmproj_to_host = True)) == ["-ngl", "-1", "--fit", "off"]
@@ -2638,17 +2517,7 @@ def test_the_cache_ram_clamp(avail, footprint, expected):
 
 
 def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
-    """The 1536 MiB intercept was validated on an A100-40, where the 3% the seam
-    withholds before the planner sees the card already reaches it. On a 12 GiB card
-    the withheld share is 369 MiB and production then charged only the CUDA context
-    plus the compute term, so the planner saw about 700 MiB of reserve at short
-    context where 1536 was measured to be needed. The TOTAL (withheld + charged)
-    must never fall below the curve; on the 40 GiB card nothing changes.
-
-    The floor is priced where the withholding happens, in load_model's snapshot, and
-    reaches the planner as one explicit term; the seam applies it last, after the
-    projector's surcharge has been handed over as its own rung.
-    """
+    """The 1536 MiB intercept was validated where the 3% the seam withholds already reaches it."""
     import inspect
 
     from core.inference import llama_cpp, offload_planner
@@ -2702,11 +2571,9 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
 
 
 def test_a_sharded_gguf_is_read_whole_before_the_planner_sees_it():
-    """A multi-part GGUF read from shard 1 alone is a fraction of the model and
-    reports itself incomplete; the seam then declined with no log line, so the
-    planner never saw a complete layout for exactly the models large enough to
-    need it (measured on Qwen3.6-235B: shard 1 alone gives complete=False,
-    spillable 0; all shards give 120 GiB spillable)."""
+    """A multi-part GGUF read from shard 1 alone is a fraction of the model and reports itself
+    incomplete; the seam then declined with no log line, so the planner never saw a complete
+    layout for exactly the models large enough to need it."""
     stub = _Stub()
     stub.sharded = True
     # Shard 1 alone is what the seam used to read, and it is incomplete.
@@ -2717,13 +2584,9 @@ def test_a_sharded_gguf_is_read_whole_before_the_planner_sees_it():
 
 
 def test_host_ram_the_launch_has_already_spent_is_taken_off_the_planner_pool():
-    """The seam names the host RAM this launch spends that no term of the plan
-    carries -- a -ngld 0 drafter, the --ctx-checkpoints snapshots, a user --cache-ram
-    the seam may not clamp -- and the planner admits against what is left.
-
-    Without it the plan answers --load-mode none on RAM that is already committed,
-    and the seam then replaces the fit-derived mode with that answer, so the child
-    runs with no mmap and nothing to page out."""
+    """The seam names the host RAM this launch spends that no term of the plan carries, and the
+    planner admits against what is left.
+    """
     roomy = _plan(_Stub(), free_mib = 14 * 1024)
     assert roomy is not None and roomy.spills_anything
     assert roomy.load_mode_none
@@ -2735,21 +2598,7 @@ def test_host_ram_the_launch_has_already_spent_is_taken_off_the_planner_pool():
 
 
 def test_the_recurrent_state_is_taken_out_of_the_measured_cache_floor(monkeypatch):
-    """``kv_cache_bytes`` is the whole hybrid memory; the floor is a CACHE.
-
-    ``_estimate_kv_cache_bytes`` adds ``_mamba_recurrent_state_bytes`` on the
-    hybrid path and ``_recurrent_state_bytes`` on the MLA one, so the number the
-    snapshot carries is cache PLUS state. The planner charges
-    ``layout.recurrent_bytes`` once per slot on top of the floor it is given, so
-    handing the fused number over counts the state twice in every VRAM figure it
-    computes -- a deficit too large by the whole state, blocks spilled to cover
-    memory nothing allocates, and a modelled fitter that frees the state twice per
-    moved layer on top. A dense hybrid on ONE card reaches all of it: the
-    uneven-cache abstain returns early on a single device.
-
-    Per-slot, and the rung-1 map is re-priced the same way: the state scales with
-    the slot count exactly as the cache does.
-    """
+    """``kv_cache_bytes`` is the whole hybrid memory; the floor is a CACHE."""
     import dataclasses
 
     from core.inference import offload_planner as planner
@@ -2792,13 +2641,9 @@ def test_the_recurrent_state_is_taken_out_of_the_measured_cache_floor(monkeypatc
 
 
 def test_a_state_the_layout_cannot_model_stays_in_the_floor(monkeypatch):
-    """A KDA hybrid's state is priced by the estimator and not by the layout.
-
-    ``offload_layout`` reads ``ssm.*``; Kimi-K3-shaped linear attention has none,
-    so ``recurrent_bytes`` is 0 and the planner will add nothing back. Subtracting
-    there would UNDER-reserve the cache, which loses the load rather than merely
-    over-spilling it, so the subtraction is capped by what the layout models.
-    """
+    """A KDA hybrid's state is priced by the estimator and not by the layout: ``offload_layout``
+    reads ``ssm.*`` and Kimi-K3-shaped linear attention has none, so subtracting would
+    UNDER-reserve the cache, and the subtraction is capped by what the layout models."""
     from core.inference import offload_planner as planner
 
     state, attention = 512 * MIB, 3 * GIB
@@ -2825,14 +2670,7 @@ def test_a_state_the_layout_cannot_model_stays_in_the_floor(monkeypatch):
 
 def test_the_cache_callable_is_corrected_like_the_floor_it_replaces(monkeypatch):
     """``kv_bytes_at`` re-prices the floor at every rung, and the planner takes
-    ``layout.recurrent_bytes`` per slot out of what it returns before adding the
-    same back. The floor and the map are corrected by the state the ESTIMATOR
-    priced, capped by the layout's; the callable went over raw. Where only the
-    layout prices the state (Nemotron-H carries no full_attention_interval, so
-    the estimator prices none) the planner then subtracted a state the callable
-    never held and sized the cache one state per slot UNDER the floor at the
-    requested context, the direction that loses the load. Corrected the same
-    way, the callable agrees with the floor whatever either side priced.
+    ``layout.recurrent_bytes`` per slot out of what it returns before adding the same back.
     """
     import dataclasses
 

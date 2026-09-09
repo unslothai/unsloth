@@ -3,10 +3,9 @@
 
 """The ladder: sub-FFN rungs, and the minimal number of blocks at each one.
 
-The planner used to have one weight rung. A block's whole spillable FFN moved or
-none of it did, so covering a 0.96 GiB deficit cost 1.41 GiB of moved weights and
-every byte of the overshoot was paid again on every token that touched it. These
-pin the finer ladder that replaces it:
+The planner used to have one weight rung: a block's whole spillable FFN moved or none
+of it did, and every byte of the overshoot was paid again on every token that touched
+it. These pin the finer ladder that replaces it:
 
     1  ffn_down            (MoE: ffn_down_exps / _chexps)
     2  + ffn_up / gate_up
@@ -16,12 +15,9 @@ pin the finer ladder that replaces it:
     6  + attention projections     (off by default)
     7  + the KV cache              (off by default)
 
-and, at every rung, the fewest blocks that close the gap.
-
-The two bottom rungs are off because the module's own numbers put them off the
-scale (13.63 t/s for FFN, ~1.03 for anything touching attention or the cache).
-They are implemented so the ladder is complete and a benchmark can reach the
-bottom of it, not because anything should turn them on.
+and, at every rung, the fewest blocks that close the gap. The two bottom rungs are off
+because the module's own numbers put them off the scale; they exist so the ladder is
+complete and a benchmark can reach the bottom of it.
 """
 
 from __future__ import annotations
@@ -57,13 +53,7 @@ def graded_moe(
     attn: float = 0.025,
     shexp: float = 0.0,
 ) -> ModelLayout:
-    """A 35B-A3B-shaped MoE with its FFN broken out per matrix.
-
-    ``spillable_bytes`` is the SUM of the three, never a rounded constant: a
-    block whose parts do not add up to its whole is exactly what
-    :meth:`BlockLayout.graded` refuses, and building the fixture that way would
-    silently test the coarse path instead of the ladder.
-    """
+    """A 35B-A3B-shaped MoE with its FFN broken out per matrix."""
     d, u, g = int(down * GIB), int(up * GIB), int(gate * GIB)
     blocks = tuple(
         BlockLayout(
@@ -109,14 +99,7 @@ def ungraded_moe(n_blocks: int = 40) -> ModelLayout:
 
 
 def opts(**kwargs) -> PlanOptions:
-    """Default options for these tests, at ALL granularity.
-
-    ALL rather than the shipped BOUNDARY default because these tests are about
-    the LADDER -- which rung fires, in what order, over how few blocks -- and
-    BOUNDARY only ever grades one block, so it exercises the rung machinery
-    barely at all. The granularity DECISION, and the measurements behind
-    defaulting it to BOUNDARY, are pinned separately below.
-    """
+    """Default options for these tests, at ALL granularity."""
     kwargs.setdefault("ffn_granularity", FfnGranularity.ALL)
     return PlanOptions(host = HostProfile(threads = 6), **kwargs)
 
@@ -142,8 +125,7 @@ def test_the_first_rung_is_ffn_down_alone():
 
 
 def test_the_rungs_arrive_in_order_as_the_card_shrinks():
-    """down, then down+up, then down+up+gate. Never a later rung before an
-    earlier one is exhausted, which is what makes "minimal" mean anything."""
+    """down, then down+up, then down+up+gate."""
     layout = graded_moe()
     seen = []
     for vram in (21, 19, 15, 11, 9):
@@ -157,7 +139,6 @@ def test_the_rungs_arrive_in_order_as_the_card_shrinks():
         seen.append(tuple(classes))
     assert seen[0] == (SpillClass.FFN_DOWN,)
     assert seen[-1] == (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
-    # Monotone: a rung once entered is never given back on a smaller card.
     for earlier, later in zip(seen, seen[1:]):
         assert set(earlier) <= set(later), (earlier, later)
 
@@ -166,8 +147,6 @@ def test_a_later_rung_is_only_entered_once_the_earlier_one_is_exhausted():
     layout = graded_moe()
     plan = plan_placement(layout, [15 * GIB], 94 * GIB, 8192, opts = opts())
     down, up = plan.ot_patterns[0], plan.ot_patterns[1]
-    # The down rung took every block -- collapsed to the unbounded form -- while
-    # the up rung names only the handful it needed.
     assert r"^blk\.\d+\." in down
     assert re.search(r"\(\d+(\|\d+)*\)", up), up
 
@@ -181,22 +160,7 @@ def deficit_of(layout: ModelLayout, vram_gib: float) -> int:
 
 
 def test_the_ladders_overshoot_is_bounded_by_one_rung_not_by_one_block():
-    """The guarantee the change actually buys, stated as the bound it is.
-
-    NOT "always moves fewer bytes". A greedy best-fit over coarse units can get
-    lucky -- on the real Qwen3.6-35B-A3B at 20 GiB the coarse planner's 4 blocks
-    came to 1.97 GiB against a 1.83 GiB deficit while the ladder's 11 ffn_down
-    units came to 1.99, because four 0.457 GiB blocks happen to land almost
-    exactly on that deficit. Asserting strict improvement would pin a
-    coincidence.
-
-    What IS guaranteed is the worst case. Both selections stop at the first unit
-    that covers the deficit, so each overshoots by less than ONE UNIT -- and the
-    ladder's unit is a third of the coarse one. That is the whole claim, and it
-    is the claim that matters for #9861's two worst cells, where an 8B with
-    11008 MiB free had 22 and 29 of 36 whole FFNs moved for a far smaller
-    deficit and landed at 0.19x and 0.21x of ``--fit on``.
-    """
+    """The guarantee the change actually buys, stated as the bound it is."""
     fine, coarse = graded_moe(), ungraded_moe()
     unit_fine = max(b.ffn_down_bytes for b in fine.blocks)
     unit_coarse = max(b.spillable_bytes for b in coarse.blocks)
@@ -214,20 +178,13 @@ def test_the_ladders_overshoot_is_bounded_by_one_rung_not_by_one_block():
         assert 0 <= over_coarse < unit_coarse, (vram, over_coarse)
         overshoots.append((over_fine, over_coarse))
 
-    # And in aggregate it does pay, which is the reason to prefer it even though
-    # any single cell can go the other way.
     assert sum(f for f, _ in overshoots) < sum(c for _, c in overshoots)
 
 
 def test_an_ungraded_layout_still_gets_the_old_whole_ffn_answer():
-    """Backwards compatibility, and the safe direction for an unknown model.
-
-    A layout whose per-rung bytes do not add up to its FFN cannot be spilled by
-    rung without crediting bytes the pattern would not move. Rather than guess,
-    the ladder collapses to the single unit it always had -- so an architecture
-    whose tensor names this module has never seen degrades to the previous
-    behaviour instead of to a spill that does not cover its own deficit.
-    """
+    """Backwards compatibility, and the safe direction for an unknown model: a layout whose
+    per-rung bytes do not add up to its FFN cannot be spilled by rung without crediting
+    bytes the pattern would not move, so the ladder collapses to the single coarse unit."""
     layout = ungraded_moe()
     assert not any(b.graded for b in layout.blocks)
     plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = opts())
@@ -236,18 +193,10 @@ def test_an_ungraded_layout_still_gets_the_old_whole_ffn_answer():
 
 
 def test_the_emitted_patterns_move_exactly_the_bytes_the_plan_charged_itself():
-    """The invariant that a 20 GiB miscount already got past once.
-
-    A plan is only as good as the ``-ot`` it emits: if the patterns move fewer
-    bytes than the deficit assumed, VRAM is filled against a gap that was never
-    closed and the load OOMs. So this rebuilds the GGUF's tensor table, runs
-    llama.cpp's own matching rule over it, and checks the total against what the
-    plan says it put on the host.
-
-    ``re.search`` rather than ``re.match``, because that is what llama.cpp uses
-    (``llama-model-loader.cpp``) and it is the reason every pattern this module
-    emits is anchored.
-    """
+    """The invariant that a 20 GiB miscount already got past once: if the patterns move
+    fewer bytes than the deficit assumed, VRAM is filled against a gap that was never closed
+    and the load OOMs. Uses ``re.search``, as llama.cpp does, which is why every pattern
+    this module emits is anchored."""
     layout = graded_moe(n_blocks = 12, shexp = 0.02)
     table: list[tuple[str, int]] = []
     for b in layout.blocks:
@@ -271,9 +220,7 @@ def test_the_emitted_patterns_move_exactly_the_bytes_the_plan_charged_itself():
 
 
 def test_the_down_rung_never_drags_the_shared_experts_with_it():
-    """``ffn_down`` unanchored also matches ``ffn_down_exps`` and
-    ``ffn_down_shexp``. On a MoE model that is most of the file, moved for a
-    deficit that asked for a third of one rung."""
+    """``ffn_down`` unanchored also matches ``ffn_down_exps`` and ``ffn_down_shexp``."""
     layout = graded_moe(shexp = 0.02)
     pattern = spill_pattern_for_class(layout, SpillClass.FFN_DOWN, [3])
     assert re.search(pattern, "blk.3.ffn_down_exps.weight")
@@ -283,21 +230,14 @@ def test_the_down_rung_never_drags_the_shared_experts_with_it():
 
 
 def test_lm_head_is_the_rung_after_every_ffn_rung_and_not_before():
-    """The user's question, and the answer the measurements give: lm_head stays
-    in VRAM as long as there is any expert byte left to move instead.
-
-    16% here against 43% if taken first, because by the time it is reached FFN
-    offload has already made generation host-bandwidth-bound.
-    """
+    """The user's question, and the answer the measurements give: lm_head stays in VRAM as
+    long as there is any expert byte left to move instead."""
     layout = graded_moe(n_blocks = 8)
     spillable = layout.spillable_bytes
-    # Roomy enough that some FFN still fits: lm_head must not be touched.
     plan = plan_placement(layout, [5 * GIB], 94 * GIB, 8192, opts = opts())
     assert plan.spills_anything and not plan.spilled_lm_head
     assert moved_bytes(plan, layout) < spillable
 
-    # Tight enough that every rung above lm_head is exhausted: 3.76 GiB of FFN
-    # against a deficit larger than that, so there is nothing else left to give.
     tight = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts())
     assert tight.spills_anything
     assert tight.spilled_lm_head
@@ -305,10 +245,9 @@ def test_lm_head_is_the_rung_after_every_ffn_rung_and_not_before():
 
 
 def test_embed_tokens_is_never_a_rung_because_it_is_never_on_the_card():
-    """It is not a placement decision at all. ``llama-model.cpp`` pins
-    ``dev_input`` to the CPU unconditionally, so ``token_embd`` is host-resident
-    on every launch, spilled or not. It appears here only as host RAM the plan
-    must be able to pay for."""
+    """It is not a placement decision at all: ``llama-model.cpp`` pins ``dev_input`` to the
+    CPU unconditionally, so ``token_embd`` is host-resident on every launch. It appears here
+    only as host RAM the plan must be able to pay for."""
     layout = graded_moe()
     plan = plan_placement(layout, [64 * GIB], 94 * GIB, 8192, opts = opts())
     assert not plan.spills_anything, "this card holds the whole model"
@@ -317,11 +256,8 @@ def test_embed_tokens_is_never_a_rung_because_it_is_never_on_the_card():
 
 
 def test_attention_and_the_cache_are_off_the_ladder_by_default():
-    """A load that needs them is a load ``--fit on`` should place.
-
-    Measured: 13.63 t/s with the FFN on the host, ~1.03 once attention or the
-    cache follows it. Abstaining costs 0.93x to 1.16x. So the planner stops.
-    """
+    """A load that needs them is a load ``--fit on`` should place: the measurements put
+    both rungs off the bottom of the scale, and abstaining is nearly free."""
     layout = graded_moe(n_blocks = 8, attn = 0.4)
     plan = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts())
     assert not plan.spills_anything
@@ -352,13 +288,9 @@ def test_the_cache_is_the_last_rung_of_all_and_emits_nkvo():
 
 
 def test_load_mode_is_none_when_the_host_side_fits_and_mmap_when_it_does_not():
-    """The rule the user stated, and it is orthogonal to which rung fired.
-
-    ``--load-mode none`` is worth 2.09x to 2.35x on prefill against mmap on
-    host-resident weights, but only while those bytes really are in RAM. Past
-    that, mmap is the only thing making an over-commit pageable rather than
-    OOM-killed.
-    """
+    """The rule the user stated, and it is orthogonal to which rung fired: ``--load-mode
+    none`` beats mmap on host-resident weights, but only while those bytes really are in
+    RAM. Past that, mmap is the only thing making an over-commit pageable."""
     layout = graded_moe()
     roomy = plan_placement(layout, [15 * GIB], 94 * GIB, 8192, opts = opts())
     assert roomy.spills_anything and roomy.load_mode_none
@@ -370,21 +302,16 @@ def test_load_mode_is_none_when_the_host_side_fits_and_mmap_when_it_does_not():
 
 
 def test_a_partial_rung_is_charged_to_the_right_card_not_to_the_pool():
-    """Two devices and a rung that moved a third of some blocks.
-
-    ``-ot`` does not move a layer, so a partial spill relieves only the card the
-    chosen indices already sat on. Crediting the whole block for a partial move
-    is the optimistic direction, and a per-device shortfall is a hard throw
-    rather than a slow load, so the planner abstains instead of guessing.
-    """
+    """Two devices and a rung that moved a third of some blocks: ``-ot`` does not move a
+    layer, so a pooled partial spill relieves only the card the chosen indices sat on, and
+    a per-device shortfall is a hard throw rather than a slow load."""
     layout = graded_moe()
     plan = plan_placement(layout, [11 * GIB, 11 * GIB], 94 * GIB, 8192, opts = opts())
     if plan.spills_anything:
         partial = plan.host_bytes - layout.token_embd_bytes < layout.spillable_bytes
         if partial:
-            # A partial spill is only ever planned when it was SELECTED device by
-            # device from each card's own rows and re-checked as a whole; the
-            # pooled pick never reaches the launch.
+            # A partial spill is only ever planned when it was SELECTED device by device from each
+            # card's own rows and re-checked as a whole; the pooled pick never reaches the launch.
             assert "device by device" in plan.reason
             assert plan.vram_bytes <= 22 * GIB
     else:
@@ -434,14 +361,9 @@ def test_a_dense_model_gets_the_same_gradation():
     ],
 )
 def test_the_rung_order_is_configurable_and_costs_the_same_either_way(order):
-    """Which matrix goes first is llama.cpp's choice and UNMEASURED by us.
-
-    The cost model prices all three identically -- same ``Access.SCATTERED``,
-    same routed fraction -- and they are within a few percent of the same size,
-    so nothing here can prefer one order to another. That is worth pinning
-    rather than hiding: it says the ladder's win is GRANULARITY, and leaves the
-    ordering as an open question a benchmark can answer.
-    """
+    """Which matrix goes first is llama.cpp's choice and UNMEASURED by us: the cost model
+    prices all three identically, so nothing here can prefer one order. Pinned rather than
+    hidden, because it says the ladder's win is GRANULARITY."""
     layout = graded_moe()
     plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = order))
     assert plan.spills_anything
@@ -458,25 +380,10 @@ def overshoot(layout: ModelLayout, vram: float, options: PlanOptions) -> float:
 
 
 def test_the_shipped_default_grades_only_the_boundary_block():
-    """BOUNDARY: coarse blocks, then the last one trimmed to the rungs needed.
-
-    The reason is measured, not aesthetic. A partly-spilled block puts part of
-    its FFN on each side of the backend boundary, so the decode graph crosses
-    once more per block than a wholly-spilled one does. On Qwen3.6-35B-A3B Q4 at
-    4 slots, ggml's own ``graph splits (with bs=1)`` went 10 / 20 / 28 / 36 for
-    whole blocks against 24 / 46 / 70 / 82 for the every-block ladder, and
-    generation came out 0.88x / 0.95x / 0.92x / 0.93x -- 5 to 12% paid to save
-    0.02 to 0.36 GiB of overshoot.
-
-    Grading one block costs exactly one extra split and recovers most of the
-    overshoot, which is also what llama.cpp settled on (fit.cpp:490 applies its
-    graded fraction to il0 and LAYER_FRACTION_MOE to every layer past it).
-    """
+    """BOUNDARY: coarse blocks, then the last one trimmed to the rungs needed."""
     layout = graded_moe()
     plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = shipped())
     assert plan.spills_anything
-    # One coarse pattern covering whole FFNs, plus graded patterns naming a
-    # single block between them.
     coarse = [p for p in plan.ot_patterns if "ffn_(up|gate|down|gate_up)_" in p]
     graded = [p for p in plan.ot_patterns if p not in coarse]
     assert len(coarse) == 1, plan.ot_patterns
@@ -486,12 +393,9 @@ def test_the_shipped_default_grades_only_the_boundary_block():
 
 
 def test_boundary_grading_beats_both_extremes_on_overshoot():
-    """Less overshoot than WHOLE, and no worse than ALL, at one extra split.
-
-    Better than ALL rather than merely close to it, because BOUNDARY can combine
-    whole blocks with a partial one: its step size is the sub-FFN matrix on top
-    of a coarse base, while ALL is quantised to the matrix everywhere.
-    """
+    """Less overshoot than WHOLE, and no worse than ALL, at one extra split: BOUNDARY can
+    combine whole blocks with a partial one, so its step size is the sub-FFN matrix on top
+    of a coarse base, while ALL is quantised to the matrix everywhere."""
     layout = graded_moe()
     for vram in (21, 19, 17):
         whole = overshoot(layout, vram, shipped(ffn_granularity = FfnGranularity.WHOLE))
@@ -502,35 +406,20 @@ def test_boundary_grading_beats_both_extremes_on_overshoot():
 
 
 def test_boundary_falls_back_to_the_whole_block_when_trimming_cannot_help():
-    """A deficit that needs the entire last block leaves it whole.
-
-    Emitting a graded pattern that adds up to the same bytes would pay the extra
-    split for nothing, so the trim is skipped and one pattern says it all.
-    """
+    """A deficit that needs the entire last block leaves it whole: a graded pattern adding
+    up to the same bytes would pay the extra split for nothing."""
     layout = graded_moe()
-    # Every spillable byte is needed here, so there is no last block to trim.
     plan = plan_placement(layout, [4 * GIB], 94 * GIB, 8192, opts = shipped())
     if plan.spills_anything:
         assert len(plan.ot_patterns) <= 2, plan.ot_patterns
         assert any("ffn_(up|gate|down|gate_up)_" in p for p in plan.ot_patterns)
 
 
-# --------------------------------------------------------------------------
 # Two accounting bugs that made the planner spill a model which already fit.
-# Both were found by benchmarking gemma-4-E2B-it UD-Q4_K_XL on a 4.15 GiB
-# budget, where --fit on measured 447.8 t/s (identical to its 6 GiB control,
-# i.e. it had nothing to do) and the planner measured 187.7 -- 0.42x, which is
-# #9861's headline failure reproduced on hardware we control.
-# --------------------------------------------------------------------------
 
 
 def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
-    """A gemma-shaped layout: tied embeddings, plus per-layer input embeddings.
-
-    Tied means no ``output.weight``, so llama.cpp re-creates the output tensor
-    from ``token_embd`` as TENSOR_DUPLICATED and a second vocabulary matrix is
-    really allocated. ``per_layer_token_embd`` is NOT part of that duplicate.
-    """
+    """A gemma-shaped layout: tied embeddings, plus per-layer input embeddings."""
     blocks = tuple(
         BlockLayout(
             index = i,
@@ -550,7 +439,6 @@ def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = 0,
         token_embd_bytes = vocab + per_layer,
-        # What the loader charges to VRAM for the tied duplicate.
         other_resident_bytes = vocab,
         kv_bytes_per_token_f16 = 0.615 * GIB / 9216,
         n_ctx_train = 32768,
@@ -560,23 +448,13 @@ def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
 
 
 def test_the_tied_embedding_duplicate_is_the_vocabulary_not_the_per_layer_embeddings():
-    """1540 MiB charged to VRAM for a 264 MiB duplicate.
-
-    ``per_layer_token_embd`` lands in the same host-resident bucket as
-    ``token_embd`` -- correctly, both are host-pinned -- and the tied-embedding
-    branch then added that WHOLE bucket to ``other_resident_bytes`` to account
-    for the duplicate. On gemma-4-E2B that charged VRAM 1804 MiB instead of 264,
-    and ``all_resident_bytes`` came to 3.57 GiB against the 1.45 GiB llama.cpp
-    actually placed.
-
-    Checked here as arithmetic rather than through the GGUF reader, so the
-    property survives a reader that buckets the tensors differently.
-    """
+    """``per_layer_token_embd`` lands in the same host-resident bucket as ``token_embd``, and
+    the tied-embedding branch added that WHOLE bucket to ``other_resident_bytes``, charging
+    VRAM several times the vocabulary matrix it meant to. Checked as arithmetic rather than
+    through the GGUF reader, so it survives a reader that buckets tensors differently."""
     vocab, per_layer = 264 * 1024**2, 1540 * 1024**2
     layout = tied_embedding_layout(vocab, per_layer)
-    # The duplicate is charged, once, at the vocabulary's size.
     assert layout.other_resident_bytes == vocab
-    # And the per-layer embeddings are host bytes, never VRAM ones.
     assert layout.token_embd_bytes == vocab + per_layer
     from core.inference.offload_planner import all_resident_bytes
 
@@ -585,16 +463,8 @@ def test_the_tied_embedding_duplicate_is_the_vocabulary_not_the_per_layer_embedd
 
 
 def test_a_measured_cache_beats_the_product_under_sliding_window_attention():
-    """The product has no SWA term, so its error is one-sided and large.
-
-    On gemma-4-E2B at n_ctx 9216 it says 0.615 GiB where llama.cpp allocated
-    48 MiB: the window caps most layers at 512 tokens, those layers use narrower
-    heads (key_length_swa 256 against 512), and 20 of them share one cache. Under
-    ``max(product, measurement)`` a 13x over-estimate overrode a real number, and
-    that difference is deficit the planner spills real blocks to cover.
-
-    The max is KEPT without SWA, where the product's failure mode is the other
-    one (MLA under-counts) and the measurement is what might be short.
+    """The product has no SWA term, so its error is one-sided and large: the window caps most
+    layers, those layers use narrower heads, and 20 of them share one cache.
     """
     from core.inference.offload_planner import cache_bytes
 
@@ -607,15 +477,12 @@ def test_a_measured_cache_beats_the_product_under_sliding_window_attention():
 
 
 def test_sliding_window_without_a_measurement_abstains_rather_than_guessing():
-    """No measurement, no spill. The estimate is only wrong upwards here, and
-    upwards is the direction that invents a deficit and costs 0.42x."""
+    """No measurement, no spill."""
     layout = tied_embedding_layout(264 * 1024**2, 1540 * 1024**2)
     plan = plan_placement(layout, [4 * GIB], 200 * GIB, 9216, opts = shipped())
     assert not plan.spills_anything
     assert "sliding-window" in plan.reason
 
-    # With the cache priced, it plans normally again -- and on this budget the
-    # right answer is that nothing needs to move at all.
     measured = plan_placement(
         layout,
         [4 * GIB],
@@ -626,11 +493,6 @@ def test_sliding_window_without_a_measurement_abstains_rather_than_guessing():
     )
     assert not measured.spills_anything
     assert "fits in VRAM" in measured.reason
-
-
-# ---------------------------------------------------------------------------
-# Per-layer attention.head_count_kv
-# ---------------------------------------------------------------------------
 
 
 def _reader_with_kv_heads(value, n_layers = 6):
@@ -659,14 +521,7 @@ def _reader_with_kv_heads(value, n_layers = 6):
 
 
 def test_a_per_layer_kv_head_list_does_not_abstain():
-    """gemma-4-26B ships head_count_kv as a LIST, and int(list) raises.
-
-    layout_from_gguf swallows that to a debug log, so the planner abstained on
-    every quant of gemma-4-26B-A4B and gemma-4-31B -- six of the thirteen models
-    in the sweep -- with nothing visibly failing, because an abstain falls
-    through to --fit on. Found only when a Kaggle cell reported "layout or
-    device inventory is incomplete".
-    """
+    """gemma-4-26B ships head_count_kv as a LIST, and int(list) raises."""
     from core.inference import offload_layout as OL
 
     scalar = OL._kv_heads_total(4, 6)
@@ -675,12 +530,8 @@ def test_a_per_layer_kv_head_list_does_not_abstain():
 
 
 def test_a_mixed_kv_head_list_is_summed_not_multiplied():
-    """The real lists mix widths, so one head count times a layer count is wrong.
-
-    gemma-4-26B is [8, 8, 8, 8, 8, 2, ...] and gemma-4-31B [16, 16, 16, 16, 16,
-    4, ...]. Multiplying the first entry by the layer count would over-count the
-    cache; multiplying the last would under-count it.
-    """
+    """The real lists mix widths, so one head count times a layer count is wrong: multiplying
+    the first entry over-counts the cache and multiplying the last under-counts it."""
     from core.inference import offload_layout as OL
 
     heads = [8, 8, 8, 8, 8, 2]
@@ -696,21 +547,7 @@ def test_a_short_kv_head_list_pads_with_its_last_value():
 
 
 def test_no_ladder_rung_can_reach_a_unified_memory_host():
-    """Every granularity must abstain identically on a unified pool.
-
-    On Strix Halo (gfx1151) and Apple silicon the device and the host are the
-    same chips, so moving a tensor "to RAM" renames bytes and frees nothing. The
-    abstain that says so is the SECOND check in plan_placement, ahead of the
-    budget, the context and all rung selection, which is what makes the whole
-    ladder unreachable there.
-
-    Verified on real hardware before the ladder existed: the AMD CI GPU
-    measurement job declined on the gfx1151 unified pool while spilling 51
-    blocks for the identical layout and budget with the flag off. This test is
-    what keeps that true as rungs are added, since a rung wired in above the
-    abstain would start spilling on an APU and nobody would see it in a CUDA
-    matrix.
-    """
+    """Every granularity must abstain identically on a unified pool."""
     from dataclasses import replace
 
     from core.inference.offload_planner import (
@@ -741,38 +578,13 @@ def test_no_ladder_rung_can_reach_a_unified_memory_host():
         assert not on_apu.ot_patterns, granularity
         assert "unified memory" in on_apu.reason, granularity
         reasons.add(on_apu.reason)
-        # The same budget on a discrete card must actually spill, otherwise this
-        # test would pass on a layout that simply fits and prove nothing.
         assert on_gpu.ot_patterns, granularity
 
     assert len(reasons) == 1, f"granularity leaked into the abstain: {reasons}"
 
 
 def test_the_selection_matches_an_independent_minimal_walk():
-    """MINIMALITY, checked against a reimplementation rather than a comment.
-
-    The request this ladder answers asks for "the MINIMAL number of layers to
-    offload", and the selection code asserts it gets one by construction: take
-    the fewest units of the cheapest rung, step down only when a rung is
-    exhausted. That is sound reasoning, but it is reasoning, and a greedy walk
-    across several rungs is the shape of code where an off-by-one leaves one
-    unit too many on the host without breaking any test that only checks the
-    plan FITS.
-
-    So this recomputes the answer independently -- walk the rungs in order,
-    take units largest-first, stop at the first unit that closes the gap -- and
-    demands the planner move exactly that many bytes. An overshoot bound cannot
-    catch an off-by-one that stays inside one unit; an exact comparison can.
-
-    NOTE ON THE BOUND, because the first version of this test was wrong. It
-    compared the overshoot against the smallest unit ANYWHERE in the layout and
-    failed at 21 GiB, where the plan overshot by 166.4 MB while a 161 MB
-    ffn_gate unit existed. The plan had stopped inside the ffn_down rung (unit
-    171.8 MB), so it was minimal; the test was asking it to substitute a unit
-    from a rung the ladder had not entered, which is precisely what rung ORDER
-    forbids. Minimality here means minimal SUBJECT TO the rung discipline, and
-    a check that ignores the discipline reports a violation that is not one.
-    """
+    """MINIMALITY, checked against a reimplementation rather than a comment."""
     layout = graded_moe()
     checked = 0
     for vram in (23, 21, 19, 17, 15, 13, 11):
@@ -781,8 +593,6 @@ def test_the_selection_matches_an_independent_minimal_walk():
             continue
         need = deficit_of(layout, vram)
 
-        # Independent walk: ffn_down over every block, then ffn_up, then
-        # ffn_gate, each rung largest-first, stopping the moment the gap closes.
         expected = 0
         for attr in ("ffn_down_bytes", "ffn_up_bytes", "ffn_gate_bytes"):
             if expected >= need:
@@ -837,25 +647,8 @@ def _typed_moe(
 
 
 def test_the_quant_rule_reproduces_every_measured_moe_verdict():
-    """The bits-per-weight rule, scored against the cells that produced it.
-
-    Ladder over coarse generation ratio, six MoE model-quants, two families,
-    five hosts. WIN means the every-block ladder (ALL) beat the whole-FFN
-    planner; anything else means it did not and BOUNDARY should be kept:
-
-        down/up   model         measured        verdict
-        1.93      gemma-26B Q2  1.27-1.33x      ALL
-        1.49      gemma-26B Q3  1.34x           ALL
-        1.35      Qwen35B   Q2  0.98-1.02x      BOUNDARY (flat)
-        1.34      gemma-26B Q4  0.93-0.96x      BOUNDARY
-        1.28      Qwen35B   Q6  0.954, 0.994    BOUNDARY
-        1.23      Qwen35B   Q4  0.88-0.95x      BOUNDARY
-
-    These are labels from hardware, so this test is the rule's actual evidence
-    rather than a restatement of its implementation. It uses NOMINAL bits per
-    weight from the type names, which is what a real launch has available; the
-    measured GGUF ratios differ by up to 0.025 and land on the same side of the
-    threshold, which is the property that makes the type-name version usable.
+    """The bits-per-weight rule, scored against the cells that produced it: ladder over coarse
+    generation ratio, six MoE model-quants, two families, five hosts, labelled below.
     """
     cases = [
         ("IQ4_NL", "IQ2_XS", FfnGranularity.ALL),  # gemma-26B Q2
@@ -890,13 +683,7 @@ def test_the_quant_rule_is_off_by_default_and_changes_no_plan():
 
 
 def test_the_quant_rule_abstains_rather_than_guessing():
-    """No types, or a dense model, means no opinion -- not a default of ALL.
-
-    Dense is excluded deliberately and not by oversight: both dense models
-    measured (gemma-31B at ratios 1.30 and 1.32) WIN with the ladder, which is
-    the wrong side of a threshold fitted to MoE, so the rule is known not to
-    describe them. Silently applying it there would use evidence against itself.
-    """
+    """No types, or a dense model, means no opinion, not a default of ALL."""
     untyped = graded_moe()
     assert moe_down_up_bpw_ratio(untyped) is None
     assert (
@@ -924,7 +711,6 @@ def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
 
     needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
     saved_by_knobs = mmproj + (floor // 2 + layout.recurrent_bytes) + draft
-    # Short by everything the knobs can give plus half of one ffn_down rung.
     short = saved_by_knobs + layout.blocks[0].ffn_down_bytes // 2
     card = needed + GIB - short + mmproj + draft
     o = opts(
@@ -959,24 +745,15 @@ def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
 
 
 def test_a_cpu_pinned_projector_is_charged_to_host_ram():
-    """--no-mmproj-offload moves the projector, it does not delete it.
-
-    The flag clears ``mmproj_use_gpu`` and clip.cpp then allocates the whole
-    projector in a CPU backend buffer, so rung 0 turns VRAM bytes into HOST RAM
-    bytes. Both host-RAM decisions in ``_finish`` spend that RAM: the ``--cache-ram``
-    clamp hands the prompt cache whatever is left under the headroom, and the cost
-    gate refuses a spill the host cannot hold. Leaving the projector out of
-    ``host_bytes`` spends it twice -- the plan can enable ``--load-mode none``,
-    which is a no-mmap load that cannot page, on a host that does not have the
-    room.
-    """
+    """--no-mmproj-offload moves the projector, it does not delete it: the flag clears
+    ``mmproj_use_gpu`` and clip.cpp allocates the whole projector in a CPU backend buffer,
+    so rung 0 turns VRAM bytes into HOST RAM bytes. Leaving it out of ``host_bytes`` spends
+    that RAM twice, and ``--load-mode none`` cannot page."""
     from core.inference.offload_planner import all_resident_bytes
 
     layout = graded_moe()
     ctx, floor, mmproj = 4096, GIB, 3 * GIB
     needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor)
-    # Short by half a projector, so rung 0 alone closes the deficit and no weight
-    # is spilled: the only host bytes here are the embedding and the projector.
     card = needed + GIB + mmproj // 2
     o = opts(
         overhead_bytes_per_device = GIB,
@@ -984,7 +761,6 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
         mmproj_bytes = mmproj,
         mmproj_movable = True,
     )
-    # Just enough RAM for the embedding and the projector under the headroom.
     ram = o.host_ram_headroom_bytes + layout.token_embd_bytes + mmproj
 
     plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
@@ -995,9 +771,6 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
     assert plan.load_mode_none
     assert plan.cache_ram_mib == 0, "nothing is left under the headroom for the prompt cache"
 
-    # One byte short of the projector, and the plan is refused rather than
-    # launched: the projector sits in a CPU backend buffer, so mmap could not
-    # page it, and nothing else in a projector-only plan scores the host side.
     short = plan_placement(layout, [card], ram - 1, ctx, kv_bytes_floor = floor, opts = o)
     assert short.declined_by_gate and not short.changed, short.reason
     assert "host RAM" in short.reason
@@ -1005,10 +778,9 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
 
 
 def test_the_per_device_selection_grades_its_boundary_block_too():
-    """The pooled ladder trims the LAST whole block it takes down to the rungs
-    the deficit needed; the per-device walk took whole blocks and stopped, so
-    every deficient device carried up to one whole block of host traffic the
-    deficit did not need. Each device's last whole block is its own boundary."""
+    """The pooled ladder trims the LAST whole block it takes; the per-device walk took whole
+    blocks and stopped, so every deficient device carried up to one whole block of host
+    traffic the deficit did not need."""
     from core.inference.offload_planner import (
         PlanOptions,
         _per_device_shortfall,
@@ -1031,7 +803,6 @@ def test_the_per_device_selection_grades_its_boundary_block_too():
     assert all(u.cls is None for u in whole)
     assert any(u.cls is not None for u in graded), "no device's boundary block was graded"
     assert sum(u.nbytes for u in graded) < sum(u.nbytes for u in whole)
-    # And the trimmed selection still fits device by device.
     moved = {}
     for u in graded:
         moved[u.index] = moved.get(u.index, 0) + u.nbytes
@@ -1039,11 +810,9 @@ def test_the_per_device_selection_grades_its_boundary_block_too():
 
 
 def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
-    """Under iSWA the windowed layers' cache grows with the slot count and the
-    full-attention layers' does not, so the per-layer weights measured at the
-    caller's slots no longer split a re-priced total. On one card rung 1 fires;
-    across two the check would pass a card that fails allocation, so the rung is
-    skipped there and the ladder goes on to the weights."""
+    """Under iSWA the windowed layers' cache grows with the slot count and the full-attention
+    layers' does not, so the per-layer weights no longer split a re-priced total. Across two
+    cards the check would pass a card that fails allocation, so rung 1 is skipped there."""
     import dataclasses
 
     from core.inference.offload_planner import all_resident_bytes
@@ -1052,7 +821,6 @@ def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
     ctx, floor = 4096, GIB
     table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
     needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
-    # Short by exactly what going to one slot recovers, and nothing else.
     card = needed + GIB - (3 * floor // 4 + 3 * layout.recurrent_bytes) + 16 * 1024 * 1024
     o = opts(
         overhead_bytes_per_device = GIB,
@@ -1079,10 +847,9 @@ def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
 
 
 def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
-    """A KDA hybrid without full_attention_interval says which rows carry no
-    cache with a 0 in the per-layer list. Summed away, the layout reported every
-    layer as attention and no recurrent rows, and the multi-device check then
-    spread the measured cache uniformly over rows that hold none of it."""
+    """A KDA hybrid without full_attention_interval marks the rows that carry no cache with a
+    0 in the per-layer list. Summed away, every layer read as attention and the multi-device
+    check spread the measured cache over rows that hold none of it."""
     from core.inference import offload_layout as OL
 
     def reader(heads):
@@ -1126,12 +893,7 @@ def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
 
 
 def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypatch):
-    """A request does not get longer because the server takes fewer at once. The
-    gate scaled the prompt by the old/new slot ratio after rung 1, which at four
-    slots to one quadrupled it and charged prefill once per micro-batch of a
-    request that never launches; the prompt stays what the caller stated and is
-    only capped at the window a slot can serve, n_ctx / slots without a unified
-    cache and the whole context with one."""
+    """A request does not get longer because the server takes fewer at once."""
     from core.inference import offload_planner as planner
 
     layout = graded_moe()
@@ -1167,7 +929,6 @@ def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypa
         layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, kv_unified = True)
     )
     assert seen and seen[-1] == 1024, seen
-    # A request longer than a slot's window is capped there, and only there.
     seen.clear()
     wide = dict(base, workload_prompt_tokens = 8192, min_parallel = 2)
     plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**wide))
@@ -1180,14 +941,12 @@ def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypa
 
 
 def test_a_repeated_rung_class_is_walked_once():
-    """A custom order that names a class twice must not count its bytes twice:
-    every rung pass re-reads its units from the layout, so the second pass took
-    the same tensors again toward the deficit while the override names them once,
-    and the plan claimed a fit that freed less than it said."""
+    """A custom order that names a class twice must not count its bytes twice: every rung
+    pass re-reads its units from the layout, so the second pass took the same tensors again
+    toward the deficit while the override names them once."""
     layout = graded_moe()
     dup = (SpillClass.FFN_DOWN, SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
     clean = (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
-    # 14 GiB: the deficit outruns every ffn_down, so the duplicate pass would run.
     plan = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = dup))
     ref = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = clean))
     assert plan.spills_anything
@@ -1196,10 +955,9 @@ def test_a_repeated_rung_class_is_walked_once():
 
 
 def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
-    """A hybrid that names both full_attention_interval and a per-layer
-    head_count_kv vector keeps zeros on its recurrent rows. Truncating the vector
-    to the first n_attention entries summed mostly zeros and priced the cache at
-    a fraction of its size; the positive rows are the attention layers."""
+    """A hybrid that names both full_attention_interval and a per-layer head_count_kv vector
+    keeps zeros on its recurrent rows. Truncating the vector to the first n_attention entries
+    summed mostly zeros and priced the cache at a fraction of its size."""
     from core.inference import offload_layout as OL
 
     fields = {
@@ -1283,14 +1041,9 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
 
 
 def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
-    """A slot the cache does not shrink for is concurrency given up for nothing.
-
-    Two shapes reach that: a floor map that is flat across the slot count, and
-    --kv-unified with no recurrent state, where the attention cache is held at
-    the caller's count whatever the map says. The rung stepped 4 slots down to 1
-    in both, and the spill it emitted afterwards was byte-identical to the plan
-    pinned at 4.
-    """
+    """A slot the cache does not shrink for is concurrency given up for nothing: a flat floor
+    map, and --kv-unified with no recurrent state, both hold the cache at the caller's count
+    whatever the map says."""
     from core.inference.offload_planner import all_resident_bytes
 
     layout = graded_moe()
@@ -1300,7 +1053,6 @@ def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
     needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
     card = needed + GIB - 3 * layout.blocks[0].ffn_down_bytes
     base = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, n_parallel = 4)
-    # A flat map, and a map that falls under a cache the slot count does not size.
     for extra in (
         dict(kv_bytes_floor_by_parallel = flat),
         dict(kv_bytes_floor_by_parallel = falls, kv_unified = True),
@@ -1350,10 +1102,9 @@ def test_the_slot_rung_still_fires_where_a_slot_really_is_a_cache():
 
 
 def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
-    """--kv-unified makes the attention cache flat in the slot count; the recurrent
-    state is still one copy per sequence (llama-memory-recurrent sizes on
-    n_seq_max and has no unified form). Skipping rung 1 outright under the flag
-    spilled 2.4 GiB of FFN on a hybrid where one slot fewer fitted resident."""
+    """--kv-unified makes the attention cache flat in the slot count; the recurrent state is
+    still one copy per sequence. Skipping rung 1 outright under the flag spilled FFN on a
+    hybrid where one slot fewer fitted resident."""
     from dataclasses import replace
 
     from core.inference.offload_planner import all_resident_bytes
@@ -1371,8 +1122,6 @@ def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
     )
     plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
     assert plan.n_parallel == 3 and not plan.spills_anything, plan.reason
-    # The attention cache is not re-priced per slot under the flag: with no state
-    # to give back the rung keeps every slot and the weights spill instead.
     plain = graded_moe()
     short = all_resident_bytes(plain, ctx, kv_bytes_floor = floor, n_seq = 4) + GIB - GIB // 2
     flat = plan_placement(plain, [short], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))

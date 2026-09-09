@@ -154,9 +154,6 @@ def test_cgroup_v1_reclaims_hierarchical_inactive_file_cache(tmp_path, monkeypat
     assert LlamaCppBackend._cgroup_available_memory_mib() == 12 * _MIB_PER_GB
 
 
-# ------------------------------------------------- prompt cache in the footprint
-
-
 def _cache_bytes(cache_ram, caps = None):
     from core.inference.llama_cpp import LlamaCppBackend
     return LlamaCppBackend._effective_prompt_cache_bytes(cache_ram, caps)
@@ -177,9 +174,7 @@ def test_a_typed_ceiling_is_charged_at_what_was_typed():
 
 
 def test_no_limit_is_charged_as_the_default_not_as_infinity():
-    """-1 is llama.cpp's "no limit". Charging infinity would answer "never fits"
-    for every load and take --load-mode none away from hosts that are fine; the
-    default is the size it is actually likely to reach."""
+    """-1 is llama.cpp's "no limit"."""
     assert _cache_bytes(-1) == 8192 * 1024 * 1024
 
 
@@ -191,37 +186,7 @@ def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
 
 
 def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
-    """Pin where the (VRAM + RAM) rule switches to mmap. Nothing more.
-
-    This docstring has been wrong three times. The third time is the instructive
-    one, because it was wrong about the AXIS rather than about a data point.
-
-    The benchmark rig forced host RAM down by holding a hog sized against
-    MemFree (SC_AVPHYS_PAGES). What determines whether a new process can get
-    memory is MemAvailable -- free pages PLUS reclaimable page cache -- and after
-    the rig downloads a 17.5 GiB GGUF those differ by tens of GiB. One cell
-    labelled "6.16 GiB of RAM" was measured starting its arms with 46.3 GiB
-    available. The hog was also sized once as `MemFree - target`, which is zero
-    when MemFree already sits near the target, so on the cells that mattered no
-    hog was formed at all.
-
-    So every RAM figure this docstring used to quote was a label, not a
-    condition, and the boundary was never crossed in a way a process could feel.
-    Three separate "mmap collapses" readings came out of that rig at three
-    different claimed deficits, each contradicted by the next run. All three are
-    withdrawn, and so is the framing that treated them as a thrash curve.
-
-    What survives is the part that never depended on the RAM axis: --load-mode
-    none is 2-3% faster than mmap wherever the spill fits, and never slower,
-    across seven cells and three runs. Whether mmap helps where the spill does
-    NOT fit remains unmeasured.
-
-    The assertions below are unaffected by any of this. They pin
-    _fits_without_paging, which is a property of the code and not of any cell:
-    given a stated need, a device list and an available-RAM figure, it must
-    switch at the stated point. That is worth pinning so a change is deliberate.
-    This test does not claim the switch point is right or wrong.
-    """
+    """Pin where the (VRAM + RAM) rule switches to mmap."""
     mib = 1024**2
     gib = 1024**3
     backend = object.__new__(LlamaCppBackend)
@@ -240,7 +205,5 @@ def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
 
     assert mode_at(24) == "none"
     assert mode_at(15.76) == "none"
-    # Below the spill size the rule switches. Measured behaviour on both sides of
-    # this point is "no-mmap works fine"; mmap's behaviour here is unresolved.
     assert mode_at(10.12) == "mmap"
     assert mode_at(8.53) == "mmap"

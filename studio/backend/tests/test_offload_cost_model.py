@@ -353,8 +353,6 @@ def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
         2.0 * prefill_penalty_ms(p, 512, n_ubatch = 512)
     )
     assert prefill_penalty_ms(p, 0, n_ubatch = 512) == 0.0
-    # rank scores the whole request the same way, so a short embedding prompt
-    # is not priced below the transfer it makes.
     short = rank([p], n_generated = 0, n_prompt = 512, n_ubatch = 2048)[0][1]
     full = rank([p], n_generated = 0, n_prompt = 2048, n_ubatch = 2048)[0][1]
     assert short == pytest.approx(full)

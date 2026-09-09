@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The 31 planned cells published in issue #9861, as ground-truth labels.
-
-These are somebody else's measurements on hardware we do not have (i5-12400F,
-6 cores, RTX 6000 Ada 48 GB + RTX 3090 24 GB, n_ctx 32768 across 4 slots, flash
-attention on, ``--load-mode none``). They are worth keeping because they are the
-only side-by-side numbers against the placement Studio actually falls back to
-when the planner abstains, and because a cost gate tuned on our own Colab matrix
-would otherwise be tuned on the regime that produced the bug.
-
-Arm naming follows the issue, which is the REVERSE of our bench notebooks:
-
-    A = the planner's placement
-    B = llama.cpp's own ``--fit on``
-
-so ``pp_planner`` under ``pp_fit`` means the planner prefills slower.
-
-Workload the numbers were taken at, needed to turn throughputs back into a
-verdict: a unique 2311-2362 token prompt per request so the prompt cache cannot
-serve it, and 128 generated tokens at temperature 0. ``WORKLOAD_PROMPT_TOKENS``
-takes the midpoint.
-
-The reporter has since attached a caveat to the generation column: n_ctx was
-allocated at 32768 but only about 2.2K tokens were ever live, so generation was
-measured where cache residency is worth least. That caveat is real and it is why
-``breakeven_generated_tokens`` below is computed rather than asserted -- but note
-it cannot rescue a cell whose generation is ALSO slower, and 27 of these 31 are.
-"""
+"""The 31 planned cells published in issue #9861, as ground-truth labels."""
 
 from __future__ import annotations
 
@@ -60,12 +34,8 @@ class ReportedCell:
         n_prompt: float = WORKLOAD_PROMPT_TOKENS,
         n_generated: float = WORKLOAD_GENERATED_TOKENS,
     ) -> tuple[float, float]:
-        """(planner, fit) wall seconds for one request of this shape.
-
-        A single throughput column cannot say which arm a user would rather
-        have; prefill and generation trade against each other and the exchange
-        rate is the request shape. Both columns are folded into one number here
-        so the label below is not an artefact of picking a favourite column.
+        """(planner, fit) wall seconds for one request of this shape, so the label
+        below is not an artefact of picking a favourite throughput column.
         """
         planner = n_prompt / self.pp_planner + n_generated / self.tg_planner
         fit = n_prompt / self.pp_fit + n_generated / self.tg_fit
@@ -82,12 +52,8 @@ class ReportedCell:
 
     @property
     def breakeven_generated_tokens(self) -> float | None:
-        """Generated tokens needed before the generation win repays the prefill loss.
-
-        ``None`` when there is no such length: the planner is slower per output
-        token as well, so decoding for longer only widens the gap. That is the
-        case the short-sequence caveat on the issue cannot argue away, and it
-        covers 27 of these 31 cells.
+        """Generated tokens needed before the generation win repays the prefill loss, or ``None``
+        when the planner is slower per output token too and decoding longer only widens the gap.
         """
         per_token_saved = 1.0 / self.tg_planner - 1.0 / self.tg_fit
         if per_token_saved >= 0.0:
@@ -97,8 +63,7 @@ class ReportedCell:
         return n if n > 0.0 else 0.0
 
 
-# Ordered as published: descending generation ratio, so the few cells the
-# planner wins sit at the top and the collapse at the bottom is visible.
+# Ordered as published: descending generation ratio.
 REPORTED_CELLS: tuple[ReportedCell, ...] = (
     ReportedCell("Llama-3.3-70B Q4", "Ada", 38016, 38, 80, 267.3, 309.1, 15.27, 7.68),
     ReportedCell("Qwen3.6-35B-A3B Q4", "3090", 9344, 37, 40, 118.1, 132.5, 15.66, 12.31),
@@ -134,9 +99,8 @@ REPORTED_CELLS: tuple[ReportedCell, ...] = (
     ReportedCell("Qwen3-8B Q4", "Ada", 11008, 29, 36, 1818.2, 6194.0, 101.81, 858.68),
 )
 
-# The two cells a gate must not throw away. Everything else in the table is a
-# loss at the published workload, so a gate that declined all 31 would score
-# well on the losses and still be wrong.
+# The two cells a gate must not throw away; every other cell here is a loss at the
+# published workload, so declining all 31 would score well and still be wrong.
 WINNING_CELLS: tuple[ReportedCell, ...] = tuple(
     cell for cell in REPORTED_CELLS if cell.speedup() > 1.0
 )

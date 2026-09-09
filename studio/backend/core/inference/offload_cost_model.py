@@ -249,16 +249,7 @@ def prefill_penalty_ms(
     n_ubatch: int = 512,
     host: HostProfile | None = None,
 ) -> float:
-    """Extra milliseconds to prefill ``n_prompt`` tokens.
-
-    The weights are copied once per micro-batch, and a partial batch copies them
-    just the same: a 512-token prompt at ``--ubatch-size 2048`` is ONE transfer,
-    not a quarter of one. Charged per whole batch, ceiling, so a prompt shorter
-    than the batch, or one that is not a multiple of it, is not priced below the
-    transfer it has to make. (That under-pricing was enough to flip the cost
-    gate on an embedding launch, where generation is zero and prefill is the
-    whole score.)
-    """
+    """Extra milliseconds to prefill ``n_prompt`` tokens."""
     host = host or HostProfile()
     if host.unified_memory or n_prompt <= 0 or n_ubatch <= 0:
         return 0.0

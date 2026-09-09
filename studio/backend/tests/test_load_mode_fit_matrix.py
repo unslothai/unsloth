@@ -2280,12 +2280,8 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
 
 
 def test_the_prompt_cache_is_in_the_footprint_it_is_subtracted_from():
-    """The predicate subtracts every host-only term from the footprint before
-    crediting VRAM, then adds it to the RAM requirement. The prompt cache was in
-    the host-only term and not in the footprint, so it was subtracted from bytes
-    never added: 20 GiB on a 12 GiB card with an 8 GiB cache priced as 8 GiB of
-    RAM instead of 16, and the false fit took mmap away from the one load that
-    needed it."""
+    """The prompt cache is host-only but absent from the footprint, so subtracting it
+    credited VRAM that was never charged and faked a fit."""
     avail_mib = 16 * 1024
 
     def _fit(cache):

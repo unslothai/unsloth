@@ -33,27 +33,10 @@ _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 
 
 class SpillClass(Enum):
-    """One rung's worth of tensors, in the order the ladder gives them up.
-
-    The ladder used to have a single FFN rung: a block's whole spillable FFN
-    moved or none of it did. That is coarse in the direction that costs the most,
-    because the planner only ever needs to cover a DEFICIT, and a whole-FFN unit
-    overshoots it by up to two thirds. Splitting the FFN into its three matrices
-    lets the same deficit be covered by moving about a third as many bytes.
-
-    The order below is llama.cpp's, from ``common/fit.cpp:407-440``, where the
-    per-layer fractions are named for what STAYS resident and so read backwards:
-    ``LAYER_FRACTION_GATE`` moves ``ffn_down`` only, ``_UP`` moves down plus
-    gate, ``_ATTN`` moves the whole FFN. llama.cpp applies that gradation to the
-    single boundary layer and no other (``fit.cpp:490``); this applies it to
-    every layer.
-
-    UNMEASURED, and deliberately so: ``offload_cost_model`` prices all three
-    expert matrices identically (same ``Access.SCATTERED``, same routed
-    fraction) and they are within a few percent of the same size, so nothing in
-    our cost model prefers this order to any other. The GRANULARITY is what pays;
-    the ORDER is inherited on the assumption that llama.cpp had a reason.
-    ``PlanOptions.ffn_rung_order`` exists so a benchmark can contradict it.
+    """One rung's worth of tensors, in the order the ladder gives them up. The order is
+    llama.cpp's, from ``common/fit.cpp:407-440``, where the per-layer fractions are named for
+    what STAYS resident and so read backwards: ``LAYER_FRACTION_GATE`` moves ``ffn_down`` only,
+    ``_UP`` moves down plus gate, ``_ATTN`` moves the whole FFN.
     """
 
     FFN_DOWN = "ffn_down"
@@ -64,28 +47,22 @@ class SpillClass(Enum):
     # Shared experts and any non-expert FFN on a MoE model: fully activated, so
     # dense-FFN bandwidth. Empty on a dense model, whose FFN is already rungs 1-3.
     DENSE_FFN = "dense_ffn"
-    # The four big attention projections. NOT the norms, which are on the
-    # critical path for a rounding error of size.
+    # The four big attention projections.
     ATTENTION = "attention"
 
 
-# Ordered by what the ladder gives up first. lm_head and the KV cache are rungs
-# too, but they are not per-block and are handled directly by the planner.
+# Ordered by what the ladder gives up first.
 FFN_SPILL_CLASSES = (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
 BLOCK_SPILL_CLASSES = FFN_SPILL_CLASSES + (SpillClass.DENSE_FFN, SpillClass.ATTENTION)
 
-# Which tail names fall in which class, for a MoE and for a dense model. Kept as
-# ONE table so the byte accounting and the emitted ``-ot`` pattern can never
-# disagree: a plan that credits itself bytes its pattern does not move is the
-# failure mode that produced a silent 20 GiB miscount once already.
+# Which tail names fall in which class, for a MoE and for a dense model.
 _CLASS_BODIES: dict[SpillClass, tuple[str, str]] = {
     #                     MoE                              dense
     SpillClass.FFN_DOWN: ("ffn_down_(exps|chexps)", "ffn_down"),
     SpillClass.FFN_UP: ("ffn_(up|gate_up)_(exps|chexps)", "ffn_up"),
     SpillClass.FFN_GATE: ("ffn_gate_(exps|chexps)", "ffn_gate"),
-    # Shared experts, and the plain dense FFN that MoE architectures put in
-    # their first k layers. Both are read in full every token, unlike the routed
-    # experts above, which is why they are a later rung than all three of those.
+    # Shared experts, and the plain dense FFN MoE architectures put in their first k
+    # layers: read in full every token, unlike the routed experts above, so a later rung.
     SpillClass.DENSE_FFN: ("ffn_(up|gate|down|gate_up)(_shexp)?", ""),
     SpillClass.ATTENTION: ("attn_(q|k|v|qkv|output)", "attn_(q|k|v|qkv|output)"),
 }
@@ -100,12 +77,7 @@ _CLASS_RES: dict[SpillClass, tuple[re.Pattern, re.Pattern]] = {
 
 
 def classify_tail(tail: str, is_moe: bool) -> Optional[SpillClass]:
-    """Which rung ``blk.N.<tail>`` belongs to, or None for never-spillable.
-
-    None covers the norms, the router (``ffn_gate_inp``), and the recurrent
-    state: each is either tiny, on the critical path for every token, or moved
-    only by a layer split that ``-ot`` cannot express.
-    """
+    """Which rung ``blk.N.<tail>`` belongs to, or None for never-spillable."""
     for cls in BLOCK_SPILL_CLASSES:
         if _CLASS_RES[cls][0 if is_moe else 1].match(tail):
             return cls
@@ -121,42 +93,22 @@ class BlockLayout:
     spillable_bytes: int
     # attention, norms, routers, shared experts, ssm: on the critical path every token, or the KV cache hangs off them.
     resident_bytes: int
-    # The same bytes again, split by rung. Default 0 so every hand-built layout
-    # in the existing tests still constructs, and so a layout that could not be
-    # graded (an architecture whose tails match none of the class patterns) falls
-    # back to the coarse whole-FFN rung rather than silently spilling nothing.
+    # The same bytes again, split by rung.
     ffn_down_bytes: int = 0
     ffn_up_bytes: int = 0
     ffn_gate_bytes: int = 0
     dense_ffn_bytes: int = 0
     attn_bytes: int = 0
-    # The GGUF quant type of each rung's tensors ("" when unknown), because what
-    # a rung costs on the CPU is not a function of its BYTES alone.
-    #
-    # MEASURED on gemma-4-26B-A4B, same model, three quants, pure CPU (-ngl 0),
-    # tokens/s x file size as a per-byte proxy:
-    #
-    #   Q2_K_XL  IQ4_NL down + IQ2_XS  gate_up   327.6   ladder 1.27-1.33x
-    #   Q3_K_XL  IQ4_NL down + IQ3_XXS gate_up   361.6   ladder 1.09-1.34x
-    #   Q4_K_XL  Q5_1   down + Q4_K    gate_up   403.3   ladder 0.93-0.96x
-    #
-    # The IQ mixes reach 81% of the K-quant's per-byte CPU throughput, and the
-    # ladder wins exactly where the tensor it keeps RESIDENT is an IQ type. So
-    # the rung order is a property of the types, not of the model or the host --
-    # three earlier readings (host speed, model family, spill depth) were each
-    # falsified by the next batch of cells.
+    # The GGUF quant type of each rung's tensors ("" when unknown): what a rung costs
+    # on the CPU is not a function of its BYTES alone, and the ladder wins exactly
+    # where the tensor it keeps RESIDENT is an IQ type.
     ffn_down_type: str = ""
     ffn_up_type: str = ""
     ffn_gate_type: str = ""
 
     @property
     def graded(self) -> bool:
-        """Whether the three FFN rungs account for the whole spillable FFN.
-
-        False means the sub-FFN rungs must not be used for this block: the
-        breakdown would understate what a pattern moves, and the planner would
-        fill VRAM against a deficit it had not really closed.
-        """
+        """Whether the three FFN rungs account for the whole spillable FFN."""
         graded = self.ffn_down_bytes + self.ffn_up_bytes + self.ffn_gate_bytes
         return self.spillable_bytes > 0 and graded == self.spillable_bytes
 
@@ -217,8 +169,7 @@ class ModelLayout:
     # know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
     # Multi-head latent attention (attention.kv_lora_rank): the cache is one compressed K-only latent per token, not
-    # a K+V pair per head, so the per-head product above over-counts it by up to two orders of magnitude. A caller's
-    # architecture-aware measurement is the only honest size and is trusted over the product.
+    # a K+V pair per head, so the per-head product above over-counts it by up to two orders of magnitude.
     has_mla: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -302,29 +253,7 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
 
 
 def _kv_heads_total(n_kv_head, n_attention: int) -> int:
-    """Total KV heads across `n_attention` layers, for a scalar OR a per-layer list.
-
-    ``attention.head_count_kv`` is a bare scalar on most architectures and a
-    PER-LAYER array on some. gemma-4-26B-A4B ships a 30-entry
-    ``[8, 8, 8, 8, 8, 2, ...]`` and gemma-4-31B a 60-entry
-    ``[16, 16, 16, 16, 16, 4, ...]``.
-
-    ``int()`` on a list raises, ``layout_from_gguf`` swallows the error to a
-    debug log, and the planner then abstains on every quant of both families --
-    six of the thirteen models in the sweep -- with nothing visibly failing,
-    because an abstain falls through to ``--fit on``. It surfaced only when a
-    Kaggle cell finally ran one and reported "layout or device inventory is
-    incomplete".
-
-    Summing is the right arithmetic and not merely a type fix: these models mix
-    8 with 2, and 16 with 4, so one head count times a layer count is the wrong
-    number even where it happens not to raise. ``llama_cpp.py`` already models
-    this as ``_n_kv_heads_by_layer``; the layout never learned about it.
-
-    A list shorter than the layer count is padded with its own last value, which
-    is what a trailing uniform tail means; 0 signals "unusable", so the caller
-    abstains rather than pricing a cache of zero.
-    """
+    """Total KV heads across `n_attention` layers, for a scalar OR a per-layer list."""
     if n_attention <= 0:
         return 0
     if isinstance(n_kv_head, (list, tuple)):
@@ -340,8 +269,7 @@ def _kv_heads_total(n_kv_head, n_attention: int) -> int:
 
 # The default llama.cpp uses when a hybrid's GGUF omits full_attention_interval, per architecture. Read straight off
 # the `uint32_t full_attn_interval = N;` that precedes each optional get_key: src/models/qwen3next.cpp:24,
-# qwen35.cpp:23, qwen35moe.cpp:26, minimax-01.cpp:13. Every entry here has to come from that source; an architecture
-# not listed abstains below rather than guessing.
+# qwen35.cpp:23, qwen35moe.cpp:26, minimax-01.cpp:13. An architecture not listed abstains below rather than guessing.
 _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
     "qwen3next": 4,
     "qwen35": 4,
@@ -351,9 +279,7 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 
 
 # Architectures whose zero-KV-head rows are recurrent only when their FFN width is 0 as well
-# (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516). Nemotron-H's other zero-head rows are
-# MLP-only and carry no SSM state, so charging them one over-counts the state by a row apiece. Every other zero-head
-# hybrid -- jamba, granite-hybrid, lfm2, plamo2, kimi-linear, bailingmoe3 -- keys on the heads alone.
+# (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516).
 _RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
 
 
@@ -388,8 +314,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. llama.cpp resolves
     # that in three steps (models/qwen3next.cpp:21-27, and the identical block in qwen35, qwen35moe and minimax-01): an
     # explicit per-layer mask first, then the interval key, then the ARCHITECTURE's built-in default for it. Absent from
-    # all three, every layer is attention -- true for a plain transformer, and wrong for a hybrid, which is why the
-    # ssm.* check below abstains instead.
+    # all three, every layer is attention, which is why the ssm.* check below abstains instead.
     recurrent_known = False
     n_recurrent = 0
     mask = _field(reader, f"{arch}.attention.recurrent_layers")
@@ -417,14 +342,9 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
-    # A per-layer list with zeros names the rows that carry NO attention cache
-    # (a KDA / linear-attention hybrid). Summing them away would report every
-    # layer as attention and let a multi-device check spread the cache uniformly
-    # over rows that hold none of it; keep the count honest so the uneven-cache
-    # abstain sees the hybrid. With full_attention_interval set as well the list
-    # is still per PHYSICAL layer, zeros on the recurrent rows: truncating it to
-    # the first n_attention entries summed mostly zeros and priced the cache at
-    # a fraction of its size, so the positive rows are what is summed.
+    # A per-layer list with zeros names the rows that carry NO attention cache (a KDA /
+    # linear-attention hybrid); summing them away would let a multi-device check spread the
+    # cache over rows that hold none of it.
     if isinstance(n_kv_head, (list, tuple)) and n_layers > 0:
         _heads = [int(h) for h in n_kv_head]
         if _heads:
@@ -471,10 +391,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_embd_s = d_state * d_inner
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
 
-    # ssm.* keys say the model HAS recurrent layers; nothing above could say which. Reporting it as all-attention is not
-    # a small error in the safe direction: Qwen3-Next reads as 48 GQA layers, 12288 MiB at 131072 against a real 3373.5,
-    # and the fixed state that IS there comes out as 0. Abstain, like the sharded case, so the planner falls through to
-    # --fit on rather than planning against a cache 3.6x its size.
+    # ssm.* keys say the model HAS recurrent layers; nothing above could say which.
     if not recurrent_known and d_inner and d_state and d_conv:
         logger.debug("offload layout: %s has ssm keys but no recurrent-layer map", arch)
         return ModelLayout()
@@ -510,21 +427,15 @@ def _layout_from_readers(readers) -> ModelLayout:
             if cls is not None:
                 bucket = per_class.setdefault(index, {})
                 bucket[cls] = bucket.get(cls, 0) + nbytes
-                # The rung's quant TYPE, for the CPU cost of running it there.
-                # Recorded from the largest tensor in the class so a stray F32
-                # bias cannot outvote the weight matrix that dominates the work.
+                # The rung's quant TYPE, from the largest tensor in the class so a
+                # stray F32 bias cannot outvote the weight matrix that dominates.
                 tb = per_class_type.setdefault(index, {})
                 if nbytes > tb.get(cls, (0, ""))[0]:
                     tname = getattr(tensor, "tensor_type", None)
                     tb[cls] = (nbytes, getattr(tname, "name", "") or "")
             continue
         if name.startswith("per_layer_token_embd"):
-            # gemma3/gemma4 per-layer embeddings. Host-resident like token_embd,
-            # and kept in a SEPARATE total because the tied-embedding branch
-            # below duplicates the VOCABULARY matrix and must not be handed this
-            # as well: on gemma-4-E2B it is 1540 MiB against a 264 MiB vocabulary,
-            # so folding it in charged VRAM 1540 MiB for a tensor llama.cpp never
-            # puts there. See the comment on that branch for what it cost.
+            # gemma3/gemma4 per-layer embeddings.
             per_layer_embd += nbytes
         elif "token_embd" in name:
             token_embd += nbytes
@@ -547,19 +458,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     # direction. Resident, not lm_head: the duplicate keeps the name token_embd.weight, so LM_HEAD_PATTERN cannot match
     # and the lm_head rung would credit a spill that moves nothing.
     if not lm_head and token_embd:
-        # ``token_embd`` ONLY, never the per-layer embeddings. What llama.cpp
-        # duplicates is the vocabulary matrix -- ggml_dup_tensor on the tensor
-        # routed through the OUTPUT buffer list -- and the per-layer input
-        # embeddings are neither an output nor duplicated.
-        #
-        # MEASURED cost of getting this wrong, on gemma-4-E2B-it UD-Q4_K_XL with
-        # 4.15 GiB free: the layout charged VRAM 1804 MiB for the duplicate
-        # instead of 264 MiB, so ``all_resident_bytes`` came to 3.57 GiB against
-        # the 1.45 GiB llama.cpp actually placed, and the planner spilled the FFN
-        # of 32 of 35 blocks to cover a deficit that did not exist. ``--fit on``
-        # left the model wholly resident and measured 447.8 t/s; the planner
-        # measured 187.7. That is 0.42x, on a model that FIT -- the same failure
-        # #9861 reported and the same shape as its two worst cells.
+        # ``token_embd`` ONLY, never the per-layer embeddings.
         other_resident += token_embd
 
     # trailing nextn/MTP blocks are not loaded unless a draft is engaged
@@ -636,13 +535,7 @@ def spill_pattern_for_class(
     cls: SpillClass,
     indices: Optional[list[int]] = None,
 ) -> str:
-    """The anchored ``-ot`` pattern for one rung over ``indices``.
-
-    Anchored for the same reason :func:`spill_pattern_for` is: llama.cpp matches
-    with ``std::regex_search``, so an unanchored ``ffn_down`` would also match
-    ``ffn_down_exps`` and move the whole expert rung when only the dense one was
-    asked for -- which on a MoE model is most of the file.
-    """
+    """The anchored ``-ot`` pattern for one rung over ``indices``."""
     body = _CLASS_BODIES[cls][0 if layout.is_moe else 1]
     if not body:
         raise ValueError(

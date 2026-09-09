@@ -306,12 +306,8 @@ def test_plan_to_args_shape():
 
 
 def test_largest_first_minimises_overshoot():
-    """Best-fit-decreasing: cover a small residual with a small block, not by
-    dragging a 400 MiB block across the bus on every token.
-
-    Pinned to LARGEST_FIRST explicitly. On this fixture the 50 MiB block is ALSO
-    the last one, so under the BACK_FIRST default the assertion held by
-    coincidence and the test had silently stopped testing the order.
+    """Best-fit-decreasing: cover a small residual with a small block, not by dragging a 400 MiB
+    block across the bus on every token.
     """
     layout = uneven_layout()
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
@@ -332,13 +328,9 @@ def test_largest_first_minimises_overshoot():
 
 
 def test_the_default_order_is_back_first():
-    """On a fixture where the two orders DISAGREE: the smallest block is at the
-    front, the last block is twice its size. The default takes the last block;
-    LARGEST_FIRST, asked for by name, takes the small one.
-
-    98 cells, five hosts: contiguous-from-the-back is never more than 3% worse
-    than largest-first and better by more than 3% in 10, median 1.0073.
-    """
+    """On a fixture where the two orders DISAGREE: the smallest block is at the front and
+    the last block is twice its size. The default takes the last block; LARGEST_FIRST,
+    asked for by name, takes the small one."""
     sizes = [50 * MIB, 200 * MIB, 400 * MIB, 100 * MIB]
     layout = ModelLayout(
         **{
@@ -476,8 +468,6 @@ def test_a_safe_partial_spill_across_two_gpus_is_planned():
     )
 
     assert plan.changed is True
-    # Device 0 owns rows 0-2 and is half a GiB over; device 1 owns rows 3-4 and
-    # needs the whole 2 GiB block. BACK_FIRST takes the last block on each device.
     assert plan.spilled_blocks == (2, 3)
 
 
@@ -572,9 +562,6 @@ def test_output_device_shortfall_can_reach_the_lm_head_rung():
         split_weights_per_device = [1, 1],
     )
 
-    # Device 0 (rows 0-1) is 100 over and BACK_FIRST takes block 1; device 1 (rows
-    # 2-3) holds the 10-byte block and the 100-byte output row, which only the
-    # lm_head rung can relieve.
     assert plan.spilled_blocks == (1,)
     assert plan.spilled_lm_head is True
     assert plan.vram_bytes <= 120
@@ -629,11 +616,9 @@ def test_the_row_split_matches_llama_cpp():
     # Contiguous, in device order, covering every row exactly once.
     rows = _device_slots(65, [24 * GIB, 8 * GIB])
     assert rows[0] == list(range(0, 49)) and rows[1] == list(range(49, 65))
-    # One device takes everything.
     assert _device_slots(65, [8 * GIB]) == [list(range(65))]
-    # An all-zero split is not a placement llama.cpp produces -- it prefix-sums
-    # the shares and divides by the total -- so it is refused rather than
-    # modelled as "device 0 takes every row", which is what it used to answer.
+    # An all-zero split is not a placement llama.cpp produces, since it prefix-sums the
+    # shares and divides by the total, so it is refused rather than modelled.
     with pytest.raises(ValueError):
         _device_slots(4, [0, 0])
 
@@ -683,9 +668,6 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
     that each one's row share fits with room to spare return None -- no abstain
     reason -- for the same full spill the tight case rejects."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    # BYTES per block, not a set of indices: once a rung can move part of a
-    # block, crediting the whole block for a partial move is the optimistic
-    # direction and a per-device shortfall is a hard throw.
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     tight = _ALL_SPILL_VRAM // 2
     assert (
@@ -845,10 +827,7 @@ def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
 
 
 def test_only_the_default_context_reads_the_training_window():
-    """MOVED: this pinned a clamp of every request to n_ctx_train. llama-server
-    serves a -c above the window, so the clamp priced a cache the child does not
-    run at and the seam rewrote or out-ran the user's -c. An explicit request is
-    priced as asked; the default, and only the default, reads the window."""
+    """MOVED: this pinned a clamp of every request to n_ctx_train."""
     layout = q4_layout()
     assert plan_placement(layout, [24 * GIB], 128 * GIB, 999_999).n_ctx == 999_999
     assert plan_placement(layout, [24 * GIB], 128 * GIB, 0).n_ctx == layout.n_ctx_train
@@ -868,10 +847,6 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
     at 9.73 GiB against 8 GiB usable, so no rung of the ladder fits. Halving the
     cache brings the floor to 7.73 and it does."""
     layout = q4_layout()
-    # The reserve model is pinned out of this pair: it is about the CACHE rescuing a load, and
-    # with the shipped context term a 9 GiB card at 64K reserves ~1 GiB more, so q8_0 no longer
-    # covers the gap. That is the reserve doing its job, and it is asserted on its own in
-    # test_the_context_reserve_declines_a_load_the_flat_one_accepted rather than smuggled in here.
     pinned = PlanOptions(overhead_bytes_per_token = 0)
     without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536, opts = pinned)
     assert without.insufficient is True
@@ -925,9 +900,8 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
 # test_the_overhead_reserve_covers_the_measured_prefill_buffer.
 FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
 # The context-linear part of the reserve is pinned to zero here for the same reason the flat
-# part is pinned to 1 GiB: these ladders are arithmetic about the CACHE, and a reserve that
-# moves with the context would make every expected number a function of the reserve model
-# instead. The term itself is pinned by test_the_reserve_grows_with_context_and_max_context_agrees.
+# part is pinned to 1 GiB: these ladders are arithmetic about the CACHE, and the term itself
+# is pinned by test_the_reserve_grows_with_context_and_max_context_agrees.
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
@@ -1100,18 +1074,15 @@ def _hybrid_tensors(n = 48):
 
 
 def test_a_hybrid_without_the_interval_key_uses_the_architecture_default():
-    """llama.cpp defaults full_attention_interval per ARCHITECTURE and only then
-    treats every layer as attention (models/qwen3next.cpp:24). Reading the absent
-    key as 0 made Qwen3-Next look like 48 GQA layers with no state at all: 12288
-    MiB of cache at 131072 against the 3072 + 75 it really reserves, a 3.6x
-    over-count that shrinks context or spills weights that fit."""
+    """llama.cpp defaults full_attention_interval per ARCHITECTURE and only then treats every
+    layer as attention (models/qwen3next.cpp:24). Reading the absent key as 0 made Qwen3-Next
+    look like 48 GQA layers with no state, a 3.6x over-count of the cache."""
     layout = _layout_from_reader(_StubReader(_qwen3next_fields(), _hybrid_tensors()))
     assert layout.complete
     assert layout.n_attention_layers == 12
     assert layout.kv_bytes(131072) == 3072 * MIB
     assert layout.recurrent_bytes > 0
 
-    # The default is exactly what the key would have said.
     spelled = _layout_from_reader(
         _StubReader(
             _qwen3next_fields(**{"qwen3next.full_attention_interval": 4}), _hybrid_tensors()
@@ -1149,7 +1120,6 @@ def test_ssm_keys_with_no_recurrent_map_abstain_instead_of_reading_all_attention
     fields["general.architecture"] = "mysteryhybrid"
     assert _layout_from_reader(_StubReader(fields, _hybrid_tensors())).complete is False
 
-    # A plain transformer has no ssm.* keys and is still read.
     plain = {k: v for k, v in fields.items() if ".ssm." not in k}
     assert _layout_from_reader(_StubReader(plain, _hybrid_tensors())).complete is True
 
@@ -1179,7 +1149,6 @@ def test_nemotron_h_mlp_only_rows_are_not_charged_a_recurrent_state():
     assert layout.n_attention_layers == 2
     assert layout.recurrent_bytes == 4 * one_state
 
-    # An architecture llama.cpp keys on the heads alone keeps all six.
     other = {k.replace("nemotron_h", "jamba"): v for k, v in fields.items()}
     other["general.architecture"] = "jamba"
     assert _layout_from_reader(_StubReader(other, _hybrid_tensors(8))).recurrent_bytes == (
@@ -1321,54 +1290,29 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
 
 
 def test_the_context_reserve_matches_what_was_measured_on_hardware():
-    """The flat term was right and incomplete: the reserve also grows with context.
-
-    MEASURED by sweeping device headroom directly with -ot at fixed context and budget until
-    the load flips from failing to serving. gemma-4-26B-A4B Q4 on an A100-40:
-
-        n_ctx  33792   required ~= 1184 MiB      (a cell that served on 1196 and failed on 1184)
-        n_ctx ~66600   required in (1786.3, 1932.5]   three runs, 4x apart in prompt length,
-                                                      intersected at matched total context
-        n_ctx 132096   required  > 1958.1 MiB    (the planner spilled NOTHING and still failed)
-
-    so the slope is in [18.8, 23.4] KiB per token. The flat 1536 MiB covers the first of those
-    and not the last two, which is the defect: llama-server does not run slower when the reserve
-    is short, it refuses to start.
-    """
+    """The flat term was right and incomplete: the reserve also grows with context."""
     opts = PlanOptions()
     mib = 1024 * 1024
 
-    # Unchanged where the flat term was calibrated and is known to work. That includes a
-    # 32K context: the requirement is flat from 9216 to 33792, and charging the slope from
-    # 16384 spilled 0.2 GiB on a 27B where the fitter had slack, a measured loss.
     assert _device_reserve(opts, 8192) == opts.overhead_bytes_per_device
     assert _device_reserve(opts, 32768) == opts.overhead_bytes_per_device
     assert _device_reserve(opts, opts.overhead_free_ctx) == opts.overhead_bytes_per_device
 
-    # Above every measured requirement, at every measured context.
     assert _device_reserve(opts, 33792) / mib > 1184
     assert _device_reserve(opts, 66560) / mib > 1932.5
     assert _device_reserve(opts, 132096) / mib > 1958.1
 
-    # And not unboundedly above it. Over-reserving is not free: it spills more, measured at
-    # 7 to 12% of generation per surplus GiB on three models and two cards.
     assert _device_reserve(opts, 66560) / mib < 1932.5 + 1024
     assert _device_reserve(opts, 132096) / mib < 1958.1 + 3 * 1024
 
-    # The slope itself sits inside the measured bracket, and independently agrees with the one
-    # llama.cpp's own fitter leaves (21.41 KiB/token, R^2 = 0.9995 over four contexts).
     kib = 1024
     assert 18.8 * kib <= opts.overhead_bytes_per_token <= 23.4 * kib
 
 
 def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
-    """The behaviour change, stated once and directly.
-
-    An 8.5 GiB card at 64K context: the flat reserve leaves room for a q8_0 cache and the load
-    is planned, while the context-aware one charges ~750 MiB more and correctly finds it does
-    not fit. This is the pair test_kv_quantisation_rescues_a_load_f16_cannot_fit pins the reserve
-    out of, so the two do not have to disagree.
-    """
+    """The behaviour change, stated once and directly: on an 8.5 GiB card at 64K the flat
+    reserve leaves room for a q8_0 cache and the load is planned, while the context-aware one
+    correctly finds it does not fit."""
     layout = q4_layout()
     flat = plan_placement(
         layout,
@@ -1383,7 +1327,6 @@ def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
     assert flat.insufficient is False, "the flat reserve accepted this cell"
     assert aware.insufficient is True, "the context reserve must not"
 
-    # Same card, short context: identical answers, so nothing below the free context moves.
     a = plan_placement(
         layout, [8704 * 1024 * 1024], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0)
     )
@@ -1392,28 +1335,21 @@ def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
 
 
 def test_max_context_for_is_consistent_with_the_reserve_it_charges():
-    """The reserve depends on the context and the context is what is being solved for.
-
-    A single pass answers with the reserve for some OTHER context, which over-reports: it hands
-    back a context whose own reserve no longer leaves room for its own cache. The fixed point
-    is the only self-consistent answer, and this asserts the property rather than the loop --
-    feed the answer back in and it must still fit.
-    """
+    """The reserve depends on the context and the context is what is being solved for, so a
+    single pass answers with the reserve for some OTHER context and hands back a context whose
+    own reserve no longer leaves room for its own cache. Feed the answer back in and it fits."""
     layout = q4_layout()
     for budget_gib in (12, 16, 24, 48):
         vram = [budget_gib * GIB]
         ctx = max_context_for(layout, vram, spill_all_ffn = True)
         if ctx <= 0:
             continue
-        # Its own reserve, at its own answer, still leaves room for its own cache.
         assert max_context_for(layout, vram, spill_all_ffn = True) == ctx
 
         flat_only = max_context_for(
             layout, vram, spill_all_ffn = True, opts = PlanOptions(overhead_bytes_per_token = 0)
         )
         assert ctx <= flat_only, "the context term can only reduce the answer, never raise it"
-        # Only where the answer is set by memory. On a big enough card both are pinned to
-        # n_ctx_train and are equal for a reason that has nothing to do with the reserve.
         if ctx > PlanOptions().overhead_free_ctx and flat_only < layout.n_ctx_train:
             assert ctx < flat_only, "and above the free context it must actually bite"
 
@@ -1542,9 +1478,8 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
     assert len(plan.spilled_blocks) == len(layout.blocks), "every block goes"
     assert len(plan.ot_patterns) >= 1
 
-    # The UNION, not patterns[0]. Boundary grading emits the last block taken as
-    # its own pattern, so a single-pattern assertion reads block 63 as missing
-    # when it is simply in the next one.
+    # The UNION, not patterns[0]: boundary grading emits the last block taken as its own
+    # pattern, so a single-pattern assertion reads that block as missing.
     def spills(tensor: str) -> bool:
         return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
 
@@ -1555,18 +1490,7 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
 
 
 def test_every_spill_pattern_is_bounded_to_blocks_the_layout_knows():
-    """The unbounded ``^blk\\.\\d+\\.`` form is gone, including where nothing is
-    excluded.
-
-    This test used to assert the OPPOSITE -- that a GGUF with no excluded blocks
-    kept the compact global form, on the grounds that the bound is only worth
-    paying where it buys something. The ladder settled that differently: block
-    indices are enumerated because a rung may take a block in part, and the
-    boundary block is emitted separately, so no path still produces the global
-    form. That is the safer of the two, since llama.cpp applies these with
-    ``std::regex_search`` (llama-model-loader.cpp:1182) and an unbounded pattern
-    matches any future trailing block the layout never sized.
-    """
+    """The unbounded ``^blk\\.\\d+\\.`` form is gone, including where nothing is excluded."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(plan.spilled_blocks) == len(layout.blocks)
@@ -1604,13 +1528,9 @@ def test_row_ownership_is_modelled_on_raw_free_not_on_the_budget():
     card's TOTAL, so the two agree only when every card has the same free/total.
     Feeding the budget in as the split weight silently moves the boundary."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    # BYTES per block, not a set of indices: once a rung can move part of a
-    # block, crediting the whole block for a partial move is the optimistic
-    # direction and a per-device shortfall is a hard throw.
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     budgets = [2 * GIB, 2 * GIB]
 
-    # Same budgets, different RAW free: the rows move, so the verdict may too.
     even = _per_device_shortfall(
         layout,
         _NO_OVERHEAD,
@@ -1651,26 +1571,11 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     assert plan.changed is False
     assert "sliding-window" in plan.reason
 
-    # A SINGLE card abstains too, and this assertion is the reverse of what it
-    # used to be. The old premise was that only a split needs to know WHERE the
-    # full-context layers are, so one card could plan normally. gemma-4 refutes
-    # it: `layout.kv_bytes` charges every attention layer the full context at
-    # full head width, while the model caps most layers at a 512-token window,
-    # narrows their heads (key_length_swa 256 against key_length 512) and shares
-    # one cache across 20 layers. Measured, the product said 0.615 GiB at
-    # n_ctx 9216 where llama.cpp allocated 48 MiB -- a 13x over-count. So the
-    # layout cannot size the TOTAL either, not just its placement, and with no
-    # caller-supplied measurement the honest answer on any device count is to
-    # decline rather than spill to cover arithmetic.
     one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert one.changed is False
     assert one.spilled_blocks == ()
     assert "sliding-window" in one.reason
 
-    # ...and a supplied measurement lifts it, because then the total IS known.
-    # It spills 56 of 64 rather than all of them: the honest 48 MiB cache leaves
-    # a smaller deficit than the layout's own over-count would have invented,
-    # which is the whole point of preferring the measurement.
     measured = plan_placement(
         swa,
         [_ALL_SPILL_VRAM],
@@ -1749,9 +1654,6 @@ def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
     evenly, so it refuses; with one it knows where the big caches land."""
     layout = _swa_layout()
     half = _ALL_SPILL_VRAM // 2
-    # BYTES per block, not a set of indices: once a rung can move part of a
-    # block, crediting the whole block for a partial move is the optimistic
-    # direction and a per-device shortfall is a hard throw.
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
 
     without = _per_device_shortfall(
@@ -1786,9 +1688,6 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
     """Scaled to the total the caller already priced, so changing only its SHAPE
     moves the cache between devices without changing how much cache there is."""
     layout = _swa_layout()
-    # BYTES per block, not a set of indices: once a rung can move part of a
-    # block, crediting the whole block for a partial move is the optimistic
-    # direction and a per-device shortfall is a hard throw.
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     n = layout.n_layers
     budgets = [_ALL_SPILL_VRAM // 2, _ALL_SPILL_VRAM // 2]
@@ -1826,9 +1725,6 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
 def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
     """A vector of the wrong length is not evidence: abstain, do not stretch it."""
     layout = _swa_layout()
-    # BYTES per block, not a set of indices: once a rung can move part of a
-    # block, crediting the whole block for a partial move is the optimistic
-    # direction and a per-device shortfall is a hard throw.
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     half = _ALL_SPILL_VRAM // 2
     got = _per_device_shortfall(
@@ -1902,12 +1798,8 @@ def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, mon
     assert not layout_from_gguf(str(shards[0]), all_shards = True).complete
 
 
-# ----------------------------------------------------- rungs above the first weight spill
-#
-# The owner's priority order for what a launch KEEPS: generation speed, context,
-# the prompt cache, the MTP / speculative draft, --parallel, the projector
-# resident. The ladder gives those up in reverse, and the three below are all
-# free per token, so they fire before any weight leaves the device.
+# The owner's priority order for what a launch KEEPS: generation speed, context, the prompt
+# cache, the MTP / speculative draft, --parallel, the projector resident.
 
 _R_CTX = 4096
 _R_OPTS = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
@@ -1928,7 +1820,6 @@ def _card_short_by(
 def test_rung0_pins_the_projector_before_touching_a_block():
     layout = q4_layout()
     mmproj = 600 * MIB
-    # The card holds the projector too, and is short by less than the projector.
     card = _card_short_by(layout, 100 * MIB) + mmproj
     kept = plan_placement(
         layout,
@@ -1953,8 +1844,7 @@ def test_rung0_pins_the_projector_before_touching_a_block():
 
 
 def test_rung1_steps_the_slot_count_down_one_slot_at_a_time():
-    """Short by a quarter of the cache plus a hair: three slots suffice, so three
-    it is, not one. The map says what each slot count costs."""
+    """Short by a quarter of the cache plus a hair: three slots suffice, so three it is, not one."""
     layout = q4_layout()
     floor = GIB
     table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
@@ -1985,7 +1875,6 @@ def test_rung1_respects_min_parallel():
         kv_bytes_floor = floor,
         opts = PlanOptions(**_R_OPTS, n_parallel = 4, min_parallel = 3, kv_bytes_floor_by_parallel = table),
     )
-    # Two slots would have covered it; the floor of three means blocks go instead.
     assert plan.n_parallel == 3
     assert plan.spills_anything, plan.reason
 
@@ -2035,7 +1924,6 @@ def test_the_linear_slot_fallback_never_undercuts_the_layout_product():
         assert scaled is not None
         assert cache_bytes(layout, _R_CTX, kv_bytes_floor = scaled) >= layout.kv_bytes(_R_CTX)
     assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 2) is None
-    # The caller's own slot count is always priceable, SWA or not.
     assert (
         _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 4) == 64 * MIB
     )
@@ -2053,8 +1941,6 @@ def test_rung2_drops_the_draft_only_after_the_slots_are_exhausted():
     floor = GIB
     draft = 700 * MIB
     table = {2: floor, 1: floor // 2}
-    # Short by a hair more than the draft: one slot fewer (frees floor/2 plus the
-    # recurrent state) is enough, and the draft stays.
     card = _card_short_by(layout, floor // 2 - MIB, floor = floor, n_seq = 2) + draft
     common = dict(
         **_R_OPTS,
@@ -2082,11 +1968,9 @@ def test_rung2_drops_the_draft_only_after_the_slots_are_exhausted():
 
 
 def test_rungs_0_to_2_alone_are_ranked_against_the_launch_the_caller_typed():
-    """These used to skip the gate outright, on the argument that a plan with no
-    spill has no fallback arm. It has one: the launch as the caller typed it,
-    fitted by llama.cpp. So the plan is ranked, and a projector moved for free
-    still wins -- what changes is that both figures are computed and reported
-    rather than left at zero for a decision nobody could check."""
+    """These used to skip the gate outright, on the argument that a plan with no spill has no
+    fallback arm. It has one: the launch as the caller typed it, fitted by llama.cpp, so both
+    figures are computed and reported rather than left at zero."""
     layout = q4_layout()
     mmproj = 600 * MIB
     card = _card_short_by(layout, 100 * MIB) + mmproj
@@ -2121,9 +2005,6 @@ def test_the_prompt_cache_bound_is_reported_only_when_it_binds():
     assert not cramped.load_mode_none and cramped.cache_ram_mib == -1
 
 
-# ----------------------------------------------------------------- context last
-
-
 def test_max_context_for_honours_the_measured_floor():
     layout = q4_layout()
     bare = max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
@@ -2137,7 +2018,6 @@ def test_max_context_for_honours_the_measured_floor():
         floor_ctx = 32768,
     )
     assert 0 < doubled < bare
-    # Twice the cache per token leaves about half the context; within a step of it.
     assert abs(doubled - bare // 2) <= 1024, (bare, doubled)
     swa = replace(layout, has_swa = True)
     flat_a = max_context_for(
@@ -2156,25 +2036,19 @@ def test_max_context_for_honours_the_measured_floor():
         kv_bytes_floor = GIB,
         floor_ctx = 4096,
     )
-    # A windowed cache is flat in context, so the context it was measured at is irrelevant
-    # and the answer is bounded only by the training length and the reserve.
     assert flat_a == flat_b
     assert flat_a >= doubled
 
 
 def test_the_shrink_prices_the_budget_at_the_shrunk_context():
-    """At 131072 the reserve's context term alone eats the card; at a shorter
-    context the same card holds the load with every FFN spilled. FIT_ONLY must
-    plan, which it cannot do if it prices the shrunk context against the reserve
-    of the requested one."""
+    """At 131072 the reserve's context term alone eats the card; at a shorter context the same card
+    holds the load with every FFN spilled.
+    """
     layout = q4_layout()
     opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY)
     plan = plan_placement(layout, [10 * GIB], 64 * GIB, 131072, opts = opts)
     assert plan.changed and not plan.insufficient, plan.reason
     assert 4096 <= plan.n_ctx < 131072, plan.n_ctx
-
-
-# ------------------------------------- knob-only fits are per-device fits too
 
 
 def _mixed_card_vision_layout():
@@ -2202,17 +2076,7 @@ def _mixed_card_vision_layout():
 
 
 def test_a_knob_only_fit_is_checked_device_by_device():
-    """Moving the projector can make the POOLED budget fit while the small card
-    stays over. That plan reshapes the launch, so the seam emits
-    ``-ngl -1 --fit off`` and llama.cpp's own per-device fitter never runs; the
-    over card then throws on load rather than loading slowly.
-
-    This used to abstain the moment the shortfall was seen. Abstaining is the
-    LAST answer, not the first: the card is over by less than one of its own
-    blocks, so the per-device selector covers it from that card's rows and the
-    load is served. What the test still pins is that the over card is never
-    waved through -- the plan that comes out has to pass the same check.
-    """
+    """Moving the projector can make the POOLED budget fit while the small card stays over."""
     layout = _mixed_card_vision_layout()
     opts = PlanOptions(
         overhead_bytes_per_device = 1 * GIB,
@@ -2222,10 +2086,8 @@ def test_a_knob_only_fit_is_checked_device_by_device():
         n_parallel = 1,
     )
     vram = [24 * GIB, 8 * GIB]
-    # The pooled arithmetic really does say yes once the projector moves.
     assert all_resident_bytes(layout, 8192) > 27 * GIB
     assert all_resident_bytes(layout, 8192) <= 30 * GIB
-    # And device 1 really is over.
     assert (
         _per_device_shortfall(
             layout,
@@ -2245,7 +2107,6 @@ def test_a_knob_only_fit_is_checked_device_by_device():
     plan = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
     assert plan.mmproj_to_host and plan.spilled_blocks, plan.reason
     assert "device 1" in plan.reason
-    # Only rows the over card owns, and the card fits once they move.
     assert all(index >= 25 for index in plan.spilled_blocks), plan.spilled_blocks
     assert (
         _per_device_shortfall(
@@ -2262,9 +2123,6 @@ def test_a_knob_only_fit_is_checked_device_by_device():
         )
         is None
     )
-
-
-# ------------------------------------- the context bound and where the cache is
 
 
 def _bound_layout(*, resident_per_block: int, has_swa: bool = False):
@@ -2288,9 +2146,7 @@ def _bound_layout(*, resident_per_block: int, has_swa: bool = False):
 
 
 def test_the_context_bound_leaves_a_host_held_cache_in_host_ram():
-    """-nkvo holds both caches in host RAM, so no context charges them to VRAM.
-    Charging them anyway bounded the descending ladder at a fraction of the
-    context that fits, and the launch lost the difference for nothing."""
+    """-nkvo holds both caches in host RAM, so no context charges them to VRAM."""
     layout = _bound_layout(resident_per_block = 130 * MIB)
     opts = PlanOptions(
         overhead_bytes_per_device = 1 * GIB,
@@ -2305,7 +2161,6 @@ def test_the_context_bound_leaves_a_host_held_cache_in_host_ram():
     assert resident_floor_bytes(layout, bound, kv_on_host = True) <= _usable_vram_for(
         vram, opts, bound
     )
-    # The old bound came off the f16 product, which -nkvo never puts on the card.
     assert bound > 40960
 
     plan = plan_placement(layout, vram, 256 * GIB, 131072, opts = opts)
@@ -2314,10 +2169,9 @@ def test_the_context_bound_leaves_a_host_held_cache_in_host_ram():
 
 
 def test_a_windowed_cache_does_not_cap_the_context_bound_at_the_naive_product():
-    """``cache_at`` charges a measured SWA floor context-FLAT, so the layout's
-    full-context product is not an upper bound on the answer. Deriving the search
-    ceiling from it cut a gemma-shaped launch to a fraction of its trained
-    length."""
+    """``cache_at`` charges a measured SWA floor context-FLAT, so the layout's full-context product
+    is not an upper bound on the answer.
+    """
     layout = _bound_layout(resident_per_block = 100 * MIB, has_swa = True)
     opts = PlanOptions(
         overhead_bytes_per_device = 1 * GIB,
@@ -2347,12 +2201,7 @@ def _usable_vram_for(vram, opts, n_ctx):
 
 
 def test_a_resident_fit_below_the_requested_context_is_a_change():
-    """The context ladder can settle on a context where every tensor stays
-    resident. That plan emits no pattern and moves no knob, and with the host RAM
-    unknown it cannot claim --load-mode none either, so nothing else marked it
-    changed and the seam dropped it: the child launched at the fallback cap with
-    the proved context thrown away. A shorter context than requested is a
-    change on its own."""
+    """The context ladder can settle on a context where every tensor stays resident."""
     blocks = tuple(
         BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
     )
@@ -2378,11 +2227,9 @@ def test_a_resident_fit_below_the_requested_context_is_a_change():
 
 
 def test_the_context_bound_assumes_the_rungs_above_the_first_spill():
-    """The ladder's upper bound charged the projector and the draft in full and
-    priced the cache at the full slot count, so with a projector large enough to
-    eat the card on its own the bound was zero and the ladder never looked, even
-    though every context below the request fits once rung 0 moves the projector.
-    The bound now assumes those rungs, which is what the retry will do."""
+    """The ladder's upper bound charged the projector and the draft in full and priced the
+    cache at the full slot count, so a large projector made the bound zero and the ladder never
+    looked. The bound now assumes those rungs, which is what the retry will do."""
     blocks = tuple(
         BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
     )
@@ -2403,7 +2250,6 @@ def test_the_context_bound_assumes_the_rungs_above_the_first_spill():
         mmproj_bytes = 3 * GIB,
         mmproj_movable = True,
     )
-    # With the projector charged the card cannot even hold the weights.
     assert max_context_for(layout, [8 * GIB], opts = opts) == 0
     plan = plan_placement(layout, [8 * GIB], 64 * GIB, 131072, opts = opts)
     assert plan.changed and not plan.insufficient, plan.reason
@@ -2467,8 +2313,6 @@ def test_the_context_bound_releases_the_dense_ffn_rung_too():
     context the ladder could reach once that rung fired."""
     with_shared = graded_moe_with_shared(0.2)
     without = graded_moe_with_shared(0.0)
-    # 11 GiB: the attention and the vocabulary fit under the reserve, the 8 GiB
-    # of shared FFN do not, so the bound is decided by whether they are released.
     bound = max_context_for(with_shared, [11 * GIB], spill_all_ffn = True)
     assert bound > 0
     assert bound == max_context_for(without, [11 * GIB], spill_all_ffn = True)
@@ -2518,7 +2362,6 @@ def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_i
         _swa_layout(), arch = "qwen35", has_swa = False, recurrent_bytes = 2 * GIB, n_attention_layers = 4
     )
     n = layout.n_layers
-    # Attention on every sixteenth row, recurrent everywhere else.
     weights = [1 if i % (n // 4) == 0 else 0 for i in range(n)]
     spilled = {b.index: b.spillable_bytes for b in layout.blocks}
 
@@ -2542,10 +2385,7 @@ def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_i
         return used
 
     one, four = usage(layout), usage(layout, n_seq = 4)
-    # Ceiling per row, so up to one byte per recurrent row of rounding.
     assert abs(sum(four) - sum(one) - 3 * 2 * GIB) <= n
-    # Budgets sized to the weights and cache alone: the state is the difference
-    # between "fits" and "device over".
     bare = usage(dataclasses.replace(layout, recurrent_bytes = 0))
     budgets = [b + 64 * MIB for b in bare]
     short = _per_device_shortfall(
@@ -2560,7 +2400,6 @@ def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_i
         kv_layer_weights = weights,
     )
     assert short is not None and "device" in short
-    # A vector with no zero row cannot say where the state lives: abstain.
     uniform = _per_device_shortfall(
         layout,
         _NO_OVERHEAD,
@@ -2631,13 +2470,11 @@ def test_an_explicit_context_above_the_training_window_is_priced_as_asked():
     asked = 2 * layout.n_ctx_train
     plan = plan_placement(layout, [40 * GIB], 256 * GIB, asked, opts = opts)
     assert plan.n_ctx == asked, plan
-    # And the cache is priced at that context: twice the window costs more than the window.
     at_window = plan_placement(layout, [40 * GIB], 256 * GIB, layout.n_ctx_train, opts = opts)
     assert at_window.n_ctx == layout.n_ctx_train
     assert plan.host_bytes > at_window.host_bytes or (
         plan.insufficient and not at_window.insufficient
     )
-    # The default still reads the window.
     assert plan_placement(layout, [40 * GIB], 256 * GIB, 0, opts = opts).n_ctx == layout.n_ctx_train
 
 
@@ -2665,9 +2502,7 @@ def test_a_resident_context_plan_is_priced_at_the_slots_it_was_checked_at():
 
 
 def test_only_a_priced_plan_says_the_load_fits():
-    """A fit and an abstain both carry an n_ctx and a reason; only the fit was
-    priced. The seam reads the flag to restore a context Auto capped below one
-    the exact layout proves resident."""
+    """A fit and an abstain both carry an n_ctx and a reason; only the fit was priced."""
     fits = plan_placement(q4_layout(), [200 * GIB], 64 * GIB, 65536)
     assert fits.priced and not fits.spills_anything and "fits in VRAM" in fits.reason
     abstained = plan_placement(
@@ -2692,7 +2527,6 @@ def test_a_cache_already_quantised_at_launch_is_priced_as_one():
     q8_floor = cache_bytes(layout, n_ctx, kv_quantised = True)
     f16 = cache_bytes(layout, n_ctx)
     assert q8_floor < f16
-    # A budget that holds the weights plus the q8 cache and not the f16 one.
     budget = all_resident_bytes(layout, n_ctx, kv_quantised = True) + 1024 * MIB
     assert all_resident_bytes(layout, n_ctx) > budget
     flat = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
@@ -2709,7 +2543,6 @@ def test_a_cache_already_quantised_at_launch_is_priced_as_one():
         opts = PlanOptions(cache_quantised = True, kv_quant_type = "q8_0", **flat),
     )
     assert not as_quantised.spills_anything and as_quantised.priced, as_quantised.reason
-    # The type the launch already carries is not a change the plan makes.
     assert as_quantised.cache_type_k is None and as_quantised.cache_type_v is None
 
 
@@ -2756,7 +2589,6 @@ def test_an_unbounded_prompt_cache_keeps_the_plan_pageable():
     )
     assert unbounded.spills_anything and not unbounded.load_mode_none
     assert unbounded.cache_ram_mib == -1
-    # Not a refusal: the spill still fits RAM and stays pageable under mmap.
     assert not unbounded.declined_by_gate
 
 
@@ -2774,9 +2606,7 @@ def test_an_mla_cache_trusts_the_measured_floor():
     latent = product // 64
     assert cache_bytes(gqa, n_ctx, kv_bytes_floor = latent) == product
     assert cache_bytes(mla, n_ctx, kv_bytes_floor = latent) == latent
-    # No measurement: the product is still the only size on offer.
     assert cache_bytes(mla, n_ctx) == product
-    # And the same trust reaches a plan: resident at the latent, over budget under the product.
     flat = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
     budget = all_resident_bytes(mla, n_ctx) - product + latent + 256 * MIB
     assert plan_placement(
@@ -2796,16 +2626,10 @@ def test_layout_from_gguf_marks_a_latent_attention_cache():
 
 
 def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_given_up():
-    """A no-spill plan is emitted as ``-ngl -1 --fit off`` whenever it reshapes
-    the launch, and a context the ladder shrank or the seam restores above the
-    Auto cap reshapes it as much as a knob does; the per-device check ran only
-    when a knob had been given up, so a pooled fit could pin a row split one
-    card cannot hold and the server threw on load.
-
-    The check now covers the shortfall from the over card's own rows instead of
-    abstaining on sight, so what this pins is that the check RUNS and the split
-    that comes out of it holds.
-    """
+    """A no-spill plan is emitted as ``-ngl -1 --fit off`` whenever it reshapes the launch, and
+    a context the ladder shrank reshapes it as much as a knob does; the per-device check ran
+    only when a knob had been given up, so a pooled fit could pin a row split one card cannot
+    hold. What this pins is that the check RUNS and the split that comes out of it holds."""
     layout = _mixed_card_vision_layout()
     opts = PlanOptions(overhead_bytes_per_device = 1 * GIB, pipeline_overhead_bytes = 0)
     vram = [24 * GIB, 8 * GIB]
@@ -2814,16 +2638,12 @@ def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_give
     assert split.priced and split.spilled_blocks, split.reason
     assert "device 1" in split.reason, split.reason
     assert all(index >= 25 for index in split.spilled_blocks), split.spilled_blocks
-    # One card holding the same pool is a plain fit.
     whole = plan_placement(layout, [32 * GIB], 128 * GIB, 8192, opts = opts)
     assert whole.priced and "fits in VRAM" in whole.reason
 
 
-# ------------------------------------------- the caller's own cache estimator
-# One scalar floor plus a scaling rule cannot describe a hybrid's fixed state, a
-# windowed cache's two halves or an MLA latent at the same time, and the planner
-# re-prices that scalar on both axes. ``PlanOptions.kv_bytes_at`` lets the caller
-# that already computes the real size answer per (context, slots) instead.
+# One scalar floor plus a scaling rule cannot describe a hybrid's fixed state, a windowed
+# cache's two halves or an MLA latent at the same time.
 
 
 def _small_layout(**kw) -> ModelLayout:
@@ -2848,14 +2668,9 @@ _FLAT = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
 
 
 def test_a_fixed_recurrent_state_is_re_priced_not_scaled_with_the_context():
-    """A hybrid's floor is part fixed state, and the state does not shrink.
-
-    GDN, Mamba, KDA and a DeepSeek-V4 whose GGUF carries no ``kv_lora_rank`` all
-    reach the planner as one scalar with no ``recurrent_bytes`` beside it, so the
-    context rule scaled the WHOLE thing: a 5 GiB floor at 32768 that is 4 GiB of
-    state plus 1 GiB of growing cache read 1.25 GiB at 8192 against a true 4.25,
-    and a plan built on that under-reserves by 3 GiB and OOMs at load.
-    """
+    """A hybrid's floor is part fixed state, and the state does not shrink with the context, so
+    the context rule scaled the WHOLE thing: a floor that is mostly state read a fraction of
+    its true size at a shorter context, and a plan built on that under-reserves and OOMs."""
     layout = _small_layout()
 
     def kv_at(ctx: int, slots: int) -> int:
@@ -2863,10 +2678,7 @@ def test_a_fixed_recurrent_state_is_re_priced_not_scaled_with_the_context():
 
     opts = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
     assert _kv_floor_at(layout, opts, 5 * GIB, 32768, 8192, 1) == 4 * GIB + GIB // 4
-    # The rule the callable replaces, pinned so the difference is on the record.
     assert _kv_floor_at(layout, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 5 * GIB // 4
-    # And where the layout DOES know the state, that much is held out of the scale
-    # even without a callable, which is the direction that over-reserves.
     hybrid = _small_layout(recurrent_bytes = 2 * GIB)
     assert _kv_floor_at(hybrid, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 2 * GIB + 3 * GIB // 4
 
@@ -2888,14 +2700,7 @@ def test_a_shrunk_context_reserves_the_state_the_child_still_allocates():
 
 
 def test_the_context_search_prices_a_latent_cache_the_way_the_planner_does():
-    """``cache_bytes`` trusts a measured floor on MLA; the search did not.
-
-    It took the max against the per-head product -- which models a K-only latent
-    as a full K+V pair, ~70x over on DeepSeek-V3 -- and bounded itself by that
-    same product, so the largest context it would report was a few hundred tokens
-    and every MLA model that needed a shrink was refused instead. GLM-4.7 and
-    DeepSeek-V4 are both on this path.
-    """
+    """``cache_bytes`` trusts a measured floor on MLA; the search did not."""
     mla = _small_layout(
         has_mla = True,
         blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.15 * GIB)) for i in range(8)),
@@ -2912,13 +2717,7 @@ def test_the_context_search_prices_a_latent_cache_the_way_the_planner_does():
 
 
 def test_a_windowed_cache_shrinks_when_the_caller_can_split_its_halves():
-    """iSWA is flat only because one scalar cannot say which half is which.
-
-    gemma-4-31B keeps 10 full-attention layers whose cache grows linearly beside
-    the windowed ones, so holding the whole floor context-flat makes a shrink
-    free nothing and the ladder walks to min_ctx for no gain. The estimator the
-    seam already runs sizes the two halves separately.
-    """
+    """iSWA is flat only because one scalar cannot say which half is which."""
     swa = _small_layout(
         has_swa = True,
         blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.0125 * GIB)) for i in range(8)),
@@ -2931,16 +2730,13 @@ def test_a_windowed_cache_shrinks_when_the_caller_can_split_its_halves():
     flat = PlanOptions(**_FLAT)
     priced = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
     floor = dict(kv_bytes_floor = 4 * GIB, floor_ctx = 32768)
-    # Held flat there is no context this budget fits; split, 8192 does.
     assert max_context_for(swa, budget, opts = flat, **floor) == 0
     assert max_context_for(swa, budget, opts = priced, **floor) >= 8192
     assert _kv_floor_at(swa, priced, 4 * GIB, 32768, 8192, 1) == GIB + 3 * GIB // 4
 
 
 def test_an_exact_cache_is_charged_as_given_at_any_architecture():
-    """The max against the per-head product is a guard against a floor that might
-    be short. ``kv_bytes_at`` is not short: it is what llama.cpp will allocate,
-    and taking the max put a hybrid back on a product that over-counts it 3.6x."""
+    """The max against the per-head product is a guard against a floor that might be short."""
     from core.inference.offload_planner import cache_bytes as _cache_bytes
 
     layout = _small_layout(kv_bytes_per_token_f16 = 64 * 1024)
@@ -2952,14 +2748,7 @@ def test_an_exact_cache_is_charged_as_given_at_any_architecture():
 
 
 def test_a_card_the_requested_context_leaves_nothing_of_still_reaches_the_ladder():
-    """The budget was priced once, at the context the caller asked for.
-
-    The per-device reserve grows with the context, so an explicit 262144 on a
-    small card charges more reserve than the card has and the planner answered
-    "no creditable VRAM" -- above the FIT_ONLY ladder, which would have found a
-    context that fits with room to spare. NEVER_REDUCE has nothing else to try
-    and still stops there.
-    """
+    """The budget was priced once, at the context the caller asked for."""
     layout = _small_layout(
         blocks = tuple(BlockLayout(i, 0, int(0.175 * GIB)) for i in range(8)),
         lm_head_bytes = int(0.05 * GIB),
@@ -2979,12 +2768,8 @@ def test_a_card_the_requested_context_leaves_nothing_of_still_reaches_the_ladder
     assert "no creditable VRAM" not in plan.reason, plan.reason
     assert plan.priced and 32768 <= plan.n_ctx < 262144, plan.reason
     assert not plan.spills_anything, plan.reason
-    # Asked for the same context with the context pinned, the answer is unchanged.
     pinned = plan_placement(layout, card, 64 * GIB, 262144, opts = PlanOptions(**shape))
     assert "no creditable VRAM" in pinned.reason, pinned.reason
-
-
-# ------------------------------------- a pooled fit with one card short
 
 
 def _lopsided_pair_layout(n_blocks: int = 16, per_block: int = 384 * MIB) -> ModelLayout:
@@ -3045,13 +2830,11 @@ def _plan_lopsided(**kwargs) -> Plan:
 
 
 def test_a_pooled_fit_with_one_card_short_tries_the_rungs_before_it_gives_up():
-    """8 GiB of model against 3 GiB + 5 GiB: the pool fits exactly and the row
-    split puts 3.5 GiB on the 3 GiB card. Handing that back to --fit on gave up
-    before trying anything, and one slot fewer covers it: this is the lopsided
-    pair the planner is for."""
+    """8 GiB of model against 3 GiB + 5 GiB: the pool fits exactly and the row split puts 3.5 GiB
+    on the 3 GiB card.
+    """
     args = _lopsided_pair_args()
     layout, vram = args["layout"], args["vram_bytes_per_device"]
-    # The pool really does fit, and device 0 really is over.
     assert all_resident_bytes(layout, 4096, kv_bytes_floor = 2 * GIB) == 8 * GIB
     assert (
         _per_device_shortfall(
@@ -3085,7 +2868,6 @@ def test_a_pooled_fit_with_one_card_short_spills_that_card_when_no_rung_is_left(
     assert plan.priced and plan.spilled_blocks, plan.reason
     args = _lopsided_pair_args(min_parallel = 4)
     layout = args["layout"]
-    # Everything it moved sits on the card that was over.
     assert all(index <= 6 for index in plan.spilled_blocks), plan.spilled_blocks
     assert (
         _per_device_shortfall(
@@ -3115,9 +2897,7 @@ def test_a_pooled_fit_with_a_card_no_rung_can_reach_still_abstains():
 
 
 def test_an_all_zero_tensor_split_abstains_instead_of_being_modelled():
-    """A -ts whose active prefix truncates to zeros reaches the planner as an
-    all-zero split. Placing every row on device 0 reasoned about a launch
-    llama.cpp errors on; the plan has to be an abstain."""
+    """A -ts whose active prefix truncates to zeros reaches the planner as an all-zero split."""
     args = _lopsided_pair_args()
     layout = args["layout"]
     plan = plan_placement(
@@ -3133,9 +2913,6 @@ def test_an_all_zero_tensor_split_abstains_instead_of_being_modelled():
     assert not plan.changed and not plan.priced and not plan.spills_anything, plan.reason
     assert "all zero" in plan.reason, plan.reason
     assert plan_to_args(plan) == []
-
-
-# ------------------------------------- the trailing block is not always the cheap one
 
 
 def _tail_heavy_layout(
@@ -3170,11 +2947,9 @@ def _plan_for_deficit(layout: ModelLayout, deficit: int, **kwargs) -> Plan:
 
 
 def test_the_trailing_pick_gives_way_when_the_tail_block_is_a_size_accident():
-    """BACK_FIRST is a POSITION rule and was blind to size: a 100 MiB deficit on
-    a layout whose last block carries an 8 GiB FFN moved 8 GiB of it while a
-    128 MiB block sat one row down. The measured asymmetry was never about that
-    -- its cells' blocks are within a factor of two of each other -- so the
-    byte-minimal walk takes over past twice the bytes."""
+    """BACK_FIRST is a POSITION rule and was blind to size: a 100 MiB deficit on a layout whose
+    last block carries an 8 GiB FFN moved 8 GiB of it while a 128 MiB block sat one row down.
+    The byte-minimal walk takes over past twice the bytes."""
     layout = _tail_heavy_layout(tail = 8 * GIB, rest = 128 * MIB)
     plan = _plan_for_deficit(layout, 100 * MIB)
     assert plan.spilled_blocks and 7 not in plan.spilled_blocks, plan.spilled_blocks
@@ -3192,10 +2967,9 @@ def test_a_uniform_layout_still_takes_the_contiguous_tail():
 
 
 def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
-    """Under require_cost_win the caller is choosing between two placements of
-    ONE rung, where rank() is monotone in bytes, so the smaller pick simply wins
-    and only a tie keeps the tail. Driven at the selector rather than through a
-    plan, because the gate's own verdict on that spill is a separate decision."""
+    """Under require_cost_win the caller is choosing between two placements of ONE rung, where
+    rank() is monotone in bytes, so the smaller pick simply wins and only a tie keeps the tail.
+    """
     from core.inference.offload_planner import SpillUnit, _select_units
 
     units = [
@@ -3207,7 +2981,6 @@ def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
     assert [u.index for u in tail] == [2] and freed == 150 * MIB
     ranked, least = _select_units(units, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
     assert [u.index for u in ranked] == [0] and least == 100 * MIB
-    # A tie still keeps the tail.
     even = [SpillUnit(i, None, 100 * MIB) for i in range(3)]
     kept, _ = _select_units(even, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
     assert [u.index for u in kept] == [2]
@@ -3292,11 +3065,7 @@ def test_a_context_priced_reserve_lets_the_ladder_find_the_context_that_fits():
 
 
 def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector():
-    """The per-layer cache vector is measured at the requested context. On a
-    windowed cache the full-attention rows shrink with the context and the
-    windowed rows stay flat, so at a smaller context the vector no longer says
-    which card holds what, and a card could pass the check and fail to allocate.
-    One device has no split to get wrong and still walks the ladder."""
+    """The per-layer cache vector is measured at the requested context."""
     layout = replace(
         _small_layout(
             blocks = tuple(BlockLayout(i, int(0.05 * GIB), int(0.2 * GIB)) for i in range(8)),

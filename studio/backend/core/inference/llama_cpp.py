@@ -5593,9 +5593,7 @@ def _extra_args_split_mode(
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
         # Through _flag_name, because llama.cpp folds an underscore in any long option
-        # to a dash before it looks the name up (common/arg.cpp:821, :1214). A raw
-        # membership test read a typed --split_mode=row as no split mode at all, and
-        # the row-split guard then planned the load as a layer split.
+        # to a dash before it looks the name up (common/arg.cpp:821, :1214).
         if _flag_name(arg) not in _SPLIT_MODE_FLAGS:
             continue
         _, _, inline = arg.partition("=")
@@ -5696,13 +5694,7 @@ def _extra_args_n_parallel(
 def _extra_args_cache_ram(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """The prompt-cache bound a pass-through sets, in MiB, or None when nothing does.
-
-    Same precedence as ``_extra_args_n_parallel``: extras are appended after every
-    flag Studio emits and llama.cpp is last-wins, so a typed --cache-ram (-1 for
-    unbounded, 0 to disable) beats both the emitted clamp and LLAMA_ARG_CACHE_RAM.
-    The launch's RAM arithmetic has to see the value the child will run with.
-    """
+    """The prompt-cache bound a pass-through sets, in MiB, or None when nothing does."""
     source_env = os.environ if env is None else env
     found: Optional[int] = None
     raw = source_env.get("LLAMA_ARG_CACHE_RAM")
@@ -5713,10 +5705,8 @@ def _extra_args_cache_ram(
             pass
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        # Every spelling the child accepts: the -cram short form and llama.cpp's
-        # underscore normalisation of the long one, through the same normaliser
-        # the strippers use. Matching the literal --cache-ram read "-cram 0" as
-        # unset and priced the 8 GiB default for a cache the child disables.
+        # Every spelling the child accepts, through the same normaliser the strippers
+        # use: matching the literal --cache-ram read "-cram 0" as unset.
         if _flag_name(arg) not in _CACHE_RAM_FLAGS:
             continue
         _, _, inline = arg.partition("=")
@@ -5965,22 +5955,14 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
-# The planner's own default per-device reserve, 1536 MiB, is the intercept every #67
-# calibration cell was validated against (bench harness, A100-40). Kept as a module constant
-# so the seam's floor and the planner's default cannot drift apart silently.
+# The planner's own default per-device reserve, 1536 MiB, is the intercept every #67 calibration
+# cell was validated against.
 _VALIDATED_DEVICE_RESERVE_BYTES = (3 * 1024**3) // 2
 
 
 def _reserve_floor_bytes(withheld_per_device) -> int:
-    """The extra per-device reserve the seam must charge so that the TOTAL held back
-    from a card (what usable VRAM already withholds, plus what the planner charges on
-    top) never falls below the 1536 MiB intercept the reserve curve was validated on.
-
-    Production withholds max(3% of the card, 512 MiB) before the planner sees it. On a
-    40 GiB card that alone reaches the intercept; a 12 GiB card withholds 369 MiB and
-    was then charged only the CUDA context plus the compute term, ~700 MiB of reserve
-    at short context where 1536 was measured to be needed. One scalar is charged on
-    every device, so the safe anchor is the device that had the LEAST withheld.
+    """The extra per-device reserve the seam must charge so that the TOTAL held back from a card
+    never falls below the 1536 MiB intercept the reserve curve was validated on.
     """
     withheld = [max(0, int(w)) for w in withheld_per_device]
     if not withheld:
@@ -11428,25 +11410,14 @@ class LlamaCppBackend:
         # byte is the paging case this is trying to avoid.
         return spill <= max(0, avail - headroom_mib) * 1024 * 1024
 
-    # llama-server's own --cache-ram default, in MiB (common/common.h:632). Named
-    # rather than repeated, so the footprint and any future bound cannot drift.
+    # llama-server's own --cache-ram default, in MiB (common/common.h:632).
     _DEFAULT_CACHE_RAM_MIB = 8192
 
     @staticmethod
     def _effective_prompt_cache_bytes(
         cache_ram: Optional[int], server_caps: Optional[Mapping[str, object]] = None
     ) -> int:
-        """Host RAM llama-server may take for its prompt cache on this launch.
-
-        ``cache_ram`` follows llama.cpp's own spelling: None means "not set, so the
-        default applies", 0 disables the cache, and -1 means no limit. -1 is charged
-        as the default rather than as infinity -- an unbounded cache cannot be
-        budgeted at all, and answering "never fits" for it would be worse than
-        answering with the size it is actually likely to reach.
-
-        A build without ``--cache-ram`` predates the prompt cache, so there is
-        nothing to charge.
-        """
+        """Host RAM llama-server may take for its prompt cache on this launch."""
         if server_caps is not None and not server_caps.get("supports_cache_ram"):
             return 0
         if cache_ram is None:
@@ -11466,14 +11437,7 @@ class LlamaCppBackend:
         headroom_mib: float = _HOST_RAM_HEADROOM_MIB,
         default_mib: int = _DEFAULT_CACHE_RAM_MIB,
     ) -> Optional[int]:
-        """``--cache-ram`` bounded to the host RAM this launch leaves free.
-
-        The prompt cache is the cheapest thing in the system to give up: losing a
-        prefix hit costs one re-prefill, mis-sizing host RAM costs the load. So the
-        default is kept whenever it fits and shrunk to what is left otherwise, down
-        to 0 (disabled). None when RAM cannot be read, which keeps llama.cpp's own
-        default rather than inventing a bound.
-        """
+        """``--cache-ram`` bounded to the host RAM this launch leaves free."""
         if avail_mib is None:
             return None
         room = int(avail_mib) - int(host_footprint_mib) - int(headroom_mib)
@@ -11574,8 +11538,7 @@ class LlamaCppBackend:
         from utils.hardware import is_apple_silicon
 
         # An unbounded prompt cache (--cache-ram -1) has no size to charge, so the
-        # footprint below is not a ceiling and a fit read off it proves nothing;
-        # llama.cpp's own auto keeps the load pageable when the cache grows.
+        # footprint below is not a ceiling and a fit read off it proves nothing.
         if (
             not model_size
             or not kv_sized
@@ -11651,10 +11614,8 @@ class LlamaCppBackend:
             + max(0, mtp_bytes)
             # Resident, but only ever in host RAM; charged to the RAM term alone below.
             + max(0, host_only_bytes)
-            # The prompt cache, likewise: the predicate below subtracts every
-            # host-only term from this footprint before crediting VRAM, so a term
-            # charged there and not here is subtracted from bytes that were never
-            # added and the RAM requirement comes out short by the whole cache.
+            # The prompt cache, likewise: the predicate below subtracts every host-only term
+            # from this footprint, so a term charged there and not here is subtracted twice.
             + max(0, prompt_cache_bytes)
             + max(0, compute_buffer_flat)
             + max(0, compute_buffer_ctx)
@@ -11693,20 +11654,9 @@ class LlamaCppBackend:
                 + max(0, mmproj_pinned_bytes)
                 # Same split as the pinned projector: counted once above, charged to RAM.
                 + (max(0, kv_cache_bytes) if _kv_on_host else 0)
-                # llama-server's prompt cache: host RAM, and free VRAM can never pay
-                # for it. `server_prompt::data.main` is a std::vector<uint8_t>
-                # (tools/server/server-task.h:589) filled by
-                # llama_state_seq_get_data_ext, and it defaults to 8192 MiB
-                # (common/common.h:632). No term here charged it, which is the one
-                # thing this footprint is documented never to do -- understating
-                # claims a fit that is not there and then hands the load a loader
-                # that CANNOT page, so the cache filling later is an OOM kill rather
-                # than a slowdown.
-                #
-                # Observed filling in a real run's log, 2339 -> 4679 MiB over 277
-                # requests, so this is not a ceiling that never gets reached. It is
-                # charged in full rather than at some assumed live fraction because
-                # this predicate's whole bias is to refuse rather than to hope.
+                # llama-server's prompt cache: host RAM, and free VRAM can never pay for it.
+                # `server_prompt::data.main` is a std::vector<uint8_t>
+                # (tools/server/server-task.h:589) defaulting to 8192 MiB (common/common.h:632).
                 + max(0, prompt_cache_bytes)
             ),
             vram_margin_mib = fit_margin_mib,
@@ -19939,29 +19889,17 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
-                # The spill planner owns placement on this launch (opt-in flag on and
-                # no pass-through owns it). Decided BEFORE the fit so the fit can hand
-                # the planner the decisions it would otherwise make ahead of it. Bound
-                # before the try, like _spec_dropped_no_vram; off means every use below
-                # is dead and the argv is byte-identical to a launch without it.
                 _planner_owns_fit = self._planner_may_run(
                     extra_args, os.environ, load_mode = load_mode
                 )
-                # The context Auto wanted BEFORE it settled for _AUTO_OFFLOAD_CTX, when
-                # the planner owns the fit: the planner is priced at this and reduces
-                # it only after every other rung, which is the owner's priority order.
-                # 0 = ask at effective_ctx (explicit context, or planner not owning).
+                # The context Auto wanted BEFORE it settled for _AUTO_OFFLOAD_CTX, when the
+                # planner owns the fit; it reduces that only after every other rung.
                 _spill_ctx_request = 0
-                # Whether the fit's own gates would let the projector / the drafter be
-                # moved off the GPU. Recorded where those gates are evaluated so the
-                # planner's rungs 0 and 2 obey exactly the same user-owns-it rules.
+                # Whether the fit's own gates would let the projector / the drafter be moved
+                # off the GPU, so the planner's rungs 0 and 2 obey the same user-owns-it rules.
                 _mmproj_pin_allowed = False
                 _spec_drop_allowed = False
-                # --cache-ram bounded to free host RAM, emitted on the fallback path
-                # when the user set none. None keeps llama.cpp's default.
                 _auto_cache_ram_mib: Optional[int] = None
-                # The spill plan, not the fit's probe, dropped the drafter: rung 2 of
-                # its ladder. Same downgrade, different reason string.
                 _spec_dropped_by_planner = False
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
@@ -20771,9 +20709,8 @@ class LlamaCppBackend:
                         (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
                     ]
                     _discrete_vram = bool(_mm_budgeted_gpus)
-                    # The user-owns-it half of the gate below, kept for the spill
-                    # planner: its rung 0 may move the projector under exactly these
-                    # conditions and no others.
+                    # The user-owns-it half of the gate below, kept for the spill planner: its
+                    # rung 0 may move the projector under exactly these conditions and no others.
                     _mmproj_pin_allowed = bool(
                         effective_is_vision
                         and mmproj_size > 0
@@ -20913,22 +20850,8 @@ class LlamaCppBackend:
                             else:
                                 _apply_mmproj_cpu_pin(_mm_floor_ctx)
 
-                    # Target pins but the drafter's reserve tips it over: Auto drops the
-                    # drafter rather than pay for speed with context (or a --fit offload,
-                    # where decode collapses ~3x). Priced over the SAME ranked subsets the
-                    # placement loop walks, at the context the target alone would get, so
-                    # it drops only when no placement could have held both. Carried to the
-                    # launch as drafter_no_vram. Skipped under tensor parallelism, whose
-                    # per-device buffer has its own geometry these numbers do not model;
-                    # `tensor_parallel` already reflects the downgrades hoisted above, so
-                    # a request that ends up layer-split IS probed. The pooled tensor
-                    # weight-budget check below still escapes, since it prices the reserve
-                    # this probe may clear and running it first would be circular. The
-                    # gate reads the user's choice, not _mtp_effective, which by here is
-                    # the kind Auto resolved and can no longer tell the two apart.
-                    # The user-owns-it half of the probe gate, kept for the spill
-                    # planner: its rung 2 may drop the drafter under exactly these
-                    # conditions and no others.
+                    # Target pins but the drafter's reserve tips it over: Auto drops the drafter rather
+                    # than pay for speed with context.
                     _spec_drop_allowed = bool(
                         (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
                         and not _user_mtp_via_extras
@@ -21528,13 +21451,6 @@ class LlamaCppBackend:
                                 use_fit = False
                                 break
                             else:
-                                # No discrete-GPU subset holds the model at a fitted
-                                # context. Prefer a useful chat context before
-                                # handing placement to --fit on and host offload.
-                                # The planner, when it owns the fit, is asked at the
-                                # context Auto wanted and shrinks it last (see
-                                # _spill_ctx_request); the cap below still decides
-                                # what --fit on gets when the planner declines.
                                 _spill_ctx_request = effective_ctx if _planner_owns_fit else 0
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
@@ -21995,16 +21911,8 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
-                    # The context the planner is priced at. With the planner owning
-                    # the fit on an Auto context this is what Auto WANTED before it
-                    # settled for _AUTO_OFFLOAD_CTX; the planner shrinks it only after
-                    # every other rung. Equal to effective_ctx otherwise, so every
-                    # term below is unchanged for a launch the planner does not own.
                     _spill_ctx = _spill_ctx_request or effective_ctx
                     _spill_n_gpus = max(1, len(gpus or ()))
-                    # The fewest slots the planner may reduce to. A typed --parallel is
-                    # the user's, an embedding load's count is its batch, and a build
-                    # clamped to 1 has nowhere to go; otherwise rung 1 may walk to 1.
                     _spill_min_parallel = int(n_parallel or 1)
                     if (
                         _planner_owns_fit
@@ -22013,10 +21921,8 @@ class LlamaCppBackend:
                         and not self.is_embedding_gguf
                     ):
                         _spill_min_parallel = 1
-                    # The cache at every slot count rung 1 may step through, priced
-                    # exactly as _kv_bytes prices the launched count (checkpoints 0:
-                    # the placement paths price the SWA snapshots themselves). Only
-                    # under the planner: one estimator call per candidate.
+                    # The cache at every slot count rung 1 may step through, priced exactly as _kv_bytes
+                    # prices the launched count (checkpoints 0: the placement paths price the snapshots).
                     _spill_floor_by_parallel = (
                         {
                             _p: self._estimate_kv_cache_bytes(
@@ -22034,8 +21940,6 @@ class LlamaCppBackend:
                         if _planner_owns_fit
                         else {}
                     )
-                    # The micro-batch each of those slot counts launches at, so the
-                    # gate scores a reduced-slot candidate at its own prefill stream.
                     _spill_ubatch_by_parallel = (
                         {
                             _p: _ub
@@ -22047,15 +21951,8 @@ class LlamaCppBackend:
                         else {}
                     )
 
-                    # The same estimator call at an ARBITRARY context, so the planner can
-                    # re-price the cache instead of scaling the floor by a ratio. Its own
-                    # rules cannot: a fixed recurrent state does not shrink with context,
-                    # an MLA latent is not the per-head product, and an iSWA cache is
-                    # flat in one half and linear in the other. This is the one term
-                    # that knows all three, and it is what the floor map above already
-                    # is, freed of its fixed slot count. Memoised because the ladder
-                    # asks at every rung, and clamped so a walked-down candidate cannot
-                    # ask for a context llama.cpp would refuse.
+                    # The same estimator call at an ARBITRARY context, so the planner re-prices the cache
+                    # instead of scaling the floor by a ratio no single rule can be right for.
                     @functools.lru_cache(maxsize = 256)
                     def _kv_bytes_at(ctx: int, slots: int) -> int:
                         return self._estimate_kv_cache_bytes(
@@ -22069,20 +21966,8 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
 
-                    # --cache-ram bounded to the host RAM the fallback leaves free, so
-                    # the prompt cache is a term the load-mode rule can see rather than
-                    # an uncounted 8 GiB. Only when the user typed none and the planner
-                    # owns the fit; the value is emitted on the --fit on path below and
-                    # handed to the planner as the ceiling it may clamp further.
-                    # A --cache-ram typed into the extras is the user's too: it lands
-                    # after every flag emitted here and llama.cpp is last-wins, so a
-                    # clamp appended below would be overridden by it, and the RAM
-                    # rule has to price the value the child actually runs with.
-                    # Precedence is the child's: the extras land after the field's
-                    # own flag, so a typed value beats it, and the field's flag beats
-                    # LLAMA_ARG_CACHE_RAM, which llama.cpp reads only for a flag argv
-                    # never set. Pricing the field with both present reserved 1 GiB
-                    # for a cache the extras let grow to 16.
+                    # --cache-ram bounded to the host RAM the fallback leaves free, so the prompt cache is
+                    # a term the load-mode rule can see rather than an uncounted 8 GiB.
                     _cache_ram_typed = _extra_args_cache_ram(extra_args, {})
                     _cache_ram_in_force = (
                         _cache_ram_typed
@@ -22100,11 +21985,6 @@ class LlamaCppBackend:
                         )
                     except (TypeError, ValueError):
                         _cache_ram_unbounded = False
-                    # The clamp itself is derived below, once the host-only terms the
-                    # fit spends (a CPU drafter, the checkpoint snapshots, a CPU-pinned
-                    # projector) are priced, and written into the snapshot there.
-                    # Everything the spill planner needs, snapshotted as plain ints
-                    # where it is already evaluated.
                     _spill_inputs = {
                         "model_size": model_size,
                         "kv_cache_bytes": (
@@ -22130,9 +22010,8 @@ class LlamaCppBackend:
                         },
                         "gpu_indices": gpu_indices,
                         "soft_overhead": _soft_overhead,
-                        # What the usable budget above already withheld from each
-                        # card, priced into the floor the seam charges so the total
-                        # reserve never drops below the validated 1536 MiB curve.
+                        # What the usable budget above already withheld from each card, priced into
+                        # the floor the seam charges so the total reserve never drops below 1536 MiB.
                         "reserve_floor_bytes": _reserve_floor_bytes(
                             int(
                                 (_free - max(0.0, _gpu_usable((_idx, _free), _pin_fraction)))
@@ -22158,8 +22037,6 @@ class LlamaCppBackend:
                         "ctx_compute_per_device": (
                             _cc_bytes(_spill_ctx, _spill_n_gpus) // _spill_n_gpus
                         ),
-                        # The same term at any context, for the rungs the ladder
-                        # tries below the requested one.
                         "ctx_compute_at": (
                             lambda _c, _n = _spill_n_gpus: _cc_bytes(int(_c), _n) // _n
                         ),
@@ -22181,39 +22058,23 @@ class LlamaCppBackend:
                         "model_path": model_path,
                         "n_ctx": _spill_ctx,
                         "n_threads": n_threads,
-                        # The micro-batch that LAUNCHES, after the Studio field, the
-                        # extras, LLAMA_ARG_UBATCH and the slot-dependent floor have
-                        # all had their say. The cost gate divides the spilled-weight
-                        # streaming cost by it, so scoring at the 512 default while
-                        # the child runs -ub 64 prices prefill eight times too cheap
-                        # and can return the opposite placement.
+                        # The micro-batch that LAUNCHES, after the Studio field, the extras,
+                        # LLAMA_ARG_UBATCH and the slot-dependent floor have all had their say.
                         "n_ubatch": _effective_ubatch,
                         # The slot count the KV and recurrent state were PRICED at.
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
                         "n_parallel": int(n_parallel or 1),
-                        # ...and whether those slots share ONE cache. Under
-                        # --kv-unified llama-server reports n_ctx_slot = n_ctx to
-                        # every slot, so a single request may fill the whole
-                        # window; the cost gate's long-prompt veto keys on that
-                        # number and would otherwise divide it by the slot count.
                         "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
-                        # The floor map without its fixed context: the planner asks
-                        # this rather than scaling a measurement it cannot decompose.
-                        # A callable, and this dict is never serialised.
+                        # The floor map without its fixed context: the planner asks this rather than
+                        # scaling a measurement it cannot decompose. A callable, never serialised.
                         "kv_bytes_at": _kv_bytes_at if _planner_owns_fit else None,
                         "n_ubatch_by_parallel": _spill_ubatch_by_parallel,
-                        # The recurrent half of those figures, per slot.
-                        # _estimate_kv_cache_bytes returns ONE number for the whole
-                        # hybrid memory, and the planner prices the state itself from
-                        # the layout, so the seam has to be able to take it back out.
                         "kv_recurrent_bytes_per_slot": int(self._rollback_state_bytes(1)),
-                        # Rung 0: the projector, separable from extra_gpu_bytes so the
-                        # planner can move it and get BOTH its file bytes and the
-                        # runtime surcharge back. movable only under the same gate the
-                        # fit's own pin obeys, and never once already pinned.
+                        # Rung 0: the projector, separable from extra_gpu_bytes so the planner
+                        # gets BOTH its file bytes and the runtime surcharge back.
                         "mmproj_file_bytes": int(mmproj_size),
                         "mmproj_surcharge_bytes": (
                             int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
@@ -22227,9 +22088,6 @@ class LlamaCppBackend:
                             and mmproj_size > 0
                             and not _tp_planned
                         ),
-                        # Rung 2: the drafter's reserve, at the planner's context and the
-                        # launched slot count. What extra_gpu_bytes already folds in is
-                        # named too, so the seam can swap the one for the other.
                         "mtp_reserve_bytes": int(_mtp_reserve_bytes),
                         "draft_bytes": (
                             int(_mtp_bytes(_spill_ctx, n_parallel, _effective_ubatch))
@@ -22243,9 +22101,6 @@ class LlamaCppBackend:
                             and not _draft_cpu_no_embedded
                             and not _tp_planned
                         ),
-                        # The prompt cache the planner may clamp: the bounded value
-                        # when one was derived, else what this launch will really
-                        # permit (0 on a build without --cache-ram).
                         "cache_ram_default_mib": int(
                             _auto_cache_ram_mib
                             if _auto_cache_ram_mib is not None
@@ -22254,35 +22109,17 @@ class LlamaCppBackend:
                             )
                             // (1024 * 1024)
                         ),
-                        # The prompt cache the planner may clamp is not a ceiling
-                        # at all when the user set -1: its RAM proof abstains.
                         "cache_ram_user_set": _cache_ram_in_force is not None,
                         "cache_ram_unbounded": _cache_ram_unbounded,
-                        # The draft's own decode graph, folded into soft_overhead
-                        # when a GPU draft reserves; rung 2 gives it back with the
-                        # draft, since the no-draft child never allocates it.
                         "mtp_draft_compute_bytes": (
                             int(self._MTP_DRAFT_COMPUTE_BYTES) if _mtp_reserves_gpu else 0
                         ),
-                        # The main cache type the child will run, so the planner
-                        # prices a quantised cache as one rather than as an f16
-                        # product with a smaller floor under it.
+                        # The main cache type the child will run, so the planner prices a quantised
+                        # cache as one rather than as an f16 product with a smaller floor under it.
                         "cache_type_kv": cache_type_kv,
-                        # The user's loader pick, if any: it replaces the plan's
-                        # --load-mode none at launch, so the planner stands aside.
                         "load_mode": load_mode,
-                        # Context is reduced LAST, and only when Auto owns it.
-                        # A pass-through "-c 0" is the user's pin on the native window,
-                        # and it is appended after the -c a plan rewrites, so a shrunk
-                        # context would launch at native anyway, with --fit off and a
-                        # cache the plan never priced. Asked at native, never reduced.
                         "context_policy_fit_only": bool(_spill_ctx_request) and ctx_override != 0,
                         "min_ctx": int(_AUTO_OFFLOAD_CTX),
-                        # The prompt shape the cost gate prices. Per slot, capped at the
-                        # depth the dense win was measured at (1.48x at PP 8192) and the
-                        # context Auto settles for on the fallback it competes with.
-                        # One shared stream under --kv-unified, so a single request
-                        # may fill the whole window; N private windows without it.
                         "workload_prompt_tokens": int(
                             min(
                                 max(
@@ -22366,10 +22203,8 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
-                    # The planner is priced at _spill_ctx, which Auto's cap can leave
-                    # far above effective_ctx, and an accepted plan launches there: the
-                    # drafter's host KV grows with it, so the term the planner admits
-                    # against is sized at that context, not at the capped one.
+                    # The planner is priced at _spill_ctx, which Auto's cap can leave far above
+                    # effective_ctx, so the drafter's host KV term is sized there, not at the capped one.
                     _cpu_draft_spill_bytes = (
                         _cpu_draft_fit_bytes
                         if _spill_ctx == effective_ctx or _cpu_draft_fit_bytes is None
@@ -22501,27 +22336,10 @@ class LlamaCppBackend:
                         else _fit_env_mmproj_bytes
                         + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
-                    # Host RAM this launch spends that the PLAN's own host side
-                    # cannot see. Plan.host_bytes is the token embeddings plus the
-                    # spilled weights (offload_planner.py:_finish), and the seam
-                    # replaces the fit-derived load mode with the plan's, so any
-                    # host term missing here is a --load-mode none decided against
-                    # RAM that is not free -- an OOM kill where mmap would only
-                    # have paged. Three of them, all priced right here for the fit:
-                    #   * a drafter pinned to the CPU with -ngld 0, whose GGUF and
-                    #     KV are host resident (_cpu_resident_draft_bytes);
-                    #   * the SWA/recurrent snapshots --ctx-checkpoints allocates,
-                    #     which llama-server keeps in host byte buffers per slot;
-                    #   * a --cache-ram the USER set, which the rewrite below
-                    #     refuses to clamp, so the plan's own clamp cannot pay for
-                    #     it (an unset one is clamped and needs no term).
-                    # Subtracted from the host RAM the planner admits against, so
-                    # both its load-mode rule and its prompt-cache clamp see them.
-                    # Host RAM the --fit on child spends outside its GPU shortfall:
-                    # the same three CPU-only terms priced for the planner below,
-                    # at the context the fallback launches. Left out, the automatic
-                    # --cache-ram stayed at 8 GiB on a host those allocations had
-                    # already filled, and a declined plan has no clamp of its own.
+                    # Host RAM this launch spends that Plan.host_bytes (offload_planner.py:_finish) does
+                    # not carry, subtracted from the pool the planner admits against: a -ngld 0 drafter,
+                    # the --ctx-checkpoints snapshots, and a --cache-ram the USER set which the rewrite
+                    # below refuses to clamp. Priced for the --fit on fallback too, which has no clamp.
                     _host_only_fit_bytes = (
                         int(_cpu_draft_fit_bytes or 0)
                         + (
@@ -22577,15 +22395,10 @@ class LlamaCppBackend:
                             if _cache_ram_in_force is not None
                             else 0
                         )
-                        # A projector already on the CPU (--no-mmproj-offload, or its
-                        # environment form) is out of model_size and out of the plan's
-                        # host side alike, and clip.cpp holds it resident in a CPU
-                        # backend buffer: the same bytes the fit's own footprint
-                        # charges as mmproj_pinned_bytes below.
+                        # A projector already on the CPU is out of model_size and out of the plan's host side
+                        # alike, and clip.cpp holds it resident in a CPU backend buffer.
                         + int(_mmproj_pinned_bytes or 0)
                         + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0),
-                        # A caller's -nkvo cache is charged by the planner itself, on
-                        # the plan's host side (kv_on_host), not taken off the pool here.
                     )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
@@ -22609,17 +22422,8 @@ class LlamaCppBackend:
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
                         # free VRAM cannot pay for.
                         host_only_bytes = _cpu_draft_fit_bytes or 0,
-                        # The prompt cache this launch will really permit: the panel's
-                        # value when one was typed, else llama-server's own default.
-                        # A build too old for --cache-ram has no prompt cache to
-                        # charge, and an explicit 0 disables it, so both come out 0.
-                        #
-                        # Charged ONLY under the planner. This term does not exist on
-                        # main, so charging it unconditionally moved a flag-off load
-                        # that got --load-mode none there to mmap here -- a 10 GiB
-                        # spill on a 16 GiB-free host is exactly that cell. Flag off
-                        # is byte-identical to main, so the clamp that pays for the
-                        # cache and the charge for it arrive together or not at all.
+                        # The prompt cache this launch will really permit: the panel's value when one was
+                        # typed, else llama-server's own default; 0 for an old build or an explicit 0.
                         prompt_cache_bytes = (
                             self._effective_prompt_cache_bytes(
                                 _cache_ram_in_force
@@ -22989,13 +22793,8 @@ class LlamaCppBackend:
                     and int(_auto_cache_ram_mib) < self._DEFAULT_CACHE_RAM_MIB
                     and server_caps.get("supports_cache_ram")
                 ):
-                    # The user set none and the planner owns the fit: bound the
-                    # prompt cache to the host RAM this launch leaves free instead of
-                    # letting llama.cpp's 8 GiB default sit uncounted in the load-mode
-                    # arithmetic. Same value the rule above was priced at. Emitted
-                    # only when the bound BINDS: at the default it is llama-server's
-                    # own value, and writing it out made the flag-on argv differ from
-                    # flag-off on every launch, including ones the planner declined.
+                    # The user set none and the planner owns the fit: bound the prompt cache to the host
+                    # RAM this launch leaves free rather than let the 8 GiB default sit uncounted.
                     cmd.extend(["--cache-ram", str(int(_auto_cache_ram_mib))])
 
                 # Report a clean public model id (matching GET /v1/models) rather
@@ -23008,20 +22807,11 @@ class LlamaCppBackend:
                     cmd.extend(["--alias", _alias])
 
                 fully_gpu_offloaded = False
-                # A plan belongs to the load that made it. Left over from a previous
-                # one, its -ngl -1 --fit off would match the fits branch of this argv
-                # and a retry would strip it and write the old model's --parallel,
-                # -c and --cache-ram into this command.
                 self._spill_plan_flags = []
                 self._spill_plan_restore = {}
                 _spill_ctx_locals_before = None
-                # A spill plan that moved no weight (fewer slots, the projector on
-                # the CPU, the draft dropped, a shorter context) pins every layer on
-                # the GPU with -ngl -1 --fit off, exactly as the fits branch does.
-                # Kept apart from fully_gpu_offloaded, which also keys the full-
-                # offload tuning and the --fit on crash retry; this only reaches the
-                # Model Memory gate, which would otherwise page-lock a full host copy
-                # of a model whose weights are all on the card.
+                # A spill plan that moved no weight (fewer slots, the projector on the CPU, the
+                # draft dropped, a shorter context) pins every layer on the GPU.
                 _spill_keeps_every_layer_on_gpu = False
                 # Set when a positional --tensor-split is emitted, so the env block
                 # can pin CUDA to PCI order even without a GPU subset (see below).
@@ -23092,10 +22882,8 @@ class LlamaCppBackend:
                         extra_args = extra_args,
                         env = os.environ,
                     )
-                    # NOT `if _spill:` -- Plan is a dataclass, so every instance is
-                    # truthy, including ones saying it could not place this at all.
-                    # The context the planner was asked at comes from the snapshot,
-                    # which is None on a load that could not be priced at all.
+                    # NOT `if _spill:` -- Plan is a dataclass, so every instance is truthy,
+                    # including ones saying it could not place this at all.
                     _spill_flags = self._spill_plan_flags_for(
                         _spill,
                         requested_ctx = (
@@ -23110,11 +22898,8 @@ class LlamaCppBackend:
                         _spill_ctx_locals_before = None
                         cmd.extend(self._spill_plan_flags)
                         _spill_keeps_every_layer_on_gpu = "-ot" not in _spill_flags
-                        # The plan's other decisions rewrite values this argv already
-                        # carries, IN PLACE, with the fitter's own value recorded so a
-                        # retry that revokes the plan can put it back. Each rebinding
-                        # is read by the sites below it (the context integrity flags,
-                        # the speculative flags, the projector pin, the load mode).
+                        # The plan's other decisions rewrite values this argv already carries, IN PLACE, with
+                        # the fitter's own value recorded so a retry that revokes the plan can put it back.
                         if _spill.n_parallel and _spill.n_parallel < n_parallel:
                             _np_at = cmd.index("--parallel")
                             self._spill_plan_restore["--parallel"] = cmd[_np_at + 1]
@@ -23122,13 +22907,8 @@ class LlamaCppBackend:
                             # the plan priced the cache at fewer slots (rung 1)
                             n_parallel = _spill.n_parallel  # allow-slot-clamp: planner rung 1
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
-                            # The batch floor was emitted at the fitter's slot count
-                            # (max(slots, 2)) and llama.cpp derives the micro-batch
-                            # from the EMITTED value, while the plan priced its cache
-                            # and draft tables at the floor for the reduced count. The
-                            # flag follows the slots, or a --batch-size 1 request with
-                            # four slots is priced at micro-batch 2 and launches at 4
-                            # under a pin that reserved for 2.
+                            # The batch floor was emitted at the fitter's slot count and llama.cpp derives the
+                            # micro-batch from the EMITTED value, so the flag has to follow the reduced slots.
                             if n_batch is not None and "--batch-size" in cmd:
                                 _b_at = cmd.index("--batch-size")
                                 _new_batch = str(_emitted_n_batch(n_batch, n_parallel))
@@ -23139,21 +22919,15 @@ class LlamaCppBackend:
                             _c_at = cmd.index("-c")
                             self._spill_plan_restore["-c"] = cmd[_c_at + 1]
                             cmd[_c_at + 1] = str(_spill.n_ctx)
-                            # The locals the argv value describes, kept so a retry
-                            # that revokes the plan can put both back with it.
                             _spill_ctx_locals_before = (effective_ctx, max_available_ctx)
                             effective_ctx = _spill.n_ctx
                             max_available_ctx = max(max_available_ctx, effective_ctx)
                         if _spill.mmproj_to_host and not _mmproj_cpu_pinned:
-                            # Rung 0. The token itself goes out with the other pin
-                            # reasons below; here only the state those sites read.
                             _mmproj_cpu_pinned = True
                             _mmproj_pinned_bytes = mmproj_size
                             mmproj_size = 0
                             self._mmproj_fallback_reason = "cpu_offload"
                         if _spill.draft_dropped and _mtp_will_engage:
-                            # Rung 2: the same zero-VRAM downgrade the fit's own probe
-                            # takes, so _build_speculative_flags needs no new path.
                             _spec_dropped_no_vram = True
                             _spec_dropped_by_planner = True
                             _mtp_will_engage = False
@@ -23167,14 +22941,8 @@ class LlamaCppBackend:
                                 self._spill_plan_restore["--cache-ram"] = cmd[_cr_at + 1]
                                 cmd[_cr_at + 1] = str(_spill.cache_ram_mib)
                             else:
-                                # Absent before the plan, so the revocation removes it
-                                # rather than restoring a value that was never there.
                                 self._spill_plan_restore["--cache-ram"] = None
                                 cmd.extend(["--cache-ram", str(_spill.cache_ram_mib)])
-                        # The plan's footprint is the accurate one for the load mode
-                        # once the plan is taken; the fit's rule priced a different
-                        # placement. Routed through _fit_load_mode so the tokens land
-                        # in _fit_load_mode_flags and every retry strip still works.
                         _fit_load_mode = self._FIT_LOAD_MODE if _spill.load_mode_none else None
                         logger.info(
                             "Tensor spill: %s (resident %.1f GB, host %.1f GB%s%s%s)",
@@ -24751,34 +24519,16 @@ class LlamaCppBackend:
                     return stripped
 
                 def _revoke_spill_plan(run_cmd, why):
-                    """``_drop_tensor_spill``, plus the locals the plan rewrote.
-
-                    The plan lowered ``--parallel`` IN PLACE and rebound this
-                    launch's own ``n_parallel`` beside it; the revocation puts the
-                    fitter's value back in the argv, so the local has to follow or
-                    the post-launch commit records fewer slots than the child that
-                    answered actually serves. ``_commit_effective_parallel_slots``
-                    drives request admission, the slot-save loop and the micro-batch
-                    recorded next to it, and unlike the context (re-read from
-                    /props by ``_reconcile_effective_ctx_with_server``) nothing else
-                    corrects the slot count afterwards.
-                    """
+                    """``_drop_tensor_spill``, plus the locals the plan rewrote."""
                     nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
                     nonlocal effective_ctx, max_available_ctx
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
-                    # Placement is llama.cpp's again, so the all-on-GPU answer the
-                    # plan justified goes with it.
                     _spill_keeps_every_layer_on_gpu = False
-                    # So does the plan's load mode: once a plan is taken the fit's
-                    # --load-mode is REPLACED by the plan's, priced against the
-                    # plan's host side, and the fitter can put far more on the host
-                    # than the plan did. A retry that keeps "none" turns a pageable
-                    # fallback into a host-RAM OOM. Only Unsloth's own tokens; the
-                    # record is kept, as the --fit on retry keeps it, since the
-                    # arch-crash and CPU fallbacks respawn from `cmd` and strip it
-                    # themselves.
+                    # So does the plan's load mode: the fitter can put far more on the host than
+                    # the plan did, so a retry that keeps "none" turns a pageable fallback into
+                    # a host-RAM OOM.
                     if self._fit_load_mode_flags:
                         reverted = _without_subsequence(reverted, self._fit_load_mode_flags)
                     _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
@@ -24787,17 +24537,12 @@ class LlamaCppBackend:
                             n_parallel = max(1, int(_restored))
                         except (TypeError, ValueError):
                             pass
-                    # And the context: a plan that raised Auto's cap rebound the two
-                    # locals the post-launch commit and the ceiling are read from.
-                    # Left at the plan's value, the fallback advertises a context
-                    # the child it launched does not serve, and the /props
-                    # reconciliation never corrects the ceiling.
+                    # And the context: left at the plan's value, the fallback advertises a context
+                    # the child it launched does not serve, and the /props reconciliation never
+                    # corrects the ceiling.
                     if "-c" in (getattr(self, "_spill_plan_restore", None) or {}):
                         if _spill_ctx_locals_before is not None:
                             effective_ctx, max_available_ctx = _spill_ctx_locals_before
-                            # The commit below the argv build already ran with the
-                            # plan's values, ahead of the spawn; the record follows
-                            # the child that is about to be launched.
                             self._effective_context_length = (
                                 effective_ctx if effective_ctx > 0 else self._context_length
                             )
@@ -25778,12 +25523,6 @@ class LlamaCppBackend:
                 if not healthy and not _load_cancelled():
                     _kvu_cmd = None
                     if self._is_kv_unified_refused("\n".join(self._stdout_lines)):
-                        # The plan goes FIRST. _spawn_and_wait revokes it on every
-                        # labelled retry, and the revocation puts the fitter's
-                        # --parallel back; applied after the one-slot rewrite it
-                        # relaunched the slot count the server had just refused.
-                        # Idempotent: the revocation inside the spawn then finds
-                        # nothing left to strip and leaves the one slot alone.
                         _kvu_cmd = self._with_single_sequence(
                             _revoke_spill_plan(_last_spawn_cmd, "single-seq")
                         )
@@ -28054,16 +27793,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
         load_mode: Optional[str] = None,
     ) -> bool:
-        """Whether the spill planner may own this launch's placement at all.
-
-        The pure half of ``_planned_tensor_spill``'s decline chain: the opt-in
-        flag, the host class, and every pass-through that already owns placement.
-        Nothing here depends on the priced inputs, so ``load_model`` can ask it
-        BEFORE those inputs exist and hand the planner the decisions that would
-        otherwise be made ahead of it (the context to price at, whether the
-        projector or the drafter may still be moved). ``_planned_tensor_spill``
-        calls the same predicate, so the two cannot drift.
-        """
+        """Whether the spill planner may own this launch's placement at all."""
         from core.inference.offload_planner import smart_offload_enabled
 
         source_env = os.environ if env is None else env
@@ -28077,18 +27807,8 @@ class LlamaCppBackend:
         if is_apple_silicon():
             return False
 
-        # A loader mode the USER picked (the per-model field, an inherited
-        # LLAMA_ARG_* twin, or a pass-through flag) replaces the plan's own
-        # --load-mode at launch: the policy below lets the user's mode win, and
-        # the fit-derived mode stands aside for an environment or extras pick.
-        # The cost model priced the spill with the host side unmapped (mapped
-        # weight reads measured 2 to 4.6x slower), and the prompt-cache clamp
-        # exists only under "none", so a plan taken under a mode it did not price
-        # can clear a gate it should not have. "none" is the mode the plan
-        # assumes and is compatible; anything else, an explicit "auto" included
-        # (the launch policy reads the raw field, and a truthy one drops the fit's
-        # mode), is declined. The environment is read as the launch reads it,
-        # after the Model Memory scrub.
+        # A loader mode the USER picked (the per-model field, an inherited LLAMA_ARG_* twin, or
+        # a pass-through flag) replaces the plan's own --load-mode at launch.
         _mode = str(load_mode).strip().lower() if load_mode else None
         if _mode and _mode != "none":
             return False
@@ -28097,9 +27817,8 @@ class LlamaCppBackend:
         if memory_env_selects_load_mode(_env_view) or extra_args_select_load_mode(extra_args):
             return False
         # The Model Memory toggles own the mode the same way: "Keep model in GPU
-        # memory" takes the load mode outright while weights sit in host RAM,
-        # which a spill guarantees, and "Don't reserve system RAM" drops "none"
-        # itself (apply_load_mode_policy). Either lands the plan under mmap.
+        # memory" takes the load mode outright and "Don't reserve system RAM" drops
+        # "none" itself (apply_load_mode_policy). Either lands the plan under mmap.
         if model_memory_owns_placement():
             return False
 
@@ -28178,18 +27897,7 @@ class LlamaCppBackend:
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
     ) -> "Optional[SpillPlan]":
-        """A ``-ot`` spill plan for a load Unsloth could not fit, or None to abstain.
-
-        Abstaining reproduces today's ``--fit on`` byte for byte, so every
-        uncertain input abstains rather than guessing. That is the whole safety
-        argument: the only behaviour that changes is the case where a plan was
-        produced, and a plan is only produced when the numbers are known.
-
-        The planner must NOT run when anything else owns placement. Pricing a
-        placement the child will not actually get is the single bug class behind
-        most of the review traffic on the load-mode work, and the cheap way to
-        avoid it is to decline rather than to model the override.
-        """
+        """A ``-ot`` spill plan for a load Unsloth could not fit, or None to abstain."""
         from core.inference.offload_cost_model import HostProfile
         from core.inference.offload_planner import ContextPolicy, PlanOptions, plan_placement
 
@@ -28201,43 +27909,15 @@ class LlamaCppBackend:
         ):
             return None
 
-        # An integrated CUDA SoC (Jetson, DGX Spark) is unified memory too, and
-        # nothing else here sees it: _amd_apu_wants_unified_memory answers only for
-        # ROCm, and shared_gpu_ids is populated only on Vulkan, which reports total
-        # 0 for an iGPU. CUDA states it directly (cudaDeviceProp::integrated, torch's
-        # is_integrated), and Studio's diffusion policy already classifies such a
-        # device as unified memory for exactly this reason -- CPU offload frees
-        # nothing there (diffusion_memory.py:292-294). A spill would count one pool
-        # twice and then pin the result with --fit off.
+        # An integrated CUDA SoC (Jetson, DGX Spark) is unified memory too, and nothing else
+        # here sees it: _amd_apu_wants_unified_memory answers only for ROCm and shared_gpu_ids
+        # only for Vulkan. Studio's diffusion policy already agrees (diffusion_memory.py:292-294).
         if self._integrated_cuda_unified_memory(inputs.get("gpu_indices")):
             logger.debug("Tensor spill: declined, an integrated CUDA device is unified memory")
             return None
 
-        # Slots are SIZING, not placement, and these numbers were priced at Unsloth's
-        # own --parallel. A pass-through is appended after it and llama.cpp is
-        # last-wins, so a larger one grows the attention cache and the recurrent
-        # state under a deficit computed for the smaller count.
-        #
-        # A SMALLER value used to be waved through as "over-reserved, the safe
-        # direction". That was true while the plan only had to be feasible: a
-        # cache reservation larger than the child's cannot OOM it. It stopped
-        # being true when the plan started being SCORED. ``kv_cache_bytes`` is
-        # measured at the priced slot count and reaches the planner as
-        # ``kv_bytes_floor``, and ``_fit_fallback_placement`` both consumes that
-        # floor and scales its moved live-cache term from it, while the -ot
-        # placement it is compared against carries no cache term at all. So an
-        # over-sized floor inflates exactly one arm: the fitter is modelled
-        # moving more layers than it will, and is charged Access.KV_CACHE on
-        # cache the child never allocates. The bias is one-directional -- every
-        # verdict it changes is a spill ACCEPTED over a fitter that beats it.
-        #
-        # It is not a rounding error either. ``_estimate_kv_cache_bytes`` folds
-        # ``_recurrent_state_bytes(n_parallel)`` into that figure, and that method
-        # scales linearly in the slot count, so on a Nemotron-H-shaped hybrid eight
-        # slots down to one is a 3.4x floor, and re-scoring the fallback at the
-        # count the child really gets turns four of a twenty-one budget sweep
-        # from SPILL to DECLINE. Nothing here can re-measure the cache for the
-        # new count, so decline, like every other pass-through this cannot price.
+        # Slots are SIZING, not placement, and these numbers were priced at Unsloth's own
+        # --parallel.
         priced_parallel = int(inputs.get("n_parallel") or 1)
         override_parallel = _extra_args_n_parallel(extra_args, source_env)
         if override_parallel is not None and override_parallel != priced_parallel:
@@ -28247,13 +27927,8 @@ class LlamaCppBackend:
                 priced_parallel,
             )
             return None
-        # A pass-through EQUAL to the priced count is not an override, but it is
-        # still appended after the --parallel a plan rewrites, and last-wins puts
-        # the original count back in the child. Rung 1 would then reserve for the
-        # reduced count and launch --fit off at the full one, recreating the very
-        # deficit it closed. The snapshot pins min_parallel for this; pin it here
-        # too so a caller that built its inputs without the snapshot cannot re-open
-        # the rung.
+        # A pass-through EQUAL to the priced count is still appended after the --parallel a
+        # plan rewrites, so last-wins would launch --fit off at the full count.
         min_parallel_floor = priced_parallel if override_parallel is not None else 1
 
         model_size = int(inputs.get("model_size") or 0)
@@ -28264,11 +27939,8 @@ class LlamaCppBackend:
         if not self._can_estimate_kv():
             return None
 
-        # Every shard: llama.cpp reads split.count off shard 1 and loads every
-        # sibling, and a layout read from shard 1 alone is a fraction of the model
-        # that reports itself incomplete. The models large enough to need a spill
-        # are exactly the sharded ones, so declining here silently hid the planner
-        # from all of them.
+        # Every shard: llama.cpp reads split.count off shard 1 and loads every sibling,
+        # and a layout read from shard 1 alone reports itself incomplete.
         layout = self._tensor_spill_layout(inputs.get("model_path"), all_shards = True)
         if layout is None or not layout.complete:
             logger.info(
@@ -28279,26 +27951,9 @@ class LlamaCppBackend:
             )
             return None
 
-        # The floor is an ATTENTION cache, and ``kv_cache_bytes`` is not one.
-        # ``_estimate_kv_cache_bytes`` folds the recurrent state into what it
-        # returns -- ``_mamba_recurrent_state_bytes`` on the hybrid path,
-        # ``_recurrent_state_bytes`` on the MLA one -- while the planner charges
-        # ``layout.recurrent_bytes`` ONCE PER SLOT on top of whatever floor it is
-        # handed (``resident_floor_bytes``). Handing over the fused number counts
-        # the state twice in every VRAM figure the planner computes, so the deficit
-        # is too large by the whole state and blocks are spilled to cover memory
-        # nothing will allocate. ``_fit_fallback_placement`` then frees it twice per
-        # moved layer as well (its ``kv_per_layer`` comes from the floor and its
-        # ``recurrent_per_layer`` from the layout), and prices part of a
-        # context-independent state as LIVE cache through ``floor_scale``. Single-GPU
-        # hybrids reach all of that: the uneven-cache abstain returns early on one
-        # device.
-        #
-        # Capped by what the layout itself models, and zero when it models none: a
-        # KDA hybrid (Kimi-K3) carries a state ``_estimate_kv_cache_bytes`` prices and
-        # ``offload_layout`` does not, and subtracting a term the planner will not add
-        # back would UNDER-reserve the cache, which is the one direction that loses
-        # the load rather than merely over-spilling.
+        # The floor is an ATTENTION cache and ``kv_cache_bytes`` is not one: the estimator
+        # folds the recurrent state in, while the planner charges ``layout.recurrent_bytes``
+        # ONCE PER SLOT on top of whatever floor it is handed.
         _recurrent_per_slot = min(
             int(inputs.get("kv_recurrent_bytes_per_slot") or 0), max(0, layout.recurrent_bytes)
         )
@@ -28389,11 +28044,6 @@ class LlamaCppBackend:
         avail_mib = self._available_system_memory_mib()
         if avail_mib is None:
             return None
-        # Host RAM the child spends on allocations no term of this plan carries:
-        # a CPU-pinned drafter, the --ctx-checkpoints snapshots, and a user-set
-        # --cache-ram the seam may not clamp. Taken off the pool the planner
-        # admits against rather than modelled, so the load-mode rule and the
-        # prompt-cache clamp in _finish both answer against RAM that is free.
         host_ram_bytes = max(
             0,
             avail_mib * 1024 * 1024 - int(inputs.get("host_ram_unpriced_bytes") or 0),
@@ -28428,23 +28078,17 @@ class LlamaCppBackend:
         overhead_per_device = int(inputs.get("soft_overhead") or 0) + int(
             inputs.get("ctx_compute_per_device") or 0
         )
-        # Rung 2's term. extra_gpu_bytes folds in the reserve at the LAUNCHED
-        # context; swap it for the one priced at the planner's context, plus the
-        # trailing nextn/MTP blocks the layout dropped, which an engaging draft
-        # turns from skipped bytes into resident ones in the TARGET's load (load_mtp
-        # comes from the spec type, common/common.cpp:1713). Handed to the planner
-        # as a separate term only when it may drop the draft; charged as resident
-        # otherwise, exactly as before.
+        # Rung 2's term. extra_gpu_bytes folds in the reserve at the LAUNCHED context; swap it
+        # for the one priced at the planner's, plus the trailing nextn/MTP blocks an engaging
+        # draft turns resident in the TARGET's load (common/common.cpp:1713).
         draft_bytes = int(inputs.get("draft_bytes") or 0)
         if inputs.get("mtp_will_engage") and layout.excluded_block_bytes:
             draft_bytes += layout.excluded_block_bytes
         extra_gpu_bytes -= int(inputs.get("mtp_reserve_bytes") or 0)
         draft_droppable = bool(inputs.get("draft_droppable")) and draft_bytes > 0
         if draft_droppable:
-            # The draft's decode graph (_MTP_DRAFT_COMPUTE_BYTES) rode in
-            # soft_overhead, i.e. in the per-device term; a child launched without
-            # the draft never allocates it, so it moves into the term rung 2 may
-            # give back rather than staying as a phantom reserve on every card.
+            # The draft's decode graph rode in soft_overhead, i.e. in the per-device term; a child
+            # launched without the draft never allocates it.
             _draft_compute = int(inputs.get("mtp_draft_compute_bytes") or 0)
             draft_bytes += _draft_compute
             overhead_per_device -= _draft_compute
@@ -28452,17 +28096,12 @@ class LlamaCppBackend:
             extra_gpu_bytes += draft_bytes
             draft_bytes = 0
         # Rung 0's term: the projector's file bytes ride in extra_gpu_bytes and its
-        # runtime surcharge in soft_overhead. Take both out of the fused terms when
-        # the planner may move it, so nothing is charged twice, and hand it one
-        # number it can give back whole.
+        # runtime surcharge in soft_overhead. Take both out so nothing is charged twice.
         mmproj_bytes = 0
         mmproj_movable = bool(inputs.get("mmproj_movable"))
         _mm_surcharge = int(inputs.get("mmproj_surcharge_bytes") or 0)
-        # The surcharge is ONE allocation on the main device, whether or not the
-        # projector may move; soft_overhead carries it and the planner charges
-        # that term on every card, which invented a projector per GPU on a
-        # layer split and spilled weights to pay for it. Out of the per-device
-        # term either way; charged once as resident when the projector stays.
+        # The surcharge is ONE allocation on the main device; charged per device it invented a
+        # projector per GPU on a layer split.
         overhead_per_device -= _mm_surcharge
         if mmproj_movable:
             _mm_file = int(inputs.get("mmproj_file_bytes") or 0)
@@ -28519,11 +28158,8 @@ class LlamaCppBackend:
             return None
         extra_gpu_bytes += sidecar_bytes
 
-        # The reserve floor the snapshot priced from what usable VRAM already withheld
-        # (_reserve_floor_bytes): the TOTAL per-device reserve is never below the curve
-        # #67 was calibrated on. Applied last, after the projector's surcharge has been
-        # handed to the planner as its own term, so moving the projector cannot dip
-        # the reserve under the floor. Absent from the snapshot means no floor.
+        # The reserve floor the snapshot priced from what usable VRAM already withheld, so the
+        # TOTAL per-device reserve is never below the #67 curve.
         _reserve_floor = int(inputs.get("reserve_floor_bytes") or 0)
         # The compute term above was priced at the requested context; the ladder
         # re-prices it per rung through the same closure, floored the same way.
@@ -28536,12 +28172,8 @@ class LlamaCppBackend:
         )
         overhead_per_device = max(overhead_per_device, _reserve_floor)
 
-        # The callable is the estimator's figure, and the planner takes the LAYOUT's
-        # state per slot out of it before adding that back. The two states differ
-        # wherever one side cannot price the model (a KDA state the layout does not
-        # read, a Nemotron-H state the estimator does not), so the callable is
-        # corrected exactly as the floor and the map are and then carries the
-        # layout's state, which is the one the planner subtracts.
+        # The callable is the estimator's figure, and the planner takes the LAYOUT's state per
+        # slot out of it before adding that back.
         _kv_at_raw = inputs.get("kv_bytes_at")
         _layout_state = max(0, layout.recurrent_bytes)
         kv_bytes_at = (
@@ -28575,10 +28207,6 @@ class LlamaCppBackend:
             opts = PlanOptions(
                 overhead_bytes_per_device = max(0, overhead_per_device),
                 overhead_bytes_at = overhead_bytes_at,
-                # The heavier planned axis, after the extras and the environment,
-                # the same type the KV reserve budgets. Under two bytes an element
-                # the cache is quantised and the planner prices it so; the f16
-                # product would otherwise override the smaller measured floor.
                 cache_quantised = _kv_bytes_per_elem(_planned_cache_type) < 2.0,
                 prompt_cache_unbounded = bool(inputs.get("cache_ram_unbounded")),
                 kv_quant_type = (
@@ -28586,10 +28214,8 @@ class LlamaCppBackend:
                     if _kv_bytes_per_elem(_planned_cache_type) < 2.0
                     else PlanOptions.kv_quant_type
                 ),
-                # Rungs 0 to 2, then the weight ladder, then the context: the
-                # owner's give-up order. Every term below is "not supplied" for a
-                # caller that did not price it, which leaves the planner's ladder
-                # at the weight rungs it always had.
+                # Rungs 0 to 2, then the weight ladder, then the context: the owner's give-up
+                # order. Every term below is "not supplied" for a caller that did not price it.
                 mmproj_bytes = mmproj_bytes,
                 mmproj_movable = mmproj_movable,
                 n_parallel = priced_parallel,
@@ -28602,9 +28228,8 @@ class LlamaCppBackend:
                     int(_p): _attention_floor(_v, int(_p))
                     for _p, _v in (inputs.get("kv_bytes_floor_by_parallel") or {}).items()
                 },
-                # The same measurement at any context, so the ladder re-prices the
-                # cache instead of scaling the floor. Absent from a caller that did
-                # not supply it, which leaves the planner's own rules in place.
+                # The same measurement at any context, so the ladder re-prices the cache
+                # instead of scaling the floor. Absent leaves the planner's own rules in place.
                 kv_bytes_at = kv_bytes_at,
                 draft_bytes = draft_bytes,
                 draft_droppable = draft_droppable,
@@ -28634,16 +28259,11 @@ class LlamaCppBackend:
                 # reserve. Both are in the footprint that produced the use_fit
                 # verdict, so omitting them makes the deficit too small.
                 extra_resident_bytes = extra_gpu_bytes,
-                # This is the only caller with somewhere else to go: declining
-                # here falls through to ``--fit on`` (see the fitting path
-                # below), so this is the one place a cost comparison can act on
-                # its answer. Everywhere else the planner is asked what it CAN
-                # place, which is a different question and keeps its old answer.
+                # This is the only caller with somewhere else to go: declining here falls
+                # through to ``--fit on``.
                 require_cost_win = True,
-                # Scored at the batch that launches, not the dataclass default:
-                # rank() amortises the spilled-weight stream over one ubatch, so
-                # a user who moved this knob would otherwise get the placement
-                # the gate predicted for 512 rather than the one for their value.
+                # Scored at the batch that launches, not the dataclass default: rank()
+                # amortises the spilled-weight stream over one ubatch.
                 n_ubatch = (
                     int(inputs["n_ubatch"])
                     if int(inputs.get("n_ubatch") or 0) > 0
@@ -28654,11 +28274,8 @@ class LlamaCppBackend:
                     for _p, _v in (inputs.get("n_ubatch_by_parallel") or {}).items()
                     if int(_v or 0) > 0
                 },
-                # An --embedding server never decodes: llama-server returns the
-                # pooled embedding and stops, so there is no generation phase for
-                # a spill's generation advantage to be realised in. Scoring one
-                # anyway accepted spills purely on decode wins these requests can
-                # never collect. Prefill-only is the whole workload here.
+                # An --embedding server never decodes, so there is no generation phase for a
+                # spill's generation advantage to be realised in.
                 workload_generated_tokens = (
                     0 if self.is_embedding_gguf else PlanOptions.workload_generated_tokens
                 ),
@@ -28694,58 +28311,19 @@ class LlamaCppBackend:
         may_shrink: bool = True,
         emitted_ctx: int = 0,
     ) -> "list[str]":
-        """The argv tokens for ``plan``, or ``[]`` when it must not be emitted.
-
-        ``requested_ctx`` is the context the planner was asked at, or 0 when the
-        caller cannot rewrite ``-c`` and so must not act on a shorter one.
-        ``may_shrink`` is False when that context is the user's (an explicit
-        field or a pass-through ``-c``): a plan below it priced a cache the launch
-        will not run at, and is not emitted rather than rewriting the user's
-        value or launching ``--fit off`` under a spill sized for a smaller cache.
-        ``emitted_ctx`` is the ``-c`` the argv carries right now, which Auto may
-        have capped BELOW ``requested_ctx`` before the planner was asked; a priced
-        plan that fits above it, spilling nothing, is a restore of the context
-        the coarse fit gave up, and is emitted for that alone.
-
-        The emptiness test is the point. ``Plan`` is a dataclass with no
-        ``__bool__``/``__len__``, so EVERY instance is truthy -- including the
-        ones ``plan_placement`` returns to report that it could not place the
-        load (``insufficient``), that it abstained (incomplete layout, unified
-        memory, no creditable VRAM), or that the load already fits. Emitting for
-        those would append ``-ngl -1 --fit off`` with no tensor moved to the
-        host, i.e. pin every layer to the GPU and switch the fitter off on
-        exactly the loads the planner just said do not fit. Only a plan that
-        actually spills something earns the flags; everything else falls through
-        to ``--fit on``, which is what this arm did before the planner existed.
-
-        One flag per pattern: llama-server ACCUMULATES repeated ``-ot``
-        (common/arg.cpp:2657 push_backs into the shared override vector). Do not
-        join with ";" -- that is llama-bench's separator; llama-server splits an
-        ``-ot`` value on ",".
-
-        ``--fit off`` is REQUIRED, not tidiness. The fitter aborts only on an
-        n_gpu_layers the USER set (common/fit.cpp:377) and -1 is llama.cpp's own
-        default (llama-model.cpp:2453), so ``-ngl -1`` does not hold it off: left
-        on, it would re-place layers over this plan and put the cache back on the
-        host. ``-ngl -1`` keeps every layer assigned to a GPU so the cache stays
-        there (llama-kv-cache.cpp:215); the ``-ot`` patterns move only the named
-        weights.
+        """The argv tokens for ``plan``, or ``[]`` when it must not be emitted. One flag per
+        pattern: llama-server ACCUMULATES repeated ``-ot`` (common/arg.cpp:2657 push_backs into
+        the shared override vector).
         """
         if plan is None or plan.insufficient or plan.declined_by_gate:
             return []
-        # A plan that fits ABOVE the emitted context is a launch of its own even
-        # when it spills nothing and moves no knob: Auto capped -c to 8192 on the
-        # coarse fit (gguf_size, host-only tensors included) before the planner
-        # was asked at the context Auto wanted, and the exact layout may prove
-        # that context fully resident. Discarding the plan launches the child at
-        # the cap and throws away the context the planner proved. Only a PRICED
-        # plan says so; an abstain carries an n_ctx too and proves nothing.
+        # A plan that fits ABOVE the emitted context is a launch of its own even when it spills
+        # nothing: Auto capped -c on the coarse fit before the planner was asked.
         restores_context = may_shrink and plan.priced and 0 < emitted_ctx < plan.n_ctx
         if not plan.changed and not restores_context:
             return []
-        # A plan the context ladder settled at a SHORTER context than the one asked
-        # for is likewise a launch of its own; a plan at the requested context that
-        # spills nothing, with nothing capped below it, is llama.cpp's own launch.
+        # A plan the context ladder settled at a SHORTER context is likewise a launch of its
+        # own; one at the requested context that spills nothing is llama.cpp's own launch.
         shrinks_context = 0 < plan.n_ctx < requested_ctx
         if shrinks_context and not may_shrink:
             return []
@@ -28756,10 +28334,8 @@ class LlamaCppBackend:
         tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
         if plan.spills_anything and not tokens:
             return []
-        # A plan that spilled nothing but reshaped the launch (fewer slots, the
-        # projector on the CPU, the drafter dropped) is still Unsloth's placement:
-        # every layer stays on a GPU, so it takes the same pin the proved arm does.
-        # The reshaping itself is applied by the caller, in place, from the Plan.
+        # A plan that spilled nothing but reshaped the launch is still Unsloth's placement, so
+        # it takes the same pin the proved arm does.
         return ["-ngl", "-1", "--fit", "off", *tokens]
 
     def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
@@ -28780,16 +28356,11 @@ class LlamaCppBackend:
         stripped = _without_subsequence(run_cmd, self._spill_plan_flags)
         if stripped == run_cmd:
             return run_cmd
-        # The values the plan rewrote in place go back too: a --parallel the plan
-        # lowered or a -c it raised describe the plan's placement, not the fitter's.
-        # The drafter drop and the projector pin are NOT undone, since both reduce
-        # VRAM, which is the direction a crashed launch wants.
         for flag, value in (getattr(self, "_spill_plan_restore", None) or {}).items():
             if flag not in stripped:
                 continue
             at = stripped.index(flag)
             if value is None:
-                # The plan appended it; the fitter's argv never had it.
                 del stripped[at : at + 2]
             else:
                 stripped[at + 1] = value
@@ -28817,13 +28388,8 @@ class LlamaCppBackend:
 
         if not model_path:
             return None
-        # Keyed on file IDENTITY, not name: the backend outlives a load, so
-        # re-downloading or re-quantising to the same path would otherwise plan
-        # against the OLD tensor table and understate the deficit. Same
-        # (size, mtime_ns) stat identity _slot_launch_fingerprint uses.
-        # Every shard when all of them are read: a sibling downloaded or replaced
-        # while shard 1 is untouched would otherwise serve the stale layout, and a
-        # stale COMPLETE one undercounts most of the model.
+        # Keyed on file IDENTITY, not name: the backend outlives a load, so re-quantising to
+        # the same path would otherwise plan against the OLD tensor table.
         try:
             paths = [model_path]
             if all_shards:

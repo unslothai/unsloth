@@ -648,12 +648,8 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # sizing pass, embedding slot clamp, fit-time reduction, the spill planner's
-    # per-slot cache floors (one derivation per candidate slot count it may step
-    # down to), the per-slot micro-batch map the cost gate scores each of those
-    # candidates at (_spill_ubatch_by_parallel), the _kv_bytes_at closure that
-    # re-prices that same cache at an arbitrary context, the planner's own slot
-    # reduction, then the post-launch record
+    # eight sites: sizing, embedding clamp, fit-time reduction, spill cache floors,
+    # _spill_ubatch_by_parallel, _kv_bytes_at, planner slot reduction, launch record
     assert len(calls) == 8, f"expected eight re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
@@ -663,7 +659,6 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
         "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
     )
-    # ...and the planner's slot rung is the last of those, after the fit-time one
     planner_reduction = compact.index("n_parallel=_spill.n_parallel")
     assert planner_reduction > compact.index(
         "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
