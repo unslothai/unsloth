@@ -24,6 +24,7 @@ import pathlib
 import platform
 import re
 import sys
+import types
 
 import pytest
 
@@ -521,6 +522,9 @@ def test_a_broken_uv_still_falls_back_to_pip(monkeypatch) -> None:
 
 
 def test_a_venv_that_already_has_pip_does_not_reinstall_it(monkeypatch) -> None:
+    monkeypatch.setattr(
+        stack.subprocess, "run", lambda cmd, **_k: types.SimpleNamespace(returncode = 0)
+    )
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
     assert stack._venv_pip_is_usable() is True
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "22.0.4")
@@ -534,6 +538,26 @@ def test_a_venv_that_already_has_pip_does_not_reinstall_it(monkeypatch) -> None:
 def test_a_fresh_uv_venv_still_bootstraps(monkeypatch) -> None:
     """uv venvs omit pip entirely, and that is the case this step exists for."""
     monkeypatch.setattr(stack.importlib.util, "find_spec", lambda _n: None)
+    assert stack._venv_pip_is_usable() is False
+
+
+def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
+    """Metadata survives a pip whose __main__.py is gone; `python -m pip` does not."""
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    seen: list[list[str]] = []
+
+    def broken(cmd, **_k):
+        seen.append(list(cmd))
+        return types.SimpleNamespace(returncode = 1)
+
+    monkeypatch.setattr(stack.subprocess, "run", broken)
+    assert stack._venv_pip_is_usable() is False
+    assert seen and seen[0][1:] == ["-m", "pip", "--version"]
+
+    def hangs(cmd, **kw):
+        raise stack.subprocess.TimeoutExpired(cmd, kw.get("timeout", 60))
+
+    monkeypatch.setattr(stack.subprocess, "run", hangs)
     assert stack._venv_pip_is_usable() is False
 
 

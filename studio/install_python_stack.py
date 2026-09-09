@@ -6452,7 +6452,21 @@ def _venv_pip_is_usable() -> bool:
         major = int(re.match(r"\d+", installed).group(0))
     except (AttributeError, ValueError):
         return False
-    return major >= 23
+    if major < 23:
+        return False
+    # Metadata survives a pip whose __main__.py is gone or truncated, and everything
+    # this pass runs without uv (and every force_pip step with it) is `python -m pip`.
+    # One bounded launch settles it; a pip that cannot answer is one to reinstall.
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output = True,
+            timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
