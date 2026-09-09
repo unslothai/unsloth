@@ -186,12 +186,10 @@ CANCELLED = (
 # A Stop before any output yields nothing, so the status is the only record left; a failed
 # generation has the same shape under `reason: "error"`.
 STOPPED_UNMARKED = (
-    '{ role: "assistant", content: [],'
-    ' status: { type: "incomplete", reason: "cancelled" } }'
+    '{ role: "assistant", content: [], status: { type: "incomplete", reason: "cancelled" } }'
 )
 FAILED_UNMARKED = (
-    '{ role: "assistant", content: [],'
-    ' status: { type: "incomplete", reason: "error" } }'
+    '{ role: "assistant", content: [], status: { type: "incomplete", reason: "error" } }'
 )
 STOPPED = "Response stopped"
 INTERRUPTED = "Response interrupted"
