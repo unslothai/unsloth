@@ -7788,7 +7788,6 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
 
 def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
     from hub.storage import scan_folders
-
     class _Connection:
         def __init__(self, rowcount):
             self.rowcount = rowcount
