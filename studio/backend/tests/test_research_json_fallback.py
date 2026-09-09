@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from auth.authentication import get_current_subject
 from core import research_runs
 from routes import inference as inference_route
+from state import tool_policy
 from utils.api_errors import install_api_error_handlers
 from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
@@ -72,14 +73,17 @@ def research_call(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("forced_tools", [False, True], ids = ["default-tools", "forced-tools"])
 @pytest.mark.parametrize("is_mlx", [True, False], ids = ["mlx", "transformers"])
 @pytest.mark.parametrize("phase", ["planning", "decision", "synthesis_audit"])
 def test_local_json_research_recovers_through_the_real_route(
-    monkeypatch, research_call, is_mlx, phase
+    monkeypatch, research_call, is_mlx, phase, forced_tools
 ):
     backend = _ScriptedBackend(_fixed('{"ok": true}'))
     backend.models[backend.active_model_name]["is_mlx"] = is_mlx
-    _install(monkeypatch, backend, supports_tools = False)
+    _install(monkeypatch, backend, supports_tools = forced_tools)
+    if forced_tools:
+        monkeypatch.setattr(tool_policy, "_tool_policy", True)
     app = FastAPI()
     app.include_router(inference_route.router, prefix = "/v1")
     install_api_error_handlers(app)
@@ -100,6 +104,7 @@ def test_local_json_research_recovers_through_the_real_route(
     assert finish == "stop"
     assert statuses == [400, 200]
     assert len(backend.calls) == 1
+    assert not backend.calls[0]["tools"]
     first, second = sent
     assert first.pop("response_format") == {"type": "json_object"}
     assert first == second
