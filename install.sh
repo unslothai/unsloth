@@ -9,9 +9,9 @@
 # and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
-# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
-# the pipe would be read as an option to sh itself; a local run takes the equivalent flags
-# (--no-torch, --python, --local).
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME)
+# because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local
+# run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -61,6 +61,7 @@ TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
+_ISOLATE_UV_CACHE=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -89,6 +90,7 @@ for arg in "$@"; do
         --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --isolated-uv-cache) _ISOLATE_UV_CACHE=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -98,6 +100,7 @@ done
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
+case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -615,6 +618,160 @@ _resolve_studio_destinations() {
     _LOCAL_BIN="$HOME/.local/bin"
     _STUDIO_HOME_REDIRECT=default
 }
+
+# Records which cache this install used, so an update reuses it rather than guessing: the
+# launch below repoints the backend at the Studio cache even in shared mode, so one
+# on-demand install makes an empty Studio cache look full. Never fatal.
+# A relative UV_CACHE_DIR names a different directory in each phase of one install: uv
+# resolves it against its working directory, and setup.sh changes into its own before the
+# dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
+# marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
+# moves, and which may itself be relative to where the installer was run.
+_absolutize_uv_cache_dir() {
+    case "$UV_CACHE_DIR" in
+        /*) return 0 ;;
+    esac
+    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+    case "$_uv_cache_base" in
+        /*) ;;
+        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+    esac
+    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+}
+
+_record_uv_cache_choice() {
+    # In place, before anything reads it: every branch records, so this is the one point
+    # every phase of the install and the marker are made to agree on one directory.
+    _absolutize_uv_cache_dir
+    _uv_marker_dir="$STUDIO_HOME/cache"
+    _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
+    _uv_marker_value="$UV_CACHE_DIR"
+    # Remembered so a failed install can put it back.
+    if [ "$_UV_MARKER_SAVED" != true ]; then
+        if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
+            # One we cannot read is one we cannot put back, so leave it alone.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            _UV_MARKER_EXISTED=true
+        else
+            _UV_MARKER_PREVIOUS=""
+            _UV_MARKER_EXISTED=false
+        fi
+        _UV_MARKER_SAVED=true
+    fi
+    (
+        mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            # Unlinked first: a redirection follows a symlink and truncates its target.
+            rm -f "$_uv_marker_file" 2>/dev/null &&
+            # And only once gone: rm can fail on a link in an undeletable directory.
+            ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
+            printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
+    ) || true
+}
+
+_restore_uv_cache_marker() {
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
+    [ "$_UV_MARKER_SAVED" = true ] || return 0
+    _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    rm -f "$_uv_marker_file" 2>/dev/null || true
+    if [ "$_UV_MARKER_EXISTED" = true ] \
+       && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
+        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+    fi
+    _UV_MARKER_SAVED=false
+}
+
+_configure_uv_cache() {
+    _uv_studio_cache="$STUDIO_HOME/cache/uv"
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _UV_CACHE_MODE=custom
+            export UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            _record_uv_cache_choice
+            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+            return 0
+            ;;
+    esac
+
+    if [ "$_ISOLATE_UV_CACHE" = true ]; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=isolated
+        export UV_CACHE_DIR
+        _record_uv_cache_choice
+        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        return 0
+    fi
+
+    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
+    # inherited value cannot override them; last line so a notice ahead of the path
+    # does not become the path.
+    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
+    if [ -z "$_uv_default_cache" ]; then
+        if [ -n "${XDG_CACHE_HOME:-}" ]; then
+            _uv_default_cache="${XDG_CACHE_HOME}/uv"
+        elif [ -n "${HOME:-}" ]; then
+            _uv_default_cache="${HOME}/.cache/uv"
+        fi
+    fi
+
+    _uv_default_populated=false
+    _uv_scan_blocked=false
+    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+        # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+        for _uv_bucket in \
+            "$_uv_default_cache"/archive-* \
+            "$_uv_default_cache"/builds-* \
+            "$_uv_default_cache"/built-wheels-* \
+            "$_uv_default_cache"/wheels-* \
+            "$_uv_default_cache"/sdists-*; do
+            [ -d "$_uv_bucket" ] || continue
+            # Unreadable is not empty; remembered so the message below says why.
+            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                _uv_scan_blocked=true
+                continue
+            fi
+            _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                -print 2>/dev/null | head -n 1) || _uv_artifact=""
+            if [ -n "$_uv_artifact" ]; then
+                _uv_default_populated=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$_uv_default_populated" = true ]; then
+        UV_CACHE_DIR="$_uv_default_cache"
+        _UV_CACHE_MODE=shared
+    else
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+    fi
+    export UV_CACHE_DIR
+    _record_uv_cache_choice
+
+    case "$_UV_CACHE_MODE" in
+        shared)
+            step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            ;;
+        studio)
+            if [ "$_uv_scan_blocked" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            else
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            fi
+            ;;
+    esac
+}
+
+_prepare_studio_uv_cache_for_launch() {
+    [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+}
 _resolve_studio_destinations
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
@@ -623,9 +780,38 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Keep uv's cache on the same filesystem as the venv it fills.
+# uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
+# STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.
+# The fallback is required, since uv aborts on a cache it cannot create. mkdir -p exits 0 for
+# an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
+# with a real create.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$ name: a predictable path in another account's directory can be
+    # pre-created as a symlink for `: >` to follow and truncate as root.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# The marker travels with the environment. See _record_uv_cache_choice.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+# One flag for both rollbacks: two leave a window either way round, where a signal
+# restores half a committed install.
+_STUDIO_INSTALL_COMMITTED=false
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -697,6 +883,8 @@ _discard_venv_for_recreate() {  # venv dir
 }
 
 _restore_studio_venv_replacement() {
+    # The flag the marker restore consults too, so a signal mid-commit cannot split them.
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
     # and -d would drop a file or a dangling link and strand the original.
@@ -758,6 +946,10 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
+    # First and alone, because a signal can land between any two statements. A first
+    # install rolls nothing back and still commits.
+    _STUDIO_INSTALL_COMMITTED=true
+    _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
@@ -794,6 +986,8 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Separate from the venv restore: an install can fail before one is in flight.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -806,6 +1000,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
@@ -1550,8 +1745,13 @@ LAUNCHER_EOF
     # Try to find rounded-512.png from installed package (site-packages) or local repo
     _css_found_icon=""
     _css_venv_dir=$(dirname "$(dirname "$_css_exe")")
-    # Check site-packages
-    for _sp in "$_css_venv_dir"/lib/python*/site-packages/unsloth/studio/frontend/public; do
+    # Check site-packages. `studio` is a top-level package in the wheel (see
+    # top_level.txt), not a subpackage of `unsloth`, so the old
+    # site-packages/unsloth/studio/... glob never matched and every install fell
+    # through to the network download below. Read it out of frontend/dist rather
+    # than frontend/public: Vite copies public/ into dist/ at build time, so the
+    # file is in both in a checkout, but only dist/ ships in the wheel.
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
         if [ -f "$_sp/rounded-512.png" ]; then
             _css_found_icon="$_sp/rounded-512.png"
         fi
@@ -2126,6 +2326,17 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+
+    # An automatic path belongs to the origin distro; only an override is portable.
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            ;;
+        *)
+            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+            ;;
+    esac
+    [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
@@ -2719,6 +2930,8 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
         export PATH="$_UNSLOTH_UV_BIN_DIR:$PATH"
     fi
 fi
+
+_configure_uv_cache
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
@@ -3462,16 +3675,37 @@ _hsa_spoofed_physical_gfx() {
 # as the last command would trip set -e in callers' assignments). Shared by
 # get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
 # can never disagree on what "readable" means.
+#   $1: unset    strip the visible-device masks only (#7314).
+#       physical also strip HSA_OVERRIDE_GFX_VERSION, which ROCr applies in userland so
+#                rocminfo reports the SPOOFED ISA while it is set (unslothai#7331).
+#                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True).
+#
+# Neither mode answers which device the runtime SELECTS, and no probe here applies both mask
+# families. _runtime_gfx_target() in install_python_stack.py answers that.
+#
+# shellcheck disable=SC2086  # $_pg_strip is a LIST of names for unset; quoting it would
+# unset one variable whose name contains spaces.
 _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
-    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    case "${1:-}" in
+        physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
+        *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
+    esac
+    # "physical" ignores the declared arch: a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van
+    # Gogh would answer the miscomputing gate with a healthy arch. It stays authoritative for
+    # ordinary routing.
+    if [ "${1:-}" = "physical" ]; then
+        _pg=""
+    else
+        _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    fi
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
     if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         if [ -z "$_pg" ]; then
-            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _pg=$( (unset $_pg_strip; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
     fi
     printf '%s\n' "$_pg"
@@ -3767,7 +4001,39 @@ get_torch_index_url() {
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
             echo "$_base/cpu"; return
         fi
-        # AMD GPU confirmed -- detect ROCm version
+        # Archs measured to compute INCORRECTLY under ROCm route to CPU instead. Not
+        # "everything AMD does not list": unsloth serves gfx906 and gfx1031-gfx1036 on purpose
+        # (#7277). gfx1033 (Van Gogh) installs ROCm wheels and then computes wrong answers
+        # (studio/ROCM_RDNA2_APU.md). PRESENCE, not selection: picking the runtime's GPU needs
+        # the mask layering _runtime_gfx_target() implements, so a mixed host takes the cpu
+        # index and keeps the UNSLOTH_TORCH_INDEX_URL escape hatch. Inline, not a helper:
+        # harnesses extract get_torch_index_url alone. "physical" mode so no override hides the
+        # silicon; KFD first, since amdkfd writes gfx_target_version from the kernel.
+        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe=$(_kfd_gfx_targets 2>/dev/null || true)
+        if [ -z "$_amd_gfx_gate_probe" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+            # Under a spoof nothing override-independent named the silicon, so the only value
+            # left is the spoofed name: absence of evidence, not evidence of a healthy arch.
+            # HSA_OVERRIDE_GFX_VERSION only, NOT UNSLOTH_ROCM_GFX_ARCH, which is a DECLARED
+            # arch for the runtime-less #7301 hosts.
+            echo "[WARN] HSA_OVERRIDE_GFX_VERSION is set and this host cannot confirm its real arch (no unspoofed rocminfo, amd-smi or KFD topology)." >&2
+            echo "[WARN] Installing CPU-only PyTorch rather than trusting the spoofed name: gfx1033 (Van Gogh) computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
+            echo "[WARN] Unset HSA_OVERRIDE_GFX_VERSION so the arch can be read, or pin UNSLOTH_TORCH_INDEX_URL to choose deliberately." >&2
+            echo "$_base/cpu"; return
+        fi
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
+                echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
+                echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
+                echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+                echo "$_base/cpu"; return ;;
+        esac
+        # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
+        # the block between the header comment above and this line, so keep both exact.
+        # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
@@ -4391,6 +4657,17 @@ case "$TORCH_INDEX_URL" in
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
                 || _amd_probed_gfx_first=""
+            # A measured-bad arch anywhere in the inventory disqualifies the whole family, at
+            # the source not at each consumer: gfx1033 shares gfx103X-all with gfx1030-gfx1036,
+            # so the shared-family arm below would otherwise rewrite the cpu index the gate
+            # just chose back to ROCm wheels.
+            case " $(printf '%s\n' "$_amd_probe_out" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
+                    _amd_probed_family=""
+                    _amd_probed_gfx_first="" ;;
+            esac
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true
@@ -4415,17 +4692,43 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # for, so the suffix silently cost the reroute. Normalise as the caller did.
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
-            # Route on the arch the probe READ, not on lspci marketing-name inference:
+            # Route on the arch the probe read, not on lspci marketing-name inference:
             # the two disagree on a mixed APU + discrete host, and inference's answer
             # would install wheels for a GPU the reroute decision never looked at.
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
+            # The gfx1033 gate in get_torch_index_url is not enough alone: this reroute can take
+            # an explicit override or a no-version probe family straight back to gfx103X-all.
+            # UNSLOTH_ROCM_GFX_ARCH is unset too, not just the local: setup.sh forwards it as
+            # --rocm-gfx and _apply_host_overrides reads any forwarded gfx as proof of ROCm,
+            # skipping the Vulkan branch (112.8 vs 49.8 tok/s) and asking for a HIP build the host
+            # cannot run. Keyed on the PHYSICAL inventory, since a stale gfx1030 override makes the
+            # inferred value look healthy. The gate's own verdict ran in a command substitution and
+            # cannot be reused, hence the re-probe.
+            _amd_reroute_physical=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+            [ -n "$_amd_reroute_physical" ] || _amd_reroute_physical=$(_kfd_gfx_targets 2>/dev/null || true)
+            case " $(printf '%s\n' "$_amd_reroute_physical" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*) _linux_inferred_gfx="gfx1033" ;;
+            esac
+            case "${_linux_inferred_gfx%%:*}" in
+                gfx1033)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2
+                    _linux_inferred_gfx=""
+                    unset UNSLOTH_ROCM_GFX_ARCH ;;
+            esac
             _amd_family=""
-            if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
+            if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+               [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family="${_amd_probed_family:-}"
             elif [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
+            elif [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                 [ -z "${_amd_probed_gfx_first:-}" ]; then
+                # Multiple healthy arches may share one wheel family. No single arch is
+                # forwarded to llama.cpp, but torch can still use the agreed family.
+                _amd_family="${_amd_probed_family:-}"
             fi
             if [ -n "$_amd_family" ]; then
                     _amd_mirror="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
@@ -5008,7 +5311,13 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         step "gpu" "AMD ROCm"
     fi
     _rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_rocm_root"
+    # Only claim a path that is really there: /opt/rocm is a FALLBACK, not a detection, and
+    # a runtime-only ROCm (no SDK tree) reaches here with nothing at that path.
+    if [ -d "$_rocm_root" ]; then
+        substep "ROCm: $_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_rocm_root)"
+    fi
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -5232,7 +5541,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.2}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.3}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -5242,7 +5551,7 @@ if [ "$_MIGRATED" = true ]; then
         # No-torch: --no-deps throughout (PyPI metadata still hard-deps torch).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.2"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -5257,7 +5566,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.2"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -5450,7 +5759,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = true ]; then
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.2"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -5469,7 +5778,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.2"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -5500,7 +5809,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.1" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.2" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -5771,6 +6080,9 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
+        # Same single-redirect, warning-not-failure contract as the POSIX arm. 2>/dev/null
+        # comes FIRST: redirections apply left to right, so the other order prints the
+        # shell's own "Permission denied" before the redirect can silence it.
         if {
             echo "# Added by Unsloth installer"
             echo "fish_add_path '$_pfp_quoted'"
@@ -5778,6 +6090,9 @@ _persist_fish_path_dir() {
             step "path" "added $_pfp_label to PATH in $_pfp_file"
         else
             step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your fish config to get 'unsloth' in new shells:"
+            substep "  fish_add_path '$_pfp_quoted'"
         fi
     fi
 }
@@ -5822,8 +6137,12 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        # One redirect, so an unwritable profile leaves no half-written entry; a warning rather
-        # than a failure, because under set -e an unguarded append would end the install.
+        # One redirect, not three: a write dying midway would leave a dangling
+        # "# Added by Unsloth installer" with no export under it. A failure is a WARNING
+        # carrying the manual line, never a failed install: set -e would abort after the venv,
+        # llama.cpp and the shim are in place, and a read-only rc (NixOS, home-manager,
+        # chezmoi) is a supported setup.
+        # 2>/dev/null first, as in the fish arm.
         if {
             echo ''
             echo '# Added by Unsloth installer'
@@ -5832,6 +6151,9 @@ _persist_login_path_dir() {
             step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
         else
             step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your shell config to get 'unsloth' in new shells:"
+            substep "  export PATH=\"$_plp_literal:\$PATH\""
         fi
     fi
 }
@@ -5941,33 +6263,24 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# ── Optional: Qwen3.5 / hybrid-attention fast path ───────────────────────────
-# transformers gates the Qwen3.5 fused kernels on FOUR symbols being importable
-# (modeling_qwen3_5.py: is_fast_path_available = all((causal_conv1d_fn,
-# causal_conv1d_update, chunk_gated_delta_rule, fused_recurrent_gated_delta_rule))).
-# The first two come from causal-conv1d, the last two from flash-linear-attention,
-# so BOTH are needed -- installing only the cheap one buys nothing.
-#
-# Off by default on purpose: causal-conv1d publishes an sdist and no wheels for any
-# platform, so it compiles from source and costs ~10 minutes on every machine, not
-# just aarch64. Measured benefit on a DGX Spark: QLoRA 56.0s -> 49.0s (~12%) at
-# identical loss and identical peak memory. Worth it for Qwen3.5 users, not worth
-# silently adding to every install.
-#
-#   UNSLOTH_QWEN35_FAST_PATH=1 curl -fsSL https://unsloth.ai/install.sh | sh
+# transformers gates the Qwen3.5 fused kernels on FOUR symbols importing, two from
+# causal-conv1d and two from flash-linear-attention, so BOTH are needed: installing only
+# the cheap one buys nothing. Off by default because causal-conv1d ships no wheels for any
+# platform and compiles for ~10 minutes on every machine.
+# The assignment goes on the `sh` side: on the curl side only curl gets it.
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_QWEN35_FAST_PATH=1 sh
 _unsloth_qwen35_fast_path() {
     case "${UNSLOTH_QWEN35_FAST_PATH:-}" in
         1|true|TRUE|yes|YES|on|ON) ;;
         *) return 0 ;;
     esac
-    # CUDA-only: both libraries are CUDA kernel packages and are useless (and a long
-    # pointless compile) on CPU, ROCm, XPU or Metal hosts.
+    # CUDA-only: both are CUDA kernel packages, so elsewhere this is a pointless compile.
     case "$(_tauri_gpu_branch "$(_tauri_torch_index_family "$TORCH_INDEX_URL")")" in
         cuda) ;;
         *) substep "UNSLOTH_QWEN35_FAST_PATH ignored: needs an NVIDIA CUDA host" "$C_WARN"; return 0 ;;
     esac
     step "qwen3.5" "building the fused fast path (causal-conv1d compiles, ~10 min)..."
-    if run_install_cmd "$VENV_DIR/bin/python" -m pip install --no-build-isolation \
+    if run_install_cmd "qwen3.5 fast path" "$VENV_DIR/bin/python" -m pip install --no-build-isolation \
         flash-linear-attention causal-conv1d; then
         step "qwen3.5" "fast path installed" "$C_OK"
     else
@@ -5977,26 +6290,19 @@ _unsloth_qwen35_fast_path() {
 
 _unsloth_qwen35_fast_path
 
-# ── DGX Spark: offer to pair a second Spark ──────────────────────────────────
-# Everything here is behind _unsloth_is_dgx_spark, and that gate is deliberately
-# the cheapest thing in this script: on macOS, Windows, WSL, or any x86_64 Linux
-# host the two shell comparisons below fail and NOT ONE file is opened, so a
-# normal install never pays for this feature existing. Only an aarch64 Linux box
-# reads /etc/dgx-release, which is a few hundred bytes.
+# Everything below is behind this gate, and it opens NOT ONE file off an aarch64 Linux box,
+# so a normal install never pays for the feature existing.
 _unsloth_is_dgx_spark() {
-    # `${OS:-}` rather than `$OS`: both are set unconditionally long before this runs,
-    # but install.sh is the entry point for every user on every platform, and if anyone
-    # ever adds `set -u` above this line an unbound variable would abort the whole
-    # install rather than skipping a hint nobody asked for. Fails closed either way.
+    # `${OS:-}` rather than `$OS`: under a future `set -u` an unbound variable would abort
+    # the whole install rather than skip a hint nobody asked for. Fails closed either way.
     [ "${OS:-}" = "linux" ] || return 1
     case "${_ARCH:-}" in aarch64|arm64) ;; *) return 1 ;; esac
     grep -qiE 'dgx[_ -]*spark' /etc/dgx-release 2>/dev/null && return 0
     grep -qiE 'dgx[_ -]*spark' /sys/class/dmi/id/product_name 2>/dev/null
 }
 
-# A cabled rail is an IB port that is ACTIVE whose netdev also has carrier --
-# together those two say a QSFP cable is seated AND trained at the far end.
-# sysfs globs only: no ibdev2netdev, no ip, no subprocess, no network traffic.
+# A cabled rail is an ACTIVE IB port whose netdev also has carrier: together those two say
+# the QSFP cable is seated AND trained at the far end. sysfs globs only, no subprocess.
 _unsloth_spark_cable_present() {
     for _sp_port in /sys/class/infiniband/*/ports/1; do
         [ -r "$_sp_port/state" ] || continue
@@ -6023,16 +6329,10 @@ _unsloth_spark_cabled_netdevs() {
     done
 }
 
-# The QSFP hot-plug throttle is the usual reason a two-Spark link runs at ~13-14
-# Gb/s per rail instead of ~98: a cable connected after boot can leave the
-# ConnectX-7 throttled, and only rebooting with the cabling in place clears it.
-#
-# We deliberately do NOT try to detect it here. carrier_up_count looks like the
-# signal (a link trained at boot reads 1) but is not one -- measured on a GB10 pair,
-# a node at carrier_up_count=7 ran a full 97.97 Gb/s per rail. Asserting a throttle
-# from that counter reports a broken link on a healthy machine. Benchmarking needs
-# both nodes and takes seconds, which an installer has no business doing, so point
-# at the command that can measure and say nothing more.
+# The QSFP hot-plug throttle is NOT detected here on purpose. carrier_up_count looks like the
+# signal but is not one: a node at count=7 measured a full 97.97 Gb/s per rail, so asserting a
+# throttle from it reports a broken link on a healthy machine. Only a benchmark settles it,
+# and an installer has no business running one.
 _unsloth_spark_perf_hint() {
     substep "If the link ever measures far below ~98 Gb/s per rail, the usual cause"
     substep "is the cable having been connected after boot; reboot both Sparks with"
@@ -6040,14 +6340,7 @@ _unsloth_spark_perf_hint() {
 }
 
 # UNSLOTH_SPARK_CLUSTER lets a piped/CI install answer without a TTY:
-#   1/yes  -> configure now        0/no -> skip silently        unset -> ask
-# A single Spark is the common case, so the single-Spark advice has to be good.
-# Two things surprise every new owner, and both are cheap to say here:
-#   1. the 6.2x prefill difference between NVFP4 kernels, which costs nothing but a flag;
-#   2. the memory number -- "128GB" is 128 GiB, of which ~6.3 GiB is firmware-reserved,
-#      leaving 121.69 GiB usable. People size models against 128 and then OOM.
-# No prompt and no extra install: this is three printed lines on a machine we have
-# already positively identified as a DGX Spark.
+#   1/yes -> configure now        0/no -> skip silently        unset -> ask
 _unsloth_spark_solo_hint() {
     echo ""
     step "spark" "DGX Spark detected (single)" "$C_OK"
@@ -6064,30 +6357,20 @@ _unsloth_spark_cluster_offer() {
         0|no|NO|false|FALSE|off|OFF) return 0 ;;
     esac
 
-    # Idempotent: a Spark that was already paired must not re-ask on every
-    # update. "configured" means a previous run saved a plan AND a cabled rail
-    # still carries IPv4, so this is a settled question, not an unanswered one.
-    # `detect` exits 1 on a Spark with no cable (its exit status IS the cable test, see
-    # spark_cluster.py main), and this script runs under `set -euo pipefail`, so that
-    # status has to be swallowed here or a lone Spark aborts the install on this line.
+    # Idempotent: "configured" means a previous run saved a plan AND a cabled rail still
+    # carries IPv4, so the question is settled. `detect` exits 1 on a Spark with no cable --
+    # its exit status IS the cable test -- and under `set -euo pipefail` that status must be
+    # swallowed here or a lone Spark aborts the install on this line.
     _sp_state=$({ "$VENV_DIR/bin/python" -m studio.spark_cluster detect 2>/dev/null || true; } \
         | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     if [ "$_sp_state" = "configured" ]; then
         step "spark" "second Spark already paired" "$C_OK"
-        # Still worth saying: pairing is correct but the link may be throttled,
-        # and that is invisible until someone benchmarks it.
         return 0
     fi
 
     if ! _unsloth_spark_cable_present; then
-        # A lone Spark is the common case, and until now this path said nothing at
-        # all -- on the theory that a single-Spark owner has nothing to act on.
-        # That was wrong. The largest measured win in the whole Spark effort needs
-        # NO second machine: choosing the right NVFP4 kernel is 6.2x on prefill
-        # (CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096). A lone owner who never
-        # hears that leaves more on the table than a second Spark would have added.
-        #
-        # Still no nagging: three lines, printed once, no prompt, no install.
+        # A lone Spark is the common case, and the largest measured win needs NO second
+        # machine: three lines, printed once, no prompt and no install.
         _unsloth_spark_solo_hint
         return 0
     fi
@@ -6096,39 +6379,24 @@ _unsloth_spark_cluster_offer() {
     step "spark" "a second DGX Spark is cabled to this one" "$C_OK"
     substep "Unsloth can set up the 200GbE RoCE link between them"
     substep "(static IPs on both rails, MTU 9000, and GB10-correct NCCL defaults)."
-    # Say what a second Spark actually buys, because the intuitive answer is wrong
-    # and users otherwise pair two machines expecting a speedup they will not get.
-    # Measured on Llama-3.3-70B fp8 across two Sparks:
-    #   tensor parallel  2.09x on ONE request (median TPOT 332.7 ms -> 162.4 ms)
-    #   pipeline parallel 1.08x, with TPOT FLAT -- capacity, not latency
-    #   splitting a model that already FITS on one node: 0.92x, i.e. a LOSS
+    # Say what a second Spark buys: the intuitive answer is wrong, and users otherwise pair
+    # two machines expecting a speedup they will not get.
     substep "What it buys: ~2x faster tokens for a single request (tensor parallel),"
     substep "and room for models too large for one Spark. It does NOT speed up a"
     substep "model that already fits -- splitting one of those measures 0.92x."
     _unsloth_spark_perf_hint
 
 
-    # No prompt here: an answer given once during install is one the user cannot find
-    # again afterwards, which is what #7016 did and #8040 reverted. The setting is an
-    # environment variable, and the line below says how to do it later.
-    # tests/test_installer_interactive_prompts.py enforces this.
+    # Opt-in by variable, never by question: a new installer prompt stalls `curl ... | sh`
+    # and persists an answer nobody can find again. That is what #7016 did and #8040 reverted.
     case "${UNSLOTH_SPARK_CLUSTER:-}" in
-        1|yes|YES|true|TRUE|on|ON) _sp_reply=y ;;
-        *) _sp_reply=n ;;
-    esac
-
-    case "${_sp_reply:-n}" in
-        [Yy]|[Yy][Ee][Ss])
-            # --yes: the user just answered the prompt above, and without it
-            # spark_cluster's own consent gate would ask the identical question a
-            # second time. Two gates are deliberate -- the module must refuse on its
-            # own for anyone invoking it directly -- but the user should be asked
-            # once. The module still probes the peer for resident GPU work and
-            # refuses to overwrite a venv a running job may be using.
+        1|yes|YES|true|TRUE|on|ON)
+            # --yes because the variable IS the consent. The module still refuses to overwrite
+            # a venv a running job may be using.
             "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
             ;;
         *)
-            substep "Not paired. To set up the link, run:  unsloth spark setup"
+            substep "To pair them:  unsloth spark setup"
             substep "(or re-run this installer with UNSLOTH_SPARK_CLUSTER=1)"
             ;;
     esac
@@ -6151,6 +6419,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+
+            _prepare_studio_uv_cache_for_launch
             # Detach stdin from the piped web install's pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
