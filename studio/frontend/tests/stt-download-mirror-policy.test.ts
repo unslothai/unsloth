@@ -2,16 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL(
-    "../src/features/settings/lib/stt-download-mirror.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/settings/lib/stt-download-mirror.ts");
 
 test("an adopted STT transfer keeps progress and merges its Voice owner", () => {
   assert.match(

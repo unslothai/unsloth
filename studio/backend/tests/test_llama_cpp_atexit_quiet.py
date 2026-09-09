@@ -22,6 +22,7 @@ _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference import llama_cpp as mod
 
 
 def _stub() -> LlamaCppBackend:
@@ -71,8 +72,6 @@ class _Reader:
 
 
 def test_a_process_that_cannot_be_terminated_is_not_an_error(monkeypatch, tmp_path):
-    from core.inference import llama_cpp as mod
-
     recorder = _RecordingLogger()
     monkeypatch.setattr(mod, "logger", recorder)
     backend = _stub()
@@ -114,8 +113,6 @@ class _RaisingLogger:
 
 
 def test_a_logger_that_raises_does_not_escape_the_atexit_handler(monkeypatch):
-    from core.inference import llama_cpp as mod
-
     monkeypatch.setattr(mod, "logger", _RaisingLogger())
     backend = _stub()
     backend._process = _Unterminable()
@@ -133,8 +130,6 @@ def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
     other = logging.getLogger("unsloth-atexit-test-stdlib")
     other.addHandler(handler)
     other.propagate = False
-
-    from core.inference import llama_cpp as mod
 
     def kill_and_log():
         other.warning("something a dependency logs at exit")
@@ -172,8 +167,6 @@ def test_sigkill_still_happens_when_the_log_write_fails(monkeypatch):
     warning, and reporting first meant the kill was skipped while the finally
     dropped the last reference to the process -- leaving the server running with
     nothing left to kill it."""
-    from core.inference import llama_cpp as mod
-
     monkeypatch.setattr(mod, "logger", _RaisingLogger())
     backend = _stub()
     proc = _StubbornProcess()
@@ -198,8 +191,6 @@ def test_an_unkillable_server_is_still_reported(monkeypatch):
     """The second wait raises from inside the handler it was raised from, so it is
     not caught there and escapes. If the warning came after it, the one case an
     operator most needs to see would be reported by nothing at all."""
-    from core.inference import llama_cpp as mod
-
     recorder = _RecordingLogger()
     monkeypatch.setattr(mod, "logger", recorder)
     backend = _stub()
@@ -216,8 +207,6 @@ def test_an_unkillable_server_is_still_reported(monkeypatch):
 def test_the_handler_leaves_raise_exceptions_as_it_found_it(monkeypatch):
     """Only atexit gets the quiet treatment; a live run must still surface a
     broken logging handler."""
-    from core.inference import llama_cpp as mod
-
     monkeypatch.setattr(logging, "raiseExceptions", True)
     backend = _stub()
     backend._process = _Unterminable()
