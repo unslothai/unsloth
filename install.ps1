@@ -348,8 +348,9 @@ function Install-UnslothStudio {
     # inherited (studio/src-tauri/src/install.rs sets neither); one report had it at
     # C:\Windows\TEMP, unwritable, which broke the install when the native helper was
     # still compiled through it (issue #9140). Nothing compiles now, but the Python,
-    # uv and VC++ downloads still stage through it. Probe it once and, if it cannot hold a file, point BOTH
-    # variables at a directory we own: every child process and every
+    # uv and VC++ downloads still stage through it. Probe it once and, if it cannot
+    # hold a file, point BOTH variables at a directory we own: every child process
+    # and every
     # [System.IO.Path]::GetTempPath() call reads the process environment block.
     function Test-StudioDirectoryUsable {
         param(
