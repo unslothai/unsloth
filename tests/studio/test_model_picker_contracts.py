@@ -78,6 +78,20 @@ def _call_arguments(text: str, callee: str) -> list[str]:
     return calls
 
 
+def _guard_conjuncts(source: str, opener: str) -> set[str]:
+    """The conditions in the `opener` guard, whitespace collapsed and split on the operator.
+
+    Prettier rewraps a guard the moment it gains a condition, and a later PR can add one,
+    so slicing the source on the guard's exact text breaks on a pure reformat. #10508 broke
+    two assertions here that way, by adding a validateFailures bound and wrapping both guards.
+    Comparing the SET of conditions instead survives both, and still fails if a condition is
+    dropped, which is what these tests are actually about.
+    """
+    body = source.split(opener, 1)[1]
+    body = body.split(")", 1)[0] if opener.endswith("(") else body
+    return {c.strip() for c in re.split(r"\|\||&&", re.sub(r"\s+", " ", body)) if c.strip()}
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -2609,7 +2623,9 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+    guard = _guard_conjuncts(autoload, "if (")
+    assert "autoLoadCancelled" in guard
+    assert "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS" in guard
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -3419,7 +3435,9 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    loop = _guard_conjuncts(cascade, "while (")
+    assert "!autoLoadCancelled" in loop
+    assert "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS" in loop
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 
