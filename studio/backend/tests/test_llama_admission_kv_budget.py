@@ -193,7 +193,6 @@ class TestBackwardsCompatibility:
 class TestTheRouteHelpers:
     def test_the_budget_is_the_backends_own_context_length(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         backend = SimpleNamespace(context_length = 2048)
@@ -201,7 +200,6 @@ class TestTheRouteHelpers:
 
     def test_an_unreadable_context_length_means_no_budget(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
         for value in (None, 0, -1, "nonsense"):
             backend = SimpleNamespace(context_length = value)
@@ -209,7 +207,6 @@ class TestTheRouteHelpers:
 
     def test_the_cost_is_the_prompt_plus_the_output_allowance(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(
@@ -225,7 +222,6 @@ class TestTheRouteHelpers:
 
     def test_the_cost_is_clamped_to_the_budget(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(
@@ -242,7 +238,6 @@ class TestTheRouteHelpers:
 
     def test_a_shape_with_no_messages_reserves_a_fair_share(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(prompt = "raw completion text", max_tokens = 128)
@@ -257,7 +252,6 @@ class TestTheRouteHelpers:
 
     def test_no_budget_means_no_cost(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(messages = [{"role": "user", "content": "hi"}], max_tokens = 8)
@@ -312,7 +306,6 @@ class TestTheOutputAllowanceIsCounted:
         """Generation honours max_completion_tokens through
         _effective_openai_max_tokens; admission must reserve the same allowance."""
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         messages = [{"role": "user", "content": "x" * 400}]
@@ -332,7 +325,6 @@ class TestTheOutputAllowanceIsCounted:
         """Why the /v1/responses site now reserves against the translated chat_req: the
         raw model has `input` and `max_output_tokens`, so nothing here can size it."""
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         raw = SimpleNamespace(input = "x" * 100_000, max_output_tokens = 4096)

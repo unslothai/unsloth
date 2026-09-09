@@ -6,7 +6,6 @@
 // ImageGenerationPresetParams forbids -- 422ing every debounced preset PUT for the rest of the session.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -15,6 +14,8 @@ import {
   restorableSize,
   snapDim,
 } from "../src/features/images/image-size.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const withinSchema = ({ width, height }: { width: number; height: number }) =>
   width >= MIN_DIM &&
@@ -76,10 +77,7 @@ test("a degenerate record still produces a usable size", () => {
 });
 
 const restoreSettingsBody = () => {
-  const source = readFileSync(
-    new URL("../src/features/images/images-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("features/images/images-page.tsx");
   const start = source.indexOf("const restoreSettings = useCallback(");
   assert.ok(start > 0, "restoreSettings not found");
   return source.slice(start, source.indexOf("}, [", start));

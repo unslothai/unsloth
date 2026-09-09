@@ -98,6 +98,9 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
 def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     # Microsoft's detections key on this pair;
     # install.rs already refuses it for the app's own launch.
+    # Python setup/refresh argv is exercised at the subprocess boundary by
+    # unsloth_cli/tests/test_studio_runtime_gate_powershell.py::
+    # test_windows_launch_uses_process_flags_without_windowstyle.
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
             assert not re.search(

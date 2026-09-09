@@ -118,7 +118,8 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 
 
 TOOL_ERROR_PREFIXES = (
-    "Error",
+    "Error:",
+    "Error ",
     "Search failed",
     "Execution error",
     "Blocked:",

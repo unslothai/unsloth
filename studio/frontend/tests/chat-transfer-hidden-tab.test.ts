@@ -8,7 +8,6 @@
 // already drop hidden samples; this pins that the chat one does too.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -17,16 +16,12 @@ import {
   computeTransferStats,
 } from "../src/lib/transfer-stats.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const MB = 1e6;
 
 test("the chat estimator drops samples taken while the tab is hidden", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const guard = source.indexOf("document.hidden");
   assert.ok(guard > 0, "the chat poller should skip a hidden tab");
   const clear = source.indexOf("samples.length = 0", guard);
