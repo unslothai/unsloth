@@ -297,7 +297,9 @@ def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
     sources = 'line one\nRAG_SOURCES_SENTINEL = "\\n__RAG_SOURCES__:"\nline three'
     assert strip_result_for_model(sources, "rag_search") == sources
 
-    assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
+    assert (
+        strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
+    )
     assert strip_result_for_model('output\n__IMAGES__:["a.png"]', "python") == "output"
     assert (
         strip_result_for_model('answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "rag_search")
