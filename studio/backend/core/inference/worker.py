@@ -402,19 +402,19 @@ def _load_download_repos(mc, load_in_4bit: bool, backend) -> list[str]:
         if getattr(backend, "device", None) != "mlx":
             try:
                 from unsloth.models.loader_utils import get_model_name
-
                 mapped = get_model_name(str(base), load_in_4bit = load_in_4bit)
             except Exception:
                 mapped = None
             if mapped:
                 repos.append(str(mapped))
-    return [repo for repo in dict.fromkeys(repos) if repo.count("/") == 1 and not is_local_path(repo)]
+    return [
+        repo for repo in dict.fromkeys(repos) if repo.count("/") == 1 and not is_local_path(repo)
+    ]
 
 
 def _hub_cache_dir() -> Optional[str]:
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
-
         return str(get_hf_cache_paths().hub_cache)
     except Exception:
         return None

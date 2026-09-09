@@ -3990,7 +3990,14 @@ def test_model_download_progress_counts_a_base_the_load_reports(monkeypatch, cap
     calls = []
     base_bytes = iter([1024**3, 2 * 1024**3])
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         calls.append(url)
         if url.endswith("/api/hub/active-downloads"):
             return _load_listing("owner/adapter", "owner/base")
@@ -4025,7 +4032,14 @@ def test_model_download_progress_counts_a_base_the_load_reports(monkeypatch, cap
 def test_model_download_progress_ignores_downloads_the_load_does_not_own(monkeypatch):
     reads = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/hub/active-downloads"):
             return {
                 "downloads": [
@@ -4048,7 +4062,14 @@ def test_model_download_progress_ignores_downloads_the_load_does_not_own(monkeyp
 def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
     listings = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             listings.append(url)
             raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
@@ -4067,7 +4088,14 @@ def test_model_download_progress_stops_listing_on_a_server_without_the_route(mon
 def test_model_download_progress_asks_again_after_a_transient_listing_error(monkeypatch):
     listings = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             listings.append(url)
             if len(listings) == 1:
@@ -4090,7 +4118,14 @@ def test_model_download_progress_asks_again_after_a_transient_listing_error(monk
 def test_model_download_progress_keeps_its_own_reading_when_a_base_read_fails(monkeypatch):
     adapter_bytes = iter([4 * 1024**2, 9 * 1024**2])
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return _load_listing("owner/base")
         if url.endswith("repo_id=owner%2Fbase"):
@@ -4109,7 +4144,14 @@ def test_model_download_progress_keeps_its_own_reading_when_a_base_read_fails(mo
 
 
 def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, capsys):
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return _load_listing("owner/base")
         if url.endswith("repo_id=owner%2Fadapter"):
@@ -4133,7 +4175,14 @@ def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, cap
 
 
 def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatch, capsys):
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return _load_listing("owner/base", "unsloth/base-unsloth-bnb-4bit")
         if url.endswith("repo_id=owner%2Fbase"):

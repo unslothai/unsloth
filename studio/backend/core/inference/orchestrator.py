@@ -1796,7 +1796,6 @@ class InferenceOrchestrator:
 
     def _claim_load_downloads(self, resp: dict) -> None:
         from hub.services.load_downloads import claim_load_downloads
-
         self._release_load_downloads("cancelled")
         try:
             self._load_download_keys = claim_load_downloads(

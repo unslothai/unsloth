@@ -64,7 +64,9 @@ def test_cancelling_a_load_owned_job_is_refused(registry, monkeypatch):
     load_downloads.claim_load_downloads(["owner/base"])
 
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(downloads.cancel_download_model_response(CancelDownloadRequest(repo_id = "owner/base")))
+        asyncio.run(
+            downloads.cancel_download_model_response(CancelDownloadRequest(repo_id = "owner/base"))
+        )
 
     assert excinfo.value.status_code == 409
     assert registry.get_job("owner/base::").state == "running"
@@ -80,12 +82,15 @@ def test_the_orchestrator_registers_the_downloads_a_load_reports(registry, monke
 
     with patch("core.inference.orchestrator.threading.Thread", DummyThread):
         from core.inference.orchestrator import InferenceOrchestrator
-
         orchestrator = InferenceOrchestrator()
 
     responses = iter(
         [
-            {"type": "downloads", "repo_ids": ["owner/adapter", "owner/base"], "xet_disabled": True},
+            {
+                "type": "downloads",
+                "repo_ids": ["owner/adapter", "owner/base"],
+                "xet_disabled": True,
+            },
             {"type": "loaded", "success": True},
         ]
     )
