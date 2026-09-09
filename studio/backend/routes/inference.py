@@ -2601,14 +2601,18 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         admission overcommitting on purpose."""
         try:
             controller = get_preemption_controller(_preempt_key(llama_backend))
+            # The growth goes on the ledger BEFORE any reading: the `/slots` round trip is
+            # synchronous with a three second timeout, and the server keeps decoding while
+            # it is out, so a count held back behind it can outrun the reaction headroom.
+            victims = controller.observe(completion_id, generated)
             # A solo chat has nobody to preempt and nobody waiting for its cells, so the
-            # synchronous `/slots` round trip this makes every 32 chunks can decide nothing.
-            # The ledger below is still updated, or the first chat to join it would be
-            # planned against a figure that stopped moving. Admission and the resume wait
-            # pass `force`, so both fresh-read barriers still read.
+            # round trip can decide nothing there. Admission and the resume wait pass
+            # `force`, so both fresh-read barriers still read. Contended, it is read even
+            # after a choice: the reclaim below plans from this reading.
             if controller.contended():
                 _gguf_refresh_residency(controller)
-            victims = controller.observe(completion_id, generated)
+                if not victims:
+                    victims = controller.plan_preemptions(needed = 0)
             if victims:
                 # Dead residue first: an idle slot's cache belongs to a finished request, so
                 # erasing it costs a future prefix hit where pausing costs a conversation.
@@ -25249,6 +25253,14 @@ async def produce_openai_chat_completions(
                         # Stop spawning the remaining choices once cancelled.
                         if cancel_event.is_set():
                             break
+                        if _idx:
+                            # The same lease and participant serve every choice, and each
+                            # starts over from the original prompt: the last one's replayed
+                            # partial and resume count are not its own.
+                            try:
+                                _plain_preempt_policy.restart()
+                            except Exception:
+                                logger.debug("could not restart the preemption ledger", exc_info = True)
                         full_text = ""
                         completion_usage = None
                         completion_finish = None

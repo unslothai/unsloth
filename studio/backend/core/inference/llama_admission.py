@@ -616,6 +616,9 @@ class LlamaAdmissionLease:
             if self._released or self._queue is None:
                 return True
             if want == self._tokens:
+                # Restated all the same: a yield planned from a reading older than this
+                # round must find the epoch moved, or it hands back cells now filling.
+                self._charge_seq += 1
                 return True
             if not self._queue.try_recost(self._tokens, want):
                 return False
