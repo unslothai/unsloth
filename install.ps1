@@ -346,10 +346,11 @@ function Install-UnslothStudio {
     # Windows picks the temp directory from TMP, then TEMP, then the profile, and
     # never checks it exists or is writable. The desktop app passes on whatever it
     # inherited (studio/src-tauri/src/install.rs sets neither); one report had it at
-    # C:\Windows\TEMP, unwritable, which used to break the install outright because
-    # the native helper was compiled through it (issue #9140). Nothing compiles now,
-    # but the Python, uv and VC++ downloads still stage through it. Probe it once and, if it cannot hold a file, point BOTH
-    # variables at a directory we own: every child process and every
+    # C:\Windows\TEMP, unwritable, which broke the install when the native helper was
+    # still compiled through it (issue #9140). Nothing compiles now, but the Python,
+    # uv and VC++ downloads still stage through it. Probe it once and, if it cannot
+    # hold a file, point BOTH variables at a directory we own: every child process
+    # and every
     # [System.IO.Path]::GetTempPath() call reads the process environment block.
     function Test-StudioDirectoryUsable {
         param(
@@ -830,45 +831,35 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    # Every native declaration in this script goes through here, and none of them
-    # goes through Add-Type.
+    # Every native declaration in this script goes through here, never Add-Type.
     #
-    # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns)
-    # has no in-process compiler: it writes C# to %TEMP% and runs csc.exe to get a
-    # DLL back. That is true of -TypeDefinition and of -MemberDefinition alike.
-    # Bitdefender blocks the DLL that produces, and the verdict lands on the
-    # generated file rather than on anything shipped: a windowless PowerShell,
-    # spawned by a GUI binary, launching a compiler and writing executable content
-    # to %TEMP% is a dropper's shape, whatever the code says. It also used to fail
-    # outright with CS2001 when %TEMP% was unusable (issue #9140).
+    # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns) has
+    # no in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to
+    # %TEMP% and run csc.exe. Bitdefender blocks the resulting DLL, because a
+    # windowless PowerShell spawned by a GUI binary, running a compiler and writing
+    # executable content to %TEMP%, is a dropper's shape whatever the code says. It
+    # also failed with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit
+    # builds the same interop stubs in memory: no compiler process, no source, no DLL,
+    # empty assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7
+    # take the same path.
     #
-    # Reflection emit builds the same interop stubs in memory. No compiler
-    # process, no source on disk, no DLL, nothing in %TEMP%, and the resulting
-    # assembly reports an empty Location. Available on .NET Framework 4 and on
-    # .NET 5+, so 5.1 and 7 take the same path.
+    # Throws rather than reporting: each caller wants a different answer to "the native
+    # side is unavailable", and the two cosmetic ones must not print the resolver's
+    # warning.
     #
-    # Throws on failure rather than reporting it: each caller wants a different
-    # answer to "the native side is unavailable", and the two that are cosmetic
-    # must not print the resolver's warning.
-    #
-    # Test-StudioCanDefineNativeTypes is the gate every caller checks first, and it
-    # is a gate rather than a try/catch because one of the two conditions is not
-    # catchable. App Control's Dynamic Code Security (policy option 19) always
-    # blocks loading unsigned assemblies built with System.Reflection.Emit, and
-    # Microsoft documents the parent process as usually stopped or crashing rather
-    # than raising, so nothing below could recover from it:
+    # Test-StudioCanDefineNativeTypes is the gate every caller checks first, rather than
+    # a try/catch, because App Control's Dynamic Code Security (policy option 19) blocks
+    # loading unsigned System.Reflection.Emit assemblies by usually stopping or crashing
+    # the parent instead of raising:
     # learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/appcontrol-and-dotnet
-    # A machine enforcing user-mode code integrity puts PowerShell in Constrained
-    # Language, which is the first check and the one that fires in practice; the
-    # Device Guard probe is the belt to that pair of braces, for a policy that
-    # somehow left the language mode alone. When one IS active, the answer comes from
-    # a child process that tries the emit, not from a guess about which options the
-    # policy set.
+    # Such a machine puts PowerShell in Constrained Language, the first check and the one
+    # that fires in practice; the Device Guard probe covers a policy that left the
+    # language mode alone. When one IS active, a child process tries the emit rather than
+    # guessing which options the policy set.
     $script:StudioCanDefineNativeTypes = $null
     # Why the last probe answered as it did, so a caller can tell "the child ran and
-    # said no" from "the child never got to answer". Those are the same boolean and
-    # they are not the same fact: one is a policy, the other is a process that failed
-    # to start, was killed at the deadline, or lost its output.
+    # said no" (a policy) from "the child never answered" (failed to start, killed
+    # at the deadline, or lost its output). Same boolean, different facts.
     $script:StudioEmitProbeOutcome = $null
     function Test-StudioCanDefineNativeTypes {
         if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
@@ -878,23 +869,20 @@ function Install-UnslothStudio {
             $script:StudioCanDefineNativeTypes = $false
             return $false
         }
-        # Three outcomes, not two. A status that was READ and says 0 is the only one that
-        # skips the probe: a query that threw, returned nothing, or returned an object
-        # without the property is UNKNOWN, and unknown used to be treated as unrestricted.
-        # That is the wrong direction here. The case it lets through is option 19 enforced
-        # on a host whose CIM query happens to fail, and the cost of being wrong there is a
-        # stopped installer, while the cost of probing unnecessarily is one short-lived
-        # process.
+        # Three outcomes, not two. Only a status that was READ and says 0 skips the
+        # probe; a query that threw, returned nothing, or lacked the property is
+        # UNKNOWN, and unknown must not mean unrestricted. Treating it as such lets
+        # through option 19 enforced on a host whose CIM query fails, costing a
+        # stopped installer; probing unnecessarily costs one short-lived process.
         $known = $false
         $active = $false
         try {
-            # Bounded, with what that bound actually covers stated rather than implied:
-            # -OperationTimeoutSec limits the CIM operation on a responsive target. It does
-            # not interrupt DCOM connection setup and it does not override a provider that
-            # has wedged, where the server's own timeout wins. It is worth having for the
-            # slow case and it is not a hang guard. The installer already depends on CIM
-            # for adapter and process queries, so this query does not introduce that
-            # exposure; the child probe below is the part that carries a real deadline.
+            # -OperationTimeoutSec bounds the CIM operation on a responsive target
+            # only: it does not interrupt DCOM connection setup, and a wedged
+            # provider's own timeout wins. Good for the slow case, not a hang guard.
+            # The installer already depends on CIM for adapter and process queries,
+            # so this adds no exposure; the child probe below carries the real
+            # deadline.
             $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
                 -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
             # 0 off, 1 audit, 2 enforced. A null property is not a zero.
@@ -909,21 +897,20 @@ function Install-UnslothStudio {
             $script:StudioCanDefineNativeTypes = $true
             return $true
         }
-        # A policy is active, or its state could not be read, and WHICH policy decides
-        # this. Option 19 Dynamic Code
-        # Security always blocks unsigned System.Reflection.Emit assemblies and has no
-        # audit mode on Windows 10 or Windows 11 before 24H2, where it is enforced even
-        # in an audit policy; an audit policy WITHOUT that option emits perfectly well.
-        # Win32_DeviceGuard does not report the option bit, so either guess costs a
-        # population: refusing everything sends every audit-mode machine down the lexical
-        # path, and allowing everything risks the process. Ask the machine instead.
+        # A policy is active or unreadable, and WHICH policy decides this. Option 19
+        # Dynamic Code Security always blocks unsigned System.Reflection.Emit
+        # assemblies, with no audit mode on Windows 10 or Windows 11 before 24H2
+        # (enforced even in an audit policy); an audit policy WITHOUT that option
+        # emits fine. Win32_DeviceGuard does not report the option bit, so either
+        # guess costs a population: refusing sends every audit-mode machine down the
+        # lexical path, allowing risks the process. Ask the machine instead.
         $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-        # One retry, and only when the first attempt never reached an answer. The compiled
-        # version this replaces also tried twice before caching a negative, and without
-        # that a single transient process failure is indistinguishable from a policy: it
-        # is cached for the whole run and sends the installer down the lexical path, where
-        # two unequal roots compare as unknown and a second lock gets taken. A child that
-        # RAN and said no is not retried, so a genuinely blocked machine still pays for
+        # One retry, only when the first attempt never reached an answer (the
+        # compiled version this replaces also tried twice before caching a
+        # negative). Otherwise one transient process failure is cached for the whole
+        # run as if it were a policy, sending the installer down the lexical path
+        # where two unequal roots compare as unknown and a second lock gets taken. A
+        # child that RAN and said no is not retried, so a blocked machine pays for
         # one probe.
         if (-not $script:StudioCanDefineNativeTypes -and
             $script:StudioEmitProbeOutcome -eq "indeterminate") {
@@ -932,17 +919,15 @@ function Install-UnslothStudio {
         return $script:StudioCanDefineNativeTypes
     }
 
-    # The same emit, in a process that is allowed to die. Microsoft documents a blocked
-    # dynamic load as usually stopping or crashing the parent, which is precisely why
-    # this is not attempted in-process: a child that vanishes is an answer, and the same
-    # event here would be the installer vanishing. Silence is refusal, so a probe that
-    # cannot be spawned at all lands on the lexical path rather than on optimism.
+    # The same emit, in a process that is allowed to die. A blocked dynamic load
+    # usually stops or crashes the parent, so doing this in-process would be the
+    # installer vanishing; a child that vanishes is just an answer. Silence is
+    # refusal, so an unspawnable probe lands on the lexical path.
     function Test-StudioEmitInChildProcess {
-        # HostPath is for the tests, which have no policy to trigger the real path and cannot
-        # shadow $PSHOME, since it is read-only. Production never passes it.
+        # HostPath is for the tests, which have no policy to trigger the real path and
+        # cannot shadow the read-only $PSHOME. Production never passes it.
         param([string]$HostPath)
-        # Until something here establishes otherwise. Every exit below either leaves this
-        # alone or says what it learned.
+        # Until something below establishes otherwise.
         $script:StudioEmitProbeOutcome = "indeterminate"
         $probe = @'
 try {
@@ -971,10 +956,9 @@ try {
 if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
 exit 1
 '@
-        # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other
-        # way, and the emit that matters is the one this interpreter will make. Both
-        # spellings of the leaf, so the function is the same one a non-Windows lane can
-        # execute end to end rather than a Windows-only path nothing tests.
+        # This host, not a guessed one: a 5.1 answer does not carry to pwsh or back.
+        # Both spellings of the leaf, so a non-Windows lane can execute this function
+        # end to end rather than leaving a Windows-only path untested.
         $hostExe = $HostPath
         if (-not $hostExe) {
             try {
@@ -987,20 +971,18 @@ exit 1
             } catch {}
         }
         if (-not $hostExe) { return $false }
-        # Through a Process object rather than the call operator, for a deadline. The call
-        # operator waits for the child forever, and "forever" is reachable: a security
-        # product inspecting a freshly spawned interpreter, a wedged runtime start, a child
-        # that blocks on shutdown. A probe that exists to keep the installer alive must not
-        # be the thing that hangs it.
+        # A Process object rather than the call operator, for a deadline: the call
+        # operator waits forever, and forever is reachable (a security product
+        # inspecting a fresh interpreter, a wedged runtime start, a child blocking on
+        # shutdown). A probe meant to keep the installer alive must not hang it.
         #
-        # BOTH streams are redirected and drained asynchronously. Draining is what stops a
-        # chatty child filling a pipe and deadlocking against the wait. Redirecting stderr as
-        # well is the difference between a probe that is invisible and one that can write
-        # into the installer's own stderr, which the desktop app reads, and which anything
-        # the child spawns would inherit and hold open.
+        # BOTH streams are redirected and drained asynchronously. Draining stops a
+        # chatty child filling a pipe and deadlocking against the wait. Redirecting
+        # stderr keeps the probe out of the installer's own stderr, which the desktop
+        # app reads and anything the child spawns would inherit and hold open.
         #
-        # The body is embedded in double quotes here, which is safe for exactly one reason:
-        # it contains none, asserted by a test. See the note above.
+        # The body is embedded in double quotes, safe only because it contains none,
+        # asserted by a test. See the note above.
         $info = New-Object System.Diagnostics.ProcessStartInfo
         $info.FileName = $hostExe
         $info.Arguments = "-NoProfile -NonInteractive -Command `"$probe`""
@@ -1017,11 +999,11 @@ exit 1
                 try { $child.Kill() } catch {}
                 return $false
             }
-            # Exit code AND an exact record. A marker followed by a crash is a crash: the
-            # question is whether this machine can emit and live, and a child that printed
-            # and then died has answered no. FullLanguage because an approved script can run
-            # in FullLanguage while a fresh inline command does not, and a child restricted
-            # differently from its parent has measured a different machine.
+            # Exit code AND an exact record. A marker followed by a crash is a crash:
+            # the question is whether this machine can emit and live. FullLanguage
+            # because an approved script can run in FullLanguage while a fresh inline
+            # command does not, and a child restricted differently from its parent
+            # has measured a different machine.
             if ($child.ExitCode -ne 0) {
                 $script:StudioEmitProbeOutcome = "blocked"
                 return $false
@@ -1032,23 +1014,23 @@ exit 1
                     $script:StudioEmitProbeOutcome = "ok"
                     return $true
                 }
-                # Emitted, but in a language mode this parent is not in. The child measured a
-                # different machine, which is an answer rather than a missed one.
+                # Emitted, but in a language mode this parent is not in: the child
+                # measured a different machine, which is an answer, not a miss.
                 if ($line.Trim() -like "STUDIO_EMIT_OK *") {
                     $script:StudioEmitProbeOutcome = "blocked"
                     return $false
                 }
             }
-            # Exit 0 with no marker at all: the child cannot have got past the emit and then
-            # reported nothing, so its output was lost rather than negative.
+            # Exit 0 with no marker: the child cannot have emitted and reported
+            # nothing, so its output was lost rather than negative.
             return $false
         } catch {
             return $false
         } finally {
             if ($child) {
-                # The read end goes first. A killed child can leave a grandchild holding the
-                # write end of that pipe, and the pending async read then keeps this process
-                # alive past the deadline it just enforced.
+                # The read end goes first: a killed child can leave a grandchild
+                # holding the write end, and the pending async read would then keep
+                # this process alive past the deadline it just enforced.
                 try { $child.StandardOutput.Close() } catch {}
                 try { $child.StandardError.Close() } catch {}
                 try { $child.Dispose() } catch {}
@@ -1061,16 +1043,16 @@ exit 1
         Both spellings of "define a dynamic assembly", because the two PowerShell
         hosts that run this file are on different runtimes. The static
         AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework
-        4.5 through 4.8.1 as well as .NET Core, so Windows PowerShell 5.1 should
-        take the first branch. It is tried rather than assumed because nothing
-        here can test a .NET Framework host, and getting it wrong is not a visible
-        error: the catch would cache the resolver as unavailable and every desktop
-        install would silently use the lexical fallback, which can assign
-        different mutex names to a long path and its 8.3 alias.
+        4.5 through 4.8.1 as well as .NET Core, so 5.1 should take the first
+        branch; it is tried rather than assumed because nothing here can test a
+        .NET Framework host and getting it wrong is invisible: the catch would
+        cache the resolver as unavailable and every desktop install would use the
+        lexical fallback, which can give a long path and its 8.3 alias different
+        mutex names.
 
         AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework
-        spelling and is absent on .NET Core, so it is the fallback rather than the
-        first try; pwsh would fail on it.
+        spelling and is absent on .NET Core, so it is the fallback; pwsh would
+        fail on it.
         #>
         param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
         $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
@@ -1080,10 +1062,10 @@ exit 1
         } catch [System.Management.Automation.MethodException] {
             return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
         } catch [System.Management.Automation.RuntimeException] {
-            # A missing static surfaces as a RuntimeException on some hosts rather
-            # than a MethodException. Both mean "no such method here", and a real
-            # emit failure (Dynamic Code Security, Constrained Language) throws
-            # from the AppDomain call too, so the caller still sees it.
+            # Some hosts surface a missing static as RuntimeException, not
+            # MethodException. Both mean "no such method here", and a real emit
+            # failure (Dynamic Code Security, Constrained Language) throws from the
+            # AppDomain call too, so the caller still sees it.
             return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
         }
     }
@@ -1102,13 +1084,12 @@ exit 1
             $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
 
         $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-        # Per import, because CharSet is not decoration: it selects name mangling
-        # as well as marshalling. Unicode probes <Name>W before <Name>, Ansi probes
-        # <Name> before <Name>A. Every import here names an export that exists
-        # exactly as written, so both orders arrive; declaring the one the C# these
-        # replace declared keeps the metadata honest and puts the export that does
-        # exist first. Unicode is the default, since the calls carrying text are
-        # the ones already spelled W.
+        # Per import, because CharSet selects name mangling as well as marshalling:
+        # Unicode probes <Name>W before <Name>, Ansi probes <Name> before <Name>A.
+        # Every import names an export that exists exactly as written, so both
+        # orders arrive; matching the C# these replace keeps the metadata honest and
+        # tries the existing export first. Unicode is the default, since the calls
+        # carrying text are already spelled W.
         $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
         $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
         $standard = [System.Reflection.CallingConventions]::Standard
@@ -1122,13 +1103,15 @@ exit 1
                 $standard, $import.Return, $import.Args, $winapi, $charSet)
             $method.SetImplementationFlags(
                 $method.GetMethodImplementationFlags() -bor $preserveSig)
-            # `out uint` in the C# this replaces, and DefinePInvokeMethod has no way to say
-            # so: a by-ref type alone emits `ref`, which is In and Out unset. The value is
-            # blittable and every caller initialises it first, so the marshaller pins and
-            # writes back either way, but the metadata is what a reader and any future
-            # marshalling change go by, so it says what the declaration said.
-            # ContainsKey, not a bare property read: most imports have no Out key and reading a
-            # missing one is fatal under a caller's Set-StrictMode. setup.ps1 sets none of its own.
+            # `out uint` in the C# this replaces; DefinePInvokeMethod cannot say so,
+            # since a by-ref type alone emits `ref` (In and Out unset). The value is
+            # blittable and every caller initialises it, so marshalling works either
+            # way, but the metadata is what a reader and any future marshalling
+            # change go by.
+            # ContainsKey, not a bare property read: most imports have no Out key and
+            # reading a missing one is fatal under Set-StrictMode. install.ps1 turns
+            # strict mode off for itself, studio/setup.ps1 inherits the caller's, so
+            # the guard is mirrored rather than left to one of them.
             if ($import.ContainsKey("Out")) {
                 foreach ($position in @($import.Out)) {
                     if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
@@ -1141,9 +1124,9 @@ exit 1
 
     # GetFinalPathNameByHandleW is the only exact answer for a path: it follows
     # junctions, symlinks and SUBST drives, expands 8.3 aliases and reports the
-    # on-disk spelling, none of which GetFullPath does. Cache the answer, since
-    # callers resolve dozens of paths, and where it is unavailable let
-    # Get-StudioLexicalPath carry the run.
+    # on-disk spelling, none of which GetFullPath does. Cached, since callers
+    # resolve dozens of paths; where unavailable, Get-StudioLexicalPath carries the
+    # run.
     $script:StudioFinalPathNativeState = $null
     # Reset with the rest: under `irm | iex` these are the caller's own.
     $script:StudioNativeResolveWarned = $false
@@ -1152,11 +1135,9 @@ exit 1
         param([string]$Reason)
         if ($script:StudioFinalPathWarned) { return }
         $script:StudioFinalPathWarned = $true
-        # "installation is unaffected" is what this used to promise, and it is a
-        # promise this line is not in a position to keep: the same security software
-        # that can stop a type being defined can also be acting on the rest of the
-        # run. What is true is the narrower thing, that the installer has a way to
-        # continue without it.
+        # This used to promise "installation is unaffected", which it cannot know:
+        # the same security software that blocks a type can be acting on the rest of
+        # the run. Only the narrower claim is true, that the installer can continue.
         Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
         Write-StudioLine "       Continuing with the PowerShell resolver, which cannot recover a path's" -ForegroundColor Yellow
         Write-StudioLine "       stored casing or expand an 8.3 name, so paths are compared as written." -ForegroundColor Yellow
@@ -1174,11 +1155,10 @@ exit 1
             $script:StudioFinalPathNativeState = $false
             $languageMode = "FullLanguage"
             try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
-            # Three reasons, because the gate now has three ways to say no and only one of
-            # them is a policy. Claiming code integrity for a probe that could not be
-            # spawned, or that was killed at its deadline, is a wrong answer written into
-            # the log a support request is built from: it names a machine setting the user
-            # would then go looking for and not find.
+            # Three reasons, because the gate has three ways to say no and only one
+            # is a policy. Blaming code integrity for a probe that could not be
+            # spawned, or was killed at its deadline, writes a machine setting into
+            # the support log that the user would go looking for and not find.
             $reason = if ($languageMode -ne "FullLanguage") { "PowerShell is in $languageMode" }
                       elseif ($script:StudioEmitProbeOutcome -eq "blocked") {
                           "this host enforces user-mode code integrity"
@@ -1187,14 +1167,12 @@ exit 1
             return $false
         }
         # Everything below the capability check is unchanged, so a host where the
-        # emit fails degrades exactly as a host that could not compile already
-        # did, which is a path the installer has always taken and still completes
-        # on.
+        # emit fails degrades exactly as one that could not compile already did.
         #
         # DefinePInvokeMethod cannot ask for SetLastError, so nothing below reads
-        # GetLastWin32Error. The C# it replaces threw a Win32Exception the callers
-        # only ever turned back into "use the lexical answer", so returning null
-        # loses a code nothing acted on.
+        # GetLastWin32Error. The C# it replaces threw a Win32Exception that callers
+        # only turned back into "use the lexical answer", so returning null loses a
+        # code nothing acted on.
         try {
             $null = New-StudioEmittedNativeType -TypeName "UnslothStudioFinalPathV3" -Imports @(
                 @{ Name = "CreateFileW"; Library = "kernel32.dll"; Return = [IntPtr]
@@ -1206,10 +1184,10 @@ exit 1
                    Ansi = $true }
             )
         } catch {
-            # A throw does not always mean nothing was defined: CreateType can
-            # publish the type and then fail on the way back, and the compiled
-            # version this replaces checked for exactly that before giving up. If
-            # the type is there it is usable, so ask before caching the negative.
+            # A throw does not mean nothing was defined: CreateType can publish the
+            # type and then fail on the way back, and the compiled version this
+            # replaces checked for that too. A published type is usable, so ask
+            # before caching the negative.
             if ("UnslothStudioFinalPathV3" -as [type]) {
                 $script:StudioFinalPathNativeState = $true
                 return $true
@@ -1231,10 +1209,10 @@ exit 1
     # symlinks and SUBST drives, expands 8.3 aliases and reports the on-disk
     # spelling, none of which GetFullPath does.
     #
-    # This is what the compiled Resolve() did, moved out of C# so the imports
-    # above are all the native code there is. Same flags, same two-pass buffer
-    # growth. Null rather than an exception when the handle or the call fails:
-    # every caller already treats "no exact answer" as "use the lexical one".
+    # What the compiled Resolve() did, moved out of C# so the imports above are all
+    # the native code there is. Same flags, same two-pass buffer growth. Null rather
+    # than an exception on failure: every caller already treats "no exact answer" as
+    # "use the lexical one".
     function Get-StudioNativeFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1243,20 +1221,15 @@ exit 1
         $openExisting = [uint32]3
         $backupSemantics = [uint32]0x02000000   # required to open a DIRECTORY
 
-        # Every native call is guarded, not just the ones that can fail usefully.
-        # An emitted stub binds its import on first CALL, not when the type is
-        # defined, so a host missing the export raises here rather than above, and
-        # the caller must see the same "no exact answer" it sees from a handle it
-        # could not open. The callers already treat null that way; throwing past
-        # them would be a new failure mode this change has no business inventing.
-        # Acquisition sits INSIDE the region that closes the handle. The C# this
-        # replaces returned a SafeFileHandle, whose finalizer was a backstop if the
-        # pipeline stopped between the open and the using block; an IntPtr has
-        # none, so the open and the finally are one region instead. What is left
-        # is the instant between the native return and the assignment, which no
-        # arrangement of PowerShell can close. It costs nothing here: the handle is
-        # opened with desired access 0 and FILE_SHARE_READ|WRITE|DELETE, so even a
-        # leaked one blocks no other opener, and it dies with the process.
+        # Every native call is guarded: an emitted stub binds its import on first CALL,
+        # not at definition, so a host missing the export raises here rather than above,
+        # and the caller must see the same null "no exact answer" a failed open gives.
+        # Acquisition sits INSIDE the region that closes the handle, because the
+        # SafeFileHandle the C# returned had a finalizer as a backstop and an IntPtr has
+        # none. What is left is the instant between the native return and the assignment,
+        # which no PowerShell arrangement can close and which costs nothing: opened with
+        # desired access 0 and FILE_SHARE_READ|WRITE|DELETE, even a leaked handle blocks
+        # no other opener and dies with the process.
         $handle = $invalidHandle
         try {
             try {
@@ -1283,9 +1256,9 @@ exit 1
         } catch {
             return $null
         } finally {
-            # Guarded now that the open is inside this region: the failure paths
-            # reach here with the sentinel, and closing it is a call Windows has no
-            # reason to be asked to make.
+            # Guarded now that the open is inside this region: failure paths reach
+            # here with the sentinel, which there is no reason to ask Windows to
+            # close.
             if ($handle -ne $invalidHandle -and $handle -ne [IntPtr]::Zero) {
                 try { [void][UnslothStudioFinalPathV3]::CloseHandle($handle) } catch {}
             }
@@ -1475,10 +1448,10 @@ exit 1
                 # The helper was DEFINED and still could not answer: a path renamed
                 # between the Test-Path walk and CreateFileW, an access denial on a
                 # component, a volume with no drive letter. Falling back keeps the
-                # install alive, and Exact = $false already makes the runtime lock
-                # fail closed, but nothing said so out loud: the degraded warning
-                # below only fires when the type itself could not be built. An operator was
-                # left with a silently inexact identity on a host that looks fine.
+                # install alive and Exact = $false makes the runtime lock fail
+                # closed, but say so: the degraded warning below only fires when the
+                # type itself could not be built, leaving an operator with a
+                # silently inexact identity on a host that looks fine.
                 $resolved = $null
                 if (-not $script:StudioNativeResolveWarned) {
                     $script:StudioNativeResolveWarned = $true
@@ -1544,12 +1517,11 @@ exit 1
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-StudioLine "       or unset the env var for default desktop installs." -ForegroundColor Yellow
-            # Belt and braces: TMP/TEMP are only redirected from
-            # Initialize-StudioTempEnvironment, which now runs after this throw, so
-            # there is nothing to restore here today. The call returns immediately
-            # when nothing was overridden, and under `irm | iex` those variables are
-            # the caller's own, so the day anything above starts redirecting them
-            # again this stays correct instead of silently leaking.
+            # Belt and braces: only Initialize-StudioTempEnvironment redirects
+            # TMP/TEMP and it now runs after this throw, so there is nothing to
+            # restore today. The call is a no-op when nothing was overridden, and
+            # under `irm | iex` those variables are the caller's own, so this stays
+            # correct if anything above starts redirecting them again.
             Restore-StudioTempEnvironment
             throw "$envOverrideVar is not supported with --tauri."
         }
@@ -1815,16 +1787,14 @@ exit 1
         # so that is the path the desktop app is on.
         if ($script:StudioStdoutRedirected) { return $false }
         # Emitted rather than compiled, for the reason New-StudioEmittedNativeType
-        # gives. -MemberDefinition runs csc.exe just as -TypeDefinition does, and
-        # the guard above only keeps the desktop app off it; the console path,
-        # including `irm | iex`, reached the compiler here every run. Colour is
-        # cosmetic, so failure is still just a plain banner.
-        # The same gate the resolver uses: colour is not worth a risk that cannot be
-        # caught, and a plain banner is the answer either way.
-        # The published type first, the gate only if there is nothing published. A type
-        # this session already emitted is proof that emit works here, and the compiled
-        # version checked for it in the same order; asking a child instead means one
-        # failed probe throws away a console helper that is already loaded and usable.
+        # gives: -MemberDefinition runs csc.exe just as -TypeDefinition does, and the
+        # guard above only keeps the desktop app off it, so the console path
+        # (including `irm | iex`) reached the compiler here every run.
+        # Same gate as the resolver, since colour is not worth a risk that cannot be
+        # caught; failure is just a plain banner.
+        # The published type first, the gate only if there is nothing published: a
+        # type this session already emitted proves emit works here, and asking a
+        # child instead lets one failed probe throw away a usable console helper.
         if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
             return $false
         }
@@ -1881,11 +1851,10 @@ exit 1
     }
     Write-StudioLine ""
 
-    # Here so its warning lands under the banner. The only caller now: the native
-    # path resolver used to reach it first, because compiling wrote to %TEMP%, and
-    # it no longer writes anything anywhere. Nothing between the banner and here
-    # touches the temporary directory, so the fix-up still lands before the first
-    # user of it.
+    # Here so its warning lands under the banner. The native path resolver used to
+    # reach it first, because compiling wrote to %TEMP%; it no longer writes
+    # anything. Nothing between the banner and here touches the temporary
+    # directory, so the fix-up still lands before its first user.
     Initialize-StudioTempEnvironment
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
@@ -3180,12 +3149,11 @@ exit 0
                     # Per-item SHChangeNotify: the global broadcast misses a rewritten same-name .lnk.
                     try {
                         # Emitted, not compiled: -MemberDefinition runs csc.exe too.
-                        # Tauri returns before it gets here, so this one was only
-                        # ever on the console path, but that path deserves the same
-                        # treatment. A failure here leaves stale icons, nothing more,
-                        # and the enclosing catch already absorbed that.
-                        # Same order as everywhere else: a published type settles it, and
-                        # only an absent one asks the gate.
+                        # Tauri returns before here, so this was only ever on the
+                        # console path, which deserves the same treatment. A failure
+                        # leaves stale icons and the enclosing catch absorbs it.
+                        # Same order as everywhere else: a published type settles it,
+                        # and only an absent one asks the gate.
                         if (-not ("UnslothShellIconRefresh" -as [type])) {
                             if (-not (Test-StudioCanDefineNativeTypes)) {
                                 throw "native types are unavailable on this host"
@@ -3584,14 +3552,14 @@ exit 0
 
     # QueryFullProcessImageNameW answers for processes whose MainModule is not
     # readable here: PROCESS_QUERY_LIMITED_INFORMATION is granted where the
-    # PROCESS_VM_READ that MainModule needs is refused, and it asks nothing of WMI.
+    # PROCESS_VM_READ that MainModule needs is refused, and it needs no WMI.
     # Without it a host can find NO running processes and overwrite a venv Unsloth
     # has open, so the ladder still ends at Get-Process and Win32_Process. Every
     # rung reports a real executable image; a command line or working directory
     # mentioning the path is never proof.
     #
-    # Emitted rather than compiled, like every other native declaration here. The
-    # ladder itself is unchanged from before that switch.
+    # Emitted rather than compiled, like every other native declaration here; the
+    # ladder itself is unchanged.
     $script:StudioProcessImageNativeState = $null
     function Initialize-StudioProcessImageNativeType {
         if ("UnslothStudioProcessImageV1" -as [type]) {
@@ -3599,12 +3567,11 @@ exit 0
             return $true
         }
         if ($null -ne $script:StudioProcessImageNativeState) { return $script:StudioProcessImageNativeState }
-        # A type this session already emitted outranks any probe. The compiled version
-        # could not disagree with itself here, because one type carried the path helper
-        # and this one; two types can, and the way they do is a session that emitted the
-        # path type, was interrupted, and came back to a probe that now fails. Asking a
-        # child whether emit works, in a process where emit demonstrably worked, is a
-        # question with an answer already on the table.
+        # A type this session already emitted outranks any probe. The compiled
+        # version carried the path helper and this one in a single type and so could
+        # not disagree with itself; two types can, when a session emits the path type
+        # and then meets a probe that now fails. Do not ask a child whether emit
+        # works in a process where emit demonstrably worked.
         $alreadyEmitted = $null -ne ("UnslothStudioFinalPathV3" -as [type])
         if (-not $alreadyEmitted -and -not (Test-StudioCanDefineNativeTypes)) {
             $script:StudioProcessImageNativeState = $false
@@ -3636,9 +3603,8 @@ exit 0
     }
 
     # The body of the compiled GetProcessImagePath, moved out of C# so the imports
-    # above are all the native code there is. Same flags, same buffer. Null rather
-    # than an exception on any failure, which is what the compiled one returned and
-    # what the caller below skips on.
+    # above are all the native code there is. Same flags, same buffer. Null on any
+    # failure, as the compiled one returned and as the caller below skips on.
     function Get-StudioNativeProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
         $queryLimitedInformation = [uint32]0x1000
@@ -6336,7 +6302,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.3" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.4" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -6344,7 +6310,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -6358,7 +6324,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -6538,7 +6504,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -6553,11 +6519,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.2" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -6594,7 +6560,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.2" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
