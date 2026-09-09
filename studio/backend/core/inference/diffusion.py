@@ -176,6 +176,7 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_NVFP4,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
@@ -6477,6 +6478,7 @@ class DiffusionBackend:
                 "speed_optims": [],
                 "text_encoder_quant": None,
                 "transformer_quant": None,
+                "transformer_quant_backend": None,
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
@@ -6508,6 +6510,7 @@ class DiffusionBackend:
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
+            "transformer_quant_backend": _transformer_quant_backend(state),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "resolved": state.resolved,
@@ -6530,6 +6533,41 @@ class DiffusionBackend:
                 transformer_quant = state.transformer_quant,
             ),
         }
+
+
+def _transformer_quant_backend(state: Any) -> Optional[str]:
+    """Which NVFP4 kernel path the loaded denoiser is actually running, or None.
+
+    Only nvfp4 has two implementations, so every other scheme (and the GGUF) answers None. The
+    scheme is not the answer for nvfp4 either: flashinfer is chosen per device, and a checkpoint
+    without baked activation scales, a failed preflight or a Windows host all leave the model on
+    torchao with the same 'nvfp4' in ``transformer_quant``. Read from the module tree rather than
+    from what the load intended -- ``convert_nvfp4_backend`` is all-or-nothing, so a single
+    converted layer means the conversion ran.
+
+    Never raises: a status read is a poll, and a probe of someone else's module tree must not be
+    what takes it down."""
+    if getattr(state, "transformer_quant", None) != TQ_NVFP4:
+        return None
+    try:
+        pipe = getattr(state, "pipe", None)
+        denoiser_attr = getattr(getattr(state, "family", None), "denoiser_attr", "transformer")
+        denoiser = getattr(pipe, denoiser_attr or "transformer", None)
+        if denoiser is None:
+            return None
+        declared = getattr(denoiser, "_unsloth_nvfp4_backend", None)
+        if declared:
+            return str(declared)
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+
+        for module in denoiser.modules():
+            if is_nvfp4_flashinfer_linear(module):
+                return "flashinfer"
+        # nvfp4 engaged and nothing was converted: torchao is what ran, which is the fallback the
+        # backend selection is designed to reach rather than an error.
+        return "torchao"
+    except Exception:  # noqa: BLE001 -- see the docstring: a poll must not fail on a probe
+        return None
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:
