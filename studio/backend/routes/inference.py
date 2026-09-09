@@ -16665,7 +16665,18 @@ def _requested_network_allowlist(payload: Any) -> list[str] | None:
 
 def _read_tool_isolation_capability(*, force: bool) -> Any:
     try:
-        return tool_isolation_capability_snapshot(force = force)
+        from core.inference.os_sandbox import _runtime_identity
+
+        before = _runtime_identity()
+        snapshot = tool_isolation_capability_snapshot(force = force)
+        if _runtime_identity() != before:
+            raise HTTPException(
+                status_code = 409,
+                detail = "Isolation configuration changed during the check. Check again.",
+            )
+        return snapshot
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("tool_isolation.capability_probe_failed")
         raise HTTPException(
@@ -16678,25 +16689,61 @@ def _read_tool_isolation_capability(*, force: bool) -> Any:
         )
 
 
+async def _isolation_auth_recheck(http_request: Request):
+    from auth.authentication import security
+
+    credentials = await security(http_request)
+
+    async def recheck():
+        if await http_request.is_disconnected():
+            raise HTTPException(status_code = 499, detail = "Isolation request cancelled.")
+        return await get_current_subject(credentials)
+
+    return recheck
+
+
 @studio_router.get("/tool-isolation/capability", response_model = ToolIsolationCapabilityResponse)
 def get_tool_isolation_capability(
+    refresh: bool = False,
     current_subject: str = Depends(get_current_subject),
     via_api_key: _ToolIsolationViaApiKey = False,
 ):
     require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
-    return _read_tool_isolation_capability(force = True)
+    return _read_tool_isolation_capability(force = refresh)
 
 
 @studio_router.post(
     "/tool-isolation/limited-grant", response_model = ToolIsolationLimitedGrantResponse
 )
-def create_tool_isolation_limited_grant(
+async def create_tool_isolation_limited_grant(
     request: ToolIsolationLimitedGrantRequest,
     current_subject: str = Depends(get_current_subject),
     via_api_key: _ToolIsolationViaApiKey = False,
+    recheck = Depends(_isolation_auth_recheck),
 ):
     require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
-    snapshot = _read_tool_isolation_capability(force = True)
+    from core.inference import srt_probe
+    from core.inference.os_sandbox import _runtime_identity
+
+    if srt_probe.setup_in_progress.is_set():
+        raise HTTPException(status_code = 409, detail = "Windows isolation setup is still running.")
+    identity = _runtime_identity()
+    snapshot = await asyncio.to_thread(_read_tool_isolation_capability, force = False)
+    if await recheck() != current_subject:
+        raise HTTPException(status_code = 403, detail = "The signed-in user changed.")
+    if srt_probe.setup_in_progress.is_set() or _runtime_identity() != identity:
+        raise HTTPException(
+            status_code = 409,
+            detail = "Isolation configuration changed. Check again before granting permission.",
+        )
+    if getattr(snapshot, "reason_code", None) == "probe_timeout":
+        raise HTTPException(
+            status_code = 503,
+            detail = {
+                "code": "PROBE_TIMEOUT",
+                "message": "Isolation check timed out. Check again before enabling Limited mode.",
+            },
+        )
     if request.probe_generation != snapshot.probe_generation:
         raise HTTPException(
             status_code = 409,
@@ -16731,6 +16778,42 @@ def create_tool_isolation_limited_grant(
         expires_at = datetime.fromtimestamp(grant.expires_at, tz = timezone.utc).isoformat(),
         probe_generation = grant.probe_generation,
     )
+
+
+@studio_router.post("/tool-isolation/windows-setup")
+async def setup_windows_tool_isolation(
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: _ToolIsolationViaApiKey = False,
+    recheck = Depends(_isolation_auth_recheck),
+):
+    from core.inference.srt_setup import install_windows_sandbox
+
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
+    # Elevation is meaningful only on the machine the person is using. Never
+    # turn a remote Studio link into an administrator prompt on its host.
+    if not http_request.client or http_request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(
+            status_code = 403, detail = "Open Studio on this Windows machine to set up tool isolation."
+        )
+    try:
+        body = await http_request.json()
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "Invalid setup confirmation.")
+    if (
+        not isinstance(body, dict)
+        or set(body) - {"confirm", "repair_existing"}
+        or body.get("confirm") is not True
+        or type(body.get("repair_existing", False)) is not bool
+    ):
+        raise HTTPException(status_code = 400, detail = "Confirm Windows tool-isolation setup first.")
+    if await recheck() != current_subject:
+        raise HTTPException(status_code = 403, detail = "The signed-in user changed.")
+    _raise_or_cancel_active_generations(force = False, action = "Setting up Windows tool isolation")
+    result = await asyncio.to_thread(
+        install_windows_sandbox, repair_existing = body.get("repair_existing", False)
+    )
+    return result
 
 
 @studio_router.post(

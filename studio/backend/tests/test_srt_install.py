@@ -71,6 +71,7 @@ def test_native_setup_installs_verified_helper_without_privileged_action(
 def test_explicit_windows_install_runs_only_after_integrity(installer, monkeypatch, integrity_ok):
     module, root = installer
     monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module, "_range_available", lambda ports: True)
     npm_cli = root / "node_modules/npm/bin/npm-cli.js"
     npm_cli.parent.mkdir(parents = True)
     npm_cli.write_text("// npm fixture")
@@ -95,6 +96,8 @@ def test_explicit_windows_install_runs_only_after_integrity(installer, monkeypat
         str(root / "node"),
         str(root / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"),
         "windows-install",
+        "--proxy-port-range",
+        "60080-60089",
     ]
 
 
@@ -200,6 +203,7 @@ def test_integrity_failure_is_not_reported_as_installed(installer, monkeypatch):
 def test_custom_windows_range_saved_only_after_success(installer, monkeypatch, succeeds):
     module, root = installer
     monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module, "_range_available", lambda ports: True)
     npm_cli = root / "node_modules/npm/bin/npm-cli.js"
     npm_cli.parent.mkdir(parents = True)
     npm_cli.write_text("// fixture")
@@ -226,6 +230,65 @@ def test_custom_windows_range_saved_only_after_success(installer, monkeypatch, s
         with pytest.raises(module.subprocess.CalledProcessError):
             module.install(**args)
         assert not settings.exists()
+
+
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_reserved_default_range_repair_keeps_installer_and_runtime_aligned(
+    installer, monkeypatch, succeeds
+):
+    module, root = installer
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    npm_cli = root / "node_modules/npm/bin/npm-cli.js"
+    npm_cli.parent.mkdir(parents = True)
+    npm_cli.write_text("// fixture")
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(root / name))
+    monkeypatch.setattr(
+        module, "_range_available", lambda ports: ports == [20000, 20009], raising = False
+    )
+    settings = root / "installed-runtime-settings.json"
+    settings.write_text(json.dumps({"windowsProxyPortRange": [60080, 60089]}))
+    before = settings.read_bytes()
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "windows-install" in argv and not succeeds:
+            raise module.subprocess.CalledProcessError(2, argv)
+        return SimpleNamespace(stdout = "v24.13.0")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if succeeds:
+        module.install(windows_install = True, windows_force = True)
+        assert json.loads(settings.read_text()) == {"windowsProxyPortRange": [20000, 20009]}
+    else:
+        with pytest.raises(module.subprocess.CalledProcessError):
+            module.install(windows_install = True, windows_force = True)
+        assert settings.read_bytes() == before
+    assert calls[-1][-3:] == ["--proxy-port-range", "20000-20009", "--force"]
+
+
+def test_range_selection_preserves_usable_settings_and_explicit_choice(installer, monkeypatch):
+    module, _ = installer
+    monkeypatch.setattr(module, "_range_available", lambda ports: ports == [55080, 55089])
+    assert module._select_windows_range([55080, 55089]) == [55080, 55089]
+    with pytest.raises(RuntimeError, match = "requested"):
+        module._select_windows_range([60080, 60089], explicit = True)
+    calls = []
+    monkeypatch.setattr(module, "_range_available", lambda ports: calls.append(ports) or False)
+    with pytest.raises(RuntimeError, match = "No usable"):
+        module._select_windows_range(None)
+    assert len(calls) == 65
+
+
+def test_range_check_detects_occupied_port_and_releases_sockets(installer):
+    module, _ = installer
+    with module.socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        assert not module._range_available([port, port])
+    assert module._range_available([port, port])
+    assert module._range_available([port, port])
 
 
 @pytest.mark.parametrize(

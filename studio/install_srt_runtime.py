@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,34 @@ def _port_range(value):
             "Windows proxy range must contain 2 to 100 ports between 1024 and 65535."
         )
     return [low, high]
+
+
+def _range_available(ports):
+    # Keep all candidate sockets open together so the check requires the whole
+    # range. The native probe still handles races after these are released.
+    with ExitStack() as stack:
+        for port in range(ports[0], ports[1] + 1):
+            listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            try:
+                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                listener.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+    return True
+
+
+def _select_windows_range(preferred, *, explicit = False):
+    preferred = preferred or [60080, 60089]
+    if _range_available(preferred):
+        return preferred
+    if explicit:
+        raise RuntimeError("The requested Windows proxy port range is reserved or in use.")
+    for low in range(20000, 20640, 10):
+        candidate = [low, low + 9]
+        if _range_available(candidate):
+            return candidate
+    raise RuntimeError("No usable Windows proxy port range found; tool isolation remains blocked.")
 
 
 def install(
@@ -54,6 +84,10 @@ def install(
         selected_range = _port_range(settings["windowsProxyPortRange"])
     if windows_proxy_port_range is not None:
         selected_range = _port_range(windows_proxy_port_range)
+    if windows_install:
+        selected_range = _select_windows_range(
+            selected_range, explicit = windows_proxy_port_range is not None
+        )
     node, npm = shutil.which("node"), shutil.which("npm")
     if not node or not npm:
         raise RuntimeError(

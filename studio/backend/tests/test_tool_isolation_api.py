@@ -49,6 +49,11 @@ def _client(*, via_api_key: bool) -> TestClient:
     app = FastAPI()
     app.include_router(inference_route.studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "actor-a"
+
+    async def recheck():
+        return "actor-a"
+
+    app.dependency_overrides[inference_route._isolation_auth_recheck] = lambda: recheck
     app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
     return TestClient(app)
 
@@ -418,7 +423,7 @@ def test_diagnostic_and_disclosure_survive_http_response(monkeypatch, environmen
     assert body["diagnostic"] == diagnostic
     assert body["limited_disclosure"] == limited_disclosure(environment)
     assert body["available"] is False
-    assert calls == [True]
+    assert calls == [False]
 
 
 def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
@@ -439,7 +444,7 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     expected["limited_limitations"] = list(expected.get("limited_limitations") or [])
     assert response.json() == expected
     assert response.json()["network_policies"] == ["deny"]
-    assert calls == [True]
+    assert calls == [False]
 
     with _client(via_api_key = True) as client:
         response = client.get("/api/inference/tool-isolation/capability")
@@ -449,10 +454,10 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
         "This action can only be performed from the Unsloth UI, not with an API key."
     )
     assert "MCP" not in response.json()["detail"]
-    assert calls == [True]
+    assert calls == [False]
 
 
-def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
+def test_grant_endpoint_uses_fresh_cache_and_rejects_stale_generation(monkeypatch):
     calls: list[bool] = []
 
     def _snapshot(*, force: bool):
@@ -467,7 +472,7 @@ def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
         )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "CAPABILITY_CHANGED"
-    assert calls == [True]
+    assert calls == [False]
 
 
 def test_grant_endpoint_does_not_downgrade_an_available_preview_backend(monkeypatch):
@@ -574,3 +579,117 @@ def test_nested_consent_http_boundary(monkeypatch, scenario, expected):
         probe.assert_not_called()
     if scenario == "probe_failed":
         assert response.json()["detail"]["diagnostic"]["code"] == "probe_timeout"
+
+
+def test_limited_timeout_never_issues_grant(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        inference_route,
+        "tool_isolation_capability_snapshot",
+        lambda **kw: replace(_capability(), reason_code = "probe_timeout"),
+    )
+    monkeypatch.setattr(
+        inference_route, "issue_limited_grant", lambda **kw: pytest.fail("timeout issued a grant")
+    )
+    with _client(via_api_key = False) as client:
+        response = client.post(
+            "/api/inference/tool-isolation/limited-grant",
+            json = {"ui_session_id": "page", "probe_generation": "probe-1"},
+        )
+    assert response.status_code == 503
+
+
+@pytest.mark.parametrize("status", [401, 499])
+def test_limited_revalidates_auth_and_disconnect_after_check(monkeypatch, status):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route, "tool_isolation_capability_snapshot", lambda **kw: _capability()
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "issue_limited_grant",
+        lambda **kw: pytest.fail("revoked request issued a grant"),
+    )
+
+    async def revoked():
+        raise HTTPException(status_code = status, detail = "Request no longer valid")
+
+    with _client(via_api_key = False) as client:
+        client.app.dependency_overrides[inference_route._isolation_auth_recheck] = lambda: revoked
+        response = client.post(
+            "/api/inference/tool-isolation/limited-grant",
+            json = {"ui_session_id": "page", "probe_generation": "probe-1"},
+        )
+    assert response.status_code == status
+
+
+def test_explicit_capability_recheck_forces_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        inference_route,
+        "tool_isolation_capability_snapshot",
+        lambda **kw: calls.append(kw["force"]) or _capability(),
+    )
+    with _client(via_api_key = False) as client:
+        assert (
+            client.get("/api/inference/tool-isolation/capability?refresh=true").status_code == 200
+        )
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(
+    "via_api_key,host,body,status",
+    [
+        (True, "127.0.0.1", {"confirm": True}, 403),
+        (False, "203.0.113.1", {"confirm": True}, 403),
+        (False, "127.0.0.1", {"confirm": False}, 400),
+        (False, "127.0.0.1", {"confirm": 1}, 400),
+        (False, "127.0.0.1", {"confirm": True, "command": "bad"}, 400),
+        (False, "127.0.0.1", {"confirm": True}, 200),
+    ],
+)
+def test_windows_setup_requires_local_explicit_ui_consent(
+    monkeypatch, via_api_key, host, body, status
+):
+    from core.inference import srt_setup
+
+    calls = []
+    monkeypatch.setattr(
+        srt_setup,
+        "install_windows_sandbox",
+        lambda **kw: calls.append(kw) or {"status": "installed", "message": "fixture"},
+    )
+    client = _client(via_api_key = via_api_key)
+    with TestClient(client.app, client = (host, 1234)) as http:
+        response = http.post("/api/inference/tool-isolation/windows-setup", json = body)
+    assert response.status_code == status
+    assert len(calls) == int(status == 200)
+
+
+def test_configuration_change_during_final_auth_wait_rejects_grant(monkeypatch):
+    from core.inference import os_sandbox
+
+    identity = ["before"]
+    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: identity[0])
+    monkeypatch.setattr(
+        inference_route, "tool_isolation_capability_snapshot", lambda **kw: _capability()
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "issue_limited_grant",
+        lambda **kw: pytest.fail("stale configuration issued grant"),
+    )
+
+    async def recheck():
+        identity[0] = "after"
+        return "actor-a"
+
+    with _client(via_api_key = False) as client:
+        client.app.dependency_overrides[inference_route._isolation_auth_recheck] = lambda: recheck
+        response = client.post(
+            "/api/inference/tool-isolation/limited-grant",
+            json = {"ui_session_id": "page", "probe_generation": "probe-1"},
+        )
+    assert response.status_code == 409
