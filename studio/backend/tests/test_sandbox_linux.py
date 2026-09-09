@@ -1156,12 +1156,22 @@ def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
     files, because that record is written whichever mechanism the installer used:
     a PEP 660 finder keeps its mapping in a module and puts nothing on sys.path."""
     source = tmp_path / "checkout"
-    (source / "demo").mkdir(parents = True)
+    package = source / "demo"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    # A checkout holds more than its packages, and the sandbox keeps the network.
+    (source / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    (source / "fixtures").mkdir()
     _fake_editable(tmp_path, monkeypatch, str(source))
     try:
-        assert str(source) in os_sandbox.editable_source_roots()
+        granted = os_sandbox.editable_source_roots()
+        assert str(package) in granted, granted
+        assert str(source) not in granted, granted
+        assert not any("fixtures" in path or ".env" in path for path in granted), granted
         roots = tuple(p for p in sandbox_linux._SYSTEM_ROOTS if os.path.isdir(p))
-        assert str(source) in sandbox_linux._runtime_read_paths(str(tmp_path / "wd"), roots)
+        read = sandbox_linux._runtime_read_paths(str(tmp_path / "wd"), roots)
+        assert str(package) in read
+        assert str(source) not in read
     finally:
         os_sandbox.editable_source_roots.cache_clear()
 
@@ -1174,3 +1184,44 @@ def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatc
         assert os_sandbox.editable_source_roots() == ()
     finally:
         os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(
+    tmp_path, monkeypatch
+):
+    """A workdir reached through a symlink is bound TWICE, once per spelling, and
+    the read-only runtime mounts have to come after both.
+
+    Placed between them, the second bind hides them. Placed at a spelling the jail
+    has not bound yet, there is no mount point to land on and bwrap dies with
+    "Can't mkdir parents ... Read-only file system", which in `auto` costs the
+    session its isolation rather than protecting anything. Measured under
+    bubblewrap 0.11 in a container: before this ordering the alias spelling failed
+    to launch at all, and now both refuse the write with EROFS.
+    """
+    real = tmp_path / "real"
+    venv = real / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    launch = sandbox_linux.prepare(_plan(alias))
+    try:
+        argv = list(launch.argv)
+        binds = [i for i, item in enumerate(argv) if item == "--bind"]
+        writable = [argv[i + 2] for i in binds]
+        assert str(alias) in writable and str(real) in writable, writable
+        last_bind = max(binds)
+        for leg in ("lib", "bin"):
+            for spelling in (real / "venv" / leg, alias / "venv" / leg):
+                landed = [
+                    i for i in range(len(argv))
+                    if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
+                ]
+                assert landed, f"{spelling} is not re-bound read-only"
+                assert min(landed) > last_bind, f"{spelling} is bound before the last --bind"
+    finally:
+        launch.cleanup()

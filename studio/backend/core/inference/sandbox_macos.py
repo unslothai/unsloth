@@ -31,6 +31,7 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     WorkdirUnsafeError,
+    editable_import_roots,
     editable_source_roots,
     scan_workdir_for_host_channels,
 )
@@ -113,6 +114,14 @@ _OPTIONAL_READ_ROOTS = (
     "/opt/homebrew/opt",
     "/opt/homebrew/Cellar",
 )
+# Every optional root has to RESOLVE inside one of these. Homebrew on Intel
+# chowns /usr/local to the invoking user, so an /usr/local/bin symlinked at the
+# home directory is something a user, or an earlier unisolated tool call, can
+# arrange; _path_filters resolves before it emits, and the recursive subpath
+# would then be over a home subtree in a profile whose claim is the opposite.
+# Ownership is the wrong test here, because that same chown would drop the
+# Homebrew trees this exists to keep working. Containment is the right one.
+_OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
 # HAZARD 3, optional literals. Under (deny default) an absent file yields
 # EPERM rather than ENOENT and git aborts, and the existence-filtered path
 # rules cannot carry these.
@@ -441,6 +450,24 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     return tuple(selected)
 
 
+def _contained_optional_roots() -> tuple[str, ...]:
+    """Optional search roots whose target stays inside an approved prefix.
+
+    Dropped rather than un-resolved: the whole point of a search root is that
+    Homebrew's /usr/local/bin entries are symlinks into ../Cellar, so refusing to
+    follow them would grant a directory of dangling names.
+    """
+    kept: list[str] = []
+    for root in _OPTIONAL_READ_ROOTS:
+        resolved = os.path.realpath(root)
+        if any(
+            _within(root, prefix) and _within(resolved, prefix)
+            for prefix in _OPTIONAL_ROOT_PREFIXES
+        ):
+            kept.append(root)
+    return tuple(kept)
+
+
 def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     """Interpreter directories inside the session workdir. The Linux twin of this.
 
@@ -454,18 +481,37 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
 
     Only when both spellings stay inside the workdir. One that RESOLVES outside is
     the symlink case, and denying that path would be denying the user's own home.
+
+    Both spellings of the WORKDIR too. build_profile is handed the caller's
+    spelling, and its write allowance covers the resolved form as well, so
+    measuring containment against the alias alone rejected every runtime path
+    when the workdir was a symlink and no denial was emitted at all.
     """
+    roots: list[str] = []
+    for root in (posixpath.abspath(workdir), os.path.realpath(workdir)):
+        if root not in roots:
+            roots.append(root)
     inside: list[str] = []
+    # "Python" is the framework build's top-level dyld image, which
+    # runtime_read_paths already names: omitted here it stayed writable under the
+    # workdir allowance, which is the one file a later host subprocess maps.
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
-        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
+        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python"):
             candidate = posixpath.join(prefix, name)
             absolute = posixpath.abspath(candidate)
-            if not _within(absolute, workdir) or not os.path.exists(absolute):
+            if not os.path.exists(absolute):
                 continue
-            if not _within(os.path.realpath(candidate), workdir):
-                continue
-            if absolute not in inside:
-                inside.append(absolute)
+            resolved = os.path.realpath(candidate)
+            for root in roots:
+                if not _within(absolute, root) or not _within(resolved, root):
+                    continue
+                # Denied under every spelling of the workdir, since Seatbelt
+                # judges the path as written and the allowance covers them all.
+                relative = posixpath.relpath(absolute, root)
+                for other in roots:
+                    spelling = posixpath.join(other, relative)
+                    if spelling not in inside:
+                        inside.append(spelling)
     return tuple(inside)
 
 
@@ -480,7 +526,7 @@ def build_profile(
     readable_paths = (
         *_READ_ROOTS,
         *_TLS_TRUST_PATHS,
-        *_OPTIONAL_READ_ROOTS,
+        *_contained_optional_roots(),
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
@@ -514,7 +560,12 @@ def build_profile(
     mdns_filters = " ".join(_literal_filters((_MDNSRESPONDER_SOCKET,)))
     # resolve = False so an /etc/gitconfig symlinked into the home does not turn
     # a config read allowance into a home one.
-    optional_filters = _literal_filters(_OPTIONAL_READ_LITERALS, resolve = False)
+    # The editable import roots ride here rather than in read_filters because a
+    # literal grants the directory itself, which is all a listing needs, while
+    # _path_filters would add the subpath and hand back the whole checkout.
+    optional_filters = _literal_filters(
+        _OPTIONAL_READ_LITERALS + editable_import_roots(), resolve = False
+    )
     sysctl_filters = [
         *(f"(sysctl-name {json.dumps(name)})" for name in _SYSCTL_NAMES),
         *(f"(sysctl-name-prefix {json.dumps(name)})" for name in _SYSCTL_PREFIXES),

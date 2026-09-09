@@ -521,12 +521,17 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
         argv += ["--bind", workdir, inner]
-        # After the writable bind, so the server's own runtime is read-only even
-        # when it lives under the workdir; see _runtime_paths_under.
-        for path in workdir_runtime_paths:
-            argv += ["--ro-bind", path, path]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
+        # After BOTH writable binds, and at BOTH spellings. A read-only mount
+        # placed before the second bind is hidden by it, and one placed at a
+        # spelling the jail has not bound yet has no mount point to land on:
+        # bwrap then dies with "Can't mkdir parents ... Read-only file system"
+        # and the launch fails outright. See _runtime_paths_under.
+        for path in workdir_runtime_paths:
+            argv += ["--ro-bind", path, path]
+            if inner != workdir:
+                argv += ["--ro-bind", path, inner + path[len(workdir):]]
         argv += ["--chdir", inner]
         if model_cache:
             inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)

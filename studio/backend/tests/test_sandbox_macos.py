@@ -595,3 +595,110 @@ def test_the_developer_dir_variable_never_reaches_xcode_select(monkeypatch, tmp_
     finally:
         backend._developer_paths_cache = None
     assert "DEVELOPER_DIR" not in seen["env"]
+
+
+def _profile_for(workdir, monkeypatch, prefix):
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "exec_prefix", str(prefix))
+    return backend.build_profile(
+        workdir = str(workdir), private_tmp = _PRIVATE_TMP, runtime_paths = ()
+    )
+
+
+def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
+    tmp_path, monkeypatch
+):
+    """build_profile is handed the caller's spelling of the workdir, and its write
+    allowance covers the resolved form too. Measuring containment against the alias
+    alone rejected every runtime path, so NO denial was emitted and a tool could
+    rewrite the interpreter a later host subprocess runs."""
+    real = tmp_path / "real"
+    venv = real / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+
+    profile = _profile_for(alias, monkeypatch, venv)
+    under = backend.runtime_paths_under(str(alias))
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert str(spelling) in under, under
+    deny = _rule(profile, "(deny file-write* ")
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert f'(subpath "{spelling}")' in deny, deny
+    # Last-match-wins, so the denial is worthless before the allowance.
+    lines = profile.splitlines()
+    assert lines.index(_rule(profile, _WRITE_PREFIX)) < lines.index(deny)
+
+
+def test_the_framework_python_image_is_denied_when_the_prefix_is_under_the_workdir(
+    tmp_path, monkeypatch
+):
+    """A python.org framework's top-level `Python` is the dyld image, and
+    runtime_read_paths already names it. Left out of the denial it stayed under
+    the workdir's write allowance, which is the one file a later host subprocess
+    maps."""
+    workdir = tmp_path / "session"
+    prefix = workdir / "Python.framework" / "Versions" / "3.12"
+    (prefix / "lib").mkdir(parents = True)
+    image = prefix / "Python"
+    image.write_bytes(b"\xcf\xfa\xed\xfe")
+
+    deny = _rule(_profile_for(workdir, monkeypatch, prefix), "(deny file-write* ")
+    assert str(image) in backend.runtime_paths_under(str(workdir))
+    assert f'(literal "{image}")' in deny, deny
+
+
+def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monkeypatch):
+    """Homebrew on Intel chowns /usr/local to the user, so /usr/local/bin aimed at
+    the home directory is something a user, or an earlier unisolated tool call,
+    can arrange. _path_filters resolves before it emits, so the recursive subpath
+    would be over a home subtree."""
+    home = os.path.expanduser("~")
+    real = os.path.realpath
+
+    def resolves_home(path):
+        return home if path == "/usr/local/bin" else real(path)
+
+    monkeypatch.setattr(os.path, "realpath", resolves_home)
+    kept = backend._contained_optional_roots()
+    assert "/usr/local/bin" not in kept
+    # The positive control: the siblings are untouched, so this is not passing by
+    # dropping everything.
+    assert "/opt/homebrew/bin" in kept and "/usr/local/lib" in kept
+    # Through the profile as well, since the filter is worth nothing if
+    # build_profile still reaches for the unfiltered list.
+    named = {"/usr/local/bin", _WORKDIR, _PRIVATE_TMP}
+    real_isdir, real_exists = os.path.isdir, os.path.exists
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    profile = backend.build_profile(
+        workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ()
+    )
+    assert f'(subpath "{home}")' not in profile
+
+
+def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch):
+    """The import root has to be listed for the interpreter to find anything in
+    it, and a literal grants exactly that. A subpath would grant the checkout,
+    which is the whole point of naming the packages one by one."""
+    checkout = tmp_path / "checkout"
+    package = checkout / "demo"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    (checkout / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    monkeypatch.setattr(backend, "editable_source_roots", lambda: (str(package),))
+    monkeypatch.setattr(backend, "editable_import_roots", lambda: (str(checkout),))
+
+    named = {_WORKDIR, _PRIVATE_TMP}
+    real_isdir, real_exists = os.path.isdir, os.path.exists
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    profile = backend.build_profile(
+        workdir = _WORKDIR,
+        private_tmp = _PRIVATE_TMP,
+        runtime_paths = (str(package),),
+    )
+    assert f'(literal "{checkout}")' in profile
+    assert f'(subpath "{checkout}")' not in profile
+    assert f'(subpath "{package}")' in profile

@@ -330,9 +330,67 @@ def editable_source_roots() -> tuple[str, ...]:
             continue
         if path in ("/", "/usr") or not os.path.isdir(path):
             continue
-        if path not in roots:
-            roots.append(path)
+        for importable in _importable_entries(path):
+            if importable not in roots:
+                roots.append(importable)
     return tuple(roots)
+
+
+@functools.lru_cache(maxsize = 1)
+def editable_import_roots() -> tuple[str, ...]:
+    """The directories the entries above sit in, for LISTING only.
+
+    An editable install puts its import root on sys.path, and the interpreter
+    lists that directory to find anything in it. Under bubblewrap the read-only
+    bind of each package creates the parent as an otherwise empty directory, so
+    the listing works and shows nothing else; Seatbelt has no such side effect
+    and needs the directory itself named, as a literal so its contents do not
+    come with it.
+    """
+    return tuple(dict.fromkeys(os.path.dirname(path) for path in editable_source_roots()))
+
+
+def _importable_entries(project_root: str) -> tuple[str, ...]:
+    """The importable entries under an editable checkout, not the checkout.
+
+    direct_url.json names the PROJECT root, and a checkout holds more than its
+    packages: a .env, a credentialed .git/config, a private key someone left in
+    tests/fixtures. Granting the root recursively hands all of it to
+    model-authored code that still has the network, which is the boundary this
+    is supposed to hold.
+
+    The import root is taken from sys.path where the installer put it there (a
+    src layout puts <root>/src, not <root>), and only its top-level packages and
+    modules are returned. Nothing importable found means nothing is granted:
+    the import then fails inside the jail exactly as it did before any of this,
+    which is the honest failure rather than a quiet grant of the whole tree.
+    """
+    import_roots = [
+        entry for entry in sys.path
+        if entry and (os.path.abspath(entry) == project_root
+                      or os.path.abspath(entry).startswith(project_root + os.sep))
+    ]
+    # A PEP 660 finder puts nothing on sys.path, so fall back to the two layouts
+    # that cover almost everything published.
+    for fallback in (project_root, os.path.join(project_root, "src")):
+        if fallback not in import_roots and os.path.isdir(fallback):
+            import_roots.append(fallback)
+    found: list[str] = []
+    for import_root in import_roots:
+        try:
+            names = sorted(os.listdir(import_root))
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(".") or name.endswith((".egg-info", ".dist-info")):
+                continue
+            entry = os.path.join(import_root, name)
+            package = os.path.isdir(entry) and os.path.exists(
+                os.path.join(entry, "__init__.py")
+            )
+            if (package or name.endswith(".py")) and entry not in found:
+                found.append(entry)
+    return tuple(found)
 
 
 def linux_unavailable_remediation() -> str:
