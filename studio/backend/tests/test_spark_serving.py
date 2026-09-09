@@ -2000,3 +2000,33 @@ def _port_answers(first: bool, *, then: bool):
         return first if state["n"] == 1 else then
 
     return _answer
+
+
+def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
+    # The budget bounds one crash loop. Three clean restarts spread over a long run must not
+    # leave the peer permanently unrecoverable.
+    import asyncio
+
+    state = ss.SparkServing() if hasattr(ss, "SparkServing") else None
+    if state is None:
+        import pytest
+        pytest.skip("SparkServing type not exposed")
+
+    class _Proc:
+        name, peer, returncode, remote_pid = "llama-server", "peer", 1, 7
+        tail: list = []
+        started_at = 1.0
+        alive = True
+        async def stop(self, timeout = None): pass
+        async def start(self): pass
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+    state.peer_process = _Proc()
+    state.attached_backend = object()
+    state.relaunch_attempts = len(ss.RELAUNCH_BACKOFF_S) - 1
+
+    asyncio.run(state._relaunch_peer())
+
+    assert state.relaunch_attempts == 0
+    assert not state.relaunch_gave_up

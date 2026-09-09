@@ -2018,6 +2018,10 @@ class SparkServing:
                     process.name,
                     process.remote_pid,
                 )
+                # The budget bounds one crash loop, not the process lifetime: without this a peer
+                # that restarts cleanly three times over days is then never recovered again.
+                self.relaunch_attempts = 0
+                self.relaunch_log.append({"at": time.time(), "event": "recovered"})
                 return
 
     async def detach(self) -> None:
