@@ -23,7 +23,8 @@ $subjectNames = @(
     "Test-StudioVenvRollbackMustBePreserved",
     "Remove-StaleStudioVenvRollbacks",
     "Restore-StudioVenvRollback",
-    "Complete-StudioVenvRollback"
+    "Complete-StudioVenvRollback",
+    "Restore-StudioUvCacheMarker"
 )
 
 $definitions = @{}
@@ -109,6 +110,9 @@ function Reset-RollbackState($target) {
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $target
     $script:StudioVenvRollbackActive = $false
+    # As Install-UnslothStudio does at entry: the commit flag is per install, and the
+    # restore consults it, so a previous section's commit would suppress this one.
+    $script:StudioInstallCommitted = $false
 }
 
 $StudioHome = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth-rollback-$([guid]::NewGuid().ToString('N'))"

@@ -106,6 +106,7 @@ from .diffusion_memory import (
     snapshot_device_memory,
     unified_memory_shortfall_message,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_MAX,
@@ -193,6 +194,7 @@ logger = get_logger(__name__)
 # diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
+install_torchao_int_mm_patch()
 
 
 # "gguf" and "single_file" take companions from the base repo; "pipeline" is a full diffusers repo.
@@ -4324,6 +4326,7 @@ class DiffusionBackend:
                     and compile_eligible(target, is_gguf = False, family = fam)
                 )
                 # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
+                # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
                 backend_flags_before = snapshot_backend_flags()
                 # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
                 attention_engaged = apply_attention_backend(

@@ -464,6 +464,34 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     return True
 
 
+def _pin_device_to_decoder(model):
+    # `model.device` is the device of the first parameter, and the embedding we offload is it, so
+    # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
+    # works through the hooks above, but `cache_position` is built from `input_ids.device`, so
+    # `position_ids` stays on the CPU while the hidden states are already on CUDA and the rotary
+    # embedding dies on a cpu/cuda matmul. Report the first parameter still on an accelerator
+    # instead, read live so `model.to()` moves are followed and a whole-model move to the CPU
+    # falls back to the original answer.
+    cls = type(model)
+    if not cls.__dict__.get("_unsloth_device_skips_offload", False):
+        original = getattr(cls, "device", None)
+        if not isinstance(original, property):
+            return False
+
+        def _unsloth_device(self):
+            if getattr(self, "_unsloth_embedding_offloaded", False):
+                for param in self.parameters():
+                    if param.device.type != "cpu":
+                        return param.device
+            return original.fget(self)
+
+        cls.device = property(_unsloth_device)
+        cls._unsloth_device_skips_offload = True
+    # A plain bool, so nn.Module.__setattr__ leaves it off the parameter and module registries.
+    model._unsloth_embedding_offloaded = True
+    return True
+
+
 def _embeddings_are_tied(input_embeddings, output_embeddings):
     # A tied lm_head reuses this weight, so offloading to CPU would strand the output projection.
     if input_embeddings is None or output_embeddings is None:
@@ -762,26 +790,43 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ):
         kwargs.pop("mm_token_type_ids", None)
 
-    # VLMs do not allow logits_to_keep.
-    global NUM_LOGITS_TO_KEEP
-    if arch not in NUM_LOGITS_TO_KEEP:
-        m = self
-        # Find which is used: num_logits_to_keep or logits_to_keep
-        while hasattr(m, "model"):
-            if hasattr(m, "forward"):
-                keys = inspect.signature(m.forward).parameters.keys()
-                if "num_logits_to_keep" in keys:
-                    NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
-                    break
-                elif "logits_to_keep" in keys:
-                    NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
-                    break
-            m = m.model
+    # VLMs do not allow logits_to_keep, and transformers >= 5.0 sets it itself in
+    # generate(), so pre-injecting there is redundant and the arch walk below can
+    # pick a key the top-level model rejects.
+    # The sentinel is the plain release: this Version() keeps only the leading
+    # numeric run and appends ".1" for a suffix, so a "5.0.0.dev0" sentinel would
+    # normalize to 5.0.0.1 and send 5.0.0 FINAL down the legacy branch. Prereleases
+    # still gate correctly, since they normalize to 5.0.0.1 either way.
+    if Version(transformers_version) < Version("5.0.0"):
+        global NUM_LOGITS_TO_KEEP
         if arch not in NUM_LOGITS_TO_KEEP:
-            NUM_LOGITS_TO_KEEP[arch] = None
-    key = NUM_LOGITS_TO_KEEP[arch]
-    if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
-        kwargs[key] = 1
+            m = self
+            # find which is used: num_logits_to_keep or logits_to_keep
+            while hasattr(m, "model"):
+                if hasattr(m, "forward"):
+                    keys = inspect.signature(m.forward).parameters.keys()
+                    if "num_logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                        break
+                    elif "logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                        break
+                m = m.model
+            if arch not in NUM_LOGITS_TO_KEEP:
+                NUM_LOGITS_TO_KEEP[arch] = None
+        key = NUM_LOGITS_TO_KEEP[arch]
+        if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
+            kwargs[key] = 1
+    else:
+        # v5's own injection is guarded by `"logits_to_keep" not in model_kwargs`,
+        # so it is a DEFAULT: an explicit caller value survives, and popping
+        # unconditionally would rewrite logits_to_keep=0 (full sequence) into 1.
+        # Strip only what the strict validator raises on: num_logits_to_keep
+        # everywhere (renamed away in v5), and logits_to_keep on the VLMs whose
+        # top-level forward does not take it.
+        for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
+            if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
+                kwargs.pop(_logits_kwarg, None)
 
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
@@ -1107,6 +1152,7 @@ class FastBaseModel:
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config
         # out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
+        fix_tokenizer = True,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -1691,6 +1737,7 @@ class FastBaseModel:
 
                     # Device-safe embedding offload.
                     _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    _pin_device_to_decoder(model)
                     # GPU memory must be freed explicitly or it will not be freed.
                     clean_gpu_cache()
                     gc.collect()
@@ -2048,6 +2095,15 @@ class FastBaseModel:
                     "or set HF_HUB_OFFLINE=1 to force local loading. "
                     "Otherwise please check that the model has a tokenizer."
                 ) from _last_resort_err
+        # FastModel never calls load_correct_tokenizer; heal Gemma 4 base BOS from
+        # the finalized processor / model config (unslothai/unsloth#7903).
+        from ..tokenizer_utils import _apply_post_load_tokenizer_fixes
+
+        tokenizer = _apply_post_load_tokenizer_fixes(
+            tokenizer,
+            fix_tokenizer = fix_tokenizer,
+            config = auto_config if auto_config is not None else getattr(model, "config", None),
+        )
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation; see #4982.

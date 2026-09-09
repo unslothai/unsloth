@@ -190,8 +190,8 @@ def test_composer_only_queues_behind_the_current_chat():
         "const dismissWaitToast = useCallback(",
     )
     assert "startHydratedPromptQueue(" in queue_composer_text
-    # Read into a local first: the send guard arms on the untrimmed value too,
-    # since that is what a late DOM write carries.
+    # Read into a local first: the send guard arms on the untrimmed value too, since that is what a late DOM write
+    # carries.
     assert "const cleared = aui.composer().getState().text" in queue_composer_text
     assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD
@@ -204,9 +204,8 @@ def test_composer_only_queues_behind_the_current_chat():
     dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
-    # The other two are load-bearing as well. Abort without the identity check
-    # reports the successor's start as this one's failure; cleanup without it
-    # deletes the successor's entry.
+    # The other two are load-bearing as well. Abort without the identity check reports the successor's start as this
+    # one's failure; cleanup without it deletes the successor's entry.
     assert THREAD.count("promptQueueStartPendingRef.current.get(reservationKey) ===") == 3
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
@@ -334,22 +333,20 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "the release no longer asks whether a run started while the send was "
         "parked, so a parked prompt is sent into a streaming thread again"
     )
-    # A pre-stream reservation is a run that has been accepted and has not
-    # reached isRunning yet. handleSubmit treats it as running; so must this,
-    # or the same prompt is lost in a narrower window.
+    # A pre-stream reservation is a run that has been accepted and has not reached isRunning yet. handleSubmit treats
+    # it as running; so must this, or the same prompt is lost in a narrower window.
     assert "hasPreStreamRunReservation(preStreamThreadIds)" in code
 
-    # The gate on the queue branches, which is the fix itself: an active run
-    # governs the release, not the Cmd/Ctrl+Enter intent.
+    # The gate on the queue branches, which is the fix itself: an active run governs the release, not the
+    # Cmd/Ctrl+Enter intent.
     running = code.index("if (waitForCurrentRun) {")
     branch = code[running : code.index("if (forceQueue && !disableQueue) {")]
     assert "queueComposerText(true);" in branch, (
         "the release no longer queues behind the run that started while the "
         "send was parked, so the prompt goes back to being dropped silently"
     )
-    # Every refusal handleSubmit makes, made here too. A parked send is the
-    # same submit arriving late, so a branch it does not mirror is a state the
-    # UI forbids being reachable through the settings gate.
+    # Every refusal handleSubmit makes, made here too. A parked send is the same submit arriving late, so a branch it
+    # does not mirror is a state the UI forbids being reachable through the settings gate.
     for rule, why in (
         (
             "if (disableQueue) {",
@@ -369,8 +366,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "be queued may be dispatched into a streaming thread"
     )
 
-    # Research disables input outright -- handleSubmit returns before anything
-    # else and the UI shows Stop research instead of Send.
+    # Research disables input outright -- handleSubmit returns before anything else and the UI shows Stop research
+    # instead of Send.
     research = code.index("if (isResearchActive) {")
     assert research < running, (
         "the research refusal is not ahead of the queue path, so a prompt "
@@ -387,8 +384,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "the stored draft is cleared before the queue and refusal paths, so a "
         "prompt that is neither queued nor sent cannot be recovered"
     )
-    # Unchanged: with nothing running the chord still queues, and an ordinary
-    # send still sends. A fix that stopped sending would strand that case.
+    # Unchanged: with nothing running the chord still queues, and an ordinary send still sends. A fix that stopped
+    # sending would strand that case.
     assert "sendReservedComposer();" in code
 
 
@@ -936,8 +933,8 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
-    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options
-    # argument, which changes nothing about the ordering this pins.
+    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options argument, which changes
+    # nothing about the ordering this pins.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
         "return await clearStoredChats("
     )
@@ -1028,7 +1025,6 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "\nexport function useChatActive(",
     )
 
-    # The pane knows it is hidden.
     assert (
         "backgrounded: boolean;" in autosave
     ), "ThreadBackendAutosave has to be told, like every other sync component here"
@@ -1036,9 +1032,8 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "backgrounded={backgrounded}" in RUNTIME_PROVIDER
     ), "and the provider has to pass it, or the prop is inert"
 
-    # Read at publish time, not captured when the save was queued: the save that publishes
-    # may have been scheduled while the pane was on screen and resolve long after Compare
-    # hid it.
+    # Read at publish time, not captured when the save was queued: the save that publishes may have been scheduled
+    # while the pane was on screen and resolve long after Compare hid it.
     assert "const backgroundedRef = useRef(backgrounded);" in autosave
     assert "backgroundedRef.current = backgrounded;" in autosave
 
@@ -1049,9 +1044,9 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     publish_at = autosave.index("store.setActiveThreadId(remoteId)")
     guard_at = autosave.index("!backgroundedRef.current")
 
-    # ...and on no switch away from this thread being in flight. switchToNewThread() is
-    # async, so mainThreadId still reads as this pane for the whole gap, and a save landing
-    # in it republishes the chat the user just left into the view they navigated to.
+    # ...and on no switch away from this thread being in flight. switchToNewThread() is async, so mainThreadId still
+    # reads as this pane for the whole gap, and a save landing in it republishes the chat the user just left into the
+    # view they navigated to.
     assert "!switchInFlight" in autosave, (
         "the publication must also stand down while this provider's own New Chat switch is "
         "still resolving"
@@ -1061,8 +1056,8 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
     assert guard_at < publish_at, "the guard has to come before the write it guards"
 
-    # The save itself is untouched: gating it would defeat the PR, which exists so a run
-    # that outlives its view still lands on disk.
+    # The save itself is untouched: gating it would defeat the PR, which exists so a run that outlives its view still
+    # lands on disk.
     for call in (
         "await ensureStoredChatThread(remoteId)",
         "await syncExportedRepositoryToBackend(remoteId, exported)",
@@ -1097,8 +1092,8 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
         "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
     )
 
-    # Read at publish time, through a ref, for the same reason the autosave does: the write
-    # is queued when the message arrives and resolves after Compare may have hidden the pane.
+    # Read at publish time, through a ref, for the same reason the autosave does: the write is queued when the message
+    # arrives and resolves after Compare may have hidden the pane.
     assert "const backgroundedRef = useRef(backgrounded);" in RUNTIME_PROVIDER
     assert "backgroundedRef.current = backgrounded;" in RUNTIME_PROVIDER
 

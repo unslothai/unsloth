@@ -37,6 +37,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure
 
@@ -132,6 +133,18 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "enough memory" not in msg.lower()
         assert "diffusion" not in msg.lower()
 
+    def test_an_unknown_llm_arch_points_at_the_build_not_at_the_file(self):
+        """The arch branches above name models llama-server will never run. This
+        one is everything else, and "cannot be run with llama-server" was wrong for
+        the case that actually reached users: a build older than the architecture.
+        Seen on qwen4exp, where the identical file loaded after a llama.cpp update
+        and ran for six days, and the user reinstalled four times in between."""
+        out = "error loading model: unknown model architecture: 'qwen4exp'"
+        msg = _classify(out, "/models/x.gguf", "local/x")
+        assert "qwen4exp" in msg
+        assert "updating llama.cpp" in msg.lower()
+        assert "cannot be run" not in msg.lower()
+
     # Exact match: a chat arch merely containing a diffusion token (wan,
     # sd1, flux, ...) must not be routed to the Images page.
     @pytest.mark.parametrize(
@@ -151,7 +164,7 @@ class TestUnsupportedNonDiffusionArchitecture:
         out = f"error loading model: unknown model architecture: '{arch}'"
         msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
         assert arch in msg
-        assert "does not support" in msg.lower()
+        assert "does not recognise" in msg.lower()
         assert "diffusion" not in msg.lower()
         assert "Images page" not in msg
 
@@ -171,7 +184,7 @@ class TestOllamaAndFallback:
         msg = _classify(out, self._OLLAMA_GGUF, "ollama/some-new")
         assert "Ollama" in msg
         assert "directly through Ollama" in msg
-        assert "does not support" not in msg.lower()
+        assert "does not recognise" not in msg.lower()
 
     def test_ollama_diffusion_arch_still_routes_to_images(self):
         # Diffusion routing wins over the Ollama hint.
@@ -1008,7 +1021,6 @@ class TestDiagnosticsDoNotLeak:
         # measures the runner instead, which is why this exact assertion goes red on
         # the Windows runner for main as well as for a branch. The stopwatch stays
         # only as a catastrophic guard, loose enough that no runner can trip it.
-        import time
 
         buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
@@ -1199,7 +1211,6 @@ class TestTheDyldReasonIsBounded:
     def test_a_pathological_reason_does_not_stall_the_classifier(self):
         # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured
         # before the cap, against 0.0s on main, on the thread serving the load.
-        import time
 
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
@@ -1475,8 +1486,6 @@ class TestAnEncodedSecretIsStillRedacted:
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
-        import time
-
         start = time.monotonic()
         _classify(blob, "/m.gguf", "u/x", 1)
         assert time.monotonic() - start < 2.0
@@ -1699,8 +1708,6 @@ class TestTheRedactionHolesCodexFound:
         ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
-        import time
-
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0

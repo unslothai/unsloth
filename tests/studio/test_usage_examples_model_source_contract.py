@@ -56,15 +56,14 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # A dep list missing these never re-ran, so a finished load left the first fetch's
-    # name. Nor may it be gated on having no checkpoint: the store keeps one across an
-    # idle unload, which changes nothing React can see.
+    # A dep list missing these never re-ran, so a finished load left the first fetch's name. Nor may it be gated on
+    # having no checkpoint: the store keeps one across an idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "}, [checkpoint, ggufVariant]);" in hook
     assert "needsCatalog" not in hook
-    # A finishing download moves no store state, so the fetch retries on a timer too,
-    # and residency only slows that timer rather than stopping it.
+    # A finishing download moves no store state, so the fetch retries on a timer too, and residency only slows that
+    # timer rather than stopping it.
     assert "CATALOG_RETRY_MS" in hook and "CATALOG_IDLE_MS" in hook
     assert "window.clearTimeout(timeoutId)" in hook
     assert "const CATALOG_RETRY_MS = 15000;" in src
@@ -92,9 +91,8 @@ def test_idle_unload_does_not_guess_the_stashed_checkpoint():
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
-    # Catching into [] and false made a transient error authoritative: the panel dropped
-    # a still-servable model and printed "No model". The catalog is deliberately
-    # tri-state, and a failure must stay the unknown state.
+    # Catching into [] and false made a transient error authoritative: the panel dropped a still-servable model and
+    # printed "No model". The catalog is deliberately tri-state, and a failure must stay the unknown state.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "listOpenAIModels().catch(() => null)" in hook
@@ -108,9 +106,8 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
 
 
 def test_the_pinned_quant_comes_from_the_catalog():
-    # Catalog membership proves the repo, not the saved quant: the stored one can name
-    # a file deleted while another quant remains, so pinning it 404d on a missing quant
-    # with a runnable one listed.
+    # Catalog membership proves the repo, not the saved quant: the stored one can name a file deleted while another
+    # quant remains, so pinning it 404d on a missing quant with a runnable one listed.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
@@ -134,15 +131,14 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
 
 # The monitor moved onto its own page; Settings keeps configuration and links across.
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
-# Their own module: the overlay mounts from __root.tsx, so importing from the page
-# pulled it into the eager bundle.
+# Their own module: the overlay mounts from __root.tsx, so importing from the page pulled it into the eager bundle.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
 def test_api_monitor_history_does_not_reorder_under_the_reader():
-    # The backend moves an entry to the front as it finishes, so the page pauses the poll
-    # to hold the whole list still while a payload is read.
+    # The backend moves an entry to the front as it finishes, so the page pauses the poll to hold the whole list still
+    # while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "paused" in src
     assert "setPaused" in src

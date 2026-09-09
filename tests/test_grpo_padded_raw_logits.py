@@ -113,6 +113,9 @@ _BLOCK_SOURCE = _extract_padded_loop_source()
 _BLOCK_CODE = compile(_BLOCK_SOURCE, "<rl_replacements padded loop>", "exec")
 
 
+# The real unsloth_zoo helpers when available, eager mirrors when not.
+
+
 # ── Helpers: the real unsloth_zoo ones when available, eager mirrors when not ─
 
 
@@ -359,10 +362,8 @@ def test_extracted_block_is_the_padded_loop():
     assert len(loops) == 1
     assert isinstance(loops[0].iter, ast.Name) and loops[0].iter.id == _LOOP_ITERABLE
 
-    # Both arms of the branch inside the loop must dispatch through the shared
-    # helper, which is what compares the width and consults the explicit
-    # UNSLOTH_RETURN_HIDDEN_STATES signal. Counted structurally, never by text
-    # search.
+    # Both arms of the branch inside the loop must dispatch through the shared helper, which is what compares the width
+    # and consults the explicit UNSLOTH_RETURN_HIDDEN_STATES signal.
     dispatch_tests = [
         node
         for node in ast.walk(loops[0])

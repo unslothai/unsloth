@@ -431,7 +431,10 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any
-    # repo whose config sniffs as Whisper: can_chat is what auto-load and the chat picker filter on.
+    # repo whose config sniffs as Whisper, curated or not: a third-party checkpoint or a user's own
+    # fine-tune is just as unchattable. can_chat is what auto-load and the chat picker filter on,
+    # neither of which looks at the task, so task-scoping alone would leave curated STT rows
+    # eligible for chat auto-load.
     if stt_only or is_curated_stt_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
@@ -708,7 +711,8 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
         raise _CacheSourceChanged
     rows = scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
     # The walk itself takes seconds, so a delete or finished download landing during it supersedes these
-    # rows as surely as one landing before it.
+    # rows as surely as one landing before it: without this a repo deleted mid-scan is still listed in
+    # the response.
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
     return rows

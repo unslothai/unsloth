@@ -8,11 +8,11 @@
 // be honoured.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -26,8 +26,12 @@ const {
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
-  await import("../src/features/model-picker/model-config/per-model-config.ts");
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  resolveInitialConfig,
+  resolveResidentInitialConfig,
+  savePerModelConfig,
+} = await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { shouldPersistResolvedQueuedModel } = await import(
   "../src/features/chat/utils/queued-chat-run-settings.ts"
 );
@@ -35,22 +39,18 @@ const { wantsDownloadManagerStaging } = await import(
   "../src/features/chat/utils/model-download-staging.ts"
 );
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
-
-const notice = read("../src/features/chat/components/chat-model-notice.tsx");
-const page = read("../src/features/chat/chat-page.tsx");
-const runtimeProvider = read("../src/features/chat/runtime-provider.tsx");
-const adapter = read("../src/features/chat/api/chat-adapter.ts");
-const chatApi = read("../src/features/chat/api/chat-api.ts");
-const types = read("../src/features/chat/types.ts");
-const thread = read("../src/components/assistant-ui/thread.tsx");
-const researchPanel = read(
+const notice = readText("../src/features/chat/components/chat-model-notice.tsx");
+const page = readText("../src/features/chat/chat-page.tsx");
+const runtimeProvider = readText("../src/features/chat/runtime-provider.tsx");
+const adapter = readText("../src/features/chat/api/chat-adapter.ts");
+const chatApi = readText("../src/features/chat/api/chat-api.ts");
+const types = readText("../src/features/chat/types.ts");
+const thread = readText("../src/components/assistant-ui/thread.tsx");
+const researchPanel = readText(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
-const artifact = read("../src/features/chat/artifacts/artifact-surface.tsx");
-const switchSource = read(
+const artifact = readText("../src/features/chat/artifacts/artifact-surface.tsx");
+const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
 
@@ -378,7 +378,7 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
     /queuedEmptyModelRuntime !== null[\s\S]{0,100}queuedEmptyModelRuntime\.activeGgufVariant[\s\S]{0,80}liveRuntime\.activeGgufVariant/,
   );
   assert.match(adapter, /params\.checkpoint,\s*runtime\.activeGgufVariant/);
-  const queuedSettings = read(
+  const queuedSettings = readText(
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
   assert.match(queuedSettings, /"activeGgufVariant"/);
@@ -649,12 +649,40 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
   );
   assert.match(
     remembered,
-    /resolveInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
   assert.equal(
-    resolveInitialConfig(selection.id, selection.ggufVariant).config
+    resolveResidentInitialConfig(selection.id, selection.ggufVariant).config
       .customContextLength,
     32768,
+  );
+});
+
+test("switch back recovers a repo-keyed context through a snapshot path", () => {
+  store.clear();
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.ok(
+    savePerModelConfig(repoId, "Q4_K_M", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 32768,
+    }),
+  );
+  assert.equal(resolveInitialConfig(snapshotPath, "Q4_K_M").remembered, false);
+  assert.equal(
+    resolveResidentInitialConfig(snapshotPath, "Q4_K_M").config
+      .customContextLength,
+    32768,
+  );
+  const remembered = slice(
+    page,
+    "const rememberedConfigFor = useCallback",
+    "const isExternalModel",
+  );
+  assert.match(
+    remembered,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
 });
 
