@@ -703,7 +703,7 @@ class TestOneSwitchStandsTheChildsParkingDown:
 
         monkeypatch.setenv(PREEMPT_ENV, "0")
         env: dict = {}
-        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) is True
+        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) == []
         assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
         assert _preempt_ram_disabled_in(["llama-server", "--kv-unified"], env = env)
 
@@ -711,34 +711,67 @@ class TestOneSwitchStandsTheChildsParkingDown:
         from core.inference.llama_cpp import _stand_down_child_parking
 
         env: dict = {}
-        assert _stand_down_child_parking(env, ["llama-server"]) is False
+        assert _stand_down_child_parking(env, ["llama-server"]) is None
         assert env == {}
 
     def test_studio_pausing_stands_the_child_down_too(self, monkeypatch):
         # Studio is the one pausing and `server_preempts_kv` says the server does not, so a
-        # park the child made on its own default budget raced Studio's pause unexcused.
+        # park the child made on its own budget raced Studio's pause unexcused. One owner:
+        # a budget somebody named loses to the mode, and the load warning names it.
         from core.inference.llama_cpp import _stand_down_child_parking
 
         monkeypatch.setenv(PREEMPT_MODE_ENV, "studio")
         env: dict = {}
-        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) is True
+        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) == []
         assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
         named = {"LLAMA_ARG_PREEMPT_RAM": "4096"}
-        assert _stand_down_child_parking(named, ["llama-server"]) is False
-        assert named["LLAMA_ARG_PREEMPT_RAM"] == "4096"
+        assert _stand_down_child_parking(named, ["llama-server"]) == ["LLAMA_ARG_PREEMPT_RAM=4096"]
+        assert named["LLAMA_ARG_PREEMPT_RAM"] == "0"
 
     @pytest.mark.parametrize(
-        ("env", "args"),
+        ("env", "args", "overridden", "line"),
         [
-            ({"LLAMA_ARG_PREEMPT_RAM": "4096"}, ["llama-server"]),
-            ({}, ["llama-server", "--preempt-ram", "4096"]),
-            ({}, ["llama-server", "--preempt-ram=4096"]),
+            (
+                {"LLAMA_ARG_PREEMPT_RAM": "4096"},
+                ["llama-server"],
+                ["LLAMA_ARG_PREEMPT_RAM=4096"],
+                ["llama-server"],
+            ),
+            (
+                {},
+                ["llama-server", "--preempt-ram", "4096"],
+                ["--preempt-ram 4096"],
+                ["llama-server", "--preempt-ram", "0"],
+            ),
+            (
+                {},
+                ["llama-server", "--preempt-ram=4096"],
+                ["--preempt-ram=4096"],
+                ["llama-server", "--preempt-ram=0"],
+            ),
         ],
     )
-    def test_a_budget_someone_named_keeps_its_say(self, monkeypatch, env, args):
+    def test_a_budget_someone_named_loses_to_the_switch(
+        self, monkeypatch, env, args, overridden, line
+    ):
+        # argv is applied after the environment, so a zero in the environment alone would
+        # have left a named flag parking.
         from core.inference.llama_cpp import _stand_down_child_parking
 
         monkeypatch.setenv(PREEMPT_ENV, "0")
-        before = dict(env)
-        assert _stand_down_child_parking(env, args) is False
-        assert env == before
+        assert _stand_down_child_parking(env, args) == overridden
+        assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
+        assert args == line
+        assert _preempt_ram_disabled_in(args, env = env)
+
+    def test_the_load_warning_names_the_flag_and_the_setting_that_overrode_it(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        site = source.index("_parking_overridden = _stand_down_child_parking(env, cmd)")
+        window = source[site : site + 1200]
+        assert "_stand_down_why = _child_parking_stand_down_reason()" in window
+        assert "self._record_load_warning(" in window
+        assert '", ".join(_parking_overridden)' in window

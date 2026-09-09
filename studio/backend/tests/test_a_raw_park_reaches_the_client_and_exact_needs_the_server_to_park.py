@@ -541,19 +541,14 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: False)
         why = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
         assert why and "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0" in why
-        # A named budget keeps its say, as `_stand_down_child_parking` leaves it alone.
-        assert (
-            llama_mod._exact_auto_blocker(
-                exact.EXACT_AUTO, ["llama-server", "--preempt-ram", "4096"], {}
-            )
-            is None
-        )
-        assert (
-            llama_mod._exact_auto_blocker(
-                exact.EXACT_AUTO, ["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}
-            )
-            is None
-        )
+        # A named budget does not buy the child a park either: `_stand_down_child_parking`
+        # zeroes it, so the mode would be started for a server that never parks.
+        for argv, env in (
+            (["llama-server", "--preempt-ram", "4096"], {}),
+            (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}),
+        ):
+            blocked = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, argv, env)
+            assert blocked and "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0" in blocked
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
         assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {}) is None
 
@@ -790,9 +785,10 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
 
 class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
     """`auto` was preflighted for the opt-out, `on` was not: the exact launch sized a parking budget
-    of its own, and `_stand_down_child_parking` reads any `--preempt-ram` as one somebody named, so
+    of its own, and `_stand_down_child_parking` read any `--preempt-ram` as one somebody named, so
     the child parked with UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 set. The budget is generated only when
-    the child is going to be allowed to park at all."""
+    the child is going to be allowed to park at all, and one owner pauses chats: under the opt-out
+    or `studio` mode a named budget is overridden rather than left to run beside Studio."""
 
     _POOL = 12 * _GIB
 
@@ -808,39 +804,47 @@ class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
         assert llama_mod._exact_parking_budget_mib(self._POOL, args = argv, env = {}) is not None
         assert llama_mod._named_preempt_ram_mib(argv, {}) is None
         # ... and the guard that now stands in front of both.
-        assert llama_mod._child_parking_stands_down(argv, {}) is True
+        assert llama_mod._child_parking_stands_down() is True
         # So nothing names a budget, and the child is handed parking off.
         env: dict = {}
-        assert llama_mod._stand_down_child_parking(env, argv) is True
+        assert llama_mod._stand_down_child_parking(env, argv) == []
         assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
 
-    def test_a_budget_somebody_named_still_keeps_its_say(self, monkeypatch):
+    def test_a_budget_somebody_named_is_overridden_and_named(self, monkeypatch):
         self._opt_out(monkeypatch)
-        for argv, env in (
-            (["llama-server", "--preempt-ram", "4096"], {}),
-            (["llama-server", "--preempt-ram=4096"], {}),
-            (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}),
+        for argv, env, overridden in (
+            (["llama-server", "--preempt-ram", "4096"], {}, ["--preempt-ram 4096"]),
+            (["llama-server", "--preempt-ram=4096"], {}, ["--preempt-ram=4096"]),
+            (["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}, ["LLAMA_ARG_PREEMPT_RAM=4096"]),
         ):
-            assert llama_mod._child_parking_stands_down(argv, env) is False
+            assert llama_mod._child_parking_stands_down() is True
+            assert llama_mod._stand_down_child_parking(env, argv) == overridden
+            assert llama_mod._preempt_ram_disabled_in(argv, env = env)
 
     def test_studio_side_pausing_stands_the_child_down_the_same_way(self, monkeypatch):
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
         monkeypatch.setenv(preemption_mod.PREEMPT_MODE_ENV, "studio")
-        assert llama_mod._child_parking_stands_down(["llama-server"], {}) is True
+        assert llama_mod._child_parking_stands_down() is True
+        argv = ["llama-server", "--preempt-ram", "4096"]
+        env: dict = {}
+        assert llama_mod._stand_down_child_parking(env, argv) == ["--preempt-ram 4096"]
+        assert llama_mod._preempt_ram_disabled_in(argv, env = env)
+        assert llama_mod._child_parking_stand_down_reason() == "UNSLOTH_LLAMA_PREEMPT_MODE=studio"
 
     def test_a_launch_with_preemption_on_still_gets_its_budget(self, monkeypatch):
         monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
         argv = ["llama-server", "--kv-unified"]
-        assert llama_mod._child_parking_stands_down(argv, {}) is False
+        assert llama_mod._child_parking_stands_down() is False
         assert llama_mod._exact_parking_budget_mib(self._POOL, args = argv, env = {}) is not None
         env: dict = {}
-        assert llama_mod._stand_down_child_parking(env, argv) is False
+        assert llama_mod._stand_down_child_parking(env, argv) is None
         assert env == {}
+        assert argv == ["llama-server", "--kv-unified"]
 
     def test_the_stand_down_and_the_launch_read_one_predicate(self):
         stand_down = inspect.getsource(llama_mod._stand_down_child_parking)
-        assert "_child_parking_stands_down(args, env)" in stand_down
+        assert "_child_parking_stands_down()" in stand_down
         source = inspect.getsource(LlamaCppBackend.load_model)
         guard = source.index('server_caps.get("supports_preempt_ram")')
         window = source[guard : source.index("self._exact_pool_unknown = _exact_kv_bytes <= 0")]

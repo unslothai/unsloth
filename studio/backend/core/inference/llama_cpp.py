@@ -2135,34 +2135,58 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
             + ", which llama-server cannot combine with it"
         )
     # The same condition `_stand_down_child_parking` acts on later (studio mode above is its
-    # other): Studio's preemption off and nothing naming a budget hands the child a zero.
-    if not _preemption.preemption_enabled() and _named_preempt_ram_mib(args, env) is None:
-        return (
-            "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 switches the server's parking off as well, "
-            "with no --preempt-ram named"
-        )
+    # other): Studio's preemption off hands the child a zero, over any budget the line names.
+    if not _preemption.preemption_enabled():
+        return "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 switches the server's parking off as well"
     return None
 
 
-def _child_parking_stands_down(args, env: Mapping[str, str]) -> bool:
-    """Whether the child's own parking is to be switched off for the line as it stands. Read
-    BEFORE an exact launch sizes a budget of its own: the stand-down reads any ``--preempt-ram`` as
-    one somebody named, so a budget Studio generated for itself would defeat the switch."""
-    studio_pauses = _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO
-    if (_preemption.preemption_enabled() and not studio_pauses) or "LLAMA_ARG_PREEMPT_RAM" in env:
-        return False
-    return not any(str(a).startswith("--preempt-ram") for a in (args or ()))
+def _child_parking_stand_down_reason() -> Optional[str]:
+    """The setting that makes pausing chats somebody other than the child's job, else None.
+
+    Spelled as the user set it, so a load warning can name what overrode their budget."""
+    if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
+        return f"{_preemption.PREEMPT_MODE_ENV}=studio"
+    if not _preemption.preemption_enabled():
+        return f"{_preemption.PREEMPT_ENV}=0"
+    return None
 
 
-def _stand_down_child_parking(env: dict, args) -> bool:
+def _child_parking_stands_down() -> bool:
+    """Whether the child's own parking is to be switched off. One owner pauses chats, so a budget
+    somebody named does not buy the child a park Studio would race unexcused; the load warning
+    names the flag that lost. Read BEFORE an exact launch sizes a budget of its own."""
+    return _child_parking_stand_down_reason() is not None
+
+
+def _stand_down_child_parking(env: dict, args: Optional[list] = None) -> Optional[list[str]]:
     """One switch means no preemption anywhere: with Studio's off, the child would still park on its
     own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down too, a park the child
-    made on its own racing Studio's pause with no relay excusing the silence. Sets
-    ``LLAMA_ARG_PREEMPT_RAM=0`` and returns True, unless the extras or the environment named one."""
-    if not _child_parking_stands_down(args, env):
-        return False
+    made on its own racing Studio's pause with no relay excusing the silence.
+
+    Writes ``LLAMA_ARG_PREEMPT_RAM=0`` and zeroes any ``--preempt-ram`` in ``args`` IN PLACE, since
+    llama.cpp applies argv after the environment. Returns the budgets it overrode, empty when the
+    line named none, and None when the child keeps its parking."""
+    if not _child_parking_stands_down():
+        return None
+    overridden: list[str] = []
+    inherited = env.get("LLAMA_ARG_PREEMPT_RAM")
+    if inherited is not None and str(inherited).strip() != "0":
+        overridden.append(f"LLAMA_ARG_PREEMPT_RAM={inherited}")
     env["LLAMA_ARG_PREEMPT_RAM"] = "0"
-    return True
+    for i in range(len(args or ())):
+        token = str(args[i])
+        if token == "--preempt-ram" and i + 1 < len(args):
+            value = str(args[i + 1])
+            if value.strip() != "0":
+                overridden.append(f"--preempt-ram {value}")
+            args[i + 1] = "0"
+        elif token.startswith("--preempt-ram="):
+            value = token.split("=", 1)[1]
+            if value.strip() != "0":
+                overridden.append(f"--preempt-ram={value}")
+            args[i] = "--preempt-ram=0"
+    return overridden
 
 
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
@@ -23582,9 +23606,7 @@ class LlamaCppBackend:
                     # A park that outgrows the host budget is re-prefilled, which is not
                     # byte-identical on CUDA, so the budget has to hold the whole pool. Only when
                     # nothing named one, and not when the stand-down below switches parking off.
-                    if server_caps.get("supports_preempt_ram") and not _child_parking_stands_down(
-                        list(cmd) + [str(a) for a in (extra_args or ())], os.environ
-                    ):
+                    if server_caps.get("supports_preempt_ram") and not _child_parking_stands_down():
                         try:
                             _exact_kv_bytes = _kv_bytes(effective_ctx)
                         except Exception:
@@ -23658,13 +23680,21 @@ class LlamaCppBackend:
                         "Model Memory owns placement; dropped inherited %s",
                         ", ".join(_mem_scrubbed),
                     )
-                if _stand_down_child_parking(env, cmd):
+                _parking_overridden = _stand_down_child_parking(env, cmd)
+                if _parking_overridden is not None:
+                    _stand_down_why = _child_parking_stand_down_reason()
                     logger.info(
-                        "Studio's preemption is off or Studio is the one pausing (%s, %s), so "
-                        "the server's own parking is off as well",
-                        _preemption.PREEMPT_ENV,
-                        _preemption.PREEMPT_MODE_ENV,
+                        "%s, so the server's own parking is off as well and Studio is the only "
+                        "one pausing chats",
+                        _stand_down_why,
                     )
+                    if _parking_overridden:
+                        self._record_load_warning(
+                            f"{_stand_down_why} makes Studio the one pausing chats, so the "
+                            "server's own parking is switched off and "
+                            + ", ".join(_parking_overridden)
+                            + " is overridden. Unset it to have the server park chats instead."
+                        )
                 # Same reasoning one level up: a flag validate_extra_args refuses has
                 # an env twin llama.cpp reads before argv, so denying the token alone
                 # would leave the capability reachable and unrecorded.
