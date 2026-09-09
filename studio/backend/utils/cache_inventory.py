@@ -164,6 +164,10 @@ def _pip_configured_dir() -> Optional[Path]:
             [sys.executable, "-m", "pip", "cache", "dir"],
             capture_output = True,
             text = True,
+            # A cache path can hold non-ASCII, and the default decoder is the
+            # ANSI codepage on Windows or ASCII under a C locale.
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 20,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
