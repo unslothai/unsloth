@@ -1199,47 +1199,66 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
     )
 
 
-# The exact managed block the branch below emits, named so the launch can spot its own tokens in an argv and take
-# them back out when the placement they were chosen for stops holding.
+# The exact managed block the policy emits, named so the launch can spot its own tokens in an argv and
+# take them back out when the placement they were chosen for stops holding.
 MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
 
 
-def no_reserve_requires_dio(*, supports_load_mode: bool, gpu_offload_confirmed: bool) -> bool:
+def no_reserve_requires_dio(
+    *, supports_load_mode: bool, gpu_offload_confirmed: bool
+) -> bool:
     """Whether "Don't reserve system RAM" owes this launch ``--load-mode dio``.
 
     Windows keeps the whole GGUF mapping resident after a full offload, because
     ``unmap_fragment`` is a no-op there (#9033), so the setting only means
     anything on that platform once the offload is confirmed and the build
-    understands the flag. One definition, because the launch has to record the
-    same answer the policy acts on: the reload comparator asks it about a
-    process that is already running.
+    understands the flag.
+
+    Placement only. Whether a loader choice further down the chain then overrides
+    the pair is not asked here: ``resolve_launch_load_mode`` answers that by
+    resolving the argv the policy really produces.
     """
     return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
 
 
-def managed_dio_applies(
+def resolve_launch_load_mode(
+    extra_args: Optional[Iterable[str]],
     *,
     supports_load_mode: bool,
+    weights_in_host_memory: bool,
     gpu_offload_confirmed: bool,
-    env: Optional[Mapping[str, str]] = None,
+    requested_load_mode: Optional[str],
+    env: Optional[Mapping[str, str]],
+    settings: tuple[bool, bool],
 ) -> bool:
-    """Whether "Don't reserve system RAM" would emit the managed DirectIO here.
+    """Whether the child would run DirectIO under this ``(keep_resident, no_ram_reserve)``.
 
-    Deliberately does NOT consult the toggle. The policy asks it once no-reserve
-    is on; the launch records the same answer so that a LATER save is compared
-    against the placement that is running instead of reading as already
-    satisfied. Two copies of this rule would let the flags and the reload
-    comparator disagree about the same launch.
+    Runs the REAL policy chain and resolves the argv it produces, rather than
+    assembling a hypothetical by hand. The launch calls it twice: once with the
+    live settings, which is what the child actually gets, and once with
+    no-reserve forced on, which is what a relaunch would get. Both answers come
+    from the same code path, so they cannot disagree about the same launch.
 
-    ``env`` is the child's environment after ``scrub_memory_env``. A loader
-    choice that survives the scrub is a non-reserving one the settings disclaim,
-    and argv beats the environment in llama.cpp, so the managed pair stands
-    aside for it the way the fit's own mode does.
+    Asking by hand is what went wrong before: the env view and the surviving
+    extras are scrubbed and stripped BY the settings, so a hypothetical built
+    from the live ones silently answered for the wrong toggle.
     """
-    return no_reserve_requires_dio(
+    managed, extras = apply_model_memory_policy(
+        extra_args,
         supports_load_mode = supports_load_mode,
+        weights_in_host_memory = weights_in_host_memory,
         gpu_offload_confirmed = gpu_offload_confirmed,
-    ) and not memory_env_selects_load_mode(env)
+        env = env,
+        settings = settings,
+    )
+    selected, extras = apply_load_mode_policy(
+        extras,
+        supports_load_mode = supports_load_mode,
+        weights_in_host_memory = weights_in_host_memory,
+        requested_load_mode = requested_load_mode,
+        settings = settings,
+    )
+    return resolve_effective_direct_io([*managed, *selected, *extras], env)
 
 
 def apply_model_memory_policy(
@@ -1316,10 +1335,16 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
-    if no_ram_reserve and managed_dio_applies(
-        supports_load_mode = supports_load_mode,
-        gpu_offload_confirmed = gpu_offload_confirmed,
-        env = env,
+    if (
+        no_ram_reserve
+        and no_reserve_requires_dio(
+            supports_load_mode = supports_load_mode,
+            gpu_offload_confirmed = gpu_offload_confirmed,
+        )
+        # An inherited loader choice that survives the scrub is a non-reserving one
+        # the settings disclaim, and argv beats the environment in llama.cpp, so the
+        # managed pair stands aside for it the way the fit's own mode does.
+        and not memory_env_selects_load_mode(env)
     ):
         # Windows cannot partially unmap the GGUF after offload: unmap_fragment
         # is a no-op in llama.cpp. Stream instead for this confirmed placement.
@@ -1445,8 +1470,15 @@ def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
     return out
 
 
-def model_memory_owns_placement() -> bool:
-    """True when either toggle is on, so the child env must be scrubbed."""
+def model_memory_owns_placement(settings: Optional[tuple[bool, bool]] = None) -> bool:
+    """True when either toggle is on, so the child env must be scrubbed.
+
+    ``settings`` answers for a GIVEN ``(keep_resident, no_ram_reserve)`` instead of
+    the live one, which is what lets the launch ask what it WOULD scrub under a
+    setting that is not currently on.
+    """
+    if settings is not None:
+        return settings[0] or settings[1]
     try:
         from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
     except Exception:
@@ -1630,7 +1662,7 @@ def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
     return False
 
 
-def scrub_memory_env(env: dict) -> list[str]:
+def scrub_memory_env(env: dict, settings: Optional[tuple[bool, bool]] = None) -> list[str]:
     """Drop inherited memory placement the settings override.
 
     Returns the names removed, for logging. A no-op with both toggles off, so an
@@ -1638,7 +1670,7 @@ def scrub_memory_env(env: dict) -> list[str]:
     that actually lock or reserve go: an inherited ``LLAMA_ARG_DIO=1`` is a
     loader choice, not a reservation, and no-reserve has no quarrel with it.
     """
-    if not model_memory_owns_placement():
+    if not model_memory_owns_placement(settings):
         return []
     removed = [
         name
