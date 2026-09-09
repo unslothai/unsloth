@@ -40,9 +40,11 @@ class _State:
     # Names bound to a constant, so a subscript written through one resolves to a
     # single field rather than to every field.
     consts: dict = field(default_factory = dict)
-    # Set when the path hit break or continue, so a literal loop stops simulating
-    # further items for it.
+    # Set when the path hit break, so a literal loop stops simulating further items
+    # for it. `continue` only ends the current iteration, so it is tracked apart:
+    # the path skips the rest of the body but still sees the next item.
     terminated: bool = False
+    continued: bool = False
     budget: list = field(default_factory = lambda: [8192])
 
     def copy(self, scoped = False):
@@ -55,6 +57,7 @@ class _State:
             self.constructed.copy(),
             self.consts.copy(),
             self.terminated,
+            self.continued,
             self.budget,
         )
 
@@ -99,6 +102,19 @@ def _names(node):
     )
 
 
+def _as_const(node, state):
+    """The literal a node is known to be, either written out or bound to a name."""
+    if isinstance(node, nodes.Const):
+        return node
+    if (
+        state is not None
+        and isinstance(node, nodes.Name)
+        and node.name in state.consts
+    ):
+        return nodes.Const(state.consts[node.name])
+    return None
+
+
 def _constant_truth(node, state = None):
     fact = state.facts.get(repr(node)) if state is not None else None
     if fact is not None:
@@ -107,15 +123,25 @@ def _constant_truth(node, state = None):
         return bool(node.value)
     if isinstance(node, (nodes.List, nodes.Tuple, nodes.Dict)):
         return bool(node.items)
-    if (
-        isinstance(node, nodes.Compare)
-        and isinstance(node.expr, nodes.Const)
-        and all(isinstance(operand.expr, nodes.Const) for operand in node.ops)
-    ):
-        try:
-            return bool(node.as_const())
-        except nodes.Impossible:
-            pass
+    if isinstance(node, nodes.Compare):
+        # `{% set flag = true %}{% if flag == false %}` is dead at render time, so
+        # resolve names the template bound to a literal before folding.
+        folded = _as_const(node.expr, state)
+        operands = [_as_const(operand.expr, state) for operand in node.ops]
+        if folded is not None and all(operand is not None for operand in operands):
+            replacement = nodes.Compare(
+                folded,
+                [
+                    nodes.Operand(operand.op, value)
+                    for operand, value in zip(node.ops, operands)
+                ],
+            )
+            try:
+                # The rebuilt node is synthetic, so it carries no environment of its
+                # own and has to be handed an evaluation context explicitly.
+                return bool(replacement.as_const(nodes.EvalContext(_ENVIRONMENT)))
+            except Exception:
+                pass
     if isinstance(node, nodes.Not):
         value = _constant_truth(node.node, state)
         return None if value is None else not value
@@ -157,6 +183,50 @@ def _assume(node, truth, state):
     return [result]
 
 
+def _signature(state):
+    """Everything about a path that can still change the verdict."""
+    return (
+        frozenset(state.aliases),
+        tuple(sorted((name, id(node)) for name, node in state.macros.items())),
+        frozenset((expression, fact[0]) for expression, fact in state.facts.items()),
+        frozenset(state.assigned),
+        frozenset(state.mutated),
+        frozenset(state.constructed),
+        frozenset((name, repr(value)) for name, value in state.consts.items()),
+        state.terminated,
+        state.continued,
+    )
+
+
+def _live_names(body):
+    """Names each suffix of `body` still refers to, so a fact about a name nothing
+    reads again can be dropped and the two paths that carried it collapse into one.
+
+    Without this a template pays for the full Cartesian product of its conditions:
+    twelve unrelated `{% if flagN %}` blocks are 4096 paths, which exhausts the
+    budget and fails closed on a template that does support tools. Qwen3-Coder
+    already spends most of the budget, so the headroom is not theoretical.
+    """
+    suffixes = [frozenset()] * (len(body) + 1)
+    for index in range(len(body) - 1, -1, -1):
+        suffixes[index] = _names(body[index]) | suffixes[index + 1]
+    return suffixes
+
+
+def _collapse(states, live):
+    """Drop facts nothing reads again, then merge paths that became identical."""
+    seen = {}
+    for state in states:
+        if state.facts:
+            state.facts = {
+                expression: fact
+                for expression, fact in state.facts.items()
+                if fact[1] & live
+            }
+        seen.setdefault(_signature(state), state)
+    return list(seen.values()) if len(seen) < len(states) else states
+
+
 def _forget(key, state):
     state.facts = {
         expression: fact for expression, fact in state.facts.items() if key[0] not in fact[1]
@@ -196,6 +266,56 @@ def _negated_guard(node, state):
         return _positive_test(node.node, state)
     if isinstance(node, nodes.Test) and node.name in ("none", "undefined"):
         return _tool_reference(node.node, state)
+    if isinstance(node, nodes.Compare) and len(node.ops) == 1 and node.ops[0].op == "eq":
+        return any(
+            (_tool_reference(a, state) or _counts_tools(a, state)) and _empty_literal(b)
+            for a, b in ((node.expr, node.ops[0].expr), (node.ops[0].expr, node.expr))
+        )
+    return False
+
+
+def _empty_literal(node):
+    """`[]`, `{}`, `()`, `''`, `0`, `none` - the values a catalog is compared against
+    to ask whether it is empty."""
+    if isinstance(node, nodes.Const):
+        return not node.value
+    if isinstance(node, (nodes.List, nodes.Tuple, nodes.Dict)):
+        return not node.items
+    return False
+
+
+def _counts_tools(node, state):
+    """`tools|length` and friends, so `tools|length > 0` reads as a tool guard."""
+    return (
+        isinstance(node, nodes.Filter)
+        and node.name in ("length", "count")
+        and node.node is not None
+        and _tool_reference(node.node, state)
+    )
+
+
+def _non_empty_tools(node, state):
+    """A comparison that holds exactly when the catalog is present and non-empty.
+
+    Templates spell the guard as `{% if tools != [] %}` or `{% if tools|length > 0 %}`
+    as often as `{% if tools %}`, and all three advertise tools the same way.
+    """
+    if not (isinstance(node, nodes.Compare) and len(node.ops) == 1):
+        return False
+    operand = node.ops[0]
+    left, right, op = node.expr, operand.expr, operand.op
+    if op == "ne":
+        return any(
+            (_tool_reference(a, state) or _counts_tools(a, state)) and _empty_literal(b)
+            for a, b in ((left, right), (right, left))
+        )
+    # `tools|length > 0` and the mirrored `0 < tools|length`.
+    mirror = {"gt": "lt", "lt": "gt", "gteq": "lteq", "lteq": "gteq"}
+    for counted, bound, sense in ((left, right, op), (right, left, mirror.get(op, op))):
+        if not _counts_tools(counted, state) or not isinstance(bound, nodes.Const):
+            continue
+        if (sense == "gt" and bound.value == 0) or (sense == "gteq" and bound.value == 1):
+            return True
     return False
 
 
@@ -218,6 +338,8 @@ def _positive_test(node, state):
             and node.node.name in ("none", "undefined")
             and _tool_reference(node.node.node, state)
         )
+    if _non_empty_tools(node, state):
+        return True
     if isinstance(node, nodes.Compare) and len(node.ops) == 1:
         operand = node.ops[0]
         if operand.op == "eq":
@@ -299,8 +421,12 @@ def _value_aliases(value, state, active):
         removed = _removed_key(value.node.attr, value)
         if removed is not None:
             return _select(_value_aliases(value.node.node, state, active), removed)
+        # A shallow copy is the receiver again as far as provenance goes; without this
+        # the fallback reads `copy` as a data field and loses everything under it.
+        if value.node.attr == "copy" and not value.args and not value.kwargs:
+            return _value_aliases(value.node.node, state, active)
     if isinstance(value, nodes.Call) and isinstance(value.node, nodes.Name):
-        if value.node.name == "namespace":
+        if value.node.name in ("namespace", "dict"):
             result = set().union(*(_value_aliases(arg, state, active) for arg in value.args))
             for keyword in value.kwargs:
                 _replace(result, (keyword.key,), _value_aliases(keyword.value, state, active))
@@ -329,7 +455,21 @@ def _value_aliases(value, state, active):
                     active,
                     source = state if parameter.name in arguments else local.copy(),
                 )
-            emits, _ = _scan(macro.body, local, active | {macro.name})
+            # The macro's own names stay live: nothing outside it constrains its body.
+            emits, children = _scan(
+                macro.body, local, active | {macro.name}, tail = _names(macro)
+            )
+            # A namespace write inside a macro escapes it, so the caller sees it:
+            # {% macro load() %}{% set ns.catalog = tools %}{% endmacro %}{{ load() }}
+            # leaves the catalog in ns. _export_scope already knows which of a
+            # scope's mutations outlive it, and the macro's own parameters were
+            # dropped from `assigned` by the scoped copy above.
+            for child in children:
+                exported = _export_scope(state, child)
+                state.aliases.clear()
+                state.aliases.update(exported.aliases)
+                state.mutated.update(exported.mutated)
+                state.facts = exported.facts
             return {()} if emits else set()
     # Other expressions serialize or transform their inputs.
     return (
@@ -346,7 +486,8 @@ def _bind(
     active,
     source = None,
 ):
-    source = state.copy() if source is None else source
+    private = source is None
+    source = state.copy() if private else source
     if isinstance(target, (nodes.Tuple, nodes.List)):
         if isinstance(value, (nodes.Tuple, nodes.List)):
             for item, expression in zip(target.items, value.items):
@@ -356,7 +497,16 @@ def _bind(
             for index, item in enumerate(target.items):
                 _bind_paths(item, _select(paths, index), state)
         return
-    _bind_paths(target, _value_aliases(value, source, active), state)
+    paths = _value_aliases(value, source, active)
+    if private and source.mutated - state.mutated:
+        # Evaluating the value ran a macro whose namespace writes escape it. Those
+        # landed on the private copy, so carry them over before the target is bound.
+        carried = _export_scope(state, source)
+        state.aliases.clear()
+        state.aliases.update(carried.aliases)
+        state.mutated.update(carried.mutated)
+        state.facts = carried.facts
+    _bind_paths(target, paths, state)
     key = _reference_key(target)
     if key is not None:
         source_key = (
@@ -367,7 +517,14 @@ def _bind(
         if _constructs_object(value):
             _mark_constructed(key, value, state)
         elif source_key is not None and source_key in state.constructed:
-            state.constructed.add(key)
+            # The nested members were built by the template too, so the alias has to
+            # carry them: otherwise `current.message.role` reads as external data.
+            inherited = [
+                (*key, *built[len(source_key) :])
+                for built in state.constructed
+                if built[: len(source_key)] == source_key
+            ]
+            state.constructed.update(inherited)
         else:
             state.constructed.discard(key)
     if isinstance(target, nodes.Name):
@@ -436,7 +593,12 @@ def _mutate(call, state, active):
         return
     method = call.node.attr
     positional = {suffix for arg in call.args for suffix in _value_aliases(arg, state, active)}
-    if method != "extend":
+    if method == "update" and all(isinstance(arg, nodes.Dict) for arg in call.args):
+        # A positional mapping keeps its own keys, exactly as the keyword form below
+        # does: d.update({'catalog': tools}) puts the catalog at d.catalog and leaves
+        # every other field of d alone.
+        pass
+    elif method != "extend":
         # append, insert, add, setdefault: the argument lands somewhere under the
         # receiver rather than being spliced into it. Any unrecognised method handed
         # tool data is treated the same way rather than ignored.
@@ -521,7 +683,7 @@ def _export_scope(parent, child):
     return result
 
 
-def _scan_if(node, state, active, guarded):
+def _scan_if(node, state, active, guarded, tail):
     remaining = [state]
     results = []
     for branch in [node, *node.elif_]:
@@ -529,7 +691,11 @@ def _scan_if(node, state, active, guarded):
         for current in remaining:
             for positive in _assume(branch.test, True, current):
                 emits, states = _scan(
-                    branch.body, positive, active, guarded or _positive_test(branch.test, current)
+                    branch.body,
+                    positive,
+                    active,
+                    guarded or _positive_test(branch.test, current),
+                    tail,
                 )
                 if emits:
                     return True, []
@@ -540,21 +706,25 @@ def _scan_if(node, state, active, guarded):
         # With an elif in the chain the else arm is reached for more than one
         # reason, so only a plain if/else carries the negated guard across.
         else_guarded = guarded or (not node.elif_ and _negated_guard(node.test, current))
-        emits, states = _scan(node.else_, current, active, else_guarded)
+        emits, states = _scan(node.else_, current, active, else_guarded, tail)
         if emits:
             return True, []
         results.extend(states)
     return False, results
 
 
-def _scan_loop(node, state, active, guarded):
+def _scan_loop(node, state, active, guarded, tail):
+    # A fact established on one iteration is read on the next, so nothing the loop
+    # itself mentions may be pruned inside it.
+    inner_tail = tail | _names(node)
     literal = isinstance(node.iter, (nodes.List, nodes.Tuple))
     values = node.iter.items if literal else [None]
     states = [state]
     finished = []
     if not values:
-        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
+        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded, inner_tail)
         return emits, [_export_scope(state, child) for child in children]
+    else_reachable = True
     for value in values:
         results = []
         for parent in states:
@@ -571,29 +741,39 @@ def _scan_loop(node, state, active, guarded):
             candidates = [local] if node.test is None else _assume(node.test, True, local)
             for candidate in candidates:
                 emits, children = _scan(
-                    node.body, candidate, active, guarded or _tool_reference(node.iter, parent)
+                    node.body,
+                    candidate,
+                    active,
+                    guarded or _tool_reference(node.iter, parent),
+                    inner_tail,
                 )
                 if emits:
                     return True, []
                 for child in children:
                     exported = _export_scope(parent, child)
                     if child.terminated:
-                        # break/continue ended this path, so later items of a literal
-                        # iterable never run for it: park it instead of simulating on.
+                        # break left the loop, so later items of a literal iterable
+                        # never run for this path: park it instead of simulating on.
                         exported.terminated = False
+                        exported.continued = False
                         finished.append(exported)
                     else:
+                        # continue only skipped the rest of this iteration.
+                        exported.continued = False
                         results.append(exported)
             if node.test is not None:
-                results.extend(
-                    _export_scope(parent, child) for child in _assume(node.test, False, local)
-                )
+                rejected = _assume(node.test, False, local)
+                if not rejected:
+                    # This item always passes the filter, so the body runs at least
+                    # once and the else arm is unreachable.
+                    else_reachable = False
+                results.extend(_export_scope(parent, child) for child in rejected)
         states = results
     # A filter can reject every item of a literal iterable, in which case the body
     # never runs and Jinja takes the else. Only an unfiltered literal is guaranteed
     # to iterate.
-    if not literal or node.test is not None:
-        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded)
+    if not literal or (node.test is not None and else_reachable):
+        emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded, inner_tail)
         if emits:
             return True, []
         states.extend(_export_scope(state, child) for child in children)
@@ -605,10 +785,14 @@ def _scan(
     state,
     active,
     guarded = False,
+    tail = frozenset(),
 ):
     states = [state]
     stopped = []
-    for node in body:
+    live = _live_names(body)
+    for index, node in enumerate(body):
+        # Everything still readable once this statement is done, here or further out.
+        rest = live[index + 1] | tail
         results = []
         for current in states:
             current.budget[0] -= 1
@@ -635,13 +819,13 @@ def _scan(
                 # catalog and `{{ tools }}` renders the macro object instead.
                 _replace(current.aliases, (node.name,), set())
             elif isinstance(node, nodes.If):
-                emits, children = _scan_if(node, current, active, guarded)
+                emits, children = _scan_if(node, current, active, guarded, rest)
                 if emits:
                     return True, []
                 results.extend(children)
                 continue
             elif isinstance(node, nodes.For):
-                emits, children = _scan_loop(node, current, active, guarded)
+                emits, children = _scan_loop(node, current, active, guarded, rest)
                 if emits:
                     return True, []
                 results.extend(children)
@@ -649,7 +833,10 @@ def _scan(
             elif isinstance(node, (nodes.Break, nodes.Continue)):
                 # Nothing after this in the body runs, so the path stops being scanned.
                 # It still carries whatever it already mutated, which outlives the loop.
-                current.terminated = True
+                if isinstance(node, nodes.Break):
+                    current.terminated = True
+                else:
+                    current.continued = True
                 stopped.append(current)
                 continue
             elif isinstance(node, nodes.CallBlock):
@@ -660,34 +847,34 @@ def _scan(
                     return True, []
                 # The caller block runs only if the macro invokes caller().
                 if _invokes_caller(node.call, current):
-                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                     if emits:
                         return True, []
             elif isinstance(node, nodes.FilterBlock):
                 # The block's own filter decides what survives: `{% filter first %}`
                 # emits one character of the catalog, which is no schema at all.
                 if _keeps_content(node.filter):
-                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                     if emits:
                         return True, []
             elif isinstance(node, nodes.AssignBlock):
-                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                 _bind_paths(node.target, {()} if emits else set(), current)
             elif isinstance(node, nodes.With):
                 local = current.copy(scoped = True)
                 for target, value in zip(node.targets, node.values):
                     _bind(target, value, local, active, source = current)
-                emits, children = _scan(node.body, local, active, guarded)
+                emits, children = _scan(node.body, local, active, guarded, rest)
                 if emits:
                     return True, []
                 results.extend(_export_scope(current, child) for child in children)
                 continue
             elif hasattr(node, "body"):
-                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded)
+                emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                 if emits:
                     return True, []
             results.append(current)
-        states = results
+        states = _collapse(results, rest)
     return False, states + stopped
 
 

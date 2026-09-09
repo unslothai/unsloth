@@ -754,3 +754,104 @@ def test_mutation_through_an_alias_is_a_known_under_approximation(template):
 )
 def test_negated_tool_guard_matches_its_positive_spelling(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3968600730: a positional mapping handed to update keeps its own keys.
+        ("{% set d={} %}{% do d.update({'catalog': tools}) %}{{ d.label|default('x') }}", False),
+        ("{% set d={} %}{% do d.update({'catalog': tools}) %}{{ d.catalog|tojson }}", True),
+        # 3968600737: a literal that always passes the filter never takes the else.
+        ("{% for x in [1] if true %}plain{% else %}{{ tools|tojson }}{% endfor %}", False),
+        ("{% for x in [1] if flag %}plain{% else %}{{ tools|tojson }}{% endfor %}", True),
+        ("{% for x in [] %}plain{% else %}{{ tools|tojson }}{% endfor %}", True),
+        # 3968600770: continue ends the iteration, not the loop.
+        (
+            "{% for value in [false, tools] %}{% if not value %}{% continue %}{% endif %}"
+            "{{ value|tojson }}{% endfor %}",
+            True,
+        ),
+        ("{% for m in messages %}{% break %}{{ tools|tojson }}{% endfor %}", False),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% for x in [tools, []] %}{% set ns.catalog=x %}"
+            "{% break %}{% endfor %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        # 3968600779: an alias inherits every constructed descendant, not just the root.
+        (
+            "{% set wrapper={'message':{'role':'tool','content':'plain'}} %}"
+            "{% set current=wrapper %}{% if current.message.role == 'tool' %}"
+            "{{ current.message.content }}{% endif %}",
+            False,
+        ),
+        (
+            "{% set current=messages[0] %}{% if current.role == 'tool' %}"
+            "{{ current.content }}{% endif %}",
+            True,
+        ),
+        # 3968600789: a namespace write inside a macro escapes it.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro load() %}{% set ns.catalog=tools %}"
+            "{% endmacro %}{{ load() }}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro load(c) %}{% set ns.catalog=c %}"
+            "{% endmacro %}{% if tools %}{% set _=load(tools) %}{% endif %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro noop() %}plain{% endmacro %}"
+            "{{ noop() }}{{ ns.catalog|tojson }}",
+            False,
+        ),
+        # 3968600805: dict() keeps each keyword's field path, as namespace() does.
+        ("{% set wrapper=dict(catalog=tools, label='plain') %}{{ wrapper.label }}", False),
+        ("{% set wrapper=dict(catalog=tools) %}{{ wrapper.catalog|tojson }}", True),
+        # 3968600814: a shallow copy is the receiver again.
+        (
+            "{% set wrapper={'catalog':tools} %}{% set clone=wrapper.copy() %}"
+            "{{ clone.catalog|tojson }}",
+            True,
+        ),
+        (
+            "{% set wrapper={'catalog':tools} %}{% set clone=wrapper.copy() %}"
+            "{{ clone.label|default('x') }}",
+            False,
+        ),
+        # 3968600825: fold comparisons against names bound to a literal.
+        ("{% set flag=true %}{% if flag == false %}{{ tools|tojson }}{% endif %}", False),
+        ("{% set flag=true %}{% if flag == true %}{{ tools|tojson }}{% endif %}", True),
+        ("{% set n=3 %}{% if n > 5 %}{{ tools|tojson }}{% endif %}", False),
+        ("{% set n=3 %}{% if n < 5 %}{{ tools|tojson }}{% endif %}", True),
+        ("{% if flag == false %}{{ tools|tojson }}{% endif %}", True),
+        # 3968600841: the other spellings of a non-empty catalog guard.
+        ("{% if tools != [] %}You may use tools.{% endif %}", True),
+        ("{% if tools != none %}You may use tools.{% endif %}", True),
+        ("{% if tools|length > 0 %}You may use tools.{% endif %}", True),
+        ("{% if tools|length >= 1 %}You may use tools.{% endif %}", True),
+        ("{% if 0 < tools|length %}You may use tools.{% endif %}", True),
+        ("{% if tools == [] %}plain{% else %}You may use tools.{% endif %}", True),
+        ("{% if messages != [] %}nothing here{% endif %}", False),
+        ("{% if tools|length > 3 %}nothing here{% endif %}", False),
+        ("{% if tools == [] %}nothing here{% endif %}", False),
+    ],
+)
+def test_round_eleven_paths(template, expected):
+    assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize("blocks", [12, 40, 200])
+def test_unrelated_conditions_do_not_exhaust_the_budget(blocks):
+    """Paths that differ only in a fact nothing reads again are merged.
+
+    Without that a template pays the full Cartesian product of its conditions, and
+    the budget catch turns a tool-capable template off. Qwen3-Coder spends a large
+    share of the budget on its own, so the headroom is not theoretical.
+    """
+    template = (
+        "".join("{%% if flag%d %%}plain{%% endif %%}" % index for index in range(blocks))
+        + "{% if tools %}{{ tools|tojson }}{% endif %}"
+    )
+    assert template_supports_tools(template) is True
