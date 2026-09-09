@@ -1265,6 +1265,7 @@ export const ru = {
       copy: "Копировать",
       copied: "Скопировано",
       commandBuilder: "Конструктор команды",
+      commandShell: "Оболочка для всех команд",
       agent: "Кодинг-агент",
       model: "Модель",
       searchModels: "Поиск моделей GGUF…",
@@ -1282,9 +1283,8 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1729,7 +1729,7 @@ export const ru = {
         desktopAvailable:
           "Доступна версия {version} настольного приложения",
         desktopAvailableDescription:
-          "Установите обновление сейчас, чтобы подготовить его в фоновом режиме. Вы можете продолжать работу и перезапустить приложение, когда всё будет готово.",
+          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
         desktopExternalServer:
           "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
         desktopManualInstall:
@@ -1741,20 +1741,11 @@ export const ru = {
           "Установлена последняя версия настольного приложения",
         desktopCurrentDescription:
           "Unsloth продолжит автоматически проверять наличие обновлений.",
-        desktopPreparingDescription:
-          "Обновление готовится в фоновом режиме. Вы можете продолжать работу.",
-        desktopReadyToRestartDescription:
-          "Всё готово. Перезапустите приложение, чтобы завершить установку обновления.",
-        desktopReadyToInstallDescription:
-          "Обновление приложения загружено. Завершите обновление бэкенда, чтобы установить его.",
         checkForUpdates: "Проверить наличие обновлений",
         checkAgain: "Проверить снова",
         retryCheck: "Повторить попытку",
         checking: "Проверка…",
-        preparing: "Подготовка…",
         updateNow: "Обновить сейчас",
-        restartToUpdate: "Перезапустить для обновления",
-        finishUpdate: "Завершить обновление",
         openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",

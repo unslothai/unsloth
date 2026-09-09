@@ -22,11 +22,13 @@ from pydantic import (
 )
 
 from auth.authentication import (
+    allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
+from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -2458,7 +2460,34 @@ def _resolve_embedding_model_plan(
 
     The PUT must not persist a client assertion that the GET never validated,
     so both routes use this exact resolver.
+
+    The cache lookups below read the operator's disk without consulting the credential,
+    so a caller who cannot reach the repo must not learn its cached state from them. A
+    local path the caller named itself is not the Hub cache and stays available.
+
+    Per REPO, not per request: a lookup often answers with a stored override, a
+    ``sentence-transformers/`` alias or a derived ``-GGUF`` conversion rather than
+    ``resolved``, and /auth-check answers 200 for any string on a public base.
     """
+
+    def _authorized(repo: Optional[str]) -> bool:
+        """The repo a cache lookup actually matched, asked about in its own right.
+
+        Through the shared gate, so the forced-anonymous sentinel keeps a cached PUBLIC
+        embedder instead of being told to download one it already has: the raw check
+        refuses that caller whatever the repo is, which the template, dataset and GGUF
+        paths all stopped doing. is_cached is True because the lookup that produced this
+        repo already found it on disk.
+        """
+        if not repo:
+            return False
+        return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
+
+    # No pre-gate on ``resolved``: every cache lookup below is authorized against the repo it
+    # actually matched, so gating the lookup as well probed the Hub on every resolve, including
+    # the local and sentence-transformers paths that never consult it, and could spend half the
+    # resolver's deadline before a miss. It was also the wrong question, per the note above.
+
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)
     backend: Literal["llama", "sentence-transformers"] = (
@@ -2474,7 +2503,14 @@ def _resolve_embedding_model_plan(
             )
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
+        # Looked up BEFORE any authorization: for a slashless alias the snapshot is filed
+        # under sentence-transformers/, so gating on the literal name's verdict skipped the
+        # lookup entirely and a public alias that is fully cached came back as a download.
+        # Learning WHICH repo answered is not the leak; handing its state back is, and that
+        # repo is the one authorized here.
         cached_source = _cached_st_source(resolved)
+        if cached_source is not None and not _authorized(cached_source[0]):
+            cached_source = None
         cached = cached_source is not None
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
@@ -2540,6 +2576,8 @@ def _resolve_embedding_model_plan(
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
     cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
+    if cached_repo and not _authorized(cached_repo):
+        cached_repo = None
     if cached_repo:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -2552,6 +2590,8 @@ def _resolve_embedding_model_plan(
         # The loader's offline fallback accepts any complete cached quant from
         # any candidate only after its bounded online listing fails.
         cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
+        if cached_repo and not _authorized(cached_repo):
+            cached_repo = None
         if cached_repo:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
@@ -2566,6 +2606,13 @@ def _resolve_embedding_model_plan(
             if _sentence_transformers_fallback_allowed(resolved)
             else None
         )
+        # The GGUF branches above are gated and this one was not. The plan answers with the
+        # repo the snapshot is FILED under, which for a slashless alias is not the name the
+        # caller typed, and the response then reports it cached: that is how a denied caller
+        # discovers the operator's private weights and force-saves them as the embedder.
+        # Reading our own disk to find the repo is fine; naming it back is what is gated.
+        if st_plan is not None and not _authorized(st_plan[0]):
+            st_plan = None
         if st_plan is None:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
@@ -2579,12 +2626,15 @@ def _resolve_embedding_model_plan(
             backend = "sentence-transformers",
             download_repo = st_repo,
             # Same alias-aware predicate, asked about the repo the plan named
-            # rather than the alias the user typed.
+            # rather than the alias the user typed, which the gate above authorized.
             cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
-    if _cached_embedding_gguf_files(repo, files):
+    # A gated repo can publish its filenames, so a plan coming back is not authorization to
+    # report the operator's copy of it. The repo the plan names need not be the one the
+    # caller asked about, so it is authorized in its own right like every other candidate.
+    if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
@@ -2606,6 +2656,7 @@ def resolve_embedding_model(
     model: str,
     # Header, not a query param: keeps a gated-repo token out of URLs and logs.
     hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResolveResponse:
     """What saving ``model`` would need fetched, and whether it is already here.
@@ -2623,13 +2674,17 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
-    token = (hf_token or "").strip() or None
+    # Classified, not just trimmed: a bare strip makes a UI session look like an API key and
+    # costs it its own cached marker. The GET must refuse exactly what the PUT refuses.
+    token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     return _resolve_embedding_model_plan(resolved, token)
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
 def update_embedding_model(
-    payload: EmbeddingModelPayload, current_subject: str = Depends(get_current_subject)
+    payload: EmbeddingModelPayload,
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
     """Set the RAG embedding model. Unless ``force`` is set, the repo is verified
     to be an embedding model via HF metadata; an unverifiable model (wrong type,
@@ -2649,7 +2704,7 @@ def update_embedding_model(
             event = "settings.update_embedding_model_failed",
             log = logger,
         ) from exc
-    hf_token = (payload.hf_token or "").strip() or None
+    hf_token = hf_token_arg(payload.hf_token, allow_ambient_token = allow_ambient_token)
     from utils.utils import hf_env_offline
 
     # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
@@ -2745,7 +2800,12 @@ def update_embedding_model(
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
             # so a metadata-only partial cache still gets the forceable 409.
-            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(verify_target)
+            # A cached private repo accepted here becomes this deployment's embedder.
+            offline_cached = (
+                local_only_load
+                and cache_reads_authorized(hf_token, repo_id = verify_target)
+                and hf_cache_snapshot_is_loadable(verify_target)
+            )
             if not offline_cached:
                 raise HTTPException(
                     status_code = 409,
