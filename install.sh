@@ -3481,7 +3481,8 @@ _amd_node_repairs() {
             +) printf 'acl:%s\n' "$_anr_node"; continue ;;
         esac
         stat -c '%a|%G|%g|%n|%u' "$_anr_node" 2>/dev/null || true
-    done | awk -F'|' -v self="$(id -u 2>/dev/null || echo -1)" '
+    done | awk -F'|' -v self="$(id -u 2>/dev/null || echo -1)" \
+              -v mygids=" $(id -G 2>/dev/null) " '
         /^acl:/ { print; next }
         {
             # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
@@ -3504,6 +3505,18 @@ _amd_node_repairs() {
                 pname = $2
                 if (pname == "" || pname ~ /^UNKNOWN/) { pname = "root" }
                 if (!pseen[pname]++) print "privileged:" pname
+                next
+            }
+            # os.access already said the node is shut, so a group this account is
+            # ALREADY in is not what is denying it: a container device cgroup or an LSM
+            # is, and usermod would exit 0 and leave the node exactly as closed. Read
+            # from `id -G` with the list space-padded so 100 cannot match 1001. Above the
+            # unnamed branch too, since groupadd plus --group-add is the same empty
+            # promise for a numeric owner this account already carries.
+            if (mygids ~ (" " $3 " ")) {
+                held = $2
+                if (held == "" || held ~ /^UNKNOWN/) { held = $3 }
+                if (!aseen[held]++) print "already:" held
                 next
             }
             if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
@@ -5788,6 +5801,8 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_priv=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^privileged://p' \
         | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_already=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^already://p' \
+        | tr '\n' ',' | sed 's/,*$//')
     # Who the mode tests above answered for. $USER is inherited, so a container that changes
     # its numeric user without resetting it names somebody else, and the usermod below would
     # then modify an account that is not the one holding the device shut.
@@ -5802,7 +5817,8 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     # sentences below instead of a command that would fail.
     if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && \
        [ -z "$_closed_amd_modes" ] && [ -z "$_closed_amd_acls" ] && \
-       [ -z "$_closed_amd_owned" ] && [ -z "$_closed_amd_priv" ]; then
+       [ -z "$_closed_amd_owned" ] && [ -z "$_closed_amd_priv" ] && \
+       [ -z "$_closed_amd_already" ]; then
         _closed_amd_groups="render,video"
     fi
     if [ -n "$_closed_amd_groups" ] && [ -z "$_amd_repair_user" ]; then
@@ -5858,6 +5874,15 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     if [ -n "$_closed_amd_modes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"
         substep "  membership opens it: fix the udev rule or the node's permissions."
+    fi
+    if [ -n "$_closed_amd_already" ]; then
+        case "$_closed_amd_already" in
+            *,*) substep "  This account is already in the $_closed_amd_already groups that own" "$C_WARN" ;;
+            *)   substep "  This account is already in the $_closed_amd_already group that owns" "$C_WARN" ;;
+        esac
+        substep "  those nodes, so usermod would change nothing: something outside the"
+        substep "  file mode is denying them, typically a container device cgroup or an"
+        substep "  LSM such as SELinux or AppArmor."
     fi
     if [ -n "$_closed_amd_owned" ]; then
         substep "  $_closed_amd_owned is owned by this account, and POSIX stops at the" "$C_WARN"

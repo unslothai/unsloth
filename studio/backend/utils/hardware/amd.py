@@ -754,6 +754,12 @@ def an_amd_render_node_is_open() -> bool:
 # imported so the inference path does not pull in the installer.
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
 
+# Mesa and AMDVLK both register a 32-bit manifest beside the 64-bit one, and a 64-bit
+# llama-server cannot load either vendor's. Same rule and same needles as
+# install_llama_prebuilt._is_amd_64_bit, which rejects them for the same reason; a test
+# holds the two lists together.
+_VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
+
 
 def _vulkan_glob_matches(pattern: str, name: str) -> bool:
     """The loader's four driver-filter globs, case-insensitively: "s", "s*", "*s", "*s*"."""
@@ -822,6 +828,17 @@ def _is_an_amd_icd_name(path: str) -> bool:
     """Whether a manifest's own filename is one an AMD driver registers under."""
     stem = PurePath(path).stem.lower().replace("-", "_")
     return any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES)
+
+
+def _is_a_32_bit_icd_name(path: str) -> bool:
+    """Whether a manifest's own filename marks it as the 32-bit build of a driver.
+
+    Asked of EVERY vendor rather than of AMD alone, unlike the installer's copy: the
+    question there is "is an AMD driver installed", and here it is "what can this binary
+    load", which a 32-bit NVIDIA or Intel manifest answers no to just as squarely.
+    """
+    stem = PurePath(path).stem.lower().replace("-", "_")
+    return stem.endswith("32") or any(n in stem for n in _VULKAN_ICD_32_BIT_NEEDLES)
 
 
 def _vulkan_icd_search_dirs() -> "list[str]":
@@ -908,15 +925,41 @@ def the_vulkan_loader_can_only_load_amd() -> bool:
     driver at all" answer False. The second is not an oversight: a loader with no driver
     explains an empty probe by itself, and the closed AMD node is then not the cause either.
     """
-    paths = _vulkan_icd_manifest_paths()
-    if not paths:
-        return False
-    loadable = [
-        path for path in paths if _vulkan_loader_allows(path) and _icd_manifest_is_usable(path)
-    ]
+    loadable = _loadable_icd_manifests()
     if not loadable:
         return False
     return all(_is_an_amd_icd_name(path) for path in loadable)
+
+
+def _loadable_icd_manifests() -> "list[str]":
+    """The manifests the loader would both find here and be able to load."""
+    return [
+        path
+        for path in _vulkan_icd_manifest_paths()
+        # A 32-bit manifest is registered beside the 64-bit one and this binary cannot load
+        # it, so it is neither evidence of an AMD driver nor of another vendor's.
+        if not _is_a_32_bit_icd_name(path)
+        and _vulkan_loader_allows(path)
+        and _icd_manifest_is_usable(path)
+    ]
+
+
+def the_vulkan_loader_has_no_usable_driver() -> bool:
+    """Whether the loader would find driver manifests here and load none of them.
+
+    A second blocker rather than a competing explanation: a removed library, a filter that
+    disables the last driver, or a 32-bit-only registration leaves the probe empty however
+    the render node is owned, so opening the node repairs nothing on its own.
+
+    Positive evidence only, and the two failing answers are different. An enumeration that
+    found NOTHING says only that this cannot read the loader's configuration -- a registry
+    layout, a distribution that registers drivers some other way -- so it answers False. An
+    enumeration that found manifests and could load none of them is the claim itself.
+    """
+    paths = _vulkan_icd_manifest_paths()
+    if not paths:
+        return False
+    return not _loadable_icd_manifests()
 
 
 def a_non_amd_render_node_is_open() -> bool:
@@ -1047,13 +1090,22 @@ def _groups_that_own(paths: list) -> tuple:
                    6 -- so these are reported rather than prescribed.
     ``no_group``   nodes whose mode denies the group too, e.g. a udev rule leaving one
                    ``root:render 0600``. Joining render there changes nothing.
+    ``already``    group names this account is ALREADY in, where the node is nonetheless
+                   shut: a container device cgroup or an LSM is denying it, and usermod
+                   would succeed and change nothing.
     ``acl``        nodes carrying a POSIX access ACL, where the mode's group bits are the
                    ACL mask and the real grant is undecidable from a stat.
 
     Best effort by construction: a node that cannot be stat'd contributes to none of the
     three rather than raising, since this runs where things are already wrong.
     """
-    joinable, unnamed, no_group, acl, owned, privileged = [], [], [], [], [], []
+    joinable, unnamed, no_group, acl, owned, privileged, already = ([], [], [], [], [], [], [])
+    try:
+        # The account's own gids, read once. getgroups() is the supplementary list and does
+        # not always include the primary one, so both are needed.
+        _mine = {os.getgid(), *os.getgroups()}
+    except (OSError, AttributeError):
+        _mine = set()
     for path in paths:
         try:
             _st = os.stat(path)
@@ -1093,20 +1145,31 @@ def _groups_that_own(paths: list) -> tuple:
             if _root not in privileged:
                 privileged.append(_root)
             continue
-        if not name:
-            if _st.st_gid not in unnamed:
-                unnamed.append(_st.st_gid)
-            continue
         # Joining one of these would open the node and hand over a great deal else with
         # it, so a device node owned by one is a udev misconfiguration to report rather
-        # than a membership to prescribe.
+        # than a membership to prescribe. An unnamed GID cannot match, so this may sit
+        # above the naming branches and keep the shell half's single ordering.
         if name in _PRIVILEGED_GROUPS:
             if name not in privileged:
                 privileged.append(name)
             continue
-        if name and name not in joinable:
+        # os.access already said the node is shut, so if this account is in the owning
+        # group the group bits are not what is denying it: a container device cgroup or an
+        # LSM is. usermod would exit 0 and leave the node exactly as closed. ABOVE the
+        # unnamed branch as well, since `groupadd -g` plus `--group-add` is the same empty
+        # promise for a numeric owner this account already carries.
+        if _st.st_gid in _mine:
+            _held = name or str(_st.st_gid)
+            if _held not in already:
+                already.append(_held)
+            continue
+        if not name:
+            if _st.st_gid not in unnamed:
+                unnamed.append(_st.st_gid)
+            continue
+        if name not in joinable:
             joinable.append(name)
-    return joinable, unnamed, no_group, acl, owned, privileged
+    return joinable, unnamed, no_group, acl, owned, privileged, already
 
 
 _RENDER_NODE_GLOB = "/dev/dri/renderD*"
@@ -1187,9 +1250,11 @@ def _selector_exposes_every_gpu(
     written back out, so the same value there leaves both. _post_rocr_device_count in
     llama_cpp.py records the ROCr half of this from the same source.
 
-    False for anything this cannot map -- an unreadable count, a UUID, an out-of-range or
-    non-canonical ordinal -- so an unrecognised selector goes on being treated as one that
-    narrows.
+    An unmappable token TERMINATES the list, it does not discard what came before it: clr
+    breaks out of the loop having already pushed every device it accepted, so
+    HIP_VISIBLE_DEVICES=0,1,-1 on a two-GPU host exposes both of them. So the prefix is
+    what decides this, and False for an unreadable count -- a host this cannot measure
+    answers nothing, and unmeasured goes on meaning narrowed.
     """
     if not count:
         return False
@@ -1199,10 +1264,10 @@ def _selector_exposes_every_gpu(
         try:
             index = int(token)
         except ValueError:
-            return False
+            break
         # clr's own rule: the token has to be the index written back out.
         if str(index) != token or index < 0 or index >= count:
-            return False
+            break
         if index in seen and repeat_ends_the_list:
             break
         seen.add(index)
@@ -1303,7 +1368,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
         # after saying the closed node is not why the probe is empty.
         user = _repair_account()
-        joinable, unnamed, no_group, acl, owned, privileged = _groups_that_own(closed)
+        joinable, unnamed, no_group, acl, owned, privileged, already = _groups_that_own(closed)
         if not any(_p != _KFD_NODE for _p in closed):
             _claim = "so ROCm cannot use the AMD card even though the driver is loaded"
         elif an_amd_render_node_is_open():
@@ -1318,7 +1383,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # be stat'd at all still gets the documented pair, since some advice beats none; a
         # host whose nodes were read and offer no joinable group gets the sentences below
         # instead of a command that would fail.
-        if joinable or not (unnamed or no_group or acl or owned or privileged):
+        if joinable or not (unnamed or no_group or acl or owned or privileged or already):
             groups = joinable or ["render", "video"]
             joined = ",".join(groups)
             plural = "group" if len(groups) == 1 else "groups"
@@ -1383,6 +1448,14 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"{', '.join(owned)} is owned by this account, and POSIX stops at the owner "
                 f"bits once the uid matches, so no group membership opens it however its "
                 f"group bits read: fix the mode with chmod, or the udev rule that set it."
+            )
+        if already:
+            parts.append(
+                f"This account is already in the {', '.join(already)} "
+                f"{'group' if len(already) == 1 else 'groups'} that own those nodes, so "
+                f"usermod would change nothing: something outside the file mode is denying "
+                f"them, typically a container device cgroup or an LSM such as SELinux or "
+                f"AppArmor."
             )
         if privileged:
             parts.append(

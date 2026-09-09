@@ -10097,6 +10097,13 @@ class LlamaCppBackend:
             # reason does rather than returned in place of it.
             _second_finding = ""
 
+            def _the_vulkan_loader_has_no_driver() -> bool:
+                try:
+                    from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
+                    return the_vulkan_loader_has_no_usable_driver()
+                except Exception:  # noqa: BLE001
+                    return False
+
             def _reason(text: str) -> str:
                 return f"{text}{_second_finding}"
 
@@ -10118,6 +10125,17 @@ class LlamaCppBackend:
                         f"{node_hint} {', '.join(unresolved)} names a device this cannot "
                         f"resolve, so whether it also hides the card is unknown; check it "
                         f"if the groups do not help."
+                    )
+                # A second blocker the node repair cannot clear, and the only one this can
+                # state about the loader itself: manifests were found and not one of them
+                # is loadable, so the probe stays empty however the node is owned. Appended
+                # rather than returned, exactly like the mask sentences above -- the closed
+                # node is still true and still needs fixing.
+                if _is_vulkan and _the_vulkan_loader_has_no_driver():
+                    node_hint = (
+                        f"{node_hint} The Vulkan loader also has no driver it can load "
+                        f"here: every ICD manifest it would read is missing its library, "
+                        f"filtered out, or 32-bit, so reinstall the Vulkan driver as well."
                     )
                 # A closed node explains an empty probe only when it is a node the runtime
                 # would have used. On a multi-AMD host one render node can be shut while a
