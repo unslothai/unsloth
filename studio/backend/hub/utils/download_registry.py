@@ -1670,6 +1670,7 @@ class DownloadRegistry:
                 self._generations[key] = self._generation_seq
             else:
                 self._generations[key] = generation
+            previous = self._metadata.get(key) if current in _ACTIVE_STATES else None
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
@@ -1689,6 +1690,7 @@ class DownloadRegistry:
                     xet_cache = xet_cache,
                     scoped_files = tuple(scoped_files or ()),
                     owner = owner,
+                    load_attached = previous.load_attached if previous is not None else False,
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
@@ -1736,6 +1738,9 @@ class DownloadRegistry:
         or an in-progress delete, where no job exists for this key."""
         key = normalize_job_key(key)
         with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is not None and metadata.owner is not None:
+                return False
             return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
 
     def _active_job_variant_locked(self, key: str) -> Optional[str]:

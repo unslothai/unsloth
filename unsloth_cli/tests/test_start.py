@@ -4235,6 +4235,26 @@ def test_model_download_progress_counts_a_hub_download_the_load_attached_to(monk
     assert progress.downloaded_bytes == 1024 + 3 * 1024**3
 
 
+def test_model_download_progress_keeps_polling_a_repo_the_list_dropped(monkeypatch):
+    listings = iter([_load_listing("owner/base"), {"downloads": []}])
+    base_bytes = iter([1024**3, 2 * 1024**3])
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/active-downloads"):
+            return next(listings)
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": next(base_bytes), "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024 + 2 * 1024**3
+
+
 def test_model_download_progress_polls_a_namespace_less_base_the_load_reports(monkeypatch):
     reads = []
 

@@ -1060,6 +1060,7 @@ class _ModelDownloadProgress:
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
         self._repo_bytes: dict[str, int] = {}
+        self._companions: list[str] = []
         self._companions_listed = True
 
     def _is_gguf(self) -> bool:
@@ -1107,7 +1108,7 @@ class _ModelDownloadProgress:
 
     def _companion_repos(self) -> list[str]:
         if not self._companions_listed:
-            return []
+            return self._companions
         try:
             listing = _http_json(
                 "GET",
@@ -1118,18 +1119,17 @@ class _ModelDownloadProgress:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 self._companions_listed = False
-            return []
+            return self._companions
         except Exception:
-            return []
-        repos: list[str] = []
+            return self._companions
         for item in listing.get("downloads") or []:
             repo = str(item.get("repo_id") or "")
             loading = item.get("owner") == _LOAD_DOWNLOAD_OWNER or bool(item.get("load_attached"))
             if not loading or repo.lower() == self._model.lower():
                 continue
-            if repo and repo not in repos:
-                repos.append(repo)
-        return repos
+            if repo and repo not in self._companions:
+                self._companions.append(repo)
+        return self._companions
 
     def _read(
         self,

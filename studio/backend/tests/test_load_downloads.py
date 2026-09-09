@@ -81,6 +81,28 @@ def test_a_load_attaches_to_a_variant_download_of_the_same_repo(registry):
     assert (ref.load_attached, ref.state) == (False, "running")
 
 
+def test_a_transport_retry_keeps_the_load_attachment(registry):
+    assert registry.claim("owner/base::", "xet", repo_type = "model", repo_id = "owner/base")[0]
+    load_downloads.claim_load_downloads(["owner/base"])
+
+    assert registry.claim(
+        "owner/base::", "http", repo_type = "model", repo_id = "owner/base", replace_active = True
+    )[0]
+
+    ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
+    assert (ref.transport, ref.load_attached) == ("http", True)
+    registry.set_job("owner/base::", "complete")
+    assert registry.claim("owner/base::", "http", repo_type = "model", repo_id = "owner/base")[0]
+    assert registry.get_job_metadata("owner/base::").load_attached is False
+
+
+def test_a_load_placeholder_is_never_adoptable(registry):
+    load_downloads.claim_load_downloads(["owner/base"])
+    assert registry.adoptable("owner/base::") is False
+    assert registry.claim("owner/other::", "http", repo_type = "model", repo_id = "owner/other")[0]
+    assert registry.adoptable("owner/other::") is True
+
+
 def test_an_explicit_download_of_a_load_placeholder_is_refused(registry, monkeypatch):
     from hub.services.models import downloads
 

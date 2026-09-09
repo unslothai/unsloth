@@ -320,6 +320,7 @@ async def download_model_response(
         # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this
         # key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined
         # nothing.
+        _reject_if_load_owned(key)
         adoptable = _registry.adoptable(key)
         return {
             "job_key": key,
