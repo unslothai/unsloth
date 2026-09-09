@@ -377,6 +377,46 @@ def nvidia_compute_apps() -> dict[int, int] | None:
     return attributed_apps(nvidia_compute_apps_listing())
 
 
+def wait_for_card_to_settle() -> None:
+    """Block until the driver has finished reclaiming after a server was stopped.
+
+    settled_baseline() already waits for the number to stop falling after an unload,
+    but it talks to a LIVE backend and there is none left after stop_server(). Both
+    halves of that stop are asynchronous: the allocation is returned after the process
+    exits, and the pid keeps being listed for a moment after that. Sampled immediately,
+    the dying llama-server is assert_cli_run's before-launch state -- on a part that
+    reports [N/A] for every process it is the only evidence there is, so card_is_shared()
+    calls the card shared and a run that did reach the GPU comes back "unmeasured rather
+    than proven"; and its retained memory inflates the baseline, so the same run's device
+    delta reads as "served from the CPU".
+
+    Waiting for the total to stop falling is not enough on its own, because at the moment
+    of the call the driver may not have started giving it back: two equal samples would
+    then read as settled. The pid is the thing to wait ON. Every pid the card carries here
+    is either the server just stopped or a genuine co-tenant, so the condition is that none
+    of THEM is left -- a pid arriving afterwards is somebody else's and is not waited for.
+
+    A real co-tenant never leaves and spends the whole 30s budget. That is accepted rather
+    than special-cased: a shared card is exactly the run where card_is_shared() withdraws
+    the device-delta fallback anyway, so there is no verdict for the wait to protect there.
+    """
+    listing = nvidia_compute_apps_listing()
+    resident = listing[1] if listing else set()
+    previous_mib = nvidia_used_mib()
+    for _ in range(VRAM_SETTLE_SAMPLES):
+        time.sleep(VRAM_SETTLE_POLL_S)
+        listing = nvidia_compute_apps_listing()
+        current_mib = nvidia_used_mib()
+        fell = (
+            previous_mib is not None
+            and current_mib is not None
+            and current_mib < previous_mib - VRAM_SETTLE_TOLERANCE_MIB
+        )
+        previous_mib = current_mib
+        if not fell and not (resident & (listing[1] if listing else set())):
+            return
+
+
 def visible_device_indices() -> list[int] | None:
     """The physical card indices CUDA_VISIBLE_DEVICES exposes, or None if unset.
 
@@ -2875,7 +2915,10 @@ class Payload:
         # empty, and the VRAM delta below measures this launch alone.
         # Stopped here, not only at the end of assert_chat_ui: with --skip-ui that driver never
         # runs, so a live llama-server read as a co-tenant. Idempotent if already stopped.
+        # The wait is half the fix: a stopped server is still listed, and still resident, for
+        # a moment afterwards, which is the same co-tenant to the assertion below.
         self.stop_server()
+        wait_for_card_to_settle()
         self.assert_cli_run()
 
         # LAST of all, and the only thing here that touches the public

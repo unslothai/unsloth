@@ -2809,3 +2809,92 @@ class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
         assert (
             between[line_start:stop] == "        "
         ), "stop_server must not sit inside the skip_ui guard"
+
+    def test_the_card_is_settled_between_the_stop_and_the_assertion(self):
+        """Stopping is not the same as having stopped. Source order, because the two calls
+        are orchestration in run() and there is no seam between them to observe."""
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        cli = text.index("        self.assert_cli_run()")
+        between = text[
+            text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()") : cli
+        ]
+        assert between.rindex("self.stop_server()") < between.rindex("wait_for_card_to_settle()")
+
+
+class TestTheCardIsGivenTimeToSettleAfterAStop:
+    """A terminated llama-server keeps its allocation, and keeps being LISTED, for a moment
+    after it exits. Sampled straight away that pid is assert_cli_run's before-launch state:
+    card_is_shared() withdraws the device-delta fallback and a GPU-backed run reports
+    "unmeasured rather than proven", which is the false red this PR set out to remove.
+    """
+
+    @staticmethod
+    def _settle(samples):
+        """Drive wait_for_card_to_settle over `samples` of (used_mib, listed pids), the
+        last one repeating. (None, None) is an nvidia-smi that did not answer. Returns the
+        number of polls taken: two nvidia-smi calls each, the entry sample included."""
+        taken = []
+
+        def fake_run(cmd, **kwargs):
+            used, pids = samples[min(len(taken) // 2, len(samples) - 1)]
+            taken.append(cmd)
+            if pids is None:
+                return subprocess.CompletedProcess(cmd, 9, "", "no devices were found")
+            if "--query-compute-apps=pid,used_gpu_memory" in cmd:
+                # The [N/A] shape: every pid listed, none of them attributed.
+                return subprocess.CompletedProcess(
+                    cmd, 0, "".join(f"{p}, [N/A]\n" for p in pids), ""
+                )
+            return subprocess.CompletedProcess(cmd, 0, f"{used}\n", "")
+
+        with mock.patch.object(run_studio_gpu, "run", fake_run):
+            with mock.patch.object(run_studio_gpu.time, "sleep", lambda _s: None):
+                run_studio_gpu.wait_for_card_to_settle()
+        return len(taken) // 2
+
+    def test_it_waits_for_the_stopped_server_to_leave_the_listing(self):
+        """Two equal samples are not proof of a settled card when the driver has not begun
+        giving the memory back, which is why the pid is what is waited on."""
+        assert self._settle([(3400.0, [4242]), (3400.0, [4242]), (200.0, []), (200.0, [])]) == 4
+
+    def test_it_waits_for_the_memory_to_come_back(self):
+        """The pid can go while the driver is still returning the allocation."""
+        assert self._settle([(3400.0, []), (1800.0, []), (200.0, []), (200.0, [])]) == 4
+
+    def test_a_settled_card_is_not_waited_on(self):
+        assert self._settle([(200.0, [])]) == 2
+
+    def test_a_co_tenant_arriving_afterwards_does_not_hold_the_run(self):
+        """Only the pids the card carried at entry are the stop's to wait for."""
+        assert self._settle([(200.0, []), (2600.0, [777]), (2600.0, [777])]) == 2
+
+    def test_an_unanswering_smi_is_not_waited_on(self):
+        assert self._settle([(None, None)]) == 2
+
+    def test_the_wait_is_bounded(self):
+        """A co-tenant never leaves, and a card somebody else is draining never settles."""
+        assert (
+            self._settle([(3400.0 - 100.0 * i, [4242]) for i in range(60)])
+            == run_studio_gpu.VRAM_SETTLE_SAMPLES + 1
+        )
+
+    def test_the_settled_listing_no_longer_reads_as_a_co_tenant(self):
+        """The point of the wait, stated as the verdict it changes."""
+        stale = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            3400.0,
+            3900.0,
+            {4242},
+            {4242, 5555},
+        )[0]
+        assert stale is not None and "already on the card" in stale
+        settled = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            200.0,
+            700.0,
+            set(),
+            {5555},
+        )[0]
+        assert settled is None
