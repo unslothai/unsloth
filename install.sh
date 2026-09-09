@@ -3416,13 +3416,11 @@ _amd_gfx_has_wheel_route() {
 # Whether the generic wheel THIS host resolves carries kernels for an arch whose only route
 # is that wheel. _GENERIC_ROCM_WHEEL_GFX was measured on rocm7.0 and up, but the tag comes
 # from the installed ROCm version, so a stale /opt/rocm beside a current amdgpu resolves a
-# wheel that predates the card. _GENERIC_WHEEL_GFX_MIN_ROCM in install_python_stack.py is
-# the same table; only gfx950 reaches this, since every other arch with a floor has a
-# per-arch index above.
-#
-# No readable version answers NO rather than "unknown". The wheel that would be installed
-# still cannot run the card, and reading absence of evidence as support is what preserves
-# exactly the build that cannot run.
+# wheel that predates the card. Same table as _GENERIC_WHEEL_GFX_MIN_ROCM in
+# install_python_stack.py; only gfx950 reaches this, every other arch with a floor having a
+# per-arch index above. No readable version answers NO rather than "unknown": the wheel
+# still cannot run the card, and reading absence of evidence as support preserves exactly
+# the build that cannot run.
 _amd_generic_tag_carries_gfx() {
     case "$1" in
         gfx950|gfx1150|gfx1151) _agtc_min_major=7; _agtc_min_minor=0 ;;
@@ -3441,14 +3439,12 @@ _amd_generic_tag_carries_gfx() {
     return 1
 }
 
-# Whether the request has something to swap TO here: a corroborated AMD card whose arch an
-# index can actually serve. Presence is not that bar. A gfx1010 is present, has no route at
-# all, and a presence test trades a working NVIDIA GPU for generic wheels carrying no
-# kernels for it -- the downgrade this feature must not have, in a new costume.
-#
+# Whether the request has something to swap TO: a corroborated AMD card whose arch an index
+# can actually serve. Presence is not that bar -- a gfx1010 is present and has no route at
+# all, so a presence test trades a working NVIDIA GPU for wheels carrying no kernels for it.
 # gfx906 is dropped when a second AMD arch is present: its only route is the rocm6.3 legacy
-# tag, which opens solely when gfx906 is the sole arch, so on a mixed-AMD box it is
-# unroutable. install_python_stack.py's _MIXED_HOST_UNROUTABLE says the same.
+# tag, which opens solely when gfx906 is the sole arch. install_python_stack.py's
+# _MIXED_HOST_UNROUTABLE says the same.
 # True when a set visible-device mask exposes NO GPU at either layer. ROCr filters BENEATH
 # HIP, so an empty or -1 mask on either leaves nothing to target however the other reads:
 # HIP_VISIBLE_DEVICES=0 over ROCR_VISIBLE_DEVICES=-1 still exposes no device.
@@ -3474,20 +3470,19 @@ _amd_visible_masks_select_no_gpu() {
 
 # One mask layer applied to a per-DEVICE list, in mask order: the survivors, renumbered.
 #
-# The list is one line per device and is never deduplicated, because an ordinal names a
-# device rather than an architecture: on [gfx1010, gfx1010, gfx1100], ordinal 1 is the
-# second gfx1010, and collapsing the pair would answer for the gfx1100 instead.
+# Never deduplicated, because an ordinal names a device rather than an architecture: on
+# [gfx1010, gfx1010, gfx1100], ordinal 1 is the second gfx1010, and collapsing the pair
+# would answer for the gfx1100 instead.
 #
-# CUDA and HIP read the list left to right and stop at the first entry naming no device, so
-# what survives is the PREFIX of resolvable ordinals. A non-numeric entry cannot be resolved
-# here (ROCr accepts UUIDs) and ends the prefix rather than being guessed at.
+# CUDA and HIP read left to right and stop at the first entry naming no device, so what
+# survives is the PREFIX of resolvable ordinals. A non-numeric entry cannot be resolved here
+# (ROCr accepts UUIDs) and ends the prefix rather than being guessed at.
 #
-# A third argument of "rocr" additionally ends the prefix at a REPEATED ordinal. ROCr's own
-# filter (ROCR-Runtime, core/inc/amd_filter_device.h) terminates on an index that "maps to a
-# device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0 exposes ONE device;
-# printing it twice invents a second, and the HIP layer above then resolves an ordinal
-# against a device the runtime never surfaced. The HIP layer gets no such rule here because
-# clr documents none, and only the first survivor is read one line down in any case.
+# A third argument of "rocr" also ends the prefix at a REPEATED ordinal: ROCr's filter
+# (ROCR-Runtime, core/inc/amd_filter_device.h) terminates on an index that "maps to a device
+# that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0 exposes ONE device, and
+# printing it twice would let the HIP layer resolve an ordinal against a device the runtime
+# never surfaced. clr documents no such rule, so the HIP layer does not get one.
 _amd_mask_survivors() {
     printf '%s\n' "$1" | awk -v vis="$2" -v layer="${3:-}" '
         NF { vals[n++] = $0 }
@@ -3512,15 +3507,14 @@ _amd_mask_survivors() {
 # only ROCR_VISIBLE_DEVICES and amd-smi honours neither, so running either with a HIP mask in
 # place returns the WHOLE machine and answers on the very card the mask hid.
 #
-# The two layers COMPOSE, and in this order: ROCr filters the physical list and renumbers
-# what is left, then the HIP layer indexes those survivors. Applying only one of them reads
+# The two layers COMPOSE, in this order: ROCr filters the physical list and renumbers what
+# is left, then HIP indexes those survivors. Applying only one reads
 # ROCR_VISIBLE_DEVICES=1 HIP_VISIBLE_DEVICES=0 as the first physical card when the runtime
-# will hand over the second. _runtime_gfx_target in install_python_stack.py composes them
-# the same way, and _rocm_visibility_masks_are_stacked records why.
+# hands over the second. _runtime_gfx_target composes them the same way.
 #
 # The FIRST survivor, not any of them: HIP remaps runtime ordinal 0 onto the head of the
 # mask, so HIP_VISIBLE_DEVICES=1,0 targets the second physical card by default. Judging the
-# whole exposed set would pass on a routable card the runtime is not going to select.
+# whole exposed set would pass on a card the runtime is not going to select.
 _amd_runtime_gfx_target() {
     _argt_list="$1"
     if [ -n "${ROCR_VISIBLE_DEVICES:-}" ]; then
