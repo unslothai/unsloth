@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.9.2",
+    "unsloth_zoo>=2026.9.3",
     "wheel>=0.42.0",
     "packaging",
     # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch212x leaves
@@ -207,7 +207,7 @@ triton = [
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.9.2",
+    "unsloth_zoo>=2026.9.3",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
