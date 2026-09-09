@@ -213,11 +213,13 @@ def test_local_task_reservation_retains_aggregate_kv_budget_and_prices_tools(mon
 
 
 def test_local_runtime_must_clear_idle_slots_before_delegation(monkeypatch):
-    from core.inference import runtime_registry
+    import sys
 
     backend = SimpleNamespace(
         is_loaded = True, model_identifier = "model", idle_slot_clearing_active = False
     )
-    monkeypatch.setattr(runtime_registry, "peek_llama_cpp_backend", lambda: backend)
+    monkeypatch.setitem(
+        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: backend)
+    )
     with pytest.raises(runtime.TaskStateError, match = "idle model slots"):
         runtime.capture_runtime("local", "model")

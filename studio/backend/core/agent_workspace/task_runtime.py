@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from contextlib import asynccontextmanager
 
 from .task_state import TaskStateError
@@ -28,9 +29,11 @@ def _provider_digest(config: dict) -> str:
 
 def _llama(model: str):
     from core.inference.model_ids import model_id_matches
-    from core.inference.runtime_registry import peek_llama_cpp_backend
 
-    backend = peek_llama_cpp_backend()
+    # The serving route owns the existing singleton. Do not import that route
+    # here: importing it on demand constructs a backend and runs startup cleanup.
+    route = sys.modules.get("routes.inference")
+    backend = route.get_llama_cpp_backend() if route is not None else None
     if (
         backend is None
         or not backend.is_loaded
