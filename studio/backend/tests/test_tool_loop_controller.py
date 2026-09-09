@@ -281,6 +281,51 @@ def test_failed_call_does_not_block_retry():
     assert retry.action == "execute"
 
 
+def test_backend_isolation_failure_stops_retries_but_matching_output_does_not():
+    from core.inference.tools import _tool_failure_message
+    from core.inference.os_sandbox import SandboxUnavailableError
+
+    result = _tool_failure_message(SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: timed out"))
+    for value, blocked in ((result, True), (str(result), False)):
+        controller = ToolLoopController(tools = [_tool("terminal")])
+        decision = controller.prepare_call(_call("terminal", {"command": "git --version"}))
+        controller.record_result(decision, value)
+        assert controller.force_final_answer is blocked
+        assert bool(controller.active_tools()) is not blocked
+        retry = controller.prepare_call(_call("terminal", {"command": "git --version"}))
+        assert retry.should_execute is not blocked
+
+
+def test_truncated_isolation_failure_is_still_an_error():
+    from core.inference.tool_loop_controller import ToolIsolationUnavailableResult
+
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    decision = controller.prepare_call(_call("terminal", {"command": "git --version"}))
+    completion = controller.record_result(
+        decision, ToolIsolationUnavailableResult("output omitted")
+    )
+    assert completion.is_error
+    assert controller.force_final_answer
+
+
+@pytest.mark.parametrize(
+    "kind,arguments", [("python", {"code": "print(1)"}), ("terminal", {"command": "echo hello"})]
+)
+def test_actual_tool_failure_preserves_backend_marker(monkeypatch, tmp_path, kind, arguments):
+    from core.inference import tools
+    from core.inference.os_sandbox import SandboxUnavailableError
+    from core.inference.tool_loop_controller import ToolIsolationUnavailableResult
+
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id: str(tmp_path))
+
+    def reject(*args, **kwargs):
+        raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: timed out")
+
+    monkeypatch.setattr(tools, "prepare_tool_launch", reject)
+    result = tools.execute_tool(kind, arguments, tool_execution_mode = "os_isolation_required")
+    assert isinstance(result, ToolIsolationUnavailableResult)
+
+
 def test_empty_enabled_tool_list_blocks_all_tool_calls():
     controller = ToolLoopController(tools = [])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))

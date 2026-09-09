@@ -16766,8 +16766,16 @@ def _tool_failure_message(exc: BaseException) -> str:
             logger.warning(
                 "Python/Terminal tool refused: %s. %s", str(exc)[:300], _API_OPT_OUT_HINT
             )
-        message = f"{message} {_API_OPT_OUT_HINT}"
+        from .tool_loop_controller import ToolIsolationUnavailableResult
+
+        return ToolIsolationUnavailableResult(f"{message} {_API_OPT_OUT_HINT}")
     return message
+
+
+def _truncate_tool_failure(exc: BaseException, *, hint: str) -> str:
+    message = _tool_failure_message(exc)
+    # Keep the backend-owned failure marker through result-budget formatting.
+    return type(message)(_truncate(message, hint = hint))
 
 
 def _python_exec(
@@ -17089,8 +17097,8 @@ def _python_exec(
         # An exception message carries whatever the failure put in it, so it is capped
         # like the result would have been, with the trailers as its hint so an
         # overrun cannot drop them.
-        return _truncate(
-            _tool_failure_message(e),
+        return _truncate_tool_failure(
+            e,
             hint = _defuse_sentinels(
                 _network_denied_trailer(prepared_launch)
                 + _isolation_cleanup_trailer(prepared_launch, "python_exec")
@@ -17393,8 +17401,8 @@ def _bash_exec(
         # An exception message carries whatever the failure put in it, so it is capped
         # like the result would have been, with the trailers as its hint so an
         # overrun cannot drop them.
-        return _truncate(
-            _tool_failure_message(e),
+        return _truncate_tool_failure(
+            e,
             hint = _defuse_sentinels(
                 _network_denied_trailer(prepared_launch)
                 + _isolation_cleanup_trailer(prepared_launch, "bash_exec")

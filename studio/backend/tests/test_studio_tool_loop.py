@@ -199,6 +199,45 @@ def _visible_text(lines) -> str:
 # ── Structured tool calls (a well-behaved provider) ───────────────
 
 
+def test_isolation_failure_allows_final_answer_but_no_repeated_execution(executed, monkeypatch):
+    from core.inference.tool_loop_controller import ToolIsolationUnavailableResult
+
+    def execute(name, arguments, **kwargs):
+        executed.append(name)
+        return ToolIsolationUnavailableResult(
+            "Execution error: OS_ISOLATION_UNAVAILABLE: timed out"
+        )
+
+    monkeypatch.setattr(loop_mod, "execute_tool", execute)
+
+    def call(identifier):
+        return [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": identifier,
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"git --version"}',
+                            },
+                        }
+                    ]
+                }
+            ),
+            _sse(finish = "tool_calls"),
+            _DONE,
+        ]
+
+    transport = FakeTransport(
+        [call("first"), call("retry"), [_sse({"content": "Please repair tool isolation."}), _DONE]]
+    )
+    _run(transport, tools = [TERMINAL])
+    assert executed == ["terminal"]
+    assert not transport.requests[1]["tools"]
+
+
 def test_structured_call_executes_and_continues(executed):
     transport = FakeTransport(
         [
