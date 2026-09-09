@@ -1034,6 +1034,7 @@ def test_a_zombie_backend_is_not_a_live_sibling(tmp_path, monkeypatch):
     assert run.live_sibling_backend() is None
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "unreaped zombie processes are POSIX-only")
 def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
     # The same thing without a patch: a killed but unwaited child.
     import subprocess
