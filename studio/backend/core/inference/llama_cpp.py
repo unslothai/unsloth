@@ -33073,9 +33073,10 @@ class LlamaCppBackend:
                 break
 
             except _LlamaStreamCancelled:
-                _held = _cancelled_hold_text()
-                if _held:
-                    yield {"type": "content", "text": _held}
+                # No flush here: the buffers ``_cancelled_hold_text`` reads are bound inside the
+                # TOOL LOOP and are never rebound for this pass, which emits incrementally and
+                # holds nothing back. Flushing them replayed the previous iteration's planning
+                # text as this pass's answer, after the status boundary reset the route cursor.
                 return
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")

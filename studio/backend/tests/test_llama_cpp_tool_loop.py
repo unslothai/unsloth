@@ -7201,3 +7201,22 @@ def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatc
     texts = [event["text"] for event in events if event["type"] == "content"]
     assert texts and texts[-1] == held
     assert not any(event["type"] == "tool_start" for event in events)
+
+
+def test_only_the_tool_loop_flushes_held_text_on_cancel():
+    """``_cancelled_hold_text`` reads buffers bound inside the tool loop. The synthesized
+    final pass never rebinds or writes them and emits incrementally, holding nothing, so a
+    flush there could only ever replay the previous iteration's text as the final answer.
+    Asserted on the source because reaching that pass needs a live template render."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
+    arms = src.split("except _LlamaStreamCancelled:")[1:]
+    flushing = [i for i, arm in enumerate(arms) if "_cancelled_hold_text()" in arm]
+    assert (
+        len(flushing) == 1
+    ), f"exactly one cancel arm may flush held text; flushing arms: {flushing}"
+    # The last arm is the synthesized final pass, which owns none of those buffers.
+    assert flushing[0] != len(arms) - 1, "the final pass must not flush the tool loop's buffers"
