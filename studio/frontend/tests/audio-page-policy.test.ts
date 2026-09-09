@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -30,14 +29,10 @@ import {
   sttSelectionReady,
 } from "../src/features/audio/audio-page-policy.ts";
 
-const audioPageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const chatApiSource = readFileSync(
-  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const chatApiSource = readSrc("features/chat/api/chat-api.ts");
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);

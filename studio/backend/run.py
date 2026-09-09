@@ -877,7 +877,14 @@ def _is_port_free(host: str, port: int) -> bool:
             seen.add(key)
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # On Windows, SO_REUSEADDR lets a second socket bind a listening
+            # port when the incumbent also enabled it. That makes this probe
+            # report the port as free, then uvicorn fails with WinError 10048
+            # instead of letting _resolve_port fall back to the next port.
+            # POSIX keeps the option so a recently closed listener does not
+            # strand the preferred port in TIME_WAIT.
+            if sys.platform != "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
                 probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             probe.bind(sockaddr)
