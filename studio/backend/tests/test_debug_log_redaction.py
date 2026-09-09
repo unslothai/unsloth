@@ -249,6 +249,16 @@ def test_a_quoted_credential_is_masked_whole(line, expected):
     assert redact_log_text(line) == expected
 
 
+@pytest.mark.parametrize("prefix", ["b", "B", "r", "R", "u", "U", "br", "Rb"])
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_prefixed_env_secret_is_masked_whole(prefix, quote):
+    line = f"SSH_KEY_PASSPHRASE={prefix}{quote}correct horse battery staple{quote} status=failed"
+    expected = f"SSH_KEY_PASSPHRASE={prefix}{quote}<redacted>{quote} status=failed"
+
+    assert redact_log_text(line) == expected
+    assert redact_log_text(expected) == expected
+
+
 @pytest.mark.parametrize(
     "line,expected",
     [

@@ -178,6 +178,20 @@ def test_export_contains_every_visible_source_and_masks_credentials(client):
     assert "hf_<redacted>" in exported
 
 
+@pytest.mark.parametrize("prefix", ["b", "r", "u"])
+def test_export_masks_prefixed_env_secrets(client, prefix):
+    path = _seed_server_log(
+        f'SSH_KEY_PASSPHRASE={prefix}"correct horse battery staple" status=failed\n'
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert exported == f'SSH_KEY_PASSPHRASE={prefix}"<redacted>" status=failed\n'
+
+
 def test_export_with_no_logs_is_still_a_valid_zip(client):
     response = client.get("/api/settings/debug/logs/export")
     assert response.status_code == 200
@@ -294,12 +308,13 @@ def test_export_masks_plain_yaml_continuations_after_an_inline_value(client):
     assert "ordinary: kept" in exported
 
 
-@pytest.mark.parametrize("indicator", ["|-", ">", "|2-"])
-def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator):
+@pytest.mark.parametrize("key", ["password", "PASSWORD", "API_KEY", "HF_TOKEN"])
+@pytest.mark.parametrize("indicator", ["|", "|-", ">", "|2-"])
+def test_export_masks_every_line_of_a_yaml_block_scalar(client, indicator, key):
     first = "correct-horse-battery-staple"
     second = "another-secret-value"
     path = _seed_server_log(
-        f"credentials:\n  password: {indicator}\n    {first}\n    {second}\n  ordinary: kept\n"
+        f"credentials:\n  {key}: {indicator}\n    {first}\n    {second}\n  ordinary: kept\n"
     )
 
     response = client.get("/api/settings/debug/logs/export")

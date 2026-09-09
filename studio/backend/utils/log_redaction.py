@@ -122,7 +122,9 @@ _PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB]?|[uU])"
 _SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P<sep>=)(?:(?P<quote>[\"'])(?P<quoted>"
+    r"(?P<sep>=)(?:(?P<value_bytes>"
+    + _PYTHON_BYTES_PREFIX
+    + r")?(?P<quote>[\"'])(?P<quoted>"
     + _QUOTED_VALUE
     + r")(?P=quote)(?P<suffix>"
     + _SHELL_WORD_SUFFIX
@@ -371,7 +373,8 @@ def _redact_env_assignment(match: re.Match[str]) -> str:
     if not _is_shell_secret_env_name(key):
         return match.group(0)
     quote = match.group("quote") or ""
-    return f"{key}{match.group('sep')}{quote}{REDACTED}{quote}"
+    value_bytes = match.group("value_bytes") or ""
+    return f"{key}{match.group('sep')}{value_bytes}{quote}{REDACTED}{quote}"
 
 
 def _redact_structured_env_kv(match: re.Match[str]) -> str:
@@ -390,6 +393,9 @@ def _redact_structured_env_kv(match: re.Match[str]) -> str:
     tail = ""
     value = match.group("val")
     if value is not None:
+        # Keep block markers for streaming continuation tracking.
+        if _YAML_BLOCK_MARKER_RE.fullmatch(value):
+            return match.group(0)
         boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
         if boundary is not None:
             tail = value[boundary.start() :]
