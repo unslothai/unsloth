@@ -81,6 +81,21 @@ if ! _syntax_err=$(bash -n "$BLK" 2>&1); then
     drift "the extracted block is not valid bash (see above)"
 fi
 
+# The block calls the shared deep-verify helper rather than inlining the probe, so the
+# helper has to come with the slice. Extracted by function name and checked, for the
+# same reason the slice above is: a helper this file silently failed to find would be a
+# "command not found" that reads as an incomplete install, which forces the dependency
+# pass -- and three of the six cases below expect exactly that answer for a DIFFERENT
+# reason, so they would still pass.
+HELPERS="$WORK/helpers.sh"
+awk '
+    /^_setup_install_is_verified\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$SETUP_SH" > "$HELPERS"
+grep -q '^_setup_install_is_verified() {' "$HELPERS" \
+    || drift "_setup_install_is_verified is no longer a top-level function in setup.sh"
+
 PASS=0
 FAIL=0
 
@@ -128,6 +143,8 @@ eval_fastpath() {
         substep() { :; }
 
         # Execute extracted block
+        # shellcheck disable=SC1090
+        . "$HELPERS"
         # shellcheck disable=SC1090
         . "$BLK" || { echo "BLOCK_FAILED_TO_RUN"; exit 0; }
         [ "$_STEP_CALLS" -gt 0 ] || { echo "BLOCK_NOT_ENTERED"; exit 0; }
