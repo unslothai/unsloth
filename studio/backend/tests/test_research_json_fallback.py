@@ -192,9 +192,18 @@ def test_supported_json_mode_keeps_the_format(research_call, provider):
         (400, _refusal(None), False, True),
     ],
     ids = [
-        "other-param", "other-code", "string-error", "list-body", "not-json",
-        "wrong-status", "external-provider", "no-json-mode",
-        "audio-reply", "unsloth-tool-loop", "empty-message", "null-message",
+        "other-param",
+        "other-code",
+        "string-error",
+        "list-body",
+        "not-json",
+        "wrong-status",
+        "external-provider",
+        "no-json-mode",
+        "audio-reply",
+        "unsloth-tool-loop",
+        "empty-message",
+        "null-message",
     ],
 )
 def test_unrelated_errors_and_provider_contracts_are_not_retried(
@@ -280,6 +289,7 @@ def test_the_audio_probe_reads_both_local_backends(monkeypatch):
     assert research_runs._local_audio_model_loaded() is False
     # A run on an external connection is not served by either local backend.
     assert research_runs._local_audio_model_loaded({"providerType": "openai"}) is False
+
     # An unprobeable backend keeps the fallback, rather than disabling it on a failed read.
     def boom():
         raise RuntimeError("no orchestrator")
