@@ -21,6 +21,10 @@ Image and video families are both served: the image registry is asked first and 
 is the fallback (--modality forces either). A family with more than one denoiser builds one
 artifact per --component (Wan2.2 A14B's two experts).
 
+A calibrated build takes --gptq-dir: every admitted linear whose GPTQ correction is MEASURED to
+lower that layer's output error on held-out activations gets the corrected bf16 weight before
+quantize_, the rest stay round-to-nearest, and the metadata records which was which.
+
 Publishing is gated on a SECOND build: every checkpoint records an md5 fingerprint of each
 quantized weight's packed payload, --verify-against diffs this build against another one, and
 --upload-repo is refused unless that diff ran and matched. A build is hours of GPU time and a
@@ -136,6 +140,144 @@ def upload_destination(
             "entry to the family table, or pass --upload-filename."
         )
     return preferred
+
+
+# GPTQ scoring modes. "check" decides per layer on the OUTPUT error a held-out activation sample
+# measures through torchao's own quantiser, which is the error GPTQ optimises; "meta" decides on
+# the plain Frobenius WEIGHT error the Hessian pass recorded, which GPTQ raises by construction
+# (it trades weight error for output error) and which therefore admits nothing.
+GPTQ_SCORE_MODES = ("check", "meta")
+
+
+def gptq_weight_filename(fqn: str) -> str:
+    """The per-layer file the GPTQ pass wrote: dots become underscores, as it saved them."""
+    return fqn.replace(".", "_") + ".pt"
+
+
+def gptq_sources(
+    gptq_dir: str,
+    component: str = DEFAULT_COMPONENT,
+    *,
+    meta_override: Optional[str] = None,
+    score_override: Optional[str] = None,
+    exists = os.path.exists,
+) -> dict:
+    """Where one component's GPTQ weights, Hessian meta and do-no-harm scores live.
+
+    A single-denoiser family writes ``weights/<fqn>.pt`` and ``gptq_meta.json``; a MoE family runs
+    the pass once per expert and writes ``weights/<component>/`` and ``gptq_meta_<component>.json``.
+    Both layouts are probed rather than declared, so the same --gptq-dir serves either."""
+    root = str(gptq_dir).rstrip("/")
+    per_component = os.path.join(root, "weights", component)
+    weights = per_component if exists(per_component) else os.path.join(root, "weights")
+    meta = meta_override
+    if not meta:
+        named = os.path.join(root, f"gptq_meta_{component}.json")
+        meta = named if exists(named) else os.path.join(root, "gptq_meta.json")
+    score = score_override
+    if not score:
+        for candidate in (
+            f"gptq_score_{component}.json",
+            "gptq_score.json",
+            f"gptq_check_{component}.json",
+            "gptq_check.json",
+        ):
+            path = os.path.join(root, candidate)
+            if exists(path):
+                score = path
+                break
+    return {"weights": weights, "meta": meta, "score": score}
+
+
+def plan_gptq(
+    fqns: Sequence[str],
+    meta_layers: dict,
+    score_layers: dict,
+    *,
+    mode: str = "check",
+    has_weight = lambda fqn: True,
+) -> dict:
+    """Which admitted linears take their GPTQ weight, and why each of the rest does not.
+
+    Do no harm, per layer: a correction is applied only where it is MEASURED to help, never
+    because the layer was in the campaign. Everything else is recorded with its reason, so an
+    artifact can always say which of its weights are GPTQ and which are plain RTN.
+
+    ``missing`` is the one that must never pass silently: a layer whose file the pass never wrote
+    (or whose name drifted) would otherwise be indistinguishable from a layer that was corrected."""
+    if mode not in GPTQ_SCORE_MODES:
+        raise ValueError(f"gptq score mode must be one of {GPTQ_SCORE_MODES}, not {mode!r}")
+    layers: dict = {}
+    counts = {"applied": 0, "skipped_no_gain": 0, "skipped_unscored": 0, "missing": 0}
+    apply: list = []
+    for fqn in fqns:
+        meta = dict(meta_layers.get(fqn) or {})
+        score = dict(score_layers.get(fqn) or {})
+        record = {
+            "err_rtn": meta.get("err_rtn"),
+            "err_gptq": meta.get("err_gptq"),
+            "damp": meta.get("damp"),
+            "out_err_rtn": score.get("out_err_rtn"),
+            "out_err_gptq": score.get("out_err_gptq"),
+            "applied": False,
+        }
+        if not has_weight(fqn):
+            record["reason"] = "missing"
+            counts["missing"] += 1
+            layers[fqn] = record
+            continue
+        if mode == "check":
+            pair = (record["out_err_gptq"], record["out_err_rtn"])
+        else:
+            pair = (record["err_gptq"], record["err_rtn"])
+        if pair[0] is None or pair[1] is None:
+            record["reason"] = "unscored"
+            counts["skipped_unscored"] += 1
+        elif pair[0] < pair[1]:
+            record["applied"] = True
+            record["reason"] = "applied"
+            counts["applied"] += 1
+            apply.append(fqn)
+        else:
+            record["reason"] = "no_gain"
+            counts["skipped_no_gain"] += 1
+        layers[fqn] = record
+    return {"apply": apply, "layers": layers, "counts": counts, "mode": mode}
+
+
+def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> dict:
+    """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
+
+    The correction is only worth the GPU-hours if the packed 4-bit weight in the artifact IS the
+    corrected one. GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it
+    should reproduce it; anything else means the quantiser and the pass disagree about the grid and
+    the artifact is a differently-rounded weight that nothing measured. Reported per build as the
+    worst absolute deviation and the fraction of elements that moved, never asserted away."""
+    import torch
+
+    worst = {"max_abs": 0.0, "fqn": None}
+    diff_elems = 0
+    total_elems = 0
+    layers = list(modules.items())
+    if sample and sample < len(layers):
+        layers = layers[:: max(1, len(layers) // sample)]
+    for fqn, module in layers:
+        weight = module.weight
+        packed = weight.dequantize(torch.float32) if hasattr(weight, "dequantize") else weight.detach().float()
+        want = load_weight(fqn).to(packed.device, torch.float32)
+        delta = (packed - want).abs()
+        max_abs = float(delta.max())
+        if max_abs > worst["max_abs"]:
+            worst = {"max_abs": max_abs, "fqn": fqn}
+        diff_elems += int((delta != 0).sum())
+        total_elems += int(delta.numel())
+        del packed, want, delta
+    return {
+        "checked": len(layers),
+        "max_abs": worst["max_abs"],
+        "max_abs_fqn": worst["fqn"],
+        "frac_diff": (diff_elems / total_elems) if total_elems else 0.0,
+    }
 
 
 def parse_key(key: str) -> tuple:
@@ -291,6 +433,32 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--gptq-dir",
+        default = None,
+        help = "directory of GPTQ-corrected bf16 weights (as written by the calibration pass: "
+        "weights/<fqn with dots as underscores>.pt, or weights/<component>/... for a MoE family). "
+        "Every admitted linear whose correction is MEASURED to help takes it before quantize_",
+    )
+    p.add_argument(
+        "--gptq-meta",
+        default = None,
+        help = "the calibration pass's meta json; defaults to gptq_meta_<component>.json inside "
+        "--gptq-dir when that exists and gptq_meta.json otherwise",
+    )
+    p.add_argument(
+        "--gptq-score",
+        default = None,
+        help = "the do-no-harm score json (per layer out_err_rtn / out_err_gptq); defaults to "
+        "gptq_score_<component>.json, gptq_score.json or gptq_check.json inside --gptq-dir",
+    )
+    p.add_argument(
+        "--gptq-score-mode",
+        default = "check",
+        choices = list(GPTQ_SCORE_MODES),
+        help = "which error decides do-no-harm: 'check' the held-out OUTPUT error (the one GPTQ "
+        "optimises), 'meta' the Frobenius WEIGHT error, which GPTQ raises by construction",
+    )
+    p.add_argument(
         "--verify-against",
         default = None,
         help = "another build of this same artifact to diff the packed-weight fingerprint "
@@ -345,6 +513,15 @@ def main(argv = None) -> int:
     for refusal in (
         upload_gate_refusal(args.upload_repo, args.verify_against),
         verify_target_refusal(args.out, args.verify_against),
+        # ConvRot rotates the weight before quantize_, which a GPTQ weight has not been corrected
+        # for: the correction was solved against the UNROTATED activation covariance, so rotating
+        # it afterwards discards exactly the thing the pass computed.
+        (
+            "--gptq-dir and --convrot-groupsize cannot be combined: the correction was solved "
+            "against unrotated activations, so rotating the corrected weight discards it."
+            if args.gptq_dir and args.convrot_groupsize
+            else None
+        ),
     ):
         if refusal:
             print(f"error: {refusal}", flush = True)
@@ -400,6 +577,83 @@ def main(argv = None) -> int:
         require_divisible = require_divisible,
     )
 
+    # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the
+    # NVFP4 grid, so it goes into module.weight and the quantiser then packs it exactly as it packs
+    # any other weight. Only the 4-bit operand is touched, which is the rule the campaign measured
+    # (+46% error when a correction also became the source of an fp8 replica).
+    gptq_plan: Optional[dict] = None
+    gptq_pass: dict = {}
+    gptq_where: dict = {}
+    gptq_applied_modules: dict = {}
+    if args.gptq_dir:
+        import json
+
+        gptq_where = gptq_sources(
+            args.gptq_dir,
+            component,
+            meta_override = args.gptq_meta,
+            score_override = args.gptq_score,
+        )
+        try:
+            with open(gptq_where["meta"]) as handle:
+                gptq_pass = json.load(handle) or {}
+        except Exception as exc:  # noqa: BLE001 -- an unreadable meta decides nothing
+            print(f"error: cannot read the GPTQ meta {gptq_where['meta']}: {exc}", flush = True)
+            return 2
+        score_layers: dict = {}
+        if gptq_where["score"]:
+            try:
+                with open(gptq_where["score"]) as handle:
+                    score_layers = (json.load(handle) or {}).get("layers") or {}
+            except Exception as exc:  # noqa: BLE001
+                print(f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True)
+                return 2
+        elif args.gptq_score_mode == "check":
+            print(
+                f"error: --gptq-score-mode check needs a score file; none found in {args.gptq_dir}. "
+                "Score the corrections on held-out activations first, or pass --gptq-score-mode meta.",
+                flush = True,
+            )
+            return 2
+        admitted = [
+            (fqn, module) for fqn, module in transformer.named_modules() if filter_fn(module, fqn)
+        ]
+        weights_dir = gptq_where["weights"]
+        gptq_plan = plan_gptq(
+            [fqn for fqn, _ in admitted],
+            (gptq_pass.get("layers") or {}),
+            score_layers,
+            mode = args.gptq_score_mode,
+            has_weight = lambda fqn: os.path.exists(
+                os.path.join(weights_dir, gptq_weight_filename(fqn))
+            ),
+        )
+        for fqn, module in admitted:
+            if not gptq_plan["layers"][fqn]["applied"]:
+                continue
+            corrected = torch.load(
+                os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
+            )
+            if tuple(corrected.shape) != tuple(module.weight.shape):
+                # A shape drift means the campaign and this base are not the same model. Applying
+                # what fits and skipping the rest would ship a half-corrected artifact.
+                print(
+                    f"error: GPTQ weight for {fqn} is {tuple(corrected.shape)}, module is "
+                    f"{tuple(module.weight.shape)}",
+                    flush = True,
+                )
+                return 2
+            module.weight.data = corrected.to(module.weight.device, module.weight.dtype)
+            gptq_applied_modules[fqn] = module
+        counts = gptq_plan["counts"]
+        print(
+            f"  gptq ({args.gptq_score_mode}): applied {counts['applied']} of {len(admitted)} "
+            f"admitted linears, {counts['skipped_no_gain']} no gain, "
+            f"{counts['skipped_unscored']} unscored, {counts['missing']} missing "
+            f"[{weights_dir}]",
+            flush = True,
+        )
+
     # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
     # distribution. The fqn list is recorded, never re-derived at load time.
     rotation: dict = {}
@@ -426,6 +680,22 @@ def main(argv = None) -> int:
         )
 
     quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
+
+    gptq_idempotency: dict = {}
+    if gptq_applied_modules:
+        weights_dir = gptq_where["weights"]
+        gptq_idempotency = verify_gptq_idempotency(
+            gptq_applied_modules,
+            lambda fqn: torch.load(
+                os.path.join(weights_dir, gptq_weight_filename(fqn)), weights_only = True
+            ),
+        )
+        print(
+            f"  gptq idempotency: {gptq_idempotency['checked']} layers, max abs deviation "
+            f"{gptq_idempotency['max_abs']:.3e} ({gptq_idempotency['max_abs_fqn']}), "
+            f"{gptq_idempotency['frac_diff'] * 100:.3f}% of elements moved",
+            flush = True,
+        )
 
     state_dict = {
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
@@ -458,6 +728,26 @@ def main(argv = None) -> int:
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
+    if gptq_plan is not None:
+        # Provenance of every corrected weight in this artifact, and of every one that was left
+        # alone. Not part of the fingerprint's identity: the fingerprint hashes the packed payloads,
+        # so a different set of corrections already reads as a different artifact there.
+        metadata["gptq"] = {
+            "source": os.path.abspath(args.gptq_dir),
+            "meta_path": os.path.abspath(gptq_where["meta"]),
+            "score_path": os.path.abspath(gptq_where["score"]) if gptq_where["score"] else None,
+            "score_mode": args.gptq_score_mode,
+            "prompts": gptq_pass.get("prompts"),
+            "steps_sampled": gptq_pass.get("steps_sampled"),
+            "base_damp": gptq_pass.get("base_damp"),
+            "grid": gptq_pass.get("grid"),
+            "applied": gptq_plan["counts"]["applied"],
+            "skipped_no_gain": gptq_plan["counts"]["skipped_no_gain"],
+            "skipped_unscored": gptq_plan["counts"]["skipped_unscored"],
+            "missing": gptq_plan["counts"]["missing"],
+            "idempotency": gptq_idempotency,
+            "layers": gptq_plan["layers"],
+        }
     metadata.update(rotation)
     ckpt = {
         # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file rather than running

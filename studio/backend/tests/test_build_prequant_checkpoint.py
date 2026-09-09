@@ -414,3 +414,198 @@ def test_a_build_whose_second_run_differs_exits_3_without_uploading(monkeypatch,
         ]
     )
     assert code == 3
+
+
+# ── GPTQ corrections ─────────────────────────────────────────────────────────────
+def test_a_correction_that_does_not_help_is_not_applied_and_says_so():
+    build = _script()
+    meta = {
+        # GPTQ raises the Frobenius weight error on every layer by construction: it trades weight
+        # error for output error, which is why the weight error cannot be the do-no-harm test.
+        "blocks.0.attn1.to_q": {"err_rtn": 0.096, "err_gptq": 0.125, "damp": 0.01},
+        "blocks.1.attn1.to_q": {"err_rtn": 0.095, "err_gptq": 0.121, "damp": 0.1},
+    }
+    score = {
+        "blocks.0.attn1.to_q": {"out_err_rtn": 0.034, "out_err_gptq": 0.006},
+        "blocks.1.attn1.to_q": {"out_err_rtn": 0.021, "out_err_gptq": 0.037},
+    }
+    plan = build.plan_gptq(list(meta), meta, score, mode = "check")
+    assert plan["apply"] == ["blocks.0.attn1.to_q"]
+    assert plan["counts"] == {
+        "applied": 1,
+        "skipped_no_gain": 1,
+        "skipped_unscored": 0,
+        "missing": 0,
+    }
+    assert plan["layers"]["blocks.1.attn1.to_q"]["reason"] == "no_gain"
+    # The weight-space rule is the one the Hessian pass recorded, and on this evidence it admits
+    # nothing at all, which is why it is not the default.
+    assert build.plan_gptq(list(meta), meta, score, mode = "meta")["counts"]["applied"] == 0
+    # A layer with no score is left alone rather than applied on faith.
+    plan = build.plan_gptq(["blocks.9.ffn.net.2", *meta], meta, score, mode = "check")
+    assert plan["counts"]["skipped_unscored"] == 1
+    assert plan["layers"]["blocks.9.ffn.net.2"]["reason"] == "unscored"
+
+
+def test_a_correction_the_pass_never_wrote_is_counted_not_ignored():
+    build = _script()
+    meta = {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12}}
+    score = {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}
+    # The correction helps, but the file is not there. Silently leaving it out would make an
+    # artifact that claims a calibration it only partly has.
+    plan = build.plan_gptq(list(meta), meta, score, has_weight = lambda fqn: False)
+    assert plan["apply"] == []
+    assert plan["counts"]["missing"] == 1 and plan["counts"]["applied"] == 0
+    assert plan["layers"]["blocks.0.attn1.to_q"]["reason"] == "missing"
+    # And the errors are still recorded, so the artifact can say what was skipped and why.
+    assert plan["layers"]["blocks.0.attn1.to_q"]["out_err_gptq"] == 0.01
+
+
+def test_the_gptq_layout_of_a_moe_family_resolves_per_expert(tmp_path):
+    build = _script()
+    root = tmp_path / "gptq"
+    (root / "weights" / "transformer_2").mkdir(parents = True)
+    (root / "gptq_meta_transformer_2.json").write_text("{}")
+    (root / "gptq_score_transformer_2.json").write_text("{}")
+    (root / "gptq_meta.json").write_text("{}")
+    where = build.gptq_sources(str(root), "transformer_2")
+    # Both experts share every name in the model, so the per-expert directory is the only thing
+    # keeping expert 1's corrections out of expert 2's artifact.
+    assert where["weights"].endswith("weights/transformer_2")
+    assert where["meta"].endswith("gptq_meta_transformer_2.json")
+    assert where["score"].endswith("gptq_score_transformer_2.json")
+    # A single-denoiser family writes the flat layout, and the same directory serves it.
+    flat = tmp_path / "flat"
+    (flat / "weights").mkdir(parents = True)
+    (flat / "gptq_meta.json").write_text("{}")
+    (flat / "gptq_check.json").write_text("{}")
+    where = build.gptq_sources(str(flat), "transformer")
+    assert where["weights"].endswith("flat/weights")
+    assert where["meta"].endswith("flat/gptq_meta.json")
+    assert where["score"].endswith("flat/gptq_check.json")
+    assert build.gptq_weight_filename("blocks.0.ffn.net.0.proj") == "blocks_0_ffn_net_0_proj.pt"
+
+
+def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_path):
+    build = _script()
+    state = _fake_state_dict()
+    saved = _stub_build_stack(monkeypatch, state)
+    gptq = tmp_path / "gptq"
+    (gptq / "weights").mkdir(parents = True)
+    import json as _json
+
+    (gptq / "gptq_meta.json").write_text(
+        _json.dumps(
+            {
+                "prompts": 32,
+                "steps_sampled": [0, 12, 25, 37],
+                "base_damp": 0.01,
+                "grid": "832x480x49f_50s",
+                "layers": {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}},
+            }
+        )
+    )
+    (gptq / "gptq_check.json").write_text(
+        _json.dumps({"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}})
+    )
+    # One admitted linear with a correction on disk, one without a file at all.
+    (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
+    # The runtime filter is the admitted set, so the stub has to look like what it inspects:
+    # nn.Linear, 16-aligned, at or above the min_features floor.
+    class _Linear:
+        def __init__(self):
+            self.in_features = 1024
+            self.out_features = 1024
+            self.weight = types.SimpleNamespace(
+                shape = (1024, 1024), device = "cuda", dtype = "bfloat16", data = None
+            )
+
+    nn = types.ModuleType("torch.nn")
+    nn.Linear = _Linear
+    sys.modules["torch"].nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+    module, other = _Linear(), _Linear()
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    transformer.named_modules = lambda: [
+        ("blocks.0.attn1.to_q", module),
+        ("blocks.1.attn1.to_q", other),
+    ]
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+    loaded = types.SimpleNamespace(shape = (1024, 1024), to = lambda *a: "corrected")
+    # The idempotency check reads packed NVFP4 payloads off a real GPU; here it stands in for one,
+    # so what is asserted is that its verdict reaches the metadata.
+    monkeypatch.setattr(
+        build,
+        "verify_gptq_idempotency",
+        lambda modules, load_weight: {
+            "checked": len(modules),
+            "max_abs": 0.0,
+            "max_abs_fqn": None,
+            "frac_diff": 0.0,
+        },
+    )
+    sys.modules["torch"].load = lambda path, weights_only = True: loaded
+    out = tmp_path / "wan5b.pt"
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+            "--gptq-dir",
+            str(gptq),
+        ]
+    )
+    assert code == 0
+    # The corrected weight replaced the dense one BEFORE quantize_, which is the only order in
+    # which the quantiser packs the correction rather than re-deriving it.
+    assert module.weight.data == "corrected"
+    block = saved["ckpt"]["metadata"]["gptq"]
+    assert block["applied"] == 1 and block["missing"] == 1
+    assert block["prompts"] == 32 and block["steps_sampled"] == [0, 12, 25, 37]
+    assert block["base_damp"] == 0.01 and block["score_mode"] == "check"
+    assert set(block["layers"]) == {"blocks.0.attn1.to_q", "blocks.1.attn1.to_q"}
+    assert block["layers"]["blocks.0.attn1.to_q"]["applied"] is True
+    assert block["layers"]["blocks.1.attn1.to_q"]["reason"] == "missing"
+    assert block["idempotency"] == {
+        "checked": 1,
+        "max_abs": 0.0,
+        "max_abs_fqn": None,
+        "frac_diff": 0.0,
+    }
+    # The fingerprint stays a hash of the packed payloads alone, so the block never becomes part
+    # of the artifact's identity by itself.
+    assert "gptq" not in saved["ckpt"]["metadata"]["fingerprint"]
+
+
+def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path):
+    build = _script()
+    _stub_build_stack(monkeypatch, _fake_state_dict())
+    out = tmp_path / "both.pt"
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "--family",
+            "wan2.2-ti2v-5b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(out),
+            "--gptq-dir",
+            str(tmp_path),
+            "--convrot-groupsize",
+            "128",
+        ]
+    )
+    # Refused from the arguments alone: the correction was solved against unrotated activations.
+    assert code == 2
+    assert not out.exists()
