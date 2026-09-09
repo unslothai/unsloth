@@ -420,6 +420,33 @@ def test_a_failed_capture_is_released_before_the_eager_fallback(stub_torch):
     assert handle.capture_error["type"] == "RuntimeError"
 
 
+def test_poisoning_drops_the_graphs_it_can_no_longer_replay(stub_torch):
+    """``__call__`` short-circuits on ``poisoned`` before it reads the cache, so an entry captured
+    before the failure can never be replayed again: keeping it pins its statics, its outputs and its
+    slice of the pool for the life of the load, against the eager fallback the poisoning falls back
+    TO. Measured with the real wrapper: a 512-shape graph held through a failed larger capture is the
+    difference between that render OOMing and completing."""
+    module = _FakeDiT()
+    handle = _armed(module)
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert len(handle.cache) == 1
+    assert cg._POOL_BOX[0] is not None
+
+    # A second shape fails to capture.
+    stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
+    out = handle(_t((2, 4)), timestep = _t((1,)), return_dict = False)
+
+    assert handle.poisoned is True
+    assert out[0].value[0] == "out"  # the eager result still came back
+    assert handle.cache == {}, "graphs that can never replay again are still pinning memory"
+    assert cg._POOL_BOX[0] is None, "and the pool token outlived the last graph in it"
+    # Still eager from here on, and it does not try to capture again.
+    before = module.calls
+    handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
+    assert module.calls == before + 1
+    assert handle.stats["captures"] == 1
+
+
 def test_graph_cap_degrades_to_eager_without_poisoning(stub_torch):
     module = _FakeDiT()
     logged: list = []

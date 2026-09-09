@@ -6569,6 +6569,62 @@ class _BoomPipe(_CountingPipe):
         raise RuntimeError("shape mismatch")
 
 
+def test_generate_single_image_oom_drops_the_graphs_before_raising(fake_runtime, tmp_path):
+    """A one-image OOM is re-raised rather than split, and the default request IS one image. The
+    captured graph is shaped for the attempt that just failed and empty_cache() cannot reclaim it,
+    so without a reset here the user's smaller re-request runs a step short of what the eager path
+    would have had. Measured: a 1.7 GB decode on that next generation OOMs with the dead graph held
+    and fits once it is dropped."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe(max_images = 0)  # every forward OOMs, so a single image cannot be split
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.generate(prompt = "p", seed = 1)
+
+    assert pipe.batch_attempts == [1]  # not splittable: raised, not retried
+    assert handle.resets == 1, "the graphs stayed pinned across the raise"
+
+
+def test_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime, tmp_path):
+    """Only an OOM justifies throwing away working graphs; a shape mismatch does not."""
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _BoomPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+
+    class _Handle:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+            return self
+
+        def set_bypass(self, on):
+            return self
+
+    handle = _Handle()
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "p", seeds = [1, 2])
+    assert handle.resets == 0
+
+
 def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
     backend = _load_zimage_backend(tmp_path)
     pipe = _BoomPipe()

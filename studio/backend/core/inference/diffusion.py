@@ -6199,13 +6199,20 @@ class DiffusionBackend:
                         with torch.inference_mode():
                             out = pipe(**chunk_kwargs).images
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        if len(chunk) < 2 or not is_oom_error(exc):
+                        oom = is_oom_error(exc)
+                        if oom:
+                            # Drop the captured graphs on ANY OOM, before deciding whether this batch can be split.
+                            # They are shaped for the attempt that just failed and empty_cache() cannot reclaim them
+                            # (live statics and outputs, and a graph pool is segregated from the ordinary allocator),
+                            # so whatever runs next runs a step's worth of VRAM short of what the eager path would
+                            # have had: the halved retry below, and equally the smaller request the user makes after a
+                            # single-image OOM raises out of here. Measured: a 1.7 GB decode on the next generation
+                            # OOMs with the dead graph held and fits once it is dropped. The shape that finally
+                            # renders re-captures on its first step.
+                            cuda_graph.reset_all(state.cuda_graphs)
+                        if len(chunk) < 2 or not oom:
                             raise
                         # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry reproducible.
-                        # Drop the captured graphs FIRST: they are batch-shaped, and empty_cache() cannot reclaim
-                        # them (live statics and outputs, and a graph pool is segregated from the ordinary allocator),
-                        # so without this the halved retry OOMs too. The shape that renders re-captures on step 1.
-                        cuda_graph.reset_all(state.cuda_graphs)
                         empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
                         if callable(empty_cache):
                             empty_cache()
