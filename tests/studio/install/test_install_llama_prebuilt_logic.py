@@ -6220,7 +6220,9 @@ def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monk
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_releases",
-        lambda repo, **kw: [{"tag_name": marker["release_tag"], "published_at": "2026-01-01T00:00:00Z", "id": 1}],
+        lambda repo, **kw: [
+            {"tag_name": marker["release_tag"], "published_at": "2026-01-01T00:00:00Z", "id": 1}
+        ],
     )
     assert _check(install_dir, llama_tag = "b9001") is True
     assert _check(install_dir, llama_tag = "b9999") is False
@@ -6670,10 +6672,20 @@ def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeyp
     assert expected == "b9596-mix-bbb"
     assert expected != marker["release_tag"]
     # A marker for another build is not current whatever the listing says.
-    assert M._expected_release_tag_without_plan({"tag": "b9500", "release_tag": "x"}, "b9596", M.DEFAULT_PUBLISHED_REPO, "") is None
+    assert (
+        M._expected_release_tag_without_plan(
+            {"tag": "b9500", "release_tag": "x"}, "b9596", M.DEFAULT_PUBLISHED_REPO, ""
+        )
+        is None
+    )
     # Upstream publishes one release per build under the build's own tag: no listing.
     monkeypatch.setattr(M, "github_releases", lambda repo, **kw: pytest.fail("listed upstream"))
-    assert M._expected_release_tag_without_plan({"tag": "b9596", "release_tag": "b9596"}, "b9596", M.UPSTREAM_REPO, "") == "b9596"
+    assert (
+        M._expected_release_tag_without_plan(
+            {"tag": "b9596", "release_tag": "b9596"}, "b9596", M.UPSTREAM_REPO, ""
+        )
+        == "b9596"
+    )
 
 
 def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch):
