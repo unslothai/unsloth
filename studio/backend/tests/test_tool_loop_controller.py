@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -320,6 +321,28 @@ def test_two_plots_in_one_code_execution_turn_replay_no_base64():
     )
 
     assert strip_result_for_model(stacked, "code_execution") == "Figures saved."
+
+
+def test_a_flood_of_stacked_image_markers_stays_linear():
+    """An MCP server's reply is unbounded text and this runs on the request thread,
+    so the cost has to follow its length. Re-partitioning the shortened string once
+    per marker copies it again every time: quadruple the markers and the work grows
+    about sixteenfold instead of fourfold.
+
+    Timed against itself rather than a wall-clock budget, so the bound means the same
+    thing on a fast laptop and a loaded runner.
+    """
+
+    def elapsed(markers: int) -> float:
+        flood = '\n__IMAGES__:["x"]' * markers
+        started = time.perf_counter()
+        assert strip_result_for_model(flood, "mcp__server__read") == ""
+        return time.perf_counter() - started
+
+    small = max(elapsed(20_000), 1e-4)
+    large = elapsed(80_000)
+
+    assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the time"
 
 
 def test_the_card_text_keeps_digits_the_browser_would_round():

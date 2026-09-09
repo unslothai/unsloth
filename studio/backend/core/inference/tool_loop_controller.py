@@ -877,23 +877,33 @@ def _strip_images_sentinel(result: str) -> str:
     the marker would otherwise lose everything after it while the card the user
     reads still shows the whole result.
 
-    Peeled in a loop because a Gemini ``code_execution`` turn that drew two
-    figures stacks one envelope per ``inlineData`` part, and stopping after the
-    last one would replay the earlier plot's whole base64 data URI to the model.
+    Every envelope, not just the last: a Gemini ``code_execution`` turn that drew
+    two figures stacks one per ``inlineData`` part, and stopping after the last
+    would replay the earlier plot's whole base64 data URI to the model.
+
+    Walked by index and cut once at the end. Re-partitioning the shortened string
+    each time copies it again, which is quadratic in the number of markers, and an
+    MCP server answering with 80,000 of them is 1.3 MB of text that held this
+    thread for seconds.
     """
+    marker = "\n__IMAGES__:"
+    end = len(result)
+    cut = -1
     while True:
-        head, sep, payload = result.rpartition("\n__IMAGES__:")
-        if not sep:
-            return result
+        start = result.rfind(marker, 0, end)
+        if start == -1:
+            break
         try:
-            images = json.loads(payload)
+            images = json.loads(result[start + len(marker) : end])
         except (ValueError, RecursionError):
-            return result
+            break
         if not isinstance(images, list) or not images:
-            return result
+            break
         if not all(isinstance(image, str) and image for image in images):
-            return result
-        result = head.rstrip()
+            break
+        cut = start
+        end = start
+    return result if cut == -1 else result[:cut].rstrip()
 
 
 def _strip_rag_sources_sentinel(result: str) -> str:
