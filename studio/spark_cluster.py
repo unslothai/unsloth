@@ -25,6 +25,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -245,13 +246,36 @@ def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False
     return result
 
 
+def _planned_peers(config: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The peers `setup` addressed, read back from the rail plans it saved.
+
+    Setup writes `n_nodes`, `peer_rails` and `other_rails` but never a `peers` list, so a
+    cluster configured as `setup --nodes 3 --switched` -- the switched fabric where mDNS does
+    not answer, which is the case the config is meant to cover -- came back from discovery as
+    two nodes and was planned and sized as two. The addresses are already here; only the key
+    they were looked up under was missing."""
+    out: List[Dict[str, str]] = []
+    for plan in [config.get("peer_rails")] + list(config.get("other_rails") or []):
+        if not isinstance(plan, list) or not plan:
+            continue
+        # One node per plan, from its first rail. The others are the same host on its second
+        # PCIe function and would otherwise each count as another Spark.
+        address = str((plan[0] or {}).get("address") or "")
+        if address:
+            # No hostname: `merge_peers` keys on the first dotted field of one, which would
+            # make every planned address collapse into a single peer called `192`.
+            out.append({"hostname": "", "address": address, "source": "config-rails"})
+    return out
+
+
 def configured_peers() -> List[Dict[str, str]]:
     """Peers pinned in the saved config. mDNS does not survive a switched fabric, so the
     config is a first-class source, not a fallback. Malformed entries are skipped."""
     out: List[Dict[str, str]] = []
-    raw = load_config().get("peers")
-    if not isinstance(raw, list):
-        return out
+    config = load_config()
+    raw = config.get("peers")
+    if not isinstance(raw, list) or not raw:
+        return _planned_peers(config)
     for entry in raw:
         if isinstance(entry, str):
             out.append({"hostname": entry, "address": entry, "source": "config"})
@@ -287,7 +311,14 @@ def merge_peers(
             }
         elif not prev["address"] or (":" in prev["address"] and ":" not in address):
             prev["address"] = address or prev["address"]
-    peers = sorted(merged.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["short"]))
+    # One host reached two ways is one node. A peer named by mDNS and the same peer named by
+    # the saved rail plan key differently -- a hostname against an address -- and counting
+    # both would report a two-Spark pair as three nodes and plan for hardware that is not
+    # there. The named entry wins, since it carries the hostname.
+    by_address: Dict[str, Dict[str, Any]] = {}
+    for peer in sorted(merged.values(), key = lambda d: d["short"] == d["address"]):
+        by_address.setdefault(peer["address"] or peer["short"], peer)
+    peers = sorted(by_address.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["short"]))
     for index, peer in enumerate(peers):
         # This node is node 0; peers occupy 1..N-1.
         peer["index"] = index + 1
@@ -390,9 +421,51 @@ def cluster_state() -> str:
     if not rails:
         return "no_cable"
     config = load_config()
-    if config.get("enabled") and any(r["ipv4"] for r in rails):
+    # EVERY cabled rail, not any of them. `nccl_env` hands NCCL all of them through
+    # NCCL_IB_MERGE_NICS, so a netplan that reached one PCIe function and not the other is
+    # not a configured cluster: it is a job that fails, or runs at half the link. `any`
+    # declared that state finished and made every later install and `spark up` skip setup.
+    if config.get("enabled") and rails and all(r["ipv4"] for r in rails):
         return "configured"
     return "unconfigured"
+
+
+def cluster_config_problems() -> List[str]:
+    """Where the machine's rails and the saved plan disagree. Empty when they agree, and
+    empty when there is no plan to compare against -- this reports drift, not absence."""
+    problems: List[str] = []
+    config = load_config()
+    if not config.get("enabled"):
+        return problems
+    planned = {
+        str(entry.get("netdev") or ""): entry
+        for entry in (config.get("rails") or [])
+        if isinstance(entry, dict)
+    }
+    for rail in cabled_rails():
+        entry = planned.get(rail["netdev"])
+        if entry is None:
+            problems.append(
+                f"{rail['ib_device']} ({rail['netdev']}) is cabled but is not in the saved "
+                f"plan; re-run `unsloth spark setup`"
+            )
+            continue
+        if not rail["ipv4"]:
+            problems.append(
+                f"{rail['netdev']} has no address; the plan places it at {entry.get('address')}"
+            )
+        elif entry.get("address") and entry["address"] not in rail["ipv4"]:
+            problems.append(
+                f"{rail['netdev']} is at {', '.join(rail['ipv4'])} but the plan places it "
+                f"at {entry['address']}"
+            )
+        want_mtu = entry.get("mtu")
+        if want_mtu and rail["mtu"] and int(want_mtu) != rail["mtu"]:
+            # Not cosmetic: MTU 9000 is what lifts the RoCE path MTU from 1024 to 4096.
+            problems.append(
+                f"{rail['netdev']} is at MTU {rail['mtu']}, the plan asks for {want_mtu}"
+            )
+    return problems
 
 
 # One /24 per PCIe function: a single subnet drives only one function, half the link.
@@ -754,6 +827,29 @@ def rpc_server_binary() -> Optional[str]:
     return shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
 
 
+_LLAMA_SERVER_NAMES = ("llama-server", "llama-server.exe")
+
+
+def llama_server_names(windows: Optional[bool] = None) -> Tuple[str, ...]:
+    """`_LLAMA_SERVER_NAMES` with the platform's own spelling first, as `rpc_server_names`."""
+    suffixed = tuple(
+        n for n in _LLAMA_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
+    )
+    plain = tuple(n for n in _LLAMA_SERVER_NAMES if n not in suffixed)
+    return (suffixed + plain) if _on_windows(windows) else (plain + suffixed)
+
+
+def llama_server_binary() -> Optional[str]:
+    """Path to llama-server, or None. Separate from `rpc_server_binary` because the replica
+    layout runs only this: requiring the RPC server to locate it refused a deployment that
+    never touches RPC."""
+    for root in (llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"):
+        found = _find_in_bundle(root, llama_server_names(), executable = True)
+        if found is not None:
+            return str(found)
+    return shutil.which("llama-server")
+
+
 def _bundle_version(root: Path) -> str:
     """The release tag from BUILD_INFO.txt, or ``"unknown"``. Source builds have no such file,
     and that must read unknown rather than fail: an unknown is compared by library hash."""
@@ -1074,6 +1170,11 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
     seen: Dict[str, Tuple[int, int, int]] = {}
     for where, live in (("the peer", peer_live), ("this Spark", local_live)):
         state, version = live["state"], live["version"]
+        # A split runs ggml-rpc-server on the PEER and points the local llama-server at
+        # `peer:port`; nothing local binds that port or speaks the protocol. Refusing the
+        # deployment over an unrelated local listener rejected a launch that would have
+        # worked, so what is found here is reported and does not block.
+        keep = result["problems"] if where == "the peer" else result["notes"]
         if state == "ok":
             seen[where] = version
             result["notes"].append(
@@ -1081,7 +1182,7 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
                 f"RPC protocol {version[0]}.{version[1]}.{version[2]}."
             )
         elif state == "closed":
-            result["problems"].append(
+            keep.append(
                 f"something listens on {where} at {live['host']}:{port} but closed the "
                 f"connection on an RPC 6.0 HELLO without answering. That is what an older "
                 f"(5.x) ggml-rpc-server does, and llama-server would report 'RPC server "
@@ -1089,7 +1190,7 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
                 f"the current bundle."
             )
         elif state == "garbled":
-            result["problems"].append(
+            keep.append(
                 f"the listener on {where} at {live['host']}:{port} is not a ggml-rpc-server "
                 f"(its HELLO reply was malformed). Free the port or pick another with "
                 f"--rpc-port."
@@ -1553,6 +1654,25 @@ def cache_symmetry(peer_ip: str) -> Dict[str, Optional[bool]]:
     return out
 
 
+def classify_cuda_state(cuinit: Optional[int], smi_ok: bool) -> str:
+    """`ok` | `dead-engine` | `cuda-error` | `unknown`, from cuInit's return.
+
+    Only 100 is the fault the probe is named for, and only 100 is what a reboot clears. Any
+    nonzero code used to be called `dead-engine` and labelled CUDA_ERROR_NO_DEVICE, which put
+    a driver and userspace mismatch -- and the synthesised -1 that means libcuda.so.1 would
+    not even load -- under a reboot-only diagnosis that does not apply to either."""
+    if cuinit == 0:
+        return "ok"
+    if not smi_ok or cuinit is None:
+        return "unknown"
+    if cuinit == 100:
+        return "dead-engine"
+    if cuinit < 0:
+        # -1 is ours, from the probe's own except: libcuda.so.1 is missing or unloadable.
+        return "unknown"
+    return "cuda-error"
+
+
 def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     """A GPU that enumerates but whose compute engine is dead: nvidia-smi looks fine, cuInit(0)
     returns 100 and dmesg shows NVRM 0xbadf5600. A REBOOT clears it; a module reload does not,
@@ -1567,12 +1687,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     )
     out: Dict[str, Any] = {"local": None, "peer": None}
 
-    def _classify(cuinit: Optional[int], smi_ok: bool) -> str:
-        if cuinit == 0:
-            return "ok"
-        if smi_ok and cuinit is not None:
-            return "dead-engine"
-        return "unknown"
+    _classify = classify_cuda_state
 
     smi = shutil.which("nvidia-smi") is not None
     if smi:
@@ -1645,11 +1760,18 @@ def _cmd_doctor() -> int:
         print("No configured peer rail yet -- run `unsloth spark setup` first.")
         return 1
 
+    # Every definite fault found below, so the exit code says what the output said. A dead
+    # GPU or a missing Python.h was printed and then dropped: the return came from the NCCL
+    # verdict alone, a dead engine usually measures `unknown`, and `unknown` returned 0. A
+    # script could therefore read a node that cannot initialise CUDA as a healthy pair.
+    blockers: List[str] = []
+
     # Cheap preflight first: a missing header wastes 10 minutes on a silent hang later.
     hdr = python_dev_headers(peer)
     ver = f"python{sys.version_info.major}.{sys.version_info.minor}-dev"
     for where, ok in (("this Spark", hdr["local"]), ("the peer", hdr["peer"])):
         if ok is False:
+            blockers.append(f"Python.h is missing on {where}")
             print(f"  MISSING Python.h on {where}.")
             print("    Without it Triton cannot build its cuda_utils shim. Locally that")
             print("    reads as 'Model architectures [...] failed to be inspected'; on a")
@@ -1669,6 +1791,7 @@ def _cmd_doctor() -> int:
         if not info:
             continue
         if info["state"] == "dead-engine":
+            blockers.append(f"the GPU on {where} does not initialise")
             print(
                 f"  GPU NOT USABLE on {where}: nvidia-smi works but cuInit returns "
                 f"{info['cuinit']} (CUDA_ERROR_NO_DEVICE)."
@@ -1680,6 +1803,14 @@ def _cmd_doctor() -> int:
             print("    (This is NOT the power-delivery fault, which leaves CUDA healthy and")
             print("     instead caps NCCL bandwidth. Same symptom class, opposite remedy.)")
             print("")
+        elif info["state"] == "cuda-error":
+            blockers.append(f"CUDA does not initialise on {where} (cuInit {info['cuinit']})")
+            print(
+                f"  CUDA NOT USABLE on {where}: nvidia-smi works but cuInit returns "
+                f"{info['cuinit']}. That is not the 100 (CUDA_ERROR_NO_DEVICE) hardware "
+                f"fault a reboot clears; the usual cause is a driver and userspace "
+                f"mismatch. Check `nvidia-smi` against the installed CUDA runtime.\n"
+            )
         elif info["state"] == "unknown":
             print(f"  could not determine GPU health on {where}\n")
 
@@ -1705,6 +1836,9 @@ def _cmd_doctor() -> int:
             print(f"  llama.cpp: {note}")
             print("")
 
+    if bundle_bad:
+        blockers.append("the llama.cpp bundles do not match")
+
     print(f"Measuring NCCL all-reduce {local} <-> {peer} (takes ~30s)...")
     result = diagnose_link(nccl_bandwidth(peer, local))
     print("")
@@ -1712,9 +1846,19 @@ def _cmd_doctor() -> int:
     if result["advice"]:
         print("")
         print(result["advice"])
-    if result["verdict"] not in ("healthy", "unknown"):
+    if result["verdict"] == "unknown":
+        # Not a pass. The distributed health of the pair was not established, and a dead
+        # engine is one of the reasons the measurement comes back unknown.
+        blockers.append("the NCCL bandwidth could not be measured, so the link is unverified")
+    elif result["verdict"] != "healthy":
+        blockers.append(f"the link measured {result['verdict']}")
+    if blockers:
+        print("")
+        print("  doctor FAILED:")
+        for blocker in blockers:
+            print(f"    - {blocker}")
         return 1
-    return 1 if bundle_bad else 0
+    return 0
 
 
 def _cmd_status(benchmark: bool = False) -> int:
@@ -1735,6 +1879,8 @@ def _cmd_status(benchmark: bool = False) -> int:
         print(f"  {rail['ib_device']:<14} {rail['netdev']:<16} mtu={rail['mtu']}  {ips}")
     for peer in info["mdns_peers"]:
         print(f"  peer seen: {peer['hostname']} at {peer['address']}")
+    for problem in cluster_config_problems():
+        print(f"  PLAN DRIFT: {problem}")
     events = link_carrier_events(info["cabled_rails"])
     shown = ", ".join(f"{k}={v}" for k, v in events.items() if v is not None)
     if shown:
@@ -1751,21 +1897,33 @@ def _cmd_status(benchmark: bool = False) -> int:
         if peer_ip:
             break
     if benchmark and peer_ip:
-        rails = info["cabled_rails"]
-        if rails:
-            print(f"  measuring {rails[0]['ib_device']} against {peer_ip} ...")
-            local_ip = info["configured"][0]["ipv4"][0]
-            health = link_health(peer_ip, rails[0]["ib_device"], local_ip)
+        # Every configured rail, not the first one. NCCL_IB_MERGE_NICS hands the job both
+        # PCIe functions, so measuring rails[0] and declaring the pair healthy said nothing
+        # about the second one, which can be unaddressed, misconfigured or degraded and still
+        # take half the traffic.
+        degraded = False
+        for rail in info["configured"]:
+            local_ip = rail["ipv4"][0]
+            rail_peer = peer_address_of(local_ip)
+            if not rail_peer:
+                print(f"  {rail['ib_device']}: no peer address derivable from {local_ip}")
+                continue
+            print(f"  measuring {rail['ib_device']} against {rail_peer} ...")
+            health = link_health(rail_peer, rail["ib_device"], local_ip)
             if not health:
                 print("  (could not measure; is ib_write_bw running on the peer?)")
             elif health["degraded"]:
+                degraded = True
                 print(
-                    f"  MEASURED {health['gbps']:.2f} Gb/s -- well below "
-                    f"~{health['expected_gbps']:.0f} Gb/s per rail."
+                    f"  MEASURED {health['gbps']:.2f} Gb/s on {rail['ib_device']} -- well "
+                    f"below ~{health['expected_gbps']:.0f} Gb/s per rail."
                 )
-                print(f"  {HOTPLUG_NOTE}")
             else:
-                print(f"  MEASURED {health['gbps']:.2f} Gb/s per rail -- healthy.")
+                print(
+                    f"  MEASURED {health['gbps']:.2f} Gb/s on {rail['ib_device']} -- healthy."
+                )
+        if degraded:
+            print(f"  {HOTPLUG_NOTE}")
     elif peer_ip:
         print("  (run `unsloth spark status --benchmark` to measure the link;")
         print("   carrier counters alone cannot tell a throttled link from a healthy one)")
@@ -2537,42 +2695,224 @@ SPARK_USABLE_GIB = 121.69
 SERVE_OVERHEAD_GIB = 8.0
 
 
-def model_size_gib(target: str) -> Optional[float]:
-    """Best-effort size of a model, from a file, a directory, or the HF cache. None rather
-    than a guess: a wrong size produces confidently wrong deployment advice."""
+_GGUF_SHARD_RE = re.compile(r"^(?P<series>.+)-\d{5}-of-\d{5}\.gguf$")
+
+
+def _weight_group(filename: str) -> Optional[str]:
+    """Which mutually exclusive artifact a weight file belongs to, or None if it is not one.
+
+    Shards of one model share a group and are summed; alternatives get their own group and
+    must never be. `a-00001-of-00003.gguf` and `a-00002-of-00003.gguf` are one model,
+    `a-Q4_K_M.gguf` and `a-Q8_0.gguf` are two, and `model.safetensors` beside
+    `pytorch_model.bin` is one model written twice."""
+    if filename.endswith(".gguf"):
+        match = _GGUF_SHARD_RE.match(filename)
+        return f"gguf:{match.group('series')}" if match else f"gguf:{filename[:-5]}"
+    if filename.endswith(".safetensors"):
+        return "safetensors"
+    if filename.endswith(".bin"):
+        return "bin"
+    return None
+
+
+def _size_one_group(files: List[Tuple[str, str]]) -> Dict[str, Any]:
+    """Total bytes of the ONE model in `files` [(name, path)], or why there is not exactly one.
+
+    Summing everything was wrong in both directions. A directory of alternative quantizations
+    reported their combined size, so a model that fits each Spark was planned as too large for
+    the pair; a repo carrying both safetensors and the legacy .bin counted the same weights
+    twice. Neither is recoverable by the caller, because a plausible number is indistinguishable
+    from a right one, so an ambiguous directory is refused rather than guessed at."""
+    groups: Dict[str, int] = {}
+    seen: set = set()
+    for name, full in files:
+        group = _weight_group(name)
+        if group is None:
+            continue
+        try:
+            real = osp.realpath(full)
+            if real in seen:
+                continue
+            seen.add(real)
+            groups[group] = groups.get(group, 0) + osp.getsize(real)
+        except OSError:
+            pass
+    # The same weights in two formats: transformers reads the safetensors, so does Unsloth.
+    if "safetensors" in groups:
+        groups.pop("bin", None)
+    if not groups:
+        return {"bytes": None, "why": "no weight files found"}
+    if len(groups) > 1:
+        names = ", ".join(sorted(groups))
+        return {
+            "bytes": None,
+            "why": (
+                f"{len(groups)} alternative models are present ({names}); name one file so "
+                f"the size is the model that will actually load"
+            ),
+        }
+    return {"bytes": next(iter(groups.values())), "why": ""}
+
+
+def _hf_snapshot_dir(root: str) -> Optional[str]:
+    """The snapshot `refs/main` points at, which is the one that loads. Walking the whole
+    `models--...` tree also counted superseded revisions, overstating an updated repo."""
+    ref = osp.join(root, "refs", "main")
+    try:
+        with open(ref, "r", encoding = "utf-8") as handle:
+            commit = handle.read().strip()
+    except OSError:
+        commit = ""
+    if commit:
+        snapshot = osp.join(root, "snapshots", commit)
+        if osp.isdir(snapshot):
+            return snapshot
+    snapshots = osp.join(root, "snapshots")
+    try:
+        entries = [osp.join(snapshots, d) for d in os.listdir(snapshots)]
+    except OSError:
+        return None
+    dirs = [d for d in entries if osp.isdir(d)]
+    return dirs[0] if len(dirs) == 1 else None
+
+
+def model_size_report(target: str) -> Dict[str, Any]:
+    """`{"gib": float|None, "why": str}`: the size of the ONE model `target` names, or why
+    that cannot be answered. None rather than a guess: a wrong size produces confidently
+    wrong deployment advice, and the caller has no way to tell the two apart."""
     path = osp.expanduser(target)
     if osp.isfile(path):
-        return osp.getsize(path) / 2**30
-    if osp.isdir(path):
-        total = 0
-        for root, _, files in os.walk(path):
-            for f in files:
-                if f.endswith((".safetensors", ".gguf", ".bin")):
-                    try:
-                        total += osp.getsize(osp.join(root, f))
-                    except OSError:
-                        pass
-        return total / 2**30 if total else None
-    # A repo id: read the HF cache rather than the network, which is ~20 KB/s here.
-    cache = osp.expanduser("~/.cache/huggingface/hub")
-    slug = "models--" + target.replace("/", "--")
-    root = osp.join(cache, slug)
-    if osp.isdir(root):
-        total, seen = 0, set()
-        for dirpath, _, files in os.walk(root):
-            for f in files:
-                full = osp.join(dirpath, f)
-                try:
-                    real = osp.realpath(full)
-                    if real in seen:
-                        continue
-                    seen.add(real)
-                    if f.endswith((".safetensors", ".gguf", ".bin")):
-                        total += osp.getsize(real)
-                except OSError:
-                    pass
-        return total / 2**30 if total else None
-    return None
+        try:
+            return {"gib": osp.getsize(path) / 2**30, "why": ""}
+        except OSError as exc:
+            return {"gib": None, "why": f"could not read {path}: {exc}"}
+    root = path if osp.isdir(path) else None
+    if root is None:
+        # A repo id: read the HF cache rather than the network, which is ~20 KB/s here.
+        cache = osp.expanduser("~/.cache/huggingface/hub")
+        slug = "models--" + target.replace("/", "--")
+        repo = osp.join(cache, slug)
+        if not osp.isdir(repo):
+            return {"gib": None, "why": f"{target} is not a file, a directory or in the HF cache"}
+        root = _hf_snapshot_dir(repo)
+        if root is None:
+            return {
+                "gib": None,
+                "why": f"the HF cache for {target} has no single current snapshot to size",
+            }
+    files = []
+    for dirpath, _, names in os.walk(root):
+        files.extend((name, osp.join(dirpath, name)) for name in names)
+    result = _size_one_group(files)
+    if result["bytes"] is None:
+        return {"gib": None, "why": f"{target}: {result['why']}"}
+    return {"gib": result["bytes"] / 2**30, "why": ""}
+
+
+def model_size_gib(target: str) -> Optional[float]:
+    """Best-effort size of a model, from a file, a directory, or the HF cache."""
+    return model_size_report(target)["gib"]
+
+
+# GGUF value types, by the spec's numbering. Only the fixed-width ones need a size here;
+# strings and arrays carry their own length.
+_GGUF_FIXED = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_UNPACK = {
+    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+    6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+}
+
+
+def _gguf_read_value(handle, value_type: int, depth: int = 0):
+    """One GGUF value. Arrays of fixed-width elements are seeked over rather than read: the
+    tokenizer arrays are the bulk of the header and none of them is wanted here."""
+    if value_type in _GGUF_FIXED:
+        raw = handle.read(_GGUF_FIXED[value_type])
+        if len(raw) < _GGUF_FIXED[value_type]:
+            raise ValueError("truncated GGUF header")
+        return struct.unpack(_GGUF_UNPACK[value_type], raw)[0]
+    if value_type == 8:
+        (length,) = struct.unpack("<Q", handle.read(8))
+        return handle.read(length).decode("utf-8", "replace")
+    if value_type == 9:
+        if depth:
+            raise ValueError("nested GGUF array")
+        element, count = struct.unpack("<IQ", handle.read(12))
+        if element in _GGUF_FIXED and count > 64:
+            handle.seek(_GGUF_FIXED[element] * count, 1)
+            return []
+        return [_gguf_read_value(handle, element, depth + 1) for _ in range(count)]
+    raise ValueError(f"unknown GGUF value type {value_type}")
+
+
+def gguf_metadata(path: str) -> Dict[str, Any]:
+    """The GGUF key/value header, or `{}` when `path` is not a readable GGUF.
+
+    Only the header is read; tensor data is never touched. Long fixed-width arrays come back
+    empty because nothing here wants them, and reading a 150k-entry token list to discard it
+    would put seconds into a planning command."""
+    try:
+        with open(osp.expanduser(path), "rb") as handle:
+            magic, version = struct.unpack("<4sI", handle.read(8))
+            if magic != b"GGUF" or version not in (2, 3):
+                return {}
+            _, kv_count = struct.unpack("<QQ", handle.read(16))
+            out: Dict[str, Any] = {}
+            for _ in range(min(kv_count, 4096)):
+                (key_len,) = struct.unpack("<Q", handle.read(8))
+                key = handle.read(key_len).decode("utf-8", "replace")
+                (value_type,) = struct.unpack("<I", handle.read(4))
+                out[key] = _gguf_read_value(handle, value_type)
+            return out
+    except (OSError, ValueError, struct.error, UnicodeDecodeError):
+        return {}
+
+
+def gguf_kv_bytes_per_token(meta: Dict[str, Any]) -> Optional[float]:
+    """Bytes of KV cache one token costs, or None when the header does not say.
+
+    K and V, every layer, at the f16 default llama-server uses unless told otherwise. None
+    rather than a default: the whole point of the number is to decide whether a context fits,
+    and a made-up one decides it wrongly with no way for the caller to tell."""
+    arch = meta.get("general.architecture")
+    if not isinstance(arch, str) or not arch:
+        return None
+    layers = meta.get(f"{arch}.block_count")
+    heads_kv = meta.get(f"{arch}.attention.head_count_kv")
+    key_len = meta.get(f"{arch}.attention.key_length")
+    value_len = meta.get(f"{arch}.attention.value_length")
+    if key_len is None or value_len is None:
+        embedding = meta.get(f"{arch}.embedding_length")
+        heads = meta.get(f"{arch}.attention.head_count")
+        if not isinstance(embedding, int) or not isinstance(heads, int) or heads <= 0:
+            return None
+        key_len = value_len = embedding // heads
+    if not isinstance(key_len, int) or not isinstance(value_len, int):
+        return None
+    per_layer = float(key_len + value_len) * 2.0  # f16
+    if isinstance(heads_kv, list) and heads_kv:
+        # Hybrid stacks give head_count_kv per layer, and a layer with 0 has no KV cache
+        # at all, so multiplying by a single head count would invent memory it never uses.
+        return sum(float(h) * per_layer for h in heads_kv)
+    if not isinstance(layers, int) or not isinstance(heads_kv, int):
+        return None
+    return float(layers) * float(heads_kv) * per_layer
+
+
+def serving_kv_gib_per_user(model: str, ctx: int) -> Dict[str, Any]:
+    """`{"gib": float|None, "why": str}` -- the KV one user's full context costs.
+
+    A model whose weights fit but whose KV does not is the case the fit classes cannot see on
+    their own: at 8192 tokens and 16 slots a 27B-class GGUF wants tens of GiB of cache, far
+    past the flat `SERVE_OVERHEAD_GIB` allowance, so it was planned as fitting and then died
+    at load."""
+    path = osp.expanduser(model)
+    if not (osp.isfile(path) and path.endswith(".gguf")):
+        return {"gib": None, "why": "KV per user is only read from a GGUF header"}
+    per_token = gguf_kv_bytes_per_token(gguf_metadata(path))
+    if per_token is None:
+        return {"gib": None, "why": f"{model} does not declare the dimensions KV size needs"}
+    return {"gib": per_token * max(1, int(ctx)) / 2**30, "why": ""}
 
 
 # Llama-3.3-70B fp8 on two Sparks against one. TP is the ONLY axis that makes a single
@@ -3580,6 +3920,17 @@ def _cmd_setup(
     # different: that is the documented "provision it later" path and stays a success.
     if provision_failures:
         return 1
+    # The netplan above is PRINTED, never applied: this command does not write /etc/netplan
+    # or run `netplan apply`, because reconfiguring a machine's networking as a side effect
+    # of a plan is not something it may do unasked. What it must not do either is return
+    # success while the rails still carry no address -- `spark up --yes` then failed its own
+    # `cluster_state() == "configured"` check immediately after setup said it was done, with
+    # nothing naming the step in between.
+    if cluster_state() != "configured":
+        print("\n  NOT YET CONFIGURED: the rails still have no address, because the netplan")
+        print("  above has to be applied by you. Run the numbered commands on both Sparks,")
+        print("  then re-run `unsloth spark setup` to provision the peer.")
+        return 1
     return 0
 
 
@@ -3599,30 +3950,67 @@ def _cmd_serve(
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0
-    plan = rpc_cluster_plan(rpc_port)
-    if not plan["ok"]:
-        for problem in plan["problems"]:
-            print(f"  cannot serve across both Sparks: {problem}")
+    peer_ip = peer_ip_for()
+    if peer_ip is None:
+        print("  cannot serve across both Sparks: no configured peer rail (run `unsloth spark setup`)")
         return 1
-
-    binary = plan["rpc_server"]
-    peer_ip = plan["peer_ip"]
     engines = max(1, engines)
 
     # Decide the topology from the model: the rule is not guessable, and the right answer
     # flips at the point where two copies stop fitting.
-    size = model_size_gib(model)
-    advice = plan_deployment(size, two_sparks = True, concurrency = slots)
-    bin_dir = Path(binary).parent
-    peer_bin_dir = _peer_relative_path(bin_dir)
-    if advice["topology"] == "replicas":
+    sized = model_size_report(model)
+    size = sized["gib"]
+    if size is None:
+        # Falling through printed a two-engine split recipe for a model whose size was never
+        # established, which is the one thing this command must not do.
+        print(f"  cannot plan a deployment: {sized['why']}")
+        return 1
+    kv = serving_kv_gib_per_user(model, ctx)
+    advice = plan_deployment(
+        size,
+        two_sparks = True,
+        concurrency = slots,
+        kv_gib_per_user = kv["gib"] or 0.0,
+    )
+    # The fit class answers "how many copies fit on ONE node", which is not the launch
+    # topology: `single-or-replicas` means each Spark holds exactly one copy, so two replicas
+    # DO fit across the pair. Reading it as a split forced the 0.92x layout onto the range
+    # where replicas measured 1.30x to 1.91x. `serving` is the recommendation that already
+    # weighs concurrency and KV; use it, and keep the fit class for what does not fit at all.
+    serving = advice.get("serving") or {}
+    topology = serving.get("topology") or advice["topology"]
+    if advice["topology"] == "too-large":
+        print(f"  {advice['summary']}")
+        return 1
+
+    if topology in ("replicas", "single"):
         # Independent replicas never touch the wire during decode: each Spark runs at full
-        # local memory bandwidth, coordinated only by a request-level round-robin.
+        # local memory bandwidth, coordinated only by a request-level round-robin. No RPC is
+        # involved, so nothing here may require the RPC server to be present.
+        server = llama_server_binary()
+        if server is None:
+            print(f"  no llama-server in {llama_bundle_dir()}; reinstall the llama.cpp bundle")
+            return 1
+        bin_dir = Path(server).parent
+        peer_bin_dir = _peer_relative_path(bin_dir)
         local_port, peer_port = port + 1, port + 2
         print(f"  model    : {model}  ({size:.1f} GiB)")
+        if kv["gib"]:
+            print(f"  kv       : {kv['gib']:.2f} GiB per user at --ctx-size {ctx}")
+        else:
+            print(f"  kv       : not counted -- {kv['why']}")
+        if topology == "single":
+            print("  topology : ONE SPARK -- the second buys nothing at this concurrency")
+            print("")
+            print(f"  {serving.get('reason', '')}")
+            print("")
+            print(f"     {bin_dir}/llama-server -m {model} \\")
+            print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
+            print(f"         --host 0.0.0.0 --port {port}")
+            return 0
         print("  topology : INDEPENDENT REPLICAS -- one full model per Spark, no RPC")
         print("")
-        print("  Two copies fit, and for a model that fits this beats every split layout:")
+        print("  One copy per Spark, and for a model that fits this beats every split layout:")
         print("  a layer split never speeds up decode (0.85x to 1.01x measured from 1 to 32")
         print("  users), while two replicas measured 1.30x at 8 users, 1.75x at 16 and")
         print("  1.91x at 32. Below 8 concurrent users one Spark is as good as two.")
@@ -3647,16 +4035,23 @@ def _cmd_serve(
         print("")
         print(f"  Clients talk to port {port}. Nothing crosses the wire during decode.")
         return 0
-    elif advice["topology"] in ("layer-split", "single-or-replicas") and engines > 1:
+
+    # A split, and only now is the RPC server a requirement.
+    plan = rpc_cluster_plan(rpc_port)
+    if not plan["ok"]:
+        for problem in plan["problems"]:
+            print(f"  cannot layer-split across both Sparks: {problem}")
+        return 1
+    binary = plan["rpc_server"]
+    bin_dir = Path(binary).parent
+    peer_bin_dir = _peer_relative_path(bin_dir)
+    if engines > 1:
         # Two split engines need two full copies of the weights, so obeying --engines 2 here
         # would OOM mid-load.
         print(f"  {model} is {size:.1f} GiB -- two copies do not fit across the pair.")
         print("  Forcing --engines 1 (layer split). This buys capacity, not speed.")
         print("")
         engines = 1
-    elif advice["topology"] == "too-large":
-        print(f"  {advice['summary']}")
-        return 1
 
     # Both nodes must speak the same RPC protocol, and the build pins it; check before
     # printing a launch that would fail at load.
@@ -3671,6 +4066,20 @@ def _cmd_serve(
         return 1
     print("")
 
+    # The peer's own answer, not ours mapped onto it. A source build lives at a path the
+    # peer was never given -- provisioning copies the managed bundle and nothing else -- so
+    # deriving the remote command from the local layout emitted an ssh line for a file that
+    # is not there, after a preflight that had just reported everything fine.
+    peer_server = (preflight.get("peer") or {}).get("rpc_server")
+    if peer_server:
+        # Already absolute in the PEER's filesystem, whose home may not be ours.
+        peer_command = peer_server
+    else:
+        peer_command = f"{peer_bin_dir}/{Path(binary).name}"
+        print("  note: the peer's bundle could not be probed, so the command below assumes it")
+        print("        keeps its ggml-rpc-server where this Spark does.")
+        print("")
+
     print(f"  model   : {model}")
     print(f"  engines : {engines} (each layer-split across both Sparks)")
     print(f"  peer    : {peer_ip}")
@@ -3678,13 +4087,16 @@ def _cmd_serve(
     print(f"  1. Start {engines} rpc-server(s) on the peer, one per engine:")
     for i in range(engines):
         print(
-            f"     ssh {peer_ip} '{peer_bin_dir}/{Path(binary).name} "
+            f"     ssh {peer_ip} '{peer_command} "
             f"-H 0.0.0.0 -p {rpc_port + i} -c'"
         )
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
+    # Resolved on its own: an rpc-server found in a source tree says nothing about where
+    # llama-server is, and the two need not share a directory.
+    local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
-        print(f"     {bin_dir}/llama-server -m {model} \\")
+        print(f"     {local_server} -m {model} \\")
         print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx} \\")
         print(f"         -np {slots} -cb -ub 512 --host 127.0.0.1 --port {port + 1 + i}")
     print("")
