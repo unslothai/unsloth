@@ -277,8 +277,9 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
 def test_shell_torch_floor_intentionally_precedes_torchcodec():
     ips = _load_install_python_stack()
     source = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
-    floors = re.findall(r'TORCH_CONSTRAINT="torch>=2\.(\d+),', source)
+    floors = re.findall(r'^\s*TORCH_CONSTRAINT="torch>=2\.(\d+)(?:\.\d+)?,', source, re.M)
     assert floors, "install.sh torch constraints were not found"
+    assert floors.count("4") == 2, "both default and gfx906 floors must retain the opt-out"
     shell_floor = min(map(int, floors))
     codec_floor = min(ips._TORCHCODEC_TORCH_SPECS)
     assert (shell_floor, codec_floor) == (4, 5), "revisit the documented torchcodec opt-out"
