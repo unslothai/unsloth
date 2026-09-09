@@ -488,6 +488,9 @@ class _LlamaStreamCancelled(Exception):
 _TOOL_PRIME_PENDING = object()
 # A parallel round entry whose driver has not started; the round starts them all together below.
 _TOOL_START_DEFERRED = object()
+# An entry of a parallel round the context gate declined BEFORE it ran. Kept apart from a
+# result because the settle records an execution, and this call never made one.
+_TOOL_CALL_REFUSED = object()
 
 
 def _drive_tool_stream(stream, out_queue) -> None:
@@ -32821,7 +32824,9 @@ class LlamaCppBackend:
                                     # Only the window case: a spent output cap belongs to THIS
                                     # request, and "does not fit" would hide a working Continue.
                                     if _cap_left_c != 0 and not _continuation_refusal_announced:
-                                        _refusal_c = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                        _refusal_c = _continuation_refusal_event(
+                                            _iteration_fit_max_tokens
+                                        )
                                         if _refusal_c is not None:
                                             _continuation_refusal_announced = True
                                             yield _refusal_c
@@ -32934,7 +32939,9 @@ class LlamaCppBackend:
                                 # Same signal and the same exclusion for a cap the caller set: this
                                 # turn ends at the window, and a resume meets the preflight's refusal.
                                 if not _reasoning_cap_spent and not _continuation_refusal_announced:
-                                    _refusal_l = _continuation_refusal_event(_iteration_fit_max_tokens)
+                                    _refusal_l = _continuation_refusal_event(
+                                        _iteration_fit_max_tokens
+                                    )
                                     if _refusal_l is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_l
@@ -33789,16 +33796,23 @@ class LlamaCppBackend:
                             # Its place in the round is still its own: closed and appended
                             # here, ahead of the calls before it still running, the tool
                             # messages settled out of the model's order.
+                            #
+                            # Marked refused rather than queued as a result. The settle is
+                            # the real-execution path: it calls `record_result`, and a
+                            # refusal is not an error, so the controller would file this
+                            # call as a success -- spending the turn's one shot at
+                            # `render_html` on a call that never ran and turning the
+                            # smaller retry that follows into a no-op.
                             _pending_calls.append(
                                 (
                                     decision,
                                     None,
                                     None,
                                     _unservable_text,
+                                    _TOOL_CALL_REFUSED,
                                     None,
-                                    ["<not passed>"],
-                                    [False],
-                                    _compact_after_execution,
+                                    None,
+                                    False,
                                 )
                             )
                         else:
@@ -34374,7 +34388,7 @@ class LlamaCppBackend:
                     _p_stream,
                     _p_queue,
                     _p_result,
-                    _p_error,
+                    _p_refused,
                     _p_budget,
                     _p_starved,
                     _p_compact,
@@ -34383,6 +34397,26 @@ class LlamaCppBackend:
                         # A card to close, not a call to settle: the controller made this one an
                         # internal no-op and its provisional card is still on screen.
                         yield _p_result
+                        continue
+                    if _p_refused is _TOOL_CALL_REFUSED:
+                        # Declined before it ran, settled the way the sequential branch
+                        # settles it: the refusal is emitted and answered in this call's
+                        # slot of the round, and nothing is recorded as executed.
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _p_decision.tool_name,
+                            "tool_call_id": _p_decision.tool_call_id,
+                            "result": _p_result,
+                            "provenance": _p_decision.provenance,
+                        }
+                        _refused_message = {
+                            "role": "tool",
+                            "name": _p_decision.tool_name,
+                            "content": _p_result,
+                        }
+                        if _p_decision.tool_call_id:
+                            _refused_message["tool_call_id"] = _p_decision.tool_call_id
+                        conversation.append(_refused_message)
                         continue
                     if _p_queue is None:
                         # Nothing was started for it: the RAG cap answered before the tool would
