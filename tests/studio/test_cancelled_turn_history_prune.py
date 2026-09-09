@@ -183,9 +183,8 @@ CANCELLED = (
     '{ role: "assistant", content: [], status: { type: "incomplete" },'
     ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
 )
-# A Stop before any output yields nothing, so no marker is persisted and assistant-ui's
-# status is the only record of why the turn ended. A generation that died instead gets the
-# same empty shape under `reason: "error"`.
+# A Stop before any output yields nothing, so the status is the only record left; a failed
+# generation has the same shape under `reason: "error"`.
 STOPPED_UNMARKED = (
     '{ role: "assistant", content: [],'
     ' status: { type: "incomplete", reason: "cancelled" } }'
@@ -231,11 +230,8 @@ def test_the_defect_is_two_user_turns_touching_on_the_wire():
 
 
 def test_a_stop_before_any_output_keeps_its_prompt_on_the_wire():
-    """#10428: queue continue after Stop must still transmit the interrupted user turn.
-
-    #9484 required alternating roles, not deleting the prompt. The placeholder is
-    what stops the two user turns touching.
-    """
+    """#10428: the queued turn after Stop must still transmit the interrupted prompt. #9484
+    required alternating roles, not deleting it, and the placeholder is what gives them."""
     out = _run(_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]"))
     assert out["kept"] == ["user", "assistant", "user"]
     assert out["keptText"] == ["first", "second"]
@@ -476,11 +472,10 @@ def test_a_stop_with_no_persisted_marker_still_reads_as_a_stop():
 
 
 def test_a_generation_that_failed_is_not_replayed_as_a_stop():
-    """A failed turn has the same empty shape, and assistant-ui marks it ``reason: "error"``.
+    """A failed turn has the same empty shape, marked ``reason: "error"``.
 
-    Its prompt was never answered either, so it stays on the wire for the same reason a
-    Stop's does. Filling it with the cancelled label would tell the model the user stopped
-    a response the backend actually dropped.
+    Its prompt was never answered either, so it stays for the same reason a Stop's does, but
+    the cancelled label would tell the model the user stopped a response the backend dropped.
     """
     for is_external in ("false", "true"):
         out = _run(

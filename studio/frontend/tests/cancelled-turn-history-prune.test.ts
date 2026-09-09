@@ -69,8 +69,7 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
 });
 
 test("only a deliberate Stop is replayed as one", () => {
-  // No yield means no persisted marker, so the label comes off assistant-ui's status; a
-  // failed generation reaching the model as "Response stopped" would be a lie.
+  // Collapsing this back to a constant tells the model a failed turn was stopped.
   assert.match(
     adapter,
     /status\?\.type !== "incomplete" \|\| status\.reason === "cancelled"/,
