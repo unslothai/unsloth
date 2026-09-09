@@ -1733,17 +1733,20 @@ def test_a_cancelled_reply_is_not_duplicated_or_dropped_by_the_buffer_accounting
     assert texts and texts[-1].startswith('{"name":"terminal","arguments":{}}')
 
 
-@pytest.mark.parametrize("text", [
-    # ``arguments`` as a JSON STRING, a shape the parser accepts and the mask ignored.
-    '{"name":"terminal","arguments":"{\\"c\\":\\"<function=python>'
-    '<parameter=code>print(1)</parameter></function>\\"}"}',
-    '<|eot_id|>{"name":"terminal","arguments":"{\\"c\\":\\"<function=python>'
-    '<parameter=code>print(1)</parameter></function>\\"}"}',
-    # The SECOND object of an accepted ``;`` chain: only the leading one was masked.
-    '{"name":"terminal","arguments":{"c":"id"}};'
-    '{"name":"terminal","arguments":{"c":"<function=python>'
-    '<parameter=code>print(1)</parameter></function>"}}',
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ``arguments`` as a JSON STRING, a shape the parser accepts and the mask ignored.
+        '{"name":"terminal","arguments":"{\\"c\\":\\"<function=python>'
+        '<parameter=code>print(1)</parameter></function>\\"}"}',
+        '<|eot_id|>{"name":"terminal","arguments":"{\\"c\\":\\"<function=python>'
+        '<parameter=code>print(1)</parameter></function>\\"}"}',
+        # The SECOND object of an accepted ``;`` chain: only the leading one was masked.
+        '{"name":"terminal","arguments":{"c":"id"}};'
+        '{"name":"terminal","arguments":{"c":"<function=python>'
+        '<parameter=code>print(1)</parameter></function>"}}',
+    ],
+)
 def test_every_blocked_object_in_a_bare_json_chain_is_masked(text):
     from core.tool_healing import parse_tool_calls_from_text as light
 

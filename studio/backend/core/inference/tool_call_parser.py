@@ -782,7 +782,11 @@ _INFERENCE_WRAPPER_OPENERS = (
 
 # Openers whose body can hold a markerless call as ARGUMENT text.
 _CONTAINING_WRAPPERS = (
-    "<tool_call>", "<|tool_call>", "<function=", '<function name="', "[TOOL_CALLS]",
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    '<function name="',
+    "[TOOL_CALLS]",
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -888,10 +892,7 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             value = _top_level_args_value(probe, probe.index("{"), lead)
             if value is not None:
                 begin, stop, is_string = value
-                inner = (
-                    [(begin, stop)] if is_string
-                    else _string_content_spans(probe, begin, stop)
-                )
+                inner = [(begin, stop)] if is_string else _string_content_spans(probe, begin, stop)
                 spans.extend((a + shift, b + shift) for a, b in inner)
         cursor = shift + lead
     spans = [(start, end) for start, end in spans if end > start]
