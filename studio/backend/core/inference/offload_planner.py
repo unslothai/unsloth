@@ -705,7 +705,9 @@ def _kv_floor_at(
       slot from n_ctx 9216 to 132096 on gemma-4-26B), which is the safe direction for both.
     """
     at = max(1, opts.n_parallel)
-    want = max(1, n_parallel)
+    # One unified cache serves every slot: only the recurrent state (charged per
+    # slot by the resident sizes) follows the count, the attention cache does not.
+    want = at if opts.kv_unified else max(1, n_parallel)
     if opts.kv_bytes_at is not None:
         return _measured_cache_at(layout, opts, n_ctx, want)
     base = max(0, kv_bytes_floor)
@@ -1128,6 +1130,9 @@ def _fit_fallback_placement(
     blocks = list(layout.blocks)
     if not blocks:
         return None
+    # Both arms size ONE cache: the planner's arm trusts the exact size, so the
+    # fitter must too (the product charges a q4_0 cache 1.78x its real bytes).
+    trust = opts.kv_bytes_at is not None
     resident = all_resident_bytes(
         layout,
         n_ctx,
@@ -1135,6 +1140,7 @@ def _fit_fallback_placement(
         kv_bytes_floor = kv_bytes_floor,
         kv_on_host = kv_on_host,
         n_seq = max(1, n_seq),
+        trust_floor = trust,
     )
     # The cache follows the layer, so a layer moved to host takes its share with
     # it. Per-layer rather than per-attention-layer: SWA already makes the
@@ -1142,7 +1148,13 @@ def _fit_fallback_placement(
     kv_total = (
         0
         if kv_on_host
-        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+        else cache_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            trust_floor = trust,
+        )
     )
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
@@ -2113,7 +2125,13 @@ def _per_device_usage(
     cache = (
         0
         if opts.kv_on_host
-        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+        else cache_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            trust_floor = opts.kv_bytes_at is not None,
+        )
     )
     # Scaled without under-booking the caller's total (ceiling, not floor: a
     # per-device shortfall is a hard throw). Uniform when unsupplied.
@@ -2425,15 +2443,12 @@ def _plan_at(
     # per-device check would split a re-priced total by ratios that no longer
     # hold and could pass a card that then fails allocation under --fit off.
     #
-    # And not at all under --kv-unified, where one cache serves every slot: the
-    # slot count does not size it, so the whole rung buys concurrency away for
-    # nothing. Where the count DOES size it, a step that leaves ``needed`` where
-    # it was (a floor map that is flat across the count) says the same thing one
-    # step at a time, so it is undone and the rung ends there.
+    # A step that leaves ``needed`` where it was (a flat floor map, or a unified
+    # cache with no recurrent state) buys concurrency away for nothing: it is
+    # undone and the rung ends there.
     slots_repriceable_per_device = not (n_devices > 1 and layout.has_swa)
     while (
         needed > budget
-        and not opts.kv_unified
         and slots_repriceable_per_device
         and knobs.n_parallel > max(1, opts.min_parallel)
     ):
@@ -2481,7 +2496,6 @@ def _plan_at(
                     take(_Knobs(knobs.n_parallel, True, knobs.draft_dropped))
                 while (
                     uneven is not None
-                    and not opts.kv_unified
                     and slots_repriceable_per_device
                     and knobs.n_parallel > max(1, opts.min_parallel)
                 ):

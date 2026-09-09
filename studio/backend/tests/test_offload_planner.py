@@ -3211,3 +3211,49 @@ def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
     even = [SpillUnit(i, None, 100 * MIB) for i in range(3)]
     kept, _ = _select_units(even, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
     assert [u.index for u in kept] == [2]
+
+
+def test_the_per_device_check_sizes_the_cache_the_caller_measured():
+    """The pooled deficit trusted ``kv_bytes_at`` while the per-device check went
+    back through the product, so a q4_0 cache was spread over the cards at 1.78x
+    its bytes and FFN moved for cache that is not there."""
+    layout = ModelLayout(
+        arch = "dense",
+        blocks = tuple(BlockLayout(i, 64 * MIB, 64 * MIB) for i in range(16)),
+        complete = True,
+        n_layers = 16,
+        n_attention_layers = 16,
+        kv_bytes_per_token_f16 = 4 * GIB // 4096,
+        n_ctx_train = 131072,
+    )
+
+    def kv_at(n_ctx: int, slots: int) -> int:
+        return layout.kv_bytes(n_ctx, 1) * 9 // 32  # q4_0: 4.5 bits per element
+
+    exact = kv_at(4096, 4)
+    vram = [6 * GIB // 5, 11 * GIB // 5]  # each card holds its rows with the exact cache only
+    base = PlanOptions(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        n_parallel = 4,
+        min_parallel = 4,
+        cache_quantised = True,
+    )
+    plans = []
+    for o in (replace(base, kv_bytes_at = kv_at), base):
+        plans.append(
+            plan_placement(
+                layout,
+                vram,
+                64 * GIB,
+                4096,
+                opts = o,
+                kv_bytes_floor = exact,
+                split_weights_per_device = vram,
+                kv_layer_weights = [1] * 16,
+            )
+        )
+    trusted, product = plans
+    assert not trusted.spills_anything, trusted.reason
+    assert product.spills_anything, product.reason

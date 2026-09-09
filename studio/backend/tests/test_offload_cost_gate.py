@@ -1131,3 +1131,39 @@ def test_the_per_layer_vector_reaches_the_gate_from_plan_placement():
     with_vector = plan_placement(layout, card, 94 * GIB, 32768, opts = opts, kv_layer_weights = hybrid)
     assert plain.spilled_blocks == with_vector.spilled_blocks
     assert plain.predicted_fit_request_ms != with_vector.predicted_fit_request_ms
+
+
+def test_the_fitter_is_modelled_on_the_cache_size_the_caller_measured():
+    """Both arms have to describe ONE cache, and only one of them did.
+
+    ``PlanOptions.kv_bytes_at`` prices the exact (context, slots) the child will
+    run, and every feasibility site takes it as given (``trust_floor``). The
+    fitter model did not: it went back through ``cache_bytes`` without the flag,
+    which takes the max against the layout's product, and that product charges a
+    quantised cache ONE byte per element. A q4_0 cache is 4.5 bits
+    (``_kv_bytes_per_elem`` in llama_cpp.py), so the fitter was modelled on a
+    cache 1.78x its real size, appeared to move layers to carry cache it does not
+    hold, and the gate approved a spill the real fitter beats.
+    """
+    layout = dense_layout(kv_gib_at_32k = 6.0)
+    exact = int(layout.kv_bytes(32768, 1) * 0.5625)
+
+    def kv_at(n_ctx: int, slots: int) -> int:
+        return int(layout.kv_bytes(n_ctx, 1) * 0.5625)
+
+    opts = gated(host = HostProfile(threads = 6), cache_quantised = True, kv_bytes_at = kv_at)
+    plan = plan_placement(
+        layout, [14848 * 1024 * 1024], 94 * GIB, 32768, kv_bytes_floor = exact, opts = opts
+    )
+    assert plan.declined_by_gate, plan.reason
+    assert not plan.spilled_blocks, plan.reason
+    # The fitter arm has to move on the measured cache, not the product's.
+    untrusted = plan_placement(
+        layout,
+        [14848 * 1024 * 1024],
+        94 * GIB,
+        32768,
+        kv_bytes_floor = exact,
+        opts = replace(opts, kv_bytes_at = None),
+    )
+    assert untrusted.predicted_fit_request_ms > plan.predicted_fit_request_ms
