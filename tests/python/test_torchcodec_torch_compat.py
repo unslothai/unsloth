@@ -1274,7 +1274,6 @@ def test_the_unsuffixed_request_is_bounded_to_the_major():
     0.0.0a0 and install the empty payload this exists to avoid. So the request must always
     carry a lower bound, never be a bare name."""
     from studio.install_python_stack import _npp_requirement
-
     for major in ("13", "14", "15"):
         spec = _npp_requirement(major)
         assert spec.startswith(f"nvidia-npp>={major}"), spec
