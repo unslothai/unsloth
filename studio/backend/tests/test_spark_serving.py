@@ -3111,10 +3111,10 @@ def test_the_replica_never_inherits_an_env_var_the_primary_refuses():
     from core.inference.llama_server_args import DENIED_ENV_VARS
 
     source = {
-        "LLAMA_ARG_CACHE_TYPE_K": "Q8_0",   # the whole point of replica_env: must cross
-        "LLAMA_ARG_HOST": "10.0.0.1",       # endpoint, deliberately not inherited
+        "LLAMA_ARG_CACHE_TYPE_K": "Q8_0",  # the whole point of replica_env: must cross
+        "LLAMA_ARG_HOST": "10.0.0.1",  # endpoint, deliberately not inherited
         "LLAMA_ARG_PORT": "9999",
-        "PATH": "/usr/bin",                 # outside the namespace
+        "PATH": "/usr/bin",  # outside the namespace
     }
     for name in DENIED_ENV_VARS:
         if name.startswith("LLAMA_ARG_"):
@@ -3132,14 +3132,23 @@ def test_the_replica_gets_sidecar_paths_the_peer_can_actually_open(tmp_path):
     launch then dies on a file it just confirmed."""
     argv = [
         "/bundle/llama-server",
-        "-m", "/models/m.gguf",
-        "--lora", "adapter.gguf",
+        "-m",
+        "/models/m.gguf",
+        "--lora",
+        "adapter.gguf",
         "--control-vector-scaled=cv.gguf:0.5,/abs/other.gguf:2",
-        "--mmproj", "/already/abs.gguf",
-        "--host", "127.0.0.1", "--port", "1",
+        "--mmproj",
+        "/already/abs.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "1",
     ]
     out = ss.replica_argv(
-        argv, binary = "/bundle/llama-server", host = "10.0.0.2", port = 9,
+        argv,
+        binary = "/bundle/llama-server",
+        host = "10.0.0.2",
+        port = 9,
         cwd = "/work",
     )
     assert "/work/adapter.gguf" in out, out

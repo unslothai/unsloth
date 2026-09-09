@@ -798,7 +798,12 @@ def absolute_sidecar_operand(value: str, *, cwd: Optional[str] = None) -> str:
 
 
 def replica_argv(
-    local_argv: List[str], *, binary: str, host: str, port: int, cwd: Optional[str] = None
+    local_argv: List[str],
+    *,
+    binary: str,
+    host: str,
+    port: int,
+    cwd: Optional[str] = None,
 ) -> List[str]:
     """The local launch with only the binary, host, port and sidecar paths changed: a replica
     differing in any other flag would answer the same request differently.
