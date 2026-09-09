@@ -873,8 +873,9 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
 
     A forced list REPLACES the search rather than adding to it, and VK_DRIVER_FILES
     supersedes VK_ICD_FILENAMES rather than joining it. VK_ADD_DRIVER_FILES is the additive
-    one and leaves the search in place, so it is not read: a driver it adds is found by the
-    walk below anyway or it is not the loader's to find.
+    one: the loader reads it FIRST and then the search, and ignores it entirely when either
+    force list is set. It may name a manifest no search directory holds, so leaving it out
+    made a host with an added driver look like one that has only what the walk found.
 
     Linux only, since the render nodes this is asked about exist nowhere else.
     """
@@ -885,13 +886,14 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
         return [entry.strip() for entry in value.split(os.pathsep) if entry.strip()]
     if platform.system() != "Linux":
         return []
-    paths: "list[str]" = []
+    added = (os.environ.get("VK_ADD_DRIVER_FILES") or "").strip()
+    paths = [entry.strip() for entry in added.split(os.pathsep) if entry.strip()]
     for directory in _vulkan_icd_search_dirs():
         try:
             paths.extend(sorted(glob.glob(os.path.join(directory, "*.json"))))
         except OSError:
             continue
-    return paths
+    return list(dict.fromkeys(paths))
 
 
 def the_vulkan_loader_can_only_load_amd() -> bool:
@@ -959,16 +961,29 @@ def amd_nodes_closed_to_this_user() -> list[str]:
     if platform.system() != "Linux":
         return []
     closed = []
+    _amd_in_topology = None
     for path in [_KFD_NODE, *sorted(glob.glob(_DRI_RENDER_GLOB))]:
         try:
             if not os.path.exists(path) or os.access(path, os.R_OK | os.W_OK):
                 continue
         except OSError:
             continue
+        if _amd_in_topology is None:
+            _amd_in_topology = _kfd_topology_has_an_amd_gpu()
         if path == _KFD_NODE:
-            if _kfd_topology_has_an_amd_gpu():
+            if _amd_in_topology:
                 closed.append(path)
-        elif _render_node_is_amd(path):
+            continue
+        _vendor = _render_node_vendor(path)
+        if _vendor == _AMD_PCI_VENDOR_ID:
+            closed.append(path)
+        elif _vendor is None and _amd_in_topology:
+            # A container can map the node and hide the sysfs entry that names its vendor.
+            # Dropping it there left a host with a shut node reporting nothing closed, while
+            # _amd_render_node_exists reads the same unknown as PRESENT and withdraws the
+            # missing-node sentence too -- so #10466's own shape got no diagnosis at all.
+            # KFD is the independent evidence, and it is what keeps an NVIDIA-only host
+            # silent: its topology reports vendor 0x10DE, so this arm is never reached.
             closed.append(path)
     return closed
 

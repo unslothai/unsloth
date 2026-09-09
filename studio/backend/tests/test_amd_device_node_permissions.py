@@ -3819,7 +3819,7 @@ def _vulkan_reason_under_icd_list(
 
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
-    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES"):
         monkeypatch.delenv(_var, raising = False)
     if filters is not None or search_dirs is not None:
         # Cleared only for the arms that state their own loader configuration, since an arm
@@ -4263,3 +4263,110 @@ def test_the_same_host_without_rocm_still_gets_the_kernel_stack_hint(tmp_path):
     the sentence is for, and dropping the NVIDIA veto must not have dropped the finding."""
     out = _install_sh_missing_kfd(topology = False, nvidia = True, backend = "rocm", rocm_visible = False)
     assert "ROCm cannot see it" in out
+
+
+def test_an_added_driver_outside_the_search_is_still_a_driver(monkeypatch, linux, tmp_path):
+    """VK_ADD_DRIVER_FILES is read FIRST and then the search, and it may name a manifest no
+    search directory holds. Leaving it out made a host whose only other-vendor driver came
+    in that way look like one the loader can only answer with AMD, and the other vendor's
+    open node then stopped excusing the closed AMD one.
+
+    Fails before the fix, which read the search alone."""
+    search = tmp_path / "icd.d"
+    search.mkdir()
+    _icd_manifest(search, "radeon_icd.x86_64.json", library = "libamd.so")
+    elsewhere = tmp_path / "vendor"
+    elsewhere.mkdir()
+    added = _icd_manifest(elsewhere, "nvidia_icd.json", library = "libnv.so")
+    reason = _vulkan_reason_under_icd_list(
+        monkeypatch,
+        None,
+        search_dirs = [str(search)],
+        filters = {"VK_ADD_DRIVER_FILES": added},
+    )
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_a_forced_list_still_ignores_the_added_one(monkeypatch, linux, tmp_path):
+    """The control the loader's own rule demands: VK_ADD_DRIVER_FILES is ignored entirely
+    when VK_DRIVER_FILES or VK_ICD_FILENAMES is set, so an added other-vendor driver beside
+    a forced AMD list is not a path this binary has."""
+    search = tmp_path / "icd.d"
+    search.mkdir()
+    forced = _icd_manifest(search, "radeon_icd.x86_64.json", library = "libamd.so")
+    elsewhere = tmp_path / "vendor"
+    elsewhere.mkdir()
+    added = _icd_manifest(elsewhere, "nvidia_icd.json", library = "libnv.so")
+    reason = _vulkan_reason_under_icd_list(
+        monkeypatch,
+        forced,
+        search_dirs = [str(search)],
+        filters = {"VK_ADD_DRIVER_FILES": added},
+    )
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_an_added_amd_driver_does_not_credit_another_vendor(monkeypatch, linux, tmp_path):
+    """The second control: reading the additive list must not have made every host that has
+    one look mixed-vendor. An AMD manifest added to an AMD-only search is still AMD alone."""
+    search = tmp_path / "icd.d"
+    search.mkdir()
+    _icd_manifest(search, "radeon_icd.x86_64.json", library = "libamd.so")
+    elsewhere = tmp_path / "vendor"
+    elsewhere.mkdir()
+    added = _icd_manifest(elsewhere, "amdvlk64.json", library = "libamdvlk.so")
+    reason = _vulkan_reason_under_icd_list(
+        monkeypatch,
+        None,
+        search_dirs = [str(search)],
+        filters = {"VK_ADD_DRIVER_FILES": added},
+    )
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_a_shut_node_whose_vendor_is_hidden_is_still_reported(monkeypatch, linux):
+    """A container can map the render node and hide the sysfs entry naming its vendor.
+    Requiring a confirmed AMD vendor dropped the node, so nothing was CLOSED -- while
+    _amd_render_node_exists reads the same unknown as PRESENT and withdraws the
+    missing-node sentence too, leaving #10466's own shape with no diagnosis at all.
+
+    Fails before the fix, which asked for a vendor the container had hidden."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        vendor_readable = False,
+    )
+    assert amd.amd_nodes_closed_to_this_user() == ["/dev/kfd", "/dev/dri/renderD128"]
+    hint = amd.amd_node_permission_hint()
+    assert "/dev/dri/renderD128" in hint
+
+
+def test_the_same_hidden_vendor_says_nothing_without_an_amd_topology(monkeypatch, linux):
+    """The control, and what keeps the render-group advice off every NVIDIA host: KFD is the
+    independent evidence. Its topology reports vendor 0x10DE there, so an unreadable render
+    node is not credited to AMD and neither diagnosis fires."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        vendor_readable = False,
+        amd_owned = False,
+    )
+    assert amd.amd_nodes_closed_to_this_user() == []
+
+
+def test_a_readable_non_amd_node_is_still_dropped(monkeypatch, linux):
+    """The second control: a vendor that CAN be read and is not AMD is positive evidence
+    the node belongs to somebody else, and stays out of the list even on a host whose KFD
+    topology does report an AMD GPU."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+        amd_owned = True,
+    )
+    monkeypatch.setattr(amd, "_render_node_vendor", lambda path: "0x10de")
+    assert amd.amd_nodes_closed_to_this_user() == ["/dev/kfd"]
