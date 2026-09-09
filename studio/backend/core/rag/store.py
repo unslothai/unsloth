@@ -283,13 +283,11 @@ def create_document(
     before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
     takes a fresh timestamp moves that turn to the end of its own conversation.
 
-    ``rowid`` carries over for the same reason, one level down. Two rows archived in the
-    same clock tick hold the same `created_at` -- routine on Windows, whose wall clock
-    advances about every 15.6 ms -- and insertion order is then the only record left of
-    which turn was said first. A rewrite that takes a fresh rowid discards it, so the
-    rewritten turns sort behind the ones the pass never reached. Omitted, both arguments
-    leave this byte for byte what every other caller has always got: SQLite assigns the
-    next rowid for a NULL, exactly as it does when the column is not named at all.
+    ``rowid`` carries over one level down: rows archived in the same clock tick share a
+    `created_at` (routine on Windows, ~15.6 ms tick), so insertion order is all that
+    separates them and a fresh rowid sorts the rewritten turns behind the untouched ones.
+    Omitted, both arguments leave this byte for byte what every other caller has always
+    got: a NULL rowid is assigned exactly as if the column were not named.
     """
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
@@ -397,10 +395,9 @@ def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
 
 
 def document_rewrite_identity(conn: sqlite3.Connection, document_id: str) -> dict | None:
-    """What a re-embed has to carry over from the row it replaces, `rowid` included.
-
-    Separate from `get_document` because `SELECT *` does not return the implicit rowid and
-    widening that query would add the key to every caller's dict.
+    """What a re-embed carries over from the row it replaces. Separate from `get_document`
+    because `SELECT *` omits the implicit rowid and widening it would add the key to every
+    caller's dict.
     """
     row = conn.execute(
         "SELECT rowid, archive_ordinal, created_at FROM documents WHERE id=?", (document_id,)
