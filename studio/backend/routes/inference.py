@@ -32109,7 +32109,12 @@ async def anthropic_messages(
         )
     )
 
-    def _arm_anthropic(reservation, *, raw: bool = False) -> None:
+    def _arm_anthropic(
+        reservation,
+        *,
+        raw: bool = False,
+        measured: bool = False,
+    ) -> None:
         """Probe first, then arm. Both are no-ops when preemption cannot apply.
 
         ``raw`` for the client-tool passthrough, which has no Studio generator holding the
@@ -32117,6 +32122,10 @@ async def anthropic_messages(
         ordinarily it becomes a victim the sweep cannot reclaim from: marked PREEMPTING,
         out of ``_PREEMPTABLE``, still filling the cache the planner counted as freed.
         Counted and never chosen instead, as ``_openai_llama_count_raw_holder`` does.
+
+        ``measured`` only for the non-streaming passthrough, which has no data line to mark
+        itself at. The streaming body marks itself at its first data line; measured before
+        that, its prompt was swallowed by the residency sample for the whole prefill.
         """
         try:
             get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
@@ -32132,7 +32141,7 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
-                measured = True,  # non-streaming: no data line to mark it at
+                measured = measured,
             )
             return
         _anthropic_preempt_policy.bind(
@@ -32360,7 +32369,7 @@ async def anthropic_messages(
             # With the lease in hand, as the streaming wrapper does: only that wrapper
             # called this, so a non-streaming /v1/messages request ran with an unbound
             # policy and no participant while admission priced it optimistically.
-            _arm_anthropic(reservation, raw = raw)
+            _arm_anthropic(reservation, raw = raw, measured = raw)
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)

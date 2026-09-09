@@ -84,7 +84,7 @@ class TestTheAnthropicSurfaces:
     def test_the_non_streaming_branch_arms_and_disarms(self):
         source = _routes_source()
         assert (
-            source.count("_arm_anthropic(reservation, raw = raw)") == 2
+            source.count("_arm_anthropic(reservation, raw = raw") == 2
         ), "streaming and non-streaming both take a lease, so both arm"
         assert (
             source.count("gen_id = message_id,") >= 3

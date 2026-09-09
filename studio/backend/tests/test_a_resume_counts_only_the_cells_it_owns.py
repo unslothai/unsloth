@@ -82,3 +82,20 @@ class TestAResidentHolderStillSubtractsItsOwn:
         controller.note_resident(11000, reclaimable = 0)
 
         assert controller.room_for("mine", 8000) is False
+
+
+class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
+    """A counted holder is inside the residency sample only once llama-server has its
+    prompt. Marked measured at registration, the sample from before its prefill swallows
+    it, and the decoders beside it read as under the watermark by its whole prompt."""
+
+    def test_unmeasured_it_is_added_and_measured_it_is_inside_the_sample(self):
+        controller = _controller("http://raw-holder")
+        controller.register("chat", tokens = 6000)
+        controller.note_measured("chat")
+        controller.note_resident(10000, reclaimable = 0)
+        controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
+        assert controller.committed_tokens() == 13000
+        # Its first data line: the prompt is resident and the next sample carries it.
+        controller.note_measured("raw")
+        assert controller.committed_tokens() == 10000
