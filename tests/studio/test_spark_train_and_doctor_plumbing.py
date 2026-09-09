@@ -269,7 +269,9 @@ def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, 
     monkeypatch.setattr(
         cluster,
         "_rsync_to_peer",
-        lambda local, remote, ip, user: copied.append((local, remote)) and None or None,
+        lambda local, remote, ip, user, dereference = False: copied.append((local, remote))
+        and None
+        or None,
     )
     command = f"torchrun x --model {checkpoint} --data {data} --steps 4"
     rewritten, staged, failed = cluster.stage_run_inputs(command, "192.0.2.7", "u", "/home/bob")
@@ -291,7 +293,9 @@ def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_p
     cached.mkdir(parents = True)
     copied = []
     monkeypatch.setattr(
-        cluster, "_rsync_to_peer", lambda local, remote, ip, user: copied.append(remote) and None
+        cluster,
+        "_rsync_to_peer",
+        lambda local, remote, ip, user, dereference = False: copied.append(remote) and None,
     )
     rewritten, staged, failed = cluster.stage_run_inputs(
         "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
@@ -308,7 +312,9 @@ def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(
     """No regression: a repo id the peer can fetch for itself needs nothing staged."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        cluster, "_rsync_to_peer", lambda *a: pytest.fail("nothing should have been copied")
+        cluster,
+        "_rsync_to_peer",
+        lambda *a, **k: pytest.fail("nothing should have been copied"),
     )
     rewritten, staged, failed = cluster.stage_run_inputs(
         "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
@@ -322,7 +328,7 @@ def test_a_failed_stage_is_reported_and_not_silently_skipped(
 ) -> None:
     data = tmp_path / "rows.jsonl"
     data.write_text("{}\n", encoding = "utf-8")
-    monkeypatch.setattr(cluster, "_rsync_to_peer", lambda *a: "permission denied")
+    monkeypatch.setattr(cluster, "_rsync_to_peer", lambda *a, **k: "permission denied")
     _, staged, failed = cluster.stage_run_inputs(
         f"torchrun x --data {data}", "192.0.2.7", "u", "/home/bob"
     )

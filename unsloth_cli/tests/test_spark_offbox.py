@@ -187,12 +187,23 @@ def test_n_nodes_agrees_with_the_legacy_two_sparks_kwarg() -> None:
 
 
 def test_axis_follows_intent_not_just_fit() -> None:
-    """TP is the only axis that speeds one request; replicas are aggregate-only."""
+    """TP is the only axis that speeds one request; replicas are aggregate-only.
+
+    The throughput case is asserted at 16 concurrent, not at the default 1. This test used to
+    require `replicas` at concurrency 1, which contradicted the module's own measurement --
+    replicas are 1.00x at one user, for the cost of a full second copy of the weights -- and
+    the plan then recommended spending that memory while `recommend_topology`'s reason,
+    printed beside it, said not to.
+    """
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     fits = budget * 0.6
     assert sc.plan_deployment(fits, n_nodes = 2, intent = "latency")["axis"] == "tensor-parallel"
-    assert sc.plan_deployment(fits, n_nodes = 2, intent = "throughput")["axis"] == "replicas"
+    many = sc.plan_deployment(fits, n_nodes = 2, intent = "throughput", concurrency = 16)
+    assert many["axis"] == "replicas"
+    one = sc.plan_deployment(fits, n_nodes = 2, intent = "throughput", concurrency = 1)
+    assert one["axis"] == "none", one["recommendation"]
+    assert "spark_lb" not in one["command"], one["command"]
     big = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput")
     assert big["axis"] == "tensor-parallel" and big["topology"] == "layer-split"
 
@@ -402,7 +413,11 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     assert ran and all("--delete" not in cmd for cmd in ran)
     ran.clear()
     sc.provision_peer("192.168.200.13", delete = True)
-    assert all("--delete" in cmd for cmd in ran)
+    # rsync commands only. Provisioning also runs an ssh step to repair the copied venv's
+    # absolute self-references when it lands at a different path on the peer, and `--delete`
+    # has no meaning there.
+    assert all("--delete" in cmd for cmd in ran if cmd and cmd[0] == "rsync")
+    assert any(cmd and cmd[0] == "rsync" for cmd in ran)
     ran.clear()
     monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: pytest.fail("dry run probed the peer"))
     sc.provision_peer("192.168.200.13", dry_run = True)
@@ -619,6 +634,33 @@ def test_a_config_fault_does_not_overwrite_a_good_output(tmp_path) -> None:
         sm.merge(str(tmp_path), str(out))
     assert (out / "adapter_model.safetensors").read_bytes() == good
     assert _json.loads((out / "adapter_config.json").read_text())["r"] == 16
+
+
+def test_a_staged_base_model_path_is_not_a_config_mismatch(tmp_path) -> None:
+    """`stage_run_inputs` rewrites rank 1's --model to the path it staged on the peer, so PEFT
+    records a different `base_model_name_or_path` per stage. Treating that as fatal refused
+    every adapter pair from a `--run --save` with a local checkpoint, after the run finished."""
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    import json as _json
+
+    sm = _load("studio/spark_merge.py")
+    _mk_stage(tmp_path, 0, range(0, 12))
+    _mk_stage(tmp_path, 1, range(12, 24))
+    for rank, base in ((0, "/home/a/ckpt"), (1, "/home/b/.unsloth/stage/ckpt")):
+        p = tmp_path / f"stage{rank}" / "adapter_config.json"
+        cfg = _json.loads(p.read_text())
+        cfg["base_model_name_or_path"] = base
+        p.write_text(_json.dumps(cfg))
+    res = sm.merge(str(tmp_path), str(tmp_path / "merged"))
+    assert res["n_tensors"] == 25
+    # A real config difference is still fatal, so the exclusion is location-only.
+    p = tmp_path / "stage1" / "adapter_config.json"
+    cfg = _json.loads(p.read_text())
+    cfg["r"] = 8
+    p.write_text(_json.dumps(cfg))
+    with pytest.raises(RuntimeError):
+        sm.merge(str(tmp_path), str(tmp_path / "merged2"))
 
 
 def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:
@@ -1537,7 +1579,11 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
     secret = start_script.split("<<'UNSLOTH_EOF'\n")[1].split("\n")[0].split(":", 1)[1]
     for cmd, kw in workers:
         assert kw["env"]["RSYNC_PASSWORD"] == secret
-        assert secret not in " ".join(cmd) and "ssh" not in " ".join(cmd)
+        # Not `"ssh" not in " ".join(cmd)`: the credentials directory is an mkdtemp name,
+        # and a random suffix containing "ssh" failed this run at about one in ten thousand.
+        # What it means is that the worker carries no ssh transport.
+        assert secret not in " ".join(cmd)
+        assert "-e" not in cmd and not any(a == "ssh" or a.endswith("/ssh") for a in cmd)
         assert f"--timeout={sc.FAST_IO_TIMEOUT}" in cmd and "--contimeout=15" in cmd
         assert cmd[-1].startswith(f"rsync://unsloth-") and cmd[-1].endswith(
             ":%d/m0/" % res["fast"]["port"]
@@ -1600,7 +1646,14 @@ def test_fast_daemon_is_stopped_when_the_copy_raises(monkeypatch, tmp_path) -> N
     assert res["failed"] == [("scratch", "ssh died")] and len(fake.stops()) == 1
 
 
-def test_fast_daemon_start_failure_means_plain_ssh_and_no_stop(monkeypatch, tmp_path) -> None:
+def test_fast_daemon_start_failure_means_plain_ssh_and_a_cleanup(monkeypatch, tmp_path) -> None:
+    """It falls back to ssh, and it cleans up after itself.
+
+    This used to assert NO stop, which is the defect: the peer runs `setsid ... rsync
+    --daemon` before the handshake is read, so a failure after that point left a writable
+    daemon, its credentials file and its temp directory alive for the four-hour backstop.
+    `work_dir` is known before the connection is made, which is what makes the cleanup
+    possible without a descriptor."""
     sc, src = _fast_module(monkeypatch, tmp_path)
     fake = _Fake(daemon_rc = 1)
     monkeypatch.setattr(sc.subprocess, "run", fake)
@@ -1608,7 +1661,8 @@ def test_fast_daemon_start_failure_means_plain_ssh_and_no_stop(monkeypatch, tmp_
     assert res["copied"] == [("scratch", str(src))] and not res["failed"]
     assert res["fast"]["used"] is False and "did not start" in res["fast"]["reason"]
     assert "bind failed" in res["fast"]["reason"]
-    assert fake.workers() == [] and fake.stops() == [] and len(fake.ssh_copies()) == 1
+    assert fake.workers() == [] and len(fake.ssh_copies()) == 1
+    assert len(fake.stops()) == 1
 
 
 def test_fast_daemon_that_survives_is_reported_as_a_failure(monkeypatch, tmp_path) -> None:

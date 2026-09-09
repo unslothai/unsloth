@@ -26,7 +26,11 @@ ADAPTER_CFG = "adapter_config.json"
 STAGE_META = "unsloth_stage.json"
 # Written per stage and expected to differ: the merged adapter is the union of the stages,
 # so a per-stage module list says nothing about a config mismatch.
-_CFG_IGNORED = frozenset()
+# `base_model_name_or_path` is where the stage was LOADED from, not what it was trained on.
+# `stage_run_inputs` stages the checkpoint onto the peer, so rank 1 records the staged path
+# and rank 0 the original: a location-only difference that would otherwise refuse every
+# adapter pair produced by `--run --save` with a local checkpoint.
+_CFG_IGNORED = frozenset({"base_model_name_or_path"})
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
 
 
@@ -252,6 +256,7 @@ def _cmd_merge(
     root: str,
     out: Optional[str] = None,
     dry_run: bool = False,
+    force: bool = False,
 ) -> int:
     plan = plan_merge(root)
     print(f"  stages   {plan['n_stages']}")
@@ -271,13 +276,18 @@ def _cmd_merge(
         )
     for p in plan["problems"]:
         print(f"  PROBLEM  {p}")
-    if not plan["ok"]:
+    if not plan["ok"] and not force:
         print("  refusing to merge -- a partly-populated adapter loads fine and trains worse")
+        print("  (--force merges anyway, for a deliberate one-rank run or a partial recovery)")
         return 1
+    if not plan["ok"]:
+        # `merge()` has always taken this; nothing reached it, so the escape hatch the
+        # refusal points at could not be used from the command users are told to run.
+        print("  --force: merging despite the problems above")
     if dry_run or not out:
         print(f"  would write {out or '<--out DIR>'}")
         return 0
-    res = merge(root, out)
+    res = merge(root, out, force = force)
     print(f"  merged   {res['n_tensors']} tensors -> {res['out']}")
     return 0
 
@@ -289,9 +299,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("root", help = "the --save directory containing stage0/, stage1/, ...")
     ap.add_argument("--out", default = None, help = "where to write the merged adapter")
     ap.add_argument("--dry-run", action = "store_true", help = "inspect and report, write nothing")
+    ap.add_argument(
+        "--force",
+        action = "store_true",
+        help = "merge despite refusals: a deliberate one-rank run, or a partial recovery",
+    )
     a = ap.parse_args(argv)
     try:
-        return _cmd_merge(a.root, a.out, a.dry_run)
+        return _cmd_merge(a.root, a.out, a.dry_run, force = a.force)
     except RuntimeError as e:
         print(f"  {e}")
         return 1

@@ -120,6 +120,47 @@ def find_layers(model):
     )
 
 
+LORA_TARGETS_LLAMA = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+def lora_target_modules(model) -> List[str]:
+    """The projection names to attach LoRA to, read off THIS model's decoder layers.
+
+    The list was hard-coded to the Llama names, but `find_layers()` and the stage wrapper
+    accept any architecture with a decoder layer list. A GPT-NeoX block names its linears
+    `query_key_value`, `dense`, `dense_h_to_4h`, `dense_4h_to_h`, so none of the Llama names
+    exists and PEFT aborts with "Target modules ... not found" after the model is already
+    allocated on both ranks. The Llama set is still returned verbatim when it matches, so
+    nothing changes for the architectures that worked before.
+    """
+    import torch.nn as nn
+
+    _, layers = find_layers(model)
+    names = set()
+    for layer in layers:
+        for name, mod in layer.named_modules():
+            if isinstance(mod, nn.Linear):
+                names.add(name.rsplit(".", 1)[-1])
+    keep = [n for n in LORA_TARGETS_LLAMA if n in names]
+    if keep:
+        return keep
+    if names:
+        return sorted(names)
+    raise RuntimeError(
+        "no nn.Linear modules were found inside this model's decoder layers, so there is "
+        "nothing for LoRA to attach to. Train with --full-finetune, or use a model whose "
+        "layers hold ordinary linear projections."
+    )
+
+
 def interleaved_layers(
     n_layers: int,
     rank: int,
@@ -1816,15 +1857,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 lora_dropout = 0.0,
                 bias = "none",
                 task_type = "CAUSAL_LM",
-                target_modules = [
-                    "q_proj",
-                    "k_proj",
-                    "v_proj",
-                    "o_proj",
-                    "gate_proj",
-                    "up_proj",
-                    "down_proj",
-                ],
+                target_modules = lora_target_modules(model),
             ),
         )
     # from_pretrained hands back an eval-mode model while the shard-load path builds one in

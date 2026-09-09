@@ -1042,6 +1042,13 @@ def provision(
         "link with no other host), locked to this node's rail address and a one-shot "
         "secret, and stopped when the command ends. Same as UNSLOTH_SPARK_PROVISION_FAST=0.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help = "Provision even when the peer GPU probe is unavailable or unreadable. Only "
+        "when you are certain the peer is idle: provisioning over a running job can "
+        "swap the environment underneath it.",
+    ),
 ) -> None:
     """Copy this Spark's environment and warm caches to the peer over the fast link.
 
@@ -1063,6 +1070,8 @@ def provision(
         argv.append("--dry-run")
     if no_fast:
         argv.append("--no-fast")
+    if force:
+        argv.append("--force")
     raise typer.Exit(_cluster().main(argv))
 
 
@@ -1333,6 +1342,12 @@ def merge(
     save_dir: str = typer.Argument(..., help = "The --save directory holding stage0/, stage1/, ..."),
     out: str = typer.Option(None, "--out", "-o", help = "Where to write the merged adapter."),
     dry_run: bool = typer.Option(False, "--dry-run", help = "Inspect and report; write nothing."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help = "Merge anyway when the stage set is incomplete: a deliberate one-rank run, "
+        "or a partial recovery. The result is a partly-populated adapter.",
+    ),
 ) -> None:
     """Merge the per-stage adapters from a layer-split run into one loadable checkpoint.
 
@@ -1359,7 +1374,7 @@ def merge(
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     try:
-        rc = mod._cmd_merge(save_dir, out, dry_run)
+        rc = mod._cmd_merge(save_dir, out, dry_run, force = force)
     except RuntimeError as e:
         _say(f"  {e}")
         raise typer.Exit(1)

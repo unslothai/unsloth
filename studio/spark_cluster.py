@@ -13,6 +13,7 @@ needs its own /24 to reach the full link.
 from __future__ import annotations
 
 import getpass
+import glob
 import ipaddress
 import json
 import os
@@ -1958,6 +1959,66 @@ def provision_paths() -> Tuple[Tuple[str, str], ...]:
     )
 
 
+def peer_destination(path: str) -> str:
+    """Where `path` should land on the peer: home-relative when it is under OUR home.
+
+    The launch activates `$HOME/.unsloth/studio/unsloth_studio/bin/activate` on the peer, and
+    `_BUNDLE_PROBE` expands `$HOME` there too. Provisioning sent the venv to our own expanded
+    absolute path, so on a pair whose homes differ it wrote outside the peer's home -- or
+    failed to -- and the launch then looked for the environment somewhere it had never been
+    put. `_peer_relative_path` is the same mapping the bundle probe already uses."""
+    expanded = osp.expanduser(path)
+    return _peer_relative_path(Path(expanded))
+
+
+_VENV_MARKERS = ("bin/activate", "bin/activate.csh", "bin/activate.fish", "pyvenv.cfg")
+
+
+def venv_relocate_script(old_prefix: str, new_prefix: str) -> str:
+    """Shell that repairs a venv copied to a different absolute path.
+
+    A virtual environment is not relocatable on its own: `bin/activate` and `pyvenv.cfg`
+    record `VIRTUAL_ENV` as an absolute path and every console script (`torchrun`, `unsloth`)
+    carries an absolute shebang. Copied to a peer whose home differs, those all still point at
+    the first Spark, so the remote rank exits before rendezvous with nothing that names the
+    cause. Only the venv's own prefix is rewritten, and only in its own files."""
+    old = shlex.quote(old_prefix.rstrip("/"))
+    new = shlex.quote(new_prefix.rstrip("/"))
+    files = " ".join(shlex.quote(m) for m in _VENV_MARKERS)
+    return (
+        "set -eu\n"
+        f"v={new}\n"
+        f"old={old}\n"
+        '[ -d "$v" ] || exit 0\n'
+        '[ "$v" = "$old" ] && exit 0\n'
+        f"for f in {files}; do\n"
+        '  [ -f "$v/$f" ] && sed -i "s|$old|$v|g" "$v/$f" || true\n'
+        "done\n"
+        # Console scripts only: a shebang is the first line and no binary in bin/ has one.
+        'for f in "$v"/bin/*; do\n'
+        '  [ -f "$f" ] || continue\n'
+        '  head -c 2 "$f" 2>/dev/null | grep -q "^#!" || continue\n'
+        '  sed -i "1s|$old|$v|" "$f" || true\n'
+        "done\n"
+    )
+
+
+def _relocate_peer_venv(peer_ip: str, user: str, local: str, remote: str) -> str:
+    """Run `venv_relocate_script` on the peer. Returns an error string, or "" on success."""
+    script = venv_relocate_script(local, _peer_path(remote))
+    try:
+        res = subprocess.run(
+            ["ssh", *_SSH_OPTS, f"{user}@{peer_ip}", "bash", "-s"],
+            input = script,
+            capture_output = True,
+            text = True,
+            timeout = 300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)[:200]
+    return "" if res.returncode == 0 else (res.stderr or "").strip()[:200]
+
+
 def venv_activate() -> str:
     """The peer's `activate`. Left as the literal `$HOME/...` so it expands on the PEER, whose
     home may differ; only a custom UNSLOTH_STUDIO_HOME forces an absolute path."""
@@ -2330,17 +2391,33 @@ def start_peer_rsync_daemon(
     work_dir = "/tmp/unsloth-provision-" + secrets.token_hex(6)
     config = rsync_daemon_config(modules, peer_ip, port, local_ip, auth_user, work_dir)
     script = daemon_setup_script(config, auth_user, secret, list(modules.values()), work_dir, port)
-    proc = subprocess.run(
-        _ssh_argv(user, peer_ip) + ["bash", "-s"],
-        input = script,
-        capture_output = True,
-        text = True,
-        timeout = timeout,
-    )
+    # Every failure below is cleaned up from here, because the caller has no descriptor to
+    # clean up with: an ssh that times out or loses its reply AFTER the peer ran the detached
+    # `setsid ... rsync --daemon` left a writable daemon, its credentials file and its temp
+    # directory alive for the four-hour backstop, against the promise that they die with the
+    # command. `work_dir` is known before the connection is made, which is what makes the
+    # cleanup possible at all.
+    def _abandon() -> None:
+        stop_peer_rsync_daemon(
+            {"ssh_user": user, "peer_ip": peer_ip, "work_dir": work_dir, "pid": None}
+        )
+
+    try:
+        proc = subprocess.run(
+            _ssh_argv(user, peer_ip) + ["bash", "-s"],
+            input = script,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+        )
+    except BaseException:
+        _abandon()
+        raise
     out = proc.stdout or ""
     up = next((l for l in out.splitlines() if l.startswith(_FAST_UP_MARKER)), None)
     if proc.returncode != 0 or up is None:
         err = (proc.stderr or "").strip()[:200] or f"rc={proc.returncode}"
+        _abandon()
         raise RuntimeError(f"rsync daemon did not start on {peer_ip}: {err}")
     pid = _int_or_none(up.split(None, 1)[1].strip()) if " " in up else None
     return {
@@ -2544,7 +2621,13 @@ def provision_peer(
     if targets and not dry_run:
         decision = fast_path_decision(peer_ip, no_fast = no_fast)
         if decision["ok"]:
-            modules = {f"m{i}": _peer_path(path) for i, (path, _, _) in enumerate(targets)}
+            # peer_destination, not the raw path: an absolute path under OUR home is not a
+            # place on the peer, whose home may differ, and the launch looks for the venv
+            # under the PEER's $HOME.
+            modules = {
+                f"m{i}": _peer_path(peer_destination(path))
+                for i, (path, _, _) in enumerate(targets)
+            }
             try:
                 daemon = start_peer_rsync_daemon(peer_ip, decision["local_ip"], user, modules)
                 fast["port"] = daemon["port"]
@@ -2576,7 +2659,8 @@ def provision_peer(
                     fast["errors"].append((label, err))
             # rsync creates only the LAST component of the destination, so a brand-new peer
             # with no ~/.unsloth/studio fails; create the parent remotely first.
-            remote_parent = _peer_path(osp.dirname(path))
+            remote = peer_destination(path)
+            remote_parent = _peer_path(osp.dirname(remote))
             # `--rsync-path` runs on the PEER before rsync starts, so `--dry-run` does not
             # suppress it: a dry run was creating the directories it was only meant to report.
             # Under a dry run the wrapper is dropped, and a missing parent is reported as
@@ -2602,7 +2686,7 @@ def provision_peer(
                 "-e",
                 "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
                 local + "/",
-                f"{user}@{peer_ip}:{path}/",
+                f"{user}@{peer_ip}:{remote}/",
             ]
             if delete:
                 cmd.insert(2, "--delete")
@@ -2611,7 +2695,15 @@ def provision_peer(
             try:
                 r = subprocess.run(cmd, capture_output = True, text = True, timeout = 3600)
                 if r.returncode == 0:
-                    results["copied"].append((label, path))
+                    results["copied"].append((label, remote))
+                    # A venv that landed at a different absolute path carries the first
+                    # Spark's `VIRTUAL_ENV` and console-script shebangs, so `torchrun` there
+                    # runs -- or fails to run -- out of a path that does not exist on the
+                    # peer. Repaired in place; a no-op when the two paths agree.
+                    if not dry_run and label == "Unsloth venv":
+                        error = _relocate_peer_venv(peer_ip, user, local, remote)
+                        if error:
+                            results["failed"].append((f"{label} (relocation)", error))
                 else:
                     results["failed"].append((label, (r.stderr or "").strip()[:200]))
             except Exception as exc:
@@ -2800,6 +2892,27 @@ def model_size_report(target: str) -> Dict[str, Any]:
     wrong deployment advice, and the caller has no way to tell the two apart."""
     path = osp.expanduser(target)
     if osp.isfile(path):
+        # Naming `model-00001-of-00002.gguf` names the whole series: llama.cpp opens the
+        # first shard and loads the rest beside it. Reporting one shard's size made a model
+        # that needs a split look like one that fits, and the load is where that is found out.
+        match = _GGUF_SHARD_RE.match(osp.basename(path))
+        if match:
+            series = sorted(
+                glob.glob(osp.join(osp.dirname(path) or ".", f"{match.group('series')}-*.gguf"))
+            )
+            expected = int(osp.basename(path).rsplit("-of-", 1)[1].split(".")[0])
+            if len(series) != expected:
+                return {
+                    "gib": None,
+                    "why": (
+                        f"{target} is shard 1 of {expected} and {len(series)} are present; "
+                        f"the missing shards would not load either"
+                    ),
+                }
+            try:
+                return {"gib": sum(osp.getsize(f) for f in series) / 2**30, "why": ""}
+            except OSError as exc:
+                return {"gib": None, "why": f"could not read the shard series: {exc}"}
         try:
             return {"gib": osp.getsize(path) / 2**30, "why": ""}
         except OSError as exc:
@@ -3336,23 +3449,26 @@ def _serve_commands(
     server = llama_server_binary() or "llama-server"
     if axis == "replicas":
         # spark_lb takes backends as positional, space-separated tokens.
+        # The backends are on 8081 and the front door on 8080. Both on 8080 meant that the
+        # load balancer -- which defaults to 8080 and is meant to run on one of the Sparks --
+        # could not bind, because that node's own engine already held the port.
         backends = " ".join(
-            f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080" for i in range(n_nodes)
+            f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8081" for i in range(n_nodes)
         )
         if not gguf:
             return [
                 env,
-                f"vllm serve {model} --host 0.0.0.0 --port 8080     # run on EACH Spark",
-                f"python -m studio.spark_lb {backends}     # one front door",
+                f"vllm serve {model} --host 0.0.0.0 --port 8081     # run on EACH Spark",
+                f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
             ]
         # The real server, on the port the load balancer is told about. This used to say
         # `unsloth spark serve`, which prints a recipe rather than launching anything, and
-        # the recipe it prints uses 8081/8082 -- so every backend the line below advertises
-        # was closed.
+        # the recipe it prints binds different ports -- so every backend the line below
+        # advertised was closed.
         return [
             env,
-            f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8080     # run on EACH Spark",
-            f"python -m studio.spark_lb {backends}     # one front door",
+            f"{server} -m {model} -ngl 999 --host 0.0.0.0 --port 8081     # run on EACH Spark",
+            f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
         if not gguf:
@@ -3543,6 +3659,26 @@ def plan_deployment(
             f"162.4ms. Do NOT use pipeline parallel for this -- its TPOT is flat at "
             f"~320ms -- and do NOT layer-split a model that fits: its decode measured "
             f"0.85x to 1.01x across 1 to 32 users, never a win."
+        )
+    elif intent == "throughput" and (out.get("serving") or {}).get("topology") != "replicas":
+        # `recommend_topology` already decided this, with the concurrency and the KV in hand.
+        # Hard-coding replicas for every throughput intent contradicted it out loud: at the
+        # default concurrency of 1 it returns `single` and says the second copy buys nothing,
+        # and for prefill-heavy work it can return a split -- and the plan then told the user
+        # to spend a second copy of the weights on a layout its own measured policy rejects.
+        chosen = (out.get("serving") or {}).get("topology") or "single"
+        axis = "pipeline-parallel" if chosen == "layer_split" else "single"
+        axis_nodes = nodes if chosen == "layer_split" else 1
+        out.update(
+            axis = "none" if axis == "single" else axis,
+            axis_nodes = axis_nodes,
+            expected = expected_gain(axis, axis_nodes, concurrency, prompt_tokens or 512),
+            commands = _serve_commands("layer-split" if chosen == "layer_split" else "single",
+                                       axis_nodes, model),
+        )
+        out["recommendation"] = (out.get("serving") or {}).get("reason", "") or (
+            f"One Spark: {size_gib:.1f} GiB fits, and a second copy is not worth its memory "
+            f"at this concurrency."
         )
     elif intent == "throughput":
         gain = replicas_speedup(prompt_tokens or 512, concurrency)
@@ -4135,7 +4271,16 @@ def _cmd_serve(
         local_port, peer_port = port + 1, port + 2
         print(f"  model    : {model}  ({size:.1f} GiB)")
         if kv["gib"]:
-            print(f"  kv       : {kv['gib']:.2f} GiB per user at --ctx-size {ctx}")
+            # `--ctx-size` is llama-server's SHARED pool, not a per-slot budget: with `-np N`
+            # the slots divide it. The planner prices `ctx` per user, so the emitted commands
+            # ask for `ctx * slots` and the two now describe the same deployment. Checked
+            # against the managed build's own help, which says `--kv-unified-per-slot N`
+            # sizes the shared pool to `n_parallel*N` -- the same arithmetic, spelled with a
+            # flag a stock llama.cpp does not have.
+            print(
+                f"  kv       : {kv['gib']:.2f} GiB per user at {ctx} tokens each, "
+                f"{kv['gib'] * slots:.2f} GiB for {slots} slots"
+            )
         else:
             print(f"  kv       : not counted -- {kv['why']}")
         if topology == "single":
@@ -4144,7 +4289,7 @@ def _cmd_serve(
             print(f"  {serving.get('reason', '')}")
             print("")
             print(f"     {shlex.quote(str(bin_dir))}/llama-server -m {qmodel} \\")
-            print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
+            print(f"         -ngl 999 --ctx-size {ctx * slots} -np {slots} -cb -ub 512 \\")
             print(f"         --host 0.0.0.0 --port {port}")
             return 0
         print("  topology : INDEPENDENT REPLICAS -- one full model per Spark, no RPC")
@@ -4156,14 +4301,14 @@ def _cmd_serve(
         print("")
         print("  1. This Spark:")
         print(f"     {shlex.quote(str(bin_dir))}/llama-server -m {qmodel} \\")
-        print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
+        print(f"         -ngl 999 --ctx-size {ctx * slots} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {local_port}")
         print("")
         print(f"  2. The peer ({peer_ip}) -- the model must exist there; copy it over the")
         print("     ConnectX link rather than downloading (444 MB/s vs ~20 KB/s internet):")
         print(f"     rsync -a <model.gguf> {peer_ip}:<path>")
         print(f"     ssh {peer_ip} '{peer_bin_dir}/llama-server -m <path> \\")
-        print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
+        print(f"         -ngl 999 --ctx-size {ctx * slots} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {peer_port}'")
         print("")
         print("  3. Round-robin front end:")
@@ -4233,7 +4378,7 @@ def _cmd_serve(
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
         print(f"     {shlex.quote(local_server)} -m {qmodel} \\")
-        print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx} \\")
+        print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx * slots} \\")
         print(f"         -np {slots} -cb -ub 512 --host 127.0.0.1 --port {port + 1 + i}")
     print("")
     if engines > 1:
@@ -4366,15 +4511,23 @@ def peer_home(peer_ip: str, user: str) -> Optional[str]:
     return home if out.returncode == 0 and home.startswith("/") else None
 
 
-def _rsync_to_peer(local: str, remote: str, peer_ip: str, user: str) -> Optional[str]:
+def _rsync_to_peer(
+    local: str, remote: str, peer_ip: str, user: str, dereference: bool = False
+) -> Optional[str]:
     """Copy `local` (file or directory) to the absolute `remote` on the peer. Returns an
-    error string, or None on success."""
+    error string, or None on success.
+
+    `dereference` sends what the links point AT. Archive mode implies `--links`, which copies
+    a symlink as a symlink, and a Hugging Face snapshot directory is almost entirely symlinks
+    into `../../blobs` -- outside the directory being copied. Staging one without this put
+    broken links on the peer and rank 1 failed loading the model."""
     parent = osp.dirname(remote.rstrip("/")) or "/"
     source = local.rstrip("/") + "/" if osp.isdir(local) else local
     destination = remote.rstrip("/") + "/" if osp.isdir(local) else remote
     cmd = [
         "rsync",
         "-a",
+        *(["--copy-links"] if dereference else []),
         "--rsync-path",
         f"mkdir -p {shlex.quote(parent)} && rsync",
         "-e",
@@ -4411,7 +4564,8 @@ def stage_run_inputs(
         local = osp.expanduser(value)
         if osp.exists(local):
             remote = f"{root}/{osp.basename(local.rstrip('/'))}"
-            error = _rsync_to_peer(local, remote, peer_ip, user)
+            # Dereferenced: a snapshot directory is symlinks into ../../blobs.
+            error = _rsync_to_peer(local, remote, peer_ip, user, dereference = True)
             if error:
                 failed.append(f"{token} {value}: {error}")
             else:
@@ -4428,6 +4582,8 @@ def stage_run_inputs(
         if not osp.isdir(cached):
             continue
         remote = f"{home.rstrip('/')}/.cache/huggingface/hub/{osp.basename(cached)}"
+        # The cache entry is copied whole, blobs included, so its links stay internal and
+        # valid on the peer; dereferencing here would duplicate every blob.
         error = _rsync_to_peer(cached, remote, peer_ip, user)
         if error:
             failed.append(f"{value} (HF cache): {error}")
@@ -4436,21 +4592,53 @@ def stage_run_inputs(
     return shlex.join(tokens), staged, failed
 
 
-def collect_stage_outputs(save_dir: str, peer_ip: str, user: str, home: str) -> Optional[str]:
-    """Bring the peer's `stageN/` directories back into the local save directory.
+def wait_for_peer_stage(peer_ip: str, user: str, pid_file: str, timeout: int = 3600) -> bool:
+    """Block until the detached peer rank has exited, or the timeout.
+
+    The local `torchrun` returning says only that RANK 0 finished serialising. Rank 1 is
+    detached and `spark_pipeline` has no barrier after `save_pretrained`, so collecting on
+    rank 0's exit could rsync a stage that was still being written and report success on a
+    truncated checkpoint."""
+    command = (
+        f"p=$(cat {pid_file} 2>/dev/null); "
+        f'if [ -z "$p" ]; then exit 0; fi; '
+        f"for i in $(seq 1 {max(1, timeout)}); do "
+        f'kill -0 "$p" 2>/dev/null || exit 0; sleep 1; done; exit 1'
+    )
+    try:
+        res = subprocess.run(
+            ["ssh", "-n", *_SSH_OPTS, f"{user}@{peer_ip}", command],
+            capture_output = True,
+            timeout = timeout + 60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0
+
+
+def collect_stage_outputs(
+    save_dir: str, peer_ip: str, user: str, home: str, ranks: Optional[List[int]] = None
+) -> Optional[str]:
+    """Bring the PEER's own `stageN/` directories back into the local save directory.
 
     `spark merge` reads every stage from ONE local directory and says it needs no second
     Spark, while rank 1 wrote its stage on the peer and nothing fetched it. A successful run
-    therefore left no mergeable checkpoint on either machine."""
+    therefore left no mergeable checkpoint on either machine.
+
+    Only the peer's own stages, named explicitly. Copying the whole remote root would bring
+    back a stale `stage0` -- from an earlier run with the roles reversed, say -- over the
+    freshly trained local one, and the metadata and adapter config can still agree, so the
+    merge would accept a checkpoint combining two different runs."""
     local = osp.expanduser(save_dir)
     remote = save_dir if osp.isabs(save_dir) else f"{home.rstrip('/')}/{save_dir}"
     os.makedirs(local, exist_ok = True)
+    wanted = [f"stage{rank}" for rank in (ranks if ranks is not None else [1])]
     cmd = [
         "rsync",
         "-a",
         "-e",
         "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
-        f"{user}@{peer_ip}:{remote.rstrip('/')}/",
+        *[f"{user}@{peer_ip}:{remote.rstrip('/')}/{name}" for name in wanted],
         local.rstrip("/") + "/",
     ]
     try:
@@ -4554,6 +4742,11 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # correctly still left no mergeable checkpoint on either machine.
     save_dir = _save_dir_of(plan["node0"])
     if save_dir:
+        print("  waiting for the peer stage to finish writing ...")
+        if not wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID):
+            print(f"  the peer rank has not exited; its stage is under {save_dir} on")
+            print(f"  {plan['peer_ip']}. Collect it once it has finished, then merge.")
+            return 1
         print(f"  collecting the peer's stages into {save_dir} ...")
         error = collect_stage_outputs(save_dir, plan["peer_ip"], user, home)
         if error:
@@ -4661,6 +4854,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--model", default = "", help = "GGUF path for `serve`")
     parser.add_argument("--script", default = "", help = "training script for `train`")
     parser.add_argument("--port", type = int, default = 8080)
+    # The public `unsloth spark serve` has always exposed --rpc-port, and the preflight
+    # names it when the default port is taken; without it registered here, passing it
+    # died in argparse before reaching `_cmd_serve`.
+    parser.add_argument(
+        "--rpc-port",
+        type = int,
+        default = RPC_DEFAULT_PORT,
+        help = "base port for the peer's RPC servers (`serve`)",
+    )
     parser.add_argument("--ctx", type = int, default = 8192)
     parser.add_argument("--yes", "-y", action = "store_true")
     parser.add_argument(
@@ -4815,7 +5017,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("serve needs --model <path-to.gguf>")
             return 2
         return _cmd_serve(
-            args.model, port = args.port, ctx = args.ctx, engines = args.engines, slots = args.slots
+            args.model,
+            port = args.port,
+            rpc_port = args.rpc_port,
+            ctx = args.ctx,
+            engines = args.engines,
+            slots = args.slots,
         )
     if args.command == "train":
         if args.layer_split:
