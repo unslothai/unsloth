@@ -227,7 +227,7 @@ def _require_run(run_id: str) -> dict[str, Any]:
 
 def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
     """Signal only the caller's registration; a bare cancel ID is never stashed, since another account can legitimately reuse it."""
-    if policy.installation_is_multi_user():
+    if policy.installation_has_managed_accounts():
         active_generations.cancel_run(run_id, account_id = current_account_id())
         if supervisor_name == "chat_generation_supervisor":
             return
@@ -241,8 +241,10 @@ def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -
 
 
 def _require_available_supervisor_run_id(run_id: str) -> None:
-    """A legacy supervisor keys tasks by bare ID; refuse a foreign active slot."""
-    if policy.installation_is_multi_user():
+    """A legacy supervisor keys tasks by bare ID; refuse a foreign active slot.
+    Keyed on managed accounts: a deactivated account's producer keeps its entry and
+    start() no-ops on a held id, so an admitted owner run would never be scheduled."""
+    if policy.installation_has_managed_accounts():
         for entry in active_generations.snapshot():
             if entry["run_id"] == run_id:
                 policy.require_account_scope(entry.get("account_id"))
@@ -328,7 +330,7 @@ def cancel_chat_generation_run(
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     if run["status"] in {"cancelling", "cancelled"} and (
         getattr(request.app.state, "chat_generation_supervisor", None) is not None
-        or policy.installation_is_multi_user()
+        or policy.installation_has_managed_accounts()
     ):
         cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
     return run
@@ -345,7 +347,7 @@ async def chat_generation_events(
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
     wait_for_events = db.wait_for_events
-    if policy.installation_is_multi_user():
+    if policy.installation_has_managed_accounts():
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 

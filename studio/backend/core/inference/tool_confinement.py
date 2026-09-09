@@ -374,7 +374,8 @@ def macos_profile(
         "(allow network*)",
         "(allow file-read-metadata)",
         '(allow file-read* file-write* (subpath "/dev"))',
-        '(allow file-read* (subpath "/private/tmp") (subpath "/private/var/db"))',
+        # No shared /private/tmp: the account's own tmp root is granted with the writable roots.
+        '(allow file-read* (subpath "/private/var/db"))',
         # The per-user darwin tree holds every account's tmp root: deny it, keep the cache dir dyld needs.
         '(deny file-read* file-write* (subpath "/private/var/folders") (subpath "/var/folders"))',
         *(f"(allow file-read* (subpath {_sbpl(path)}))" for path in _darwin_user_cache_dirs()),

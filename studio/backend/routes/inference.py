@@ -7209,11 +7209,11 @@ async def _wait_for_model_switch_idle(
     still be refused, so they must not shorten the protection they provide.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
-    from auth.policy import installation_is_multi_user
     from core.inference.gpu_arbiter import require_no_foreign_generations
-    from utils.account_context import current_account_id
 
-    account_id = current_account_id() if installation_is_multi_user() else None
+    # account_scope(), not login mode: deactivating the last managed account only signals
+    # its generation, which keeps decoding on the backend this drain protects.
+    account_id = account_access.account_scope()
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
         if account_id is not None:
@@ -8501,9 +8501,11 @@ async def _reject_unservable_model(
     )
 
 
-async def _require_named_model_access(named_model: str) -> None:
+async def _require_named_model_access(
+    named_model: str, fastapi_request: Optional[Request] = None
+) -> None:
     """Authorize a named model; a path-free local id from /v1/models resolves through the
-    account catalog."""
+    account catalog, and an uncached Hub reference through the caller's own token."""
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
@@ -8517,7 +8519,35 @@ async def _require_named_model_access(named_model: str) -> None:
         await _cached_local_catalog()
         if await asyncio.to_thread(_own_local_model_for_alias, alias) is not None:
             return
+    if await _caller_token_authorizes_download(named_model, fastapi_request):
+        return
     raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+async def _caller_token_authorizes_download(
+    named_model: str, fastapi_request: Optional[Request]
+) -> bool:
+    """Whether the caller's own Hub token authorizes fetching an uncached Hub reference. A local
+    path is never downloadable, and this is the same proof the download itself demands."""
+    from core.inference.openai_auto_download import is_downloadable_ref, split_model_ref
+    from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
+
+    if fastapi_request is None or not get_openai_auto_download_enabled():
+        return False
+    reference = named_model.strip()
+    if reference.startswith(("./", "../", "~", "/")) or not is_downloadable_ref(reference):
+        return False
+    # Only the caller's own token, never the server's ambient one.
+    hf_token = _auto_download_hf_token(fastapi_request)
+    if not hf_token:
+        return False
+    try:
+        await asyncio.to_thread(
+            account_access.authorize_download, split_model_ref(reference)[0], "model", hf_token
+        )
+    except HTTPException:
+        return False
+    return True
 
 
 def _own_local_model_for_alias(alias: str) -> Optional[str]:
@@ -8579,7 +8609,7 @@ async def _maybe_auto_switch_model(
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
     if account_access.managed_account():
         if named_model:
-            await _require_named_model_access(named_model)
+            await _require_named_model_access(named_model, fastapi_request)
         elif account_access.resident_hidden("chat", _loaded_slot_ident()):
             raise HTTPException(status_code = 404, detail = "Model not found")
 
@@ -13623,18 +13653,18 @@ def _raise_or_cancel_active_generations(
     run ahead of preflight checks that can still reject the load (see
     _load_model_impl).
     """
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+
     scope = account_access.account_scope()
+    if scope is not None:
+        # Before the count and the cancel: a foreign generation refuses the swap, so
+        # cancelling first would end the caller's chats for nothing, and the caller's own
+        # count is zero when only foreign work runs. Keyed on account_scope() because
+        # deactivating the last managed account drops the count while its generation
+        # still holds the GPU.
+        require_no_foreign_generations(scope)
     if not active_generations.count(scope):
         return 0
-    from auth.policy import installation_is_multi_user
-    from core.inference.gpu_arbiter import require_no_foreign_generations
-    from utils.account_context import current_account_id
-
-    account_id = current_account_id() if installation_is_multi_user() else None
-    if account_id is not None:
-        # Before the cancel below: a foreign generation refuses the swap, so cancelling
-        # first would end the caller's chats for nothing.
-        require_no_foreign_generations(account_id)
     if not force:
         thread_ids = active_generations.active_thread_ids(scope)
         running = active_generations.count(scope)

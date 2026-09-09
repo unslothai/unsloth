@@ -719,7 +719,7 @@ def patch_thread(
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
     """Signal workers for active runs captured by the deletion transaction."""
     supervisor = getattr(request.app.state, "research_supervisor", None)
-    if supervisor is None and not policy.installation_is_multi_user():
+    if supervisor is None and not policy.installation_has_managed_accounts():
         return
     for run_id in run_ids:
         try:
@@ -750,7 +750,7 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
             try:
                 status = research_runs_db.request_cancel(run["id"])
                 if status == "cancelling" and (
-                    supervisor is not None or policy.installation_is_multi_user()
+                    supervisor is not None or policy.installation_has_managed_accounts()
                 ):
                     cancel_account_run(request, run["id"], supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
@@ -774,7 +774,7 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         # The row is usually already gone here, which makes request_cancel raise:
         # the supervisor is what actually stops the worker, so it is told first
         # and the status update is the best-effort half.
-        if supervisor is not None or policy.installation_is_multi_user():
+        if supervisor is not None or policy.installation_has_managed_accounts():
             try:
                 cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001

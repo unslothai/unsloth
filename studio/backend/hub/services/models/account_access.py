@@ -201,7 +201,7 @@ _uncommitted_components: dict[str, tuple] = {}
 
 def note_resident_account(modality: str, *references: str) -> None:
     """CPU residents have no GPU lease, so retain their load provenance at the route boundary."""
-    if policy.installation_is_multi_user():
+    if policy.installation_has_managed_accounts():
         previous = _resident_accounts.get(modality)
         _uncommitted_resident[modality] = (
             current_account_id(),
@@ -218,7 +218,7 @@ _resident_components: dict[str, tuple[str, frozenset[str]]] = {}
 
 def note_resident_components(modality: str, primary: str, *references: str) -> None:
     """A generation on a shared resident must clear its base repo and baked adapters too."""
-    if policy.installation_is_multi_user():
+    if policy.installation_has_managed_accounts():
         _uncommitted_components[modality] = (
             current_account_id(),
             _resident_components.get(modality),
@@ -234,7 +234,7 @@ def restore_resident_metadata(modality: str) -> bool:
     """Undo the records a failed load published; the previous pipeline is still resident.
     The record-keeping half of ``restore_owner_account``, and like it a no-op once another
     load took residency."""
-    if not policy.installation_is_multi_user():
+    if not policy.installation_has_managed_accounts():
         return False
     account_id = current_account_id()
     restored = False
@@ -295,7 +295,9 @@ def gpu_busy_error(path: str | None = None) -> HTTPException:
 
 
 def require_idle_other_accounts(path: str | None = None) -> None:
-    if policy.installation_is_multi_user():
+    # Managed accounts, not login mode: deactivating the last one drops the active count
+    # while its generation still holds the GPU.
+    if policy.installation_has_managed_accounts():
         from core.inference.gpu_arbiter import require_no_foreign_generations
         require_no_foreign_generations(current_account_id(), path = path)
 
@@ -732,7 +734,7 @@ def require_media_generation_access(status: dict, modality: str | None = None) -
 
 
 def foreign_work_active() -> bool:
-    if not policy.installation_is_multi_user():
+    if not policy.installation_has_managed_accounts():
         return False
     from state import active_generations
     return bool(active_generations.foreign_count(current_account_id()))
