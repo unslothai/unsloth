@@ -2526,7 +2526,7 @@ class TestWindowsNoReserveStreaming:
 
 def _dio(extras = None, *, supports = True, host = False, confirmed = True,
          requested = None, env = None, no_reserve = True, keep = False):
-    """What the child would really run with, through the real policy chain."""
+    """``(policy_emitted, effective)`` through the real policy chain."""
     return _lsa.resolve_launch_load_mode(
         extras or [],
         supports_load_mode = supports,
@@ -2549,7 +2549,7 @@ class TestTheDioPolicy:
         monkeypatch.setattr(_lsa.sys, "platform", "win32")
 
     def test_a_confirmed_full_offload_streams(self):
-        assert _dio() is True
+        assert _dio() == (True, True)
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -2561,7 +2561,7 @@ class TestTheDioPolicy:
         ids = ["toggle-off", "legacy-build", "unconfirmed"],
     )
     def test_every_leg_is_required(self, kwargs):
-        assert _dio(**kwargs) is False
+        assert _dio(**kwargs) == (False, False)
 
     def test_host_residency_reaches_the_branch_as_an_unconfirmed_offload(self):
         """The launch derives gpu_offload_confirmed from `not _mem_host_resident`,
@@ -2576,7 +2576,7 @@ class TestTheDioPolicy:
     def test_other_platforms_keep_mmap(self, monkeypatch):
         for platform in ("linux", "darwin"):
             monkeypatch.setattr(_lsa.sys, "platform", platform)
-            assert _dio() is False
+            assert _dio() == (False, False)
 
     @pytest.mark.parametrize(
         "env",
@@ -2590,26 +2590,46 @@ class TestTheDioPolicy:
         """no-reserve owns the RESERVATION, not the loader, so these survive the
         scrub, and argv beats the environment in llama.cpp."""
         assert _lsa.scrub_memory_env(dict(env), (False, True)) == []
-        assert _dio(env = env) is (env.get("LLAMA_ARG_DIO") == "1")
+        emitted, effective = _dio(env = env)
+        # The pair stands aside for any of them; only an inherited dio still streams.
+        assert emitted is False
+        assert effective is (env.get("LLAMA_ARG_DIO") == "1")
 
     def test_a_reserving_env_var_is_scrubbed_and_does_not_veto(self):
         scrubbed = {"LLAMA_ARG_NO_MMAP": "1"}
         assert _lsa.scrub_memory_env(scrubbed, (False, True)) == ["LLAMA_ARG_NO_MMAP"]
-        assert _dio(env = scrubbed) is True
+        assert _dio(env = scrubbed) == (True, True)
 
     def test_a_per_model_mmap_wins_by_last_arg(self):
-        assert _dio(requested = "mmap") is False
+        # The policy still emits; the user's selector wins the resolve.
+        assert _dio(requested = "mmap") == (True, False)
 
     def test_a_per_model_reserving_mode_is_dropped_and_dio_stands(self):
         """no-reserve vetoes none/mlock/mmap+mlock, so they cannot shadow it."""
         for mode in ("none", "mlock", "mmap+mlock"):
-            assert _dio(requested = mode) is True
+            assert _dio(requested = mode) == (True, True)
 
     def test_a_hand_typed_extra_wins_by_last_arg(self):
-        assert _dio(["--load-mode", "mmap"]) is False
+        assert _dio(["--load-mode", "mmap"]) == (True, False)
 
     def test_a_reserving_extra_is_stripped_and_dio_stands(self):
-        assert _dio(["--no-mmap"]) is True
+        assert _dio(["--no-mmap"]) == (True, True)
+
+    @pytest.mark.parametrize("how", ["requested", "extras", "env"])
+    def test_a_user_dio_streams_without_the_policy_emitting(self, how):
+        """The two halves are different questions. Conflating them made a retry
+        append a redundant pair and mark the launch active, and with both toggles
+        off `not policy_active` then fails forever: an endless reload of a healthy
+        child. The user's own dio streams; the policy contributed nothing."""
+        kw = {"no_reserve": False}
+        if how == "requested":
+            kw["requested"] = "dio"
+        elif how == "extras":
+            kw["extras"] = ["--load-mode", "dio"]
+        else:
+            kw["env"] = {"LLAMA_ARG_DIO": "1"}
+        emitted, effective = _dio(**kw)
+        assert (emitted, effective) == (False, True)
 
 
 class TestTheReloadComparator:
@@ -2668,9 +2688,10 @@ class TestTheLaunchAsksTheSameQuestionTwice:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         flat = "".join(src.split())
-        assert "self._memory_dio_applicable=resolve_launch_load_mode(" in flat
-        assert "settings=(_mem_keep_resident,True)," in flat
-        assert "env=_mem_env_view_no_reserve," in flat
+        assert "self._memory_dio_applicable=_hypo_emittedand_hypo_effective" in flat
+        assert "_ask((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat
+        # activity asks the same way, for the toggles-off child
+        assert "_ask((False,False),_off_view)" in flat
         # the hypothetical env view is scrubbed for the hypothetical toggle
         assert "scrub_memory_env(_mem_env_view_no_reserve,(_mem_keep_resident,True))" in flat
         # and the machinery it replaced is gone
@@ -2714,13 +2735,17 @@ class TestTheLaunchWithdrawsTheDio:
         arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
         assert "_drop_managed_dio" not in arm
 
-    def test_the_arch_retry_restores_before_stripping(self):
-        """The snapshot describes `cmd` while it still carried the pair, so
-        restoring on top of the strip puts back what the strip just cleared."""
+    def test_the_arch_retry_re_asks_instead_of_dropping(self):
+        """It only narrows visibility and keeps the all-layer --fit off command, so
+        a surviving discrete GPU can still be a confirmed full offload. Dropping
+        unconditionally left a healthy child on mmap with applicability cleared."""
         src = self._src()
-        assert src.index(") = _mem_policy_for_cmd") < src.index(
-            "_dio_left_cmd = bool(self._memory_dio_flags)"
-        )
+        arm = src[src.index("_dio_left_cmd = False") :]
+        arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
+        assert "self._managed_dio_for_confirmed_offload(" in arm
+        assert "gpu_indices = _remaining," in arm
+        # and the restore still precedes any bookkeeping the strip would clear
+        assert src.index(") = _mem_policy_for_cmd") < src.index("_dio_left_cmd = False")
 
     def test_a_copy_strip_leaves_the_tokens_nameable(self):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -2824,14 +2849,17 @@ class TestThePlacementProbes:
     @pytest.mark.parametrize(
         "backends,offers",
         [
-            (frozenset(), True),                       # static/custom: cannot tell
+            (frozenset(), False),                      # cannot enumerate: fail closed
             (frozenset({"base", "cpu"}), False),       # a managed CPU-only bundle
             (frozenset({"base", "cpu", "vulkan"}), True),
         ],
     )
-    def test_only_a_readable_cpu_only_bundle_is_rejected(self, monkeypatch, backends, offers):
-        """llama.cpp accepts -ngl on a CPU-only build and ignores it, but absence
-        of sidecar libs is not evidence: a statically linked build ships none."""
+    def test_an_unenumerable_build_fails_closed(self, monkeypatch, backends, offers):
+        """llama.cpp accepts -ngl on a CPU-only build and ignores it. A static custom
+        build ships no sidecars either way, and the device list comes from host tools
+        that answer for the MACHINE, not this binary. The mistakes are not symmetric:
+        guessing GPU hands DirectIO to a CPU-resident model and turns its mapping into
+        an allocated buffer; guessing no GPU only declines an optimisation."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(

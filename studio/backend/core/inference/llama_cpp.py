@@ -8445,7 +8445,7 @@ class LlamaCppBackend:
                 or self._vulkan_offload_is_discrete(binary, gpu_indices)
             )
         )
-        if not resolve_launch_load_mode(
+        emitted, effective = resolve_launch_load_mode(
             extra_args,
             supports_load_mode = bool(server_caps.get("supports_load_mode")),
             weights_in_host_memory = False,
@@ -8453,9 +8453,12 @@ class LlamaCppBackend:
             requested_load_mode = requested_load_mode,
             env = env_view,
             settings = settings,
-        ):
-            return []
-        return list(MANAGED_DIO_FLAGS)
+        )
+        # Both halves. `effective` alone is true for a user's own "dio", where the
+        # policy contributed nothing: appending a redundant pair there marks the
+        # launch active and, with both toggles off, `not policy_active` then fails
+        # forever and the reload hint and dedup restart a healthy child on a loop.
+        return list(MANAGED_DIO_FLAGS) if (emitted and effective) else []
 
     @staticmethod
     def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
@@ -8487,18 +8490,18 @@ class LlamaCppBackend:
         ``_is_vulkan_backend``. Windows and Linux only, which is where the
         prebuilts are single-backend; Metal is not among the names.
 
-        An unreadable or sidecar-less install answers True and leaves the decision
-        to the device enumeration: this exists to reject a managed CPU-only bundle,
-        not to require the layout a managed bundle happens to have.
         """
-        backends = LlamaCppBackend._installed_ggml_backends(binary)
-        # Absence of evidence is not evidence: a statically linked or custom build
-        # ships no ggml-*.dll beside llama-server, and reading that as "no GPU"
-        # suppressed the policy on a real discrete card indefinitely. Only a bundle
-        # we could actually enumerate, and that has no GPU backend in it, is one.
-        if not backends:
-            return True
-        return bool(backends & {"cuda", "hip", "vulkan"})
+        # Fail CLOSED on an install we cannot enumerate. A statically linked custom
+        # build ships no ggml-*.dll either way, so its GPU support is unknowable
+        # from here, and the device list comes from host tools (nvidia-smi, torch)
+        # which answer for the MACHINE and not for this binary. The two mistakes
+        # are not symmetric: guessing "GPU" hands DirectIO to a model llama.cpp
+        # actually keeps on the CPU and turns its pageable mapping into an
+        # allocated buffer, which is the reservation this setting exists to avoid;
+        # guessing "no GPU" only declines an optimisation on an unusual install.
+        return bool(
+            LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}
+        )
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -23562,18 +23565,28 @@ class LlamaCppBackend:
                 # the duplicate-load fast path tore down a healthy server every time.
                 # Read from the toggle-independent chain, so a LATER save is compared
                 # against this launch rather than reading as already satisfied.
-                # What this child really runs, and what a relaunch under no-reserve
-                # would run. Same function, same inputs, one toggle apart: the
-                # comparator needs the difference and nothing else.
-                self._memory_dio_applicable = resolve_launch_load_mode(
-                    extra_args,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                    weights_in_host_memory = _mem_host_resident,
-                    gpu_offload_confirmed = _mem_gpu_offload_confirmed,
-                    requested_load_mode = _resolved_load_mode,
-                    env = _mem_env_view_no_reserve,
-                    settings = (_mem_keep_resident, True),
+                # The same question of the same launch, once per settings pair that
+                # matters. `_ask` differs only in the pair, so the answers cannot
+                # disagree about one child.
+                def _ask(pair, env_view):
+                    return resolve_launch_load_mode(
+                        extra_args,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        weights_in_host_memory = _mem_host_resident,
+                        gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                        requested_load_mode = _resolved_load_mode,
+                        env = env_view,
+                        settings = pair,
+                    )
+
+                # Would a relaunch under no-reserve ADD the pair. The policy having
+                # emitted it is the question, not the effective mode: a user's own
+                # "dio" already streams, and asking for a reload to arrive at the mode
+                # the child is already in is a notice that never clears.
+                _hypo_emitted, _hypo_effective = _ask(
+                    (_mem_keep_resident, True), _mem_env_view_no_reserve
                 )
+                self._memory_dio_applicable = _hypo_emitted and _hypo_effective
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -23730,11 +23743,16 @@ class LlamaCppBackend:
                 # is removing an inert pair. The keep-resident block cannot be shadowed:
                 # it strips every load-mode flag from the extras, which marks the launch
                 # through _mem_policy_touched_extras anyway.
-                # A DirectIO pair a later mmap shadows leaves the child running the very
-                # command it would run with the toggle off, so it is not activity: counting
-                # it made turning no-reserve OFF demand a reload that removes an inert flag.
+                # Activity is "would turning the toggles off change this child", asked
+                # the same way. A pair a later mmap shadows, and a pair the user's own
+                # "dio" makes redundant, both leave the child running the command it
+                # would run unmanaged; counting either made turning no-reserve OFF
+                # demand a reload whose only effect is removing an inert flag.
+                _off_view = dict(_mem_env)
+                scrub_memory_env(_off_view, (False, False))
                 _mem_managed_is_effective = bool(_mem_managed) and (
-                    tuple(_mem_managed) != MANAGED_DIO_FLAGS or self._memory_direct_io
+                    tuple(_mem_managed) != MANAGED_DIO_FLAGS
+                    or self._memory_direct_io != _ask((False, False), _off_view)[1]
                 )
                 self._memory_policy_active = _mem_managed_is_effective or _mem_policy_touched_extras
                 self._memory_policy_extras_touched = _mem_policy_touched_extras
@@ -24739,21 +24757,34 @@ class LlamaCppBackend:
                                 # fitted attempt read as host-resident, and that is the
                                 # verdict this retry just overturned. Appended, so the
                                 # last-wins parse still leaves a hand-typed flag on top.
-                                _retry_dio = self._managed_dio_for_confirmed_offload(
-                                    extra_args,
-                                    server_caps = server_caps,
-                                    binary = binary,
-                                    gpu_indices = gpu_indices,
-                                    detected_gpus = _detected_gpus,
-                                    is_vulkan_backend = is_vulkan_backend,
-                                    requested_load_mode = _resolved_load_mode,
-                                    env_view = _fit_load_mode_env_view,
-                                    settings = _mem_settings,
+                                def _retry_dio_for(pair, env_view):
+                                    return self._managed_dio_for_confirmed_offload(
+                                        extra_args,
+                                        server_caps = server_caps,
+                                        binary = binary,
+                                        gpu_indices = gpu_indices,
+                                        detected_gpus = _detected_gpus,
+                                        is_vulkan_backend = is_vulkan_backend,
+                                        requested_load_mode = _resolved_load_mode,
+                                        env_view = env_view,
+                                        settings = pair,
+                                    )
+
+                                # The placement this retry just proved is the one a LATER
+                                # save is compared against, so refresh the forced-on
+                                # answer too. With no-reserve off the live call emits
+                                # nothing and only this line moves.
+                                self._memory_dio_applicable = bool(
+                                    _retry_dio_for(
+                                        (_mem_keep_resident, True), _mem_env_view_no_reserve
+                                    )
+                                )
+                                _retry_dio = _retry_dio_for(
+                                    _mem_settings, _fit_load_mode_env_view
                                 )
                                 if _retry_dio and not self._memory_dio_flags:
                                     run_cmd = [*run_cmd, *_retry_dio]
                                     self._memory_dio_flags = list(_retry_dio)
-                                    self._memory_dio_applicable = True
                                     self._memory_policy_active = True
                                     logger.info(
                                         "Model Memory: applying %s for the --fit off "
@@ -25303,8 +25334,6 @@ class LlamaCppBackend:
                                 "the arch-crash retry; it runs on a different device "
                                 "set than the fit was proved against."
                             )
-                        # Same for the managed DirectIO, and for the same reason:
-                        # the placement it was chosen for is the one that crashed.
                         # This respawn starts from `cmd`, but the crashed launch may
                         # have taken _spawn_and_wait's --fit retry, which appends a
                         # page-lock to its OWN argv and records it. `cmd` never carried
@@ -25325,12 +25354,34 @@ class LlamaCppBackend:
                         # strip put back the applicability and the activity the strip
                         # had just cleared, leaving a retry that runs without the pair
                         # recorded as still owing it.
-                        _dio_left_cmd = bool(self._memory_dio_flags)
-                        cmd = self._drop_managed_dio(
-                            cmd,
-                            "the arch-crash retry runs on a different device set "
-                            "than the offload was confirmed against",
-                        )
+                        # The pair is a question about PLACEMENT, not about which
+                        # devices proved it, and this retry keeps the all-layer --fit off
+                        # command: it only narrows visibility. If the surviving discrete
+                        # GPU still takes every layer the pair is still right, and
+                        # dropping it would leave a healthy full-offload child on the
+                        # resident mmap path with applicability cleared, so the enabled
+                        # setting never asks for the corrective reload. Re-ask on the
+                        # narrowed set; the --fit on rung removes it if that stops holding.
+                        _dio_left_cmd = False
+                        if self._memory_dio_flags and not (
+                            self._managed_dio_for_confirmed_offload(
+                                extra_args,
+                                server_caps = server_caps,
+                                binary = binary,
+                                gpu_indices = _remaining,
+                                detected_gpus = _detected_gpus,
+                                is_vulkan_backend = is_vulkan_backend,
+                                requested_load_mode = _resolved_load_mode,
+                                env_view = _fit_load_mode_env_view,
+                                settings = _mem_settings,
+                            )
+                        ):
+                            _dio_left_cmd = True
+                            cmd = self._drop_managed_dio(
+                                cmd,
+                                "the arch-crash retry's remaining devices no longer "
+                                "confirm a full offload",
+                            )
                         # ...except the load-mode pair just removed: the snapshot was
                         # taken while `cmd` still carried it, so restoring it would
                         # record a reservation this respawn no longer makes. From the

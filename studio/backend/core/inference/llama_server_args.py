@@ -1230,18 +1230,22 @@ def resolve_launch_load_mode(
     requested_load_mode: Optional[str],
     env: Optional[Mapping[str, str]],
     settings: tuple[bool, bool],
-) -> bool:
-    """Whether the child would run DirectIO under this ``(keep_resident, no_ram_reserve)``.
+) -> tuple[bool, bool]:
+    """``(policy_emitted_dio, effective_dio)`` under this ``(keep_resident, no_ram_reserve)``.
 
     Runs the REAL policy chain and resolves the argv it produces, rather than
-    assembling a hypothetical by hand. The launch calls it twice: once with the
-    live settings, which is what the child actually gets, and once with
-    no-reserve forced on, which is what a relaunch would get. Both answers come
-    from the same code path, so they cannot disagree about the same launch.
+    assembling a hypothetical by hand. The launch calls it for each settings pair
+    it needs an answer about, so those answers cannot disagree about one launch.
 
     Asking by hand is what went wrong before: the env view and the surviving
     extras are scrubbed and stripped BY the settings, so a hypothetical built
     from the live ones silently answered for the wrong toggle.
+
+    The two halves are DIFFERENT questions and conflating them is the other way
+    to get this wrong. ``effective_dio`` is what the child runs, which a user's
+    own ``dio`` satisfies on its own. ``policy_emitted_dio`` is whether THIS
+    policy put the pair there, which is what "did the policy change this launch"
+    and "would a relaunch add something" actually turn on.
     """
     managed, extras = apply_model_memory_policy(
         extra_args,
@@ -1258,7 +1262,10 @@ def resolve_launch_load_mode(
         requested_load_mode = requested_load_mode,
         settings = settings,
     )
-    return resolve_effective_direct_io([*managed, *selected, *extras], env)
+    return (
+        tuple(managed) == MANAGED_DIO_FLAGS,
+        resolve_effective_direct_io([*managed, *selected, *extras], env),
+    )
 
 
 def apply_model_memory_policy(
