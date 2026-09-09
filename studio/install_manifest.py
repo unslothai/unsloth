@@ -632,6 +632,152 @@ def missing_requirements(
     return missing
 
 
+# A closure walk that never finishes is a full dependency pass on every update, and a
+# site-packages on a wedged network mount can produce one. Generous, because the walk is
+# in-memory after the index is built and 400 distributions cost well under a second.
+CLOSURE_SCAN_BUDGET_SECONDS = 10.0
+# Belt to the deadline's braces: a metadata set that somehow cycles without repeating a
+# (name, extras) key still stops.
+_CLOSURE_MAX_VISITS = 20000
+
+
+def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
+    """canonical name -> (version, raw Requires-Dist lines) for this interpreter.
+
+    One pass over the metadata, because every gated step asks the same question about
+    the same site-packages and `distribution(name)` re-reads a dist-info per lookup.
+    None when the metadata cannot be enumerated at all, which the caller reads as
+    "cannot audit" rather than "satisfied".
+    """
+    from importlib.metadata import distributions
+    try:
+        index: Dict[str, Tuple[str, List[str]]] = {}
+        for dist in distributions(path = _metadata_scan_paths()):
+            try:
+                name = dist.metadata["Name"]
+                version = dist.version
+            except Exception:
+                # A dist-info with unreadable metadata is damage the caller's other
+                # checks report; it must not take the whole index with it.
+                continue
+            if not name or not version:
+                continue
+            key = _canonical(str(name))
+            # First wins, matching sys.path precedence. A duplicate is a conflict
+            # metadata_conflict() already reports, and picking the other copy here
+            # would make two checks disagree about the same venv.
+            if key in index:
+                continue
+            try:
+                requires = list(dist.requires or [])
+            except Exception:
+                requires = []
+            index[key] = (str(version), requires)
+        return index
+    except Exception:
+        return None
+
+
+def unsatisfied_closure_requirement(
+    req_file: Path,
+    index: Optional[Dict[str, Tuple[str, List[str]]]] = None,
+    budget_seconds: float = CLOSURE_SCAN_BUDGET_SECONDS,
+) -> Optional[str]:
+    """The first requirement in *req_file*'s INSTALLED closure that is not met, or None.
+
+    missing_requirements() reads the file's own lines, which stay true after a
+    transitive dependency is uninstalled: `mammoth>=1.8.0` is satisfied by a mammoth
+    whose `cobble` is gone, and importing it raises. The step that would have repaired
+    that is exactly the one being considered for a skip, so the audit has to follow
+    Requires-Dist down from each line.
+
+    Only for steps installed WITH dependencies. A `--no-deps` step deliberately leaves
+    its requirements' own dependencies unresolved, so auditing one would report a
+    conflict the installer created on purpose and force that step to run forever.
+
+    Fails CLOSED, unlike missing_requirements() and violated_constraints(): every
+    return path that is not a proven-complete closure names a reason, and the caller
+    reads any string as "install it". `packaging` absent, a direct URL requirement whose
+    provenance a version cannot answer, an unreadable file, a budget overrun -- none of
+    those are evidence that the closure holds, and the cost of being wrong is one
+    dependency pass rather than a broken import nobody repairs.
+    """
+    try:
+        from packaging.requirements import Requirement
+    except Exception:
+        return "<packaging unavailable>"
+    if index is None:
+        index = installed_dependency_index()
+    if index is None:
+        return "<metadata unreadable>"
+    try:
+        lines = Path(req_file).read_text(encoding = "utf-8-sig").splitlines()
+    except (OSError, ValueError):
+        return "<requirements unreadable>"
+
+    deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
+    # (raw requirement, the extras whose markers are in scope for it). The top level has
+    # no extra, so only markers that do not mention one apply.
+    pending: List[Tuple[str, Tuple[str, ...]]] = []
+    for line in lines:
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        if text.startswith("-"):
+            # A pip flag. None of the audited files carry one today, and an `-r` include
+            # would hide requirements from this walk entirely.
+            return f"<flag line: {text}>"
+        pending.append((text, ("",)))
+
+    seen: set = set()
+    visits = 0
+    while pending:
+        visits += 1
+        if visits > _CLOSURE_MAX_VISITS:
+            return "<closure too large>"
+        if deadline is not None and time.monotonic() > deadline:
+            return "<closure audit timed out>"
+        raw, contexts = pending.pop()
+        try:
+            requirement = Requirement(raw)
+        except Exception:
+            return f"<unparseable: {raw}>"
+        marker = requirement.marker
+        if marker is not None:
+            try:
+                applies = any(marker.evaluate({"extra": extra}) for extra in contexts)
+            except Exception:
+                return f"<unevaluable marker: {raw}>"
+            if not applies:
+                continue
+        if requirement.url:
+            # A direct reference is satisfied by whatever landed, and the version says
+            # nothing about which. _direct_reference_is_installed answers that for the
+            # one step that has one, and that step is --no-deps and never gets here.
+            return f"{requirement.name} (direct reference)"
+        key = _canonical(requirement.name)
+        record = index.get(key)
+        if record is None:
+            return requirement.name
+        version, requires = record
+        if requirement.specifier and not requirement.specifier.contains(version, prereleases = True):
+            return f"{requirement.name} {version}"
+        extras = tuple(sorted(_canonical(extra) for extra in requirement.extras))
+        visit_key = (key, extras)
+        if visit_key in seen:
+            continue
+        seen.add(visit_key)
+        # An extra's own dependencies are declared with `extra == "<name>"` markers, so
+        # a requirement asking for foo[bar] puts "bar" in scope for foo's Requires-Dist
+        # alongside the unconditional ones. Both spellings, because PEP 685 normalisation
+        # of the name inside the marker only arrived with newer build backends: a wheel
+        # built before it still says extra == "all_files", and matching only the
+        # canonical "all-files" would silently drop that extra's whole subtree.
+        child_contexts = ("", *extras, *requirement.extras)
+        pending.extend((child, child_contexts) for child in requires)
+    return None
+
+
 def violated_constraints(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:

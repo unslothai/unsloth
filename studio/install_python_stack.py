@@ -1047,6 +1047,147 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
+# The provenance this pass last installed bitsandbytes from, or None. A forced pass
+# reinstalls once; the SECOND _ensure_rocm_torch() of the same pass must not repeat that
+# download, but must still repair a bnb the with-deps steps between the two calls
+# re-resolved -- which is the whole reason the torch repair runs twice. So this records
+# WHAT landed rather than merely THAT something did.
+_BNB_ROCM_PASS_PROVENANCE: "str | None" = None
+
+
+def _installed_direct_url(dist_name: str) -> "str | None":
+    """The URL pip recorded for a distribution installed from one, or None.
+
+    PEP 610: an install from a wheel URL writes direct_url.json beside the metadata,
+    and it is the only durable record of WHERE a wheel came from -- the version cannot
+    say, because the same version is published to PyPI and to a release page.
+    """
+    try:
+        from importlib.metadata import distribution
+        recorded = distribution(dist_name).read_text("direct_url.json")
+    except Exception:  # noqa: BLE001 - absent metadata is a reason to install
+        return None
+    if not recorded:
+        return None
+    try:
+        payload = json.loads(recorded)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    url = payload.get("url")
+    return str(url) if isinstance(url, str) and url else None
+
+
+def _bnb_wheel_version(url: str) -> "str | None":
+    """The version in a bnb wheel filename, e.g. 1.33.7.preview.
+
+    Compared textually against the installed version only as a fallback, and normalised
+    the way PEP 440 does for this one wheel: its filename says 1.33.7.preview and its
+    metadata says 1.33.7rc0, which is the same release spelled two ways.
+    """
+    name = url.rsplit("/", 1)[-1]
+    parts = name.split("-")
+    return parts[1] if len(parts) > 2 and parts[0] and parts[1] else None
+
+
+def _installed_bnb_provenance() -> "str | None":
+    """What the resident bitsandbytes IS, or None when there is nothing to keep.
+
+    An opaque string, compared only against another one produced the same way: the URL
+    pip recorded for it, or its version when nothing recorded one. Deliberately says
+    nothing about whether it is the RIGHT build -- that is the caller's question, and
+    keeping the two apart is what lets a provenance recorded by the last run be checked
+    against both what is on disk now and what this run would install.
+    """
+    installed = _installed_distribution_version("bitsandbytes")
+    if not installed:
+        return None
+    # Metadata survives a quarantined payload, and the reinstall this may skip is the
+    # only thing that would put the shared objects back.
+    try:
+        if install_manifest.damaged_payload_files("bitsandbytes", limit = 1):
+            return None
+    except Exception:  # noqa: BLE001 - an environment nobody can scan is not evidence
+        return None
+    recorded_url = _installed_direct_url("bitsandbytes")
+    return f"url:{recorded_url}" if recorded_url else f"version:{installed}"
+
+
+def _bnb_provenance_matches_request(provenance: str, url: "str | None") -> bool:
+    """Whether *provenance* describes a build one of the two install paths would land."""
+    kind, _, value = provenance.partition(":")
+    if kind == "url":
+        # The pre-release wheel, proven by where it was fetched from. A bumped URL in a
+        # new installer release no longer matches, so the new wheel is fetched once.
+        return url is not None and value == url
+    # No direct_url.json: an installer that wrote none, or the PyPI fallback this path
+    # takes when the release page is unreachable. The wheel filename's version
+    # identifies the first; the pin identifies the second, and reinstalling what the
+    # fallback would install anyway buys nothing.
+    if url is not None:
+        wheel_version = _bnb_wheel_version(url)
+        if wheel_version is not None and _versions_are_same_release(value, wheel_version):
+            return True
+    return _spec_is_satisfied(_BNB_ROCM_PYPI_FALLBACK, value)
+
+
+def _bnb_rocm_install_is_current(url: "str | None") -> bool:
+    """Whether this pass may leave bitsandbytes exactly as it found it.
+
+    --force-reinstall from a release URL downloads the wheel before it can notice it
+    already has it, and this decision is reached twice per dependency pass, so an AMD
+    host paid the whole wheel twice on every no-op `studio update`.
+    """
+    provenance = _installed_bnb_provenance()
+    if provenance is None:
+        return False
+    if _BNB_ROCM_PASS_PROVENANCE is not None:
+        # This pass already settled bitsandbytes. The second call skips only while what
+        # is on disk is still what the first one left, because the steps BETWEEN the two
+        # calls are exactly what can re-resolve it -- which is why the repair runs twice.
+        return provenance == _BNB_ROCM_PASS_PROVENANCE
+    if not _may_skip_on_evidence():
+        return False
+    # The last run has to have recorded landing this same build deliberately. Without
+    # that, a generic wheel some other step pulled in reads identically on disk to the
+    # PyPI fallback this path installs on purpose.
+    recorded = (_PASS_EVIDENCE or {}).get("bnb_rocm")
+    if not isinstance(recorded, str) or recorded != provenance:
+        return False
+    return _bnb_provenance_matches_request(provenance, url)
+
+
+def _record_bnb_rocm_provenance() -> None:
+    """What this pass leaves installed, for its own second call and for the manifest."""
+    global _BNB_ROCM_PASS_PROVENANCE
+    _BNB_ROCM_PASS_PROVENANCE = _installed_bnb_provenance()
+
+
+def _versions_are_same_release(installed: str, wheel: str) -> bool:
+    """Whether two spellings of a version name the same release.
+
+    bnb's continuous-release wheel is 1.33.7.preview in its filename and 1.33.7rc0 in
+    its metadata, so a string compare says no and a PEP 440 parse says yes.
+    """
+    if installed == wheel:
+        return True
+    try:
+        from packaging.version import Version
+        return Version(installed) == Version(wheel)
+    except Exception:  # noqa: BLE001 - unparseable is not a match
+        return False
+
+
+def _spec_is_satisfied(spec: str, installed: str) -> bool:
+    """Whether *installed* satisfies a requirement string such as `name>=0.50.0`."""
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(spec).specifier.contains(installed, prereleases = True)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 def _bnb_rocm_arch_has_binary() -> bool:
     """False on aarch64: bitsandbytes ships no ROCm kernels there at any version.
     The PyPI 0.50.0 and continuous-release_main aarch64 wheels both carry only
@@ -3061,33 +3202,45 @@ def _install_bnb_windows_rocm() -> bool:
     ROCm build; before 0.50.0 it was CUDA-only, which is why there was none.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
-    _ok = False
-    if _bnb_win_url is not None:
-        _ok = pip_install_try(
-            "bitsandbytes (AMD Windows, pre-release main)",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "--no-deps",
-            _bnb_win_url,
-            constrain = False,
-            force_pip = True,
-        )
-        if not _ok:
-            _safe_print(
-                _red(
-                    "   bnb pre-release install failed; falling back to PyPI "
-                    f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
-                )
+    # Same measurement as the Linux twin, 39 MB per call on gfx1151 Windows: the wheel is
+    # downloaded before --force-reinstall can notice it is the wheel already installed.
+    # The BNB_ROCM_VERSION work below still runs, because it reads the DLL on disk rather
+    # than anything this install produced.
+    if _bnb_rocm_install_is_current(_bnb_win_url):
+        _safe_print(_dim("   bitsandbytes (AMD Windows) is already this build -- keeping it"))
+        # Recorded on the skip too, or the manifest this pass writes would forget what is
+        # installed and the next update would fetch the wheel again.
+        _record_bnb_rocm_provenance()
+        _ok = True
+    else:
+        _ok = False
+        if _bnb_win_url is not None:
+            _ok = pip_install_try(
+                "bitsandbytes (AMD Windows, pre-release main)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _bnb_win_url,
+                constrain = False,
+                force_pip = True,
             )
-    if not _ok:
-        _ok = pip_install_try(
-            "bitsandbytes (AMD Windows)",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "--no-deps",
-            _BNB_ROCM_PYPI_FALLBACK,
-            constrain = False,
-        )
+            if not _ok:
+                _safe_print(
+                    _red(
+                        "   bnb pre-release install failed; falling back to PyPI "
+                        f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
+                    )
+                )
+        if not _ok:
+            _ok = pip_install_try(
+                "bitsandbytes (AMD Windows)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _BNB_ROCM_PYPI_FALLBACK,
+                constrain = False,
+            )
+        _record_bnb_rocm_provenance()
     if not _ok:
         return False
     # BNB_ROCM_VERSION from the DLL suffix (the wheel may ship "72" while torch reports 7.13).
@@ -4422,11 +4575,17 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
-    if not _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else ""):
+    if _may_skip_on_evidence() and not _pin_needs_reinstall(
+        spec, _torch_index_tag(torch_version) if index else ""
+    ):
         # The resident wheel is this exact version AND came from this exact index -- the
         # two things the pin exists to assert. Running the install anyway resolved the
         # pin against the index on every update to arrive back where it started, and on
         # the second caller (right after the torch repair) it did so twice.
+        #
+        # _may_skip_on_evidence first: a forced pass, or one whose deep verify failed,
+        # is asking for the install to be done again, and version-plus-index metadata
+        # cannot answer either question.
         _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
         _record_step("torchao", "skipped")
         return
@@ -5515,36 +5674,46 @@ def _ensure_rocm_torch() -> None:
     # bitsandbytes only when torch links ROCm; the pre-release wheel (bnb #1887) needs pip, not uv.
     elif rocm_torch_ready:
         _bnb_url = _bnb_rocm_prerelease_url()
-        _bnb_installed = False
-        if _bnb_url is not None:
-            _bnb_installed = pip_install_try(
-                "bitsandbytes (AMD, pre-release main)",
-                "--force-reinstall",
-                "--no-cache-dir",
-                "--no-deps",
-                _bnb_url,
-                constrain = False,
-                force_pip = True,
-            )
-            if not _bnb_installed:
-                _fallback_note = (
-                    ", which carries the ROCm 4-bit fix" if _bnb_rocm_arch_has_binary() else ""
+        # --force-reinstall from a release URL fetches the wheel before it can decide it
+        # already has it, so an AMD host paid 43 MB per call and this function is called
+        # twice per pass: 86 MB on every no-op `studio update`, measured on gfx1151.
+        if _bnb_rocm_install_is_current(_bnb_url):
+            _safe_print(_dim("   bitsandbytes (AMD) is already this build -- keeping it"))
+            # Recorded on the skip too, or the manifest this pass writes would forget
+            # what is installed and the next update would fetch the wheel again.
+            _record_bnb_rocm_provenance()
+        else:
+            _bnb_installed = False
+            if _bnb_url is not None:
+                _bnb_installed = pip_install_try(
+                    "bitsandbytes (AMD, pre-release main)",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    "--no-deps",
+                    _bnb_url,
+                    constrain = False,
+                    force_pip = True,
                 )
-                _safe_print(
-                    _red(
-                        "   bnb pre-release install failed; falling back to PyPI "
-                        f"{_BNB_ROCM_PYPI_FALLBACK}{_fallback_note}"
+                if not _bnb_installed:
+                    _fallback_note = (
+                        ", which carries the ROCm 4-bit fix" if _bnb_rocm_arch_has_binary() else ""
                     )
+                    _safe_print(
+                        _red(
+                            "   bnb pre-release install failed; falling back to PyPI "
+                            f"{_BNB_ROCM_PYPI_FALLBACK}{_fallback_note}"
+                        )
+                    )
+            if not _bnb_installed:
+                pip_install(
+                    "bitsandbytes (AMD)",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    "--no-deps",
+                    _BNB_ROCM_PYPI_FALLBACK,
+                    constrain = False,
                 )
-        if not _bnb_installed:
-            pip_install(
-                "bitsandbytes (AMD)",
-                "--force-reinstall",
-                "--no-cache-dir",
-                "--no-deps",
-                _BNB_ROCM_PYPI_FALLBACK,
-                constrain = False,
-            )
+            _record_bnb_rocm_provenance()
         if not _bnb_rocm_arch_has_binary():
             _safe_print(
                 _red(
@@ -7749,6 +7918,27 @@ def _record_step(key: str, result: str) -> None:
     _STEP_RESULTS[key] = result
 
 
+def _may_skip_on_evidence() -> bool:
+    """Whether a step is allowed to answer from what is already on disk.
+
+    The requirements steps ask this through _requirements_satisfied's first line. The
+    three pin-shaped steps -- torchao, the MLX stack and torchcodec -- compare against
+    the installed distribution rather than a recorded digest, so they have to ask for
+    themselves, and while they did not a satisfied pin outranked every reason _plan_pass
+    had for refusing last run's evidence: UNSLOTH_STUDIO_FULL_DEPS, which exists so that
+    a skip can be turned off; a failed deep verify, which says the tree those pins
+    describe is damaged; a moved interpreter, platform or torch flavour, which says the
+    resident wheel was built for something else.
+
+    _full_deps_requested is asked again rather than left to _plan_pass, which already
+    refuses evidence for it: these steps are reachable from _ensure_expected_torch_flavor
+    and the post-repair torchao re-selection as well as from their own slot, and the one
+    switch a user is told to set has to hold everywhere without depending on which call
+    path got here.
+    """
+    return _PASS_EVIDENCE is not None and not _full_deps_requested()
+
+
 def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "dict | None":
     """Last run's evidence, or None when nothing may be skipped.
 
@@ -7801,6 +7991,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         "step_results": results,
         "pip_check_ok": manifest.get("pip_check_ok"),
         "mlx_health": manifest.get("mlx_health"),
+        "bnb_rocm": manifest.get("bnb_rocm"),
     }
 
 
@@ -7851,6 +8042,26 @@ def _violated_constraints() -> "list[str]":
     return _CONSTRAINTS_CACHE[1]
 
 
+_CLOSURE_INDEX_CACHE: "tuple[int, dict | None] | None" = None
+
+
+def _installed_index() -> "dict | None":
+    """This venv's installed distributions, read once per install action.
+
+    Every with-deps step walks the same site-packages, and building the index costs one
+    pass over every dist-info; `distribution(name)` inside the walk would re-read one per
+    node. Invalidated the moment something is installed, like _violated_constraints.
+    """
+    global _CLOSURE_INDEX_CACHE
+    if _CLOSURE_INDEX_CACHE is None or _CLOSURE_INDEX_CACHE[0] != _INSTALL_ACTIONS:
+        try:
+            index = install_manifest.installed_dependency_index()
+        except Exception:  # noqa: BLE001 - None is "cannot audit", which installs
+            index = None
+        _CLOSURE_INDEX_CACHE = (_INSTALL_ACTIONS, index)
+    return _CLOSURE_INDEX_CACHE[1]
+
+
 def _inputs_unchanged(keys: "list[str]") -> bool:
     recorded = (_PASS_EVIDENCE or {}).get("pass_inputs") or {}
     for key in keys:
@@ -7861,9 +8072,23 @@ def _inputs_unchanged(keys: "list[str]") -> bool:
     return True
 
 
+def _local_plugin_payload_is_damaged(dist_name: str) -> bool:
+    """Whether the installed seed plugin has files RECORD names and disk does not.
+
+    Errors read as damaged, unlike install_manifest's own convention: this decides
+    whether to skip a pip install that takes well under a second from a local path, so
+    the conservative answer is cheap here and is not on the fast path for anything else.
+    """
+    try:
+        return bool(install_manifest.damaged_payload_files(dist_name, limit = 1))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _requirements_satisfied(
     req: Path,
     *,
+    no_deps: bool,
     label: str = "",
     constrain: bool = True,
 ) -> bool:
@@ -7872,6 +8097,10 @@ def _requirements_satisfied(
     *label* is only for the caller's own bookkeeping; the manifest key is the file's
     path under REQ_ROOT, so two steps can never collide and a renamed file can never
     inherit another's record.
+
+    *no_deps* says whether the step installs with `--no-deps`, and is deliberately
+    keyword-ONLY and REQUIRED: it decides whether the dependency closure is audited,
+    and a new step that forgot to answer would silently get the weaker check.
     """
     if _PASS_EVIDENCE is None:
         return False
@@ -7896,9 +8125,25 @@ def _requirements_satisfied(
     # been removed by hand, a later resolve, or a partial uninstall.
     importlib.invalidate_caches()
     effective, temps = _effective_requirements(req)
+    # Inside the try, because `effective` can be one of `temps`: the filtered copy is
+    # unlinked in the finally, and an audit after that would read nothing.
     try:
         if install_manifest.missing_requirements(effective):
             return False
+        # ...and the output's own dependencies are still on disk. The file's lines stay
+        # true after a transitive dependency is uninstalled -- `mammoth>=1.8.0` is
+        # satisfied by a mammoth whose `cobble` is gone, and importing it raises -- and
+        # the step that used to repair that is this one. Not asked of --no-deps steps,
+        # whose requirements' own dependencies the installer left unresolved on purpose.
+        if not no_deps:
+            unmet = install_manifest.unsatisfied_closure_requirement(effective, _installed_index())
+            if unmet is not None:
+                # Named under UNSLOTH_VERBOSE because the alternative failure is
+                # invisible: an audit that can never pass turns every update into a full
+                # dependency pass, which is correct but slow, and nothing says why.
+                if VERBOSE:
+                    _note(f"{key}: {unmet} is not satisfied -- running the step")
+                return False
     except Exception:  # noqa: BLE001
         return False
     finally:
@@ -7913,6 +8158,7 @@ def _skip_step(
     req: Path,
     progress_label: str,
     *,
+    no_deps: bool,
     constrain: bool = True,
     extra_check = None,
 ) -> bool:
@@ -7926,7 +8172,7 @@ def _skip_step(
     triton-kernels.txt, where the version says nothing about which ref landed.
     """
     key = _pass_input_key(req) or str(req)
-    satisfied = _requirements_satisfied(req, constrain = constrain)
+    satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
     _progress(f"{progress_label} (satisfied, skipped)" if satisfied else progress_label)
@@ -8121,13 +8367,16 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
 
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
-    global _INSTALL_ACTIONS, _PASS_EVIDENCE, _CONSTRAINTS_CACHE
+    global _INSTALL_ACTIONS, _PASS_EVIDENCE, _CONSTRAINTS_CACHE, _CLOSURE_INDEX_CACHE
+    global _BNB_ROCM_PASS_PROVENANCE
     _STEP = 0
     # Module state, so a second call in one process (the test suites do this) starts
     # from the same place a fresh interpreter would.
     _INSTALL_ACTIONS = 0
     _PASS_EVIDENCE = None
     _CONSTRAINTS_CACHE = None
+    _CLOSURE_INDEX_CACHE = None
+    _BNB_ROCM_PASS_PROVENANCE = None
     _STEP_RESULTS.clear()
     # An aborted earlier run leaves it set, and every _safe_print() consumes it --
     # the first message would get a stray newline.
@@ -8258,7 +8507,10 @@ def install_python_stack() -> int:
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
-            if _mlx_stack_is_current():
+            # _may_skip_on_evidence, not _mlx_stack_is_current alone: the pins are exact,
+            # so they read as satisfied on the very run a forced or repair pass was asked
+            # for, and the three distributions they name would never be reinstalled.
+            if _may_skip_on_evidence() and _mlx_stack_is_current():
                 _progress("MLX stack (satisfied, skipped)")
                 _record_step("mlx", "skipped")
             else:
@@ -8323,7 +8575,7 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             "pydantic",
         )
-        if not _skip_step(REQ_ROOT / "no-torch-runtime.txt", "no-torch runtime deps"):
+        if not _skip_step(REQ_ROOT / "no-torch-runtime.txt", "no-torch runtime deps", no_deps = True):
             pip_install(
                 "Installing no-torch runtime deps",
                 "--no-cache-dir",
@@ -8380,7 +8632,7 @@ def install_python_stack() -> int:
     # Independent of the core phase: the shell installers skip that after
     # installing the two distributions inline, but still apply this file.
     if base_requirements is not None:
-        satisfied = _requirements_satisfied(base_requirements)
+        satisfied = _requirements_satisfied(base_requirements, no_deps = False)
         _record_step("base.txt", "skipped" if satisfied else "ran")
         if skip_base:
             _progress(
@@ -8450,7 +8702,7 @@ def install_python_stack() -> int:
             )
 
     # 3. Extra dependencies
-    if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras"):
+    if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras", no_deps = False):
         pip_install(
             "Installing additional unsloth dependencies",
             "--no-cache-dir",
@@ -8461,7 +8713,7 @@ def install_python_stack() -> int:
         )
 
     # 3b. Extra dependencies (no-deps) -- audio model support etc.
-    if not _skip_step(REQ_ROOT / "extras-no-deps.txt", "extra codecs"):
+    if not _skip_step(REQ_ROOT / "extras-no-deps.txt", "extra codecs", no_deps = True):
         pip_install(
             "Installing extras (no-deps)",
             "--no-deps",
@@ -8492,6 +8744,7 @@ def install_python_stack() -> int:
         elif not _skip_step(
             REQ_ROOT / "triton-kernels.txt",
             "triton kernels",
+            no_deps = True,
             constrain = False,
             extra_check = lambda: _direct_reference_is_installed(
                 REQ_ROOT / "triton-kernels.txt", "triton_kernels"
@@ -8531,7 +8784,7 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps"):
+    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps", no_deps = False):
         pip_install(
             "Installing studio dependencies",
             "--no-cache-dir",
@@ -8543,7 +8796,9 @@ def install_python_stack() -> int:
     _repair_bad_anyio()
 
     # 9. Data-designer dependencies
-    _dd_deps_ran = not _skip_step(SINGLE_ENV / "data-designer-deps.txt", "data designer deps")
+    _dd_deps_ran = not _skip_step(
+        SINGLE_ENV / "data-designer-deps.txt", "data designer deps", no_deps = False
+    )
     if _dd_deps_ran:
         pip_install(
             "Installing data-designer base dependencies",
@@ -8552,7 +8807,7 @@ def install_python_stack() -> int:
         )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
-    _dd_ran = not _skip_step(SINGLE_ENV / "data-designer.txt", "data designer")
+    _dd_ran = not _skip_step(SINGLE_ENV / "data-designer.txt", "data designer", no_deps = True)
     if _dd_ran:
         pip_install(
             "Installing data-designer",
@@ -8587,6 +8842,12 @@ def install_python_stack() -> int:
             # The directory name IS the distribution name (see each plugin's
             # pyproject.toml), so a plugin uninstalled by hand still reinstalls.
             and bool(_installed_distribution_version(plugin_dir.name))
+            # ...and the payload, not only its metadata. A seed plugin is installed from
+            # a path, so its version never moves: deleting the installed module left the
+            # version and the source digest both unchanged and the step skipped forever,
+            # while the core and sidecar paths already scan for exactly this damage.
+            # limit = 1 and the default budget: one missing file is the whole answer.
+            and not _local_plugin_payload_is_damaged(plugin_dir.name)
         )
         if not _plugin_current:
             _plugin_work.append((_plugin_name, plugin_dir))
@@ -8606,7 +8867,7 @@ def install_python_stack() -> int:
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
-    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin"):
+    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin", no_deps = False):
         pip_install(
             "Installing the pinned Diffusers release",
             "--no-cache-dir",
@@ -8718,11 +8979,20 @@ def install_python_stack() -> int:
             ):
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
+        # One decision, read twice: the line printed below has to name what this step is
+        # about to do. _may_skip_on_evidence is part of it because the version and its
+        # local tag are metadata, and a forced pass or a failed deep verify is a claim
+        # about the payload underneath, which metadata cannot answer.
+        _codec_skip = (
+            _may_skip_on_evidence()
+            and not _codec_rebuild
+            and _codec_spec_is_satisfied(_codec_spec, _codec_have)
+        )
         _safe_print(
             f"   torch {_codec_torch_ver} detected -- "
             + (
                 f"{_codec_spec} is already installed"
-                if (not _codec_rebuild and _codec_spec_is_satisfied(_codec_spec, _codec_have))
+                if _codec_skip
                 else f"installing {_codec_spec}"
             )
             # Redacted for display only; the installer below still gets the exact URL.
@@ -8737,7 +9007,7 @@ def install_python_stack() -> int:
         # install inverts the rule the extras-no-deps filter above exists to enforce, and
         # the index can refuse for reasons no local table predicts -- a yanked release, an
         # offline mirror, a platform tag added or dropped upstream after this shipped.
-        if not _codec_rebuild and _codec_spec_is_satisfied(_codec_spec, _codec_have):
+        if _codec_skip:
             # Right version, right index. Both are what the pin asserts, so there is
             # nothing left for it to do -- and it is not free: pip and uv resolve the
             # specifier against the accelerator index before deciding the same thing.
@@ -8773,7 +9043,15 @@ def install_python_stack() -> int:
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
                 "the rest of the install is unaffected"
             )
-        elif _codec_index and _STEP_RESULTS.get("torchcodec") == "ran":
+        elif _codec_index:
+            # NOT gated on the codec step having run: NPP is a separate distribution with
+            # its own failure modes -- a download that failed last update, an uninstall
+            # that took it, a codec that was already current the first time this ran --
+            # and while this also demanded that the codec step had run, a codec that the
+            # skip above accepted meant NPP was never looked at again. It is still
+            # free on an idempotent update, because the install below is skipped when the
+            # runtime is already installed.
+            #
             # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
             # dependency set, so an older cuNNN wheel installs fine under --no-deps and then
             # fails to import. 0.12+ no longer links NPP, so this only guards the older pins.
@@ -8792,7 +9070,18 @@ def install_python_stack() -> int:
                     )
                     _npp_major = _npp_probed
             _npp_spec = _npp_requirement(_npp_major) if _npp_major else ""
-            if _npp_spec and not pip_install_try(
+            # The distribution the spec names: nvidia-npp-cuNN through CUDA 12, plain
+            # nvidia-npp above it, where the major moved into the version range. Split on
+            # the first specifier character so both spellings answer with the name pip
+            # would resolve, and let _spec_is_satisfied answer the range separately.
+            _npp_name = re.split(r"[<>=!~]", _npp_spec, maxsplit = 1)[0].strip() if _npp_spec else ""
+            _npp_have = _installed_distribution_version(_npp_name) if _npp_name else None
+            if _npp_have and _spec_is_satisfied(_npp_spec, _npp_have):
+                # Already resident. Asking pip anyway resolved the name against PyPI on
+                # every update to decide the same thing, which is a network round trip on
+                # a run that is meant to make none.
+                pass
+            elif _npp_spec and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
                 _npp_spec,
@@ -8865,6 +9154,9 @@ def install_python_stack() -> int:
                     **_plugin_digests,
                 },
                 "step_results": dict(_STEP_RESULTS),
+                # What the AMD bitsandbytes repair left installed, so the next pass can
+                # tell a wheel it landed on purpose from one another step pulled in.
+                "bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,
                 "pip_check_ok": _pip_check_ok,
                 "uv_version": _uv_version(),
                 "installer_python_tag": _installer_python_tag(),

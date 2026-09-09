@@ -5,9 +5,10 @@
 the machine running pytest, so it passes on a bare laptop and fails on any host that
 already has AMD per-arch torch. Three cases in TestEnsureRocmTorch did.
 
-_installed_rocm_wheel_family and _torch_requires_rocm_sdk go to importlib.metadata for the
-RUNNING interpreter, which is the venv being repaired at install time and the test runner
-here. This file fakes the metadata layer, never the functions, so their parsing still runs.
+_installed_rocm_wheel_family, _torch_requires_rocm_sdk and _installed_bnb_provenance go to
+importlib.metadata for the RUNNING interpreter, which is the venv being repaired at install
+time and the test runner here. This file fakes the metadata layer, never the functions, so
+their parsing still runs.
 """
 
 from __future__ import annotations
@@ -104,14 +105,20 @@ def _route(
     env: "dict | None" = None,
     family: "str | None" = None,
     torch_owns_rocm: bool = False,
+    bnb_provenance: "str | None" = None,
 ) -> str:
     """Every pip argument _ensure_rocm_torch() produced, as one string. ``family`` /
-    ``torch_owns_rocm`` pin the installed-wheel pair; the defaults are "no ROCm installed"."""
+    ``torch_owns_rocm`` / ``bnb_provenance`` pin what is installed; the defaults are
+    "no ROCm and no keepable bitsandbytes installed"."""
     pip, pip_try = MagicMock(), MagicMock(return_value = True)
     probe = MagicMock(returncode = 0, stdout = _MARK + torch_line + "\n")
     buf = io.StringIO()
 
     stack_mod._invalidate_torch_runtime_probe()
+    # Pass state, not a memo: _ensure_rocm_torch is called twice by one dependency pass
+    # and the second call answers from what the first one left installed. Each call here
+    # is meant to be its own pass, so the record is cleared like the probes above.
+    stack_mod._BNB_ROCM_PASS_PROVENANCE = None
     with (
         patch.dict(os.environ, env or {}, clear = False),
         patch.object(stack_mod, "IS_WINDOWS", False),
@@ -128,6 +135,11 @@ def _route(
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = family),
         patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
+        # The third door into the running interpreter, and it has to be pinned for the
+        # same reason as the other two: the AMD bitsandbytes repair now keeps a wheel it
+        # can prove is the one it would install, so an unpinned read makes the verdict
+        # depend on whether the machine running pytest happens to have bitsandbytes.
+        patch.object(stack_mod, "_installed_bnb_provenance", return_value = bnb_provenance),
         patch.object(stack_mod.os.path, "isdir", return_value = True),
         patch.object(stack_mod.subprocess, "run", return_value = probe),
     ):
@@ -161,8 +173,8 @@ HOSTS = {
 
 @pytest.mark.parametrize("host", sorted(HOSTS))
 def test_pinning_the_pair_makes_this_machine_irrelevant(host):
-    """Pinning the pair is SUFFICIENT isolation. Not "routing ignores what is installed" --
-    at install time it must not; the claim is that these two functions are the only door."""
+    """Pinning them is SUFFICIENT isolation. Not "routing ignores what is installed" --
+    at install time it must not; the claim is that these functions are the only door."""
     gfx, torch_line = HOSTS[host]
     with ambient("bare"):
         expected = _route(gfx, torch_line)
@@ -171,9 +183,9 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
             got = _route(gfx, torch_line)
         assert got == expected, (
             f"{host} routes differently when the interpreter running the tests is in the "
-            f"{state!r} state, even though the installed-wheel pair is pinned. Something in "
-            f"_ensure_rocm_torch now reads this venv by a path those two functions do not "
-            f"cover, so the suite's verdict depends on who runs it.\n"
+            f"{state!r} state, even though what is installed is pinned. Something in "
+            f"_ensure_rocm_torch now reads this venv by a path those three functions do "
+            f"not cover, so the suite's verdict depends on who runs it.\n"
             f"  bare: {expected}\n  {state}: {got}"
         )
 
