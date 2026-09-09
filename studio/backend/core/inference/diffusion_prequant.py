@@ -952,6 +952,19 @@ def load_prequantized_transformer(
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
+        # The other backend for the same bytes: torchao's NVFP4 payload re-expressed as flashinfer
+        # operands, when this device passes the guarded preflight and the artifact baked its
+        # activation scales. A no-op for every other scheme, and a logged refusal (leaving torchao
+        # in place) for an nvfp4 artifact that baked none.
+        # Gated on the scheme so that an int8 or fp8 artifact never pays for the flashinfer probe,
+        # whose first call can JIT a kernel.
+        if scheme == "nvfp4":
+            from .diffusion_nvfp4_linear import convert_nvfp4_backend
+            from .diffusion_nvfp4_ops import select_nvfp4_backend
+            convert_nvfp4_backend(
+                transformer, metadata, select_nvfp4_backend(device), logger = logger
+            )
+
         transformer = transformer.to(device)
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built under
         # the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would raise
