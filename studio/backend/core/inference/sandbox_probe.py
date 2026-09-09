@@ -3,42 +3,13 @@
 
 """The live probe that decides whether a sandbox backend actually confines anything.
 
-``available`` is never inferred from a binary on disk. bubblewrap installed on a
-host that denies unprivileged user namespaces looks identical to a working one
-until you ask it to build a sandbox, so this module builds one and checks that
-the things which must fail do fail.
+Every control is paired with the same control run on the HOST first, so a typo
+in a path cannot read as a boundary and a quirk of the machine cannot read as a
+broken sandbox.
 
-Every control here is paired with the same control run on the HOST first. That
-pairing is the whole point, in both directions:
-
-* a negative control (reading the sentinel must raise) means nothing unless the
-  host could read that file a moment earlier -- otherwise a typo in a path reads
-  as a boundary;
-* a positive control (multiprocessing must still work) means nothing unless the
-  host can do it either -- otherwise a quirk of the machine, such as a temp
-  directory too deep for an ``AF_UNIX`` address, reads as a sandbox that broke
-  something.
-
-So the host runs the positive half by itself, in the same environment, before
-the sandbox is asked to reproduce it. When the host fails, the probe says it
-could not conclude rather than blaming the backend.
-
-The same care applies to what a negative control is allowed to assume. "A write
-outside the workdir must raise" sounds right and is wrong: bubblewrap mounts a
-private tmpfs over ``/tmp``, which is usually where this probe's own scratch
-root lives, so the write succeeds inside a perfectly good sandbox and reaches
-nothing. What must not happen is the byte arriving on the host, so that is what
-is checked, from out here, after the run.
-
-The launch is built through the backend's own ``prepare()``, never a parallel
-argv builder. A probe that assembles its own command line stops testing the code
-path that really runs, which is how a sandbox comes to be advertised on the
-strength of a command nobody executes.
-
-Network controls are deliberately absent: this sandbox confines the filesystem
-and leaves the network alone on purpose (tool calls still pip-install), so there
-is nothing to assert about it. See ``os_sandbox`` for why the record says so out
-loud rather than staying quiet.
+"A write outside the workdir must raise" is wrong: bwrap mounts a private tmpfs
+over /tmp, where this probe's scratch root usually lives. What must not happen
+is the byte arriving on the host, checked from out here after the run.
 """
 
 from __future__ import annotations
@@ -58,40 +29,27 @@ logger = get_logger(__name__)
 
 _PR_SET_NO_NEW_PRIVS = 38
 try:
-    # Resolved at import, never inside the forked child: an import after the fork
-    # can deadlock on the import lock a thread held at fork time.
+    # Resolved at import: an import after the fork can deadlock on the import lock.
     _libc = ctypes.CDLL(None, use_errno = True) if sys.platform == "linux" else None
 except OSError:  # pragma: no cover - a libc that will not load
     _libc = None
 
-# Success is this token ALONE on stdout, not merely present in it. A payload that
-# printed the token early and then died would satisfy "in" and prove nothing.
+# ALONE on stdout: a payload that printed it early and died would satisfy "in".
 PROBE_TOKEN = "UNSLOTH_SANDBOX_PROBE_OK"
 _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
-# Written by the sandboxed process to a path outside its workdir. Finding it on
-# the host afterwards is the escape; the write itself raising is not required.
+# Finding this on the host afterwards is the escape; the write need not raise.
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
-# A wedged bwrap must not hang a tool call. The work here is a few file opens and
-# one tiny interpreter start; 30s is far past anything healthy and still bounded.
 PROBE_TIMEOUT_SECONDS = 30.0
-# Long enough that a chat's worth of tool calls pays for one probe, short enough
-# that installing the AppArmor profile takes effect without restarting Studio.
+# Short enough that installing the AppArmor profile takes effect without a restart.
 _CACHE_TTL_SECONDS = 60.0
-# Keyed on backend + runtime identity, both of which are few in practice. Bounded
-# anyway so a pathological caller cannot grow it without limit.
 _CACHE_MAX_ENTRIES = 8
 
-# ``sun_path`` is 108 bytes including the NUL. The fd-passing control below binds
-# a listener under the launch's TMPDIR, and multiprocessing appends about 32
-# bytes of its own (``/pymp-XXXXXXXX/listener-XXXXXXXX``) plus this probe's
-# ``/work/tmp``. A scratch root longer than this cannot host that socket, which
-# would fail a POSITIVE control for a reason that has nothing to do with
-# isolation -- so the root is chosen to fit rather than the failure reported.
+# ``sun_path`` is 108 bytes and multiprocessing appends about 32 of its own, so a
+# longer scratch root fails a POSITIVE control for a reason unrelated to isolation.
 _MAX_PROBE_BASE_LEN = 59
 
 _cache_lock = threading.Lock()
-# key -> (expires_at, available, reason)
 _cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
 
 
@@ -118,12 +76,8 @@ def _cache_put(key: tuple[str, str], available: bool, reason: str) -> None:
     with _cache_lock:
         _cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, available, reason)
         while len(_cache) > _CACHE_MAX_ENTRIES:
-            # Insertion-ordered, so this drops the oldest verdict, which is also
-            # the one closest to expiring.
             _cache.pop(next(iter(_cache)))
 
-
-# ── the program that runs on both sides ──────────────────────────────
 
 _PREAMBLE = '''import multiprocessing.reduction, os, socket, subprocess, sys
 
@@ -143,27 +97,11 @@ def _negative_controls(
 ) -> str:
     """What a confined process must NOT be able to do.
 
-    The sentinel is read twice, by two different names. Once directly, and once
-    through a symlink that lives inside the workdir, because a boundary drawn on
-    the spelling of a path rather than on the resolved target lets the second one
-    straight out.
-
-    The write legs are two different questions, and only one of them is "did it
-    raise". A sandbox is entitled to hand the process a private tmpfs -- bwrap
-    mounts one over /tmp, which is where this probe's own scratch root usually
-    lives -- so a write outside the workdir may well succeed INSIDE and reach
-    nothing. What must not happen is the byte landing on the host, and that is
-    checked after the run, by the host, in ``_host_saw_the_write``. Opening the
-    interpreter for append is the leg that must raise: no sandbox shadows the
-    system root with something writable, so a success there is a real escape.
-
-    Reaching a host ABSTRACT unix socket is the leg with no filesystem in it at
-    all. Those live in the network namespace this sandbox deliberately shares, so
-    the Landlock scope is the only thing that closes them, and whether that scope
-    actually took hold cannot be read off the kernel's ABI version: an outer
-    sandbox or the nesting limit can deny ``landlock_restrict_self`` on a kernel
-    new enough to offer it. Proven here rather than inferred, which is the same
-    rule the rest of this module follows.
+    The sentinel is read twice, directly and through a workdir symlink, since a
+    boundary drawn on a path's spelling lets the second one out. The outside write
+    is NOT required to raise (a private tmpfs may accept it); the host decides
+    afterwards. The abstract-socket leg proves the Landlock scope took hold,
+    which the ABI version cannot say.
     """
     interpreter_leg = ""
     if interpreter_writable:
@@ -193,12 +131,6 @@ except OSError:
 
 
 def _positive_controls(workdir: str) -> str:
-    """What must keep working, sandbox or no sandbox.
-
-    Run on the host first. These are the everyday things a tool call does -- write
-    a file, fork a worker, shell out to python -- and a sandbox that breaks any of
-    them is not usable no matter how well it confines.
-    """
     return f"""
 private = os.path.join({workdir!r}, "private.txt")
 with open(private, "w", encoding = "utf-8") as handle:
@@ -245,14 +177,8 @@ def _payload(
     interpreter_writable: bool,
     abstract: "bytes | None",
 ) -> str:
-    """The full program that runs INSIDE the sandbox.
-
-    Negatives first: a boundary that is not there should be reported as such
-    rather than after the slower positive half has run. Passed as source on the
-    command line rather than as a file in the workdir, so the probe does not
-    depend on the backend exposing the workdir in any particular way and a
-    half-written scratch file can never be mistaken for a passing run.
-    """
+    """Passed as source on the command line, not as a workdir file, so the probe
+    does not depend on how the backend exposes the workdir."""
     return (
         _PREAMBLE
         + _negative_controls(sentinel, escape, outside, interpreter_writable, abstract)
@@ -262,13 +188,8 @@ def _payload(
 
 
 def _no_new_privs() -> None:
-    """PR_SET_NO_NEW_PRIVS, exactly as ``tools._sandbox_preexec`` sets it.
-
-    Runs in the forked child, so it resolves nothing it did not already have:
-    ``_libc`` is bound at import. Best effort, like the pre-exec it mirrors, but
-    a failure to set it would only make the probe MORE permissive than the launch
-    it stands in for, so it is reported rather than swallowed silently.
-    """
+    """Logged rather than swallowed: failing to set it makes the probe MORE
+    permissive than the launch it stands in for."""
     if _libc is None:
         return
     if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
@@ -276,14 +197,8 @@ def _no_new_privs() -> None:
 
 
 def _abstract_control() -> "tuple[bytes | None, Any]":
-    """A host abstract socket the sandboxed payload must NOT be able to reach.
-
-    Returns nothing where there is no scope to test: off Linux, and on a kernel
-    too old for it, where ``sandbox_linux.LIMITATIONS`` already says the boundary
-    is not there. Nothing either when the host cannot connect to its own socket,
-    since a refusal inside would then prove nothing -- the same pairing every
-    other control in here is held to.
-    """
+    """Nothing where there is no scope to test, and nothing when the host cannot
+    connect to its own socket, since a refusal inside would then prove nothing."""
     if sys.platform != "linux":
         return None, None
     from . import sandbox_landlock
@@ -308,12 +223,8 @@ def _abstract_control() -> "tuple[bytes | None, Any]":
 
 
 def _host_saw_the_write(outside: str) -> bool:
-    """Whether the sandboxed process's write outside its workdir reached the host.
-
-    The definitive escape check, and the only honest form of it: a private tmpfs
-    makes the write succeed inside while nothing arrives here, and a sandbox is
-    entitled to give the process one.
-    """
+    """The only honest form of the escape check: a private tmpfs makes the write
+    succeed inside while nothing arrives here."""
     try:
         with open(outside, encoding = "utf-8") as handle:
             return _OUTSIDE_WRITE_TOKEN in handle.read()
@@ -322,22 +233,12 @@ def _host_saw_the_write(outside: str) -> bool:
 
 
 def _host_payload(workdir: str) -> str:
-    """The positive half alone, for the host to prove it can do these things."""
     return _PREAMBLE + _positive_controls(workdir) + f"\nprint({PROBE_TOKEN!r})\n"
 
 
-# ── host-side setup and controls ─────────────────────────────────────
-
-
 def _probe_base() -> str:
-    """A scratch root the fd-passing control can actually live under.
-
-    The platform temp directory first, since that is where a probe belongs. On a
-    host whose TMPDIR is deep (a workspace-scoped TMPDIR, a long home) the
-    ``AF_UNIX`` address would not fit, so a shorter well-known root is used
-    instead; failing that, the deep one is used anyway and the host control below
-    reports honestly that nothing could be concluded.
-    """
+    """A scratch root short enough for the fd-passing control's AF_UNIX address;
+    failing that, the host control below reports the problem."""
     roots: list[str | None] = [None]  # None = the platform default
     roots.extend(root for root in ("/tmp", "/var/tmp") if os.path.isdir(root))
     fallback = None
@@ -345,7 +246,7 @@ def _probe_base() -> str:
         try:
             base = tempfile.mkdtemp(prefix = "unsloth-probe-", dir = root)
         except OSError:
-            continue  # an unwritable candidate is not a failure; try the next
+            continue  # an unwritable candidate is not a failure
         if len(base) <= _MAX_PROBE_BASE_LEN:
             if fallback is not None:
                 shutil.rmtree(fallback, ignore_errors = True)
@@ -356,20 +257,12 @@ def _probe_base() -> str:
             shutil.rmtree(base, ignore_errors = True)
     if fallback is not None:
         return fallback
-    # Nothing was usable; let mkdtemp raise into the probe's own handler, which
-    # turns it into a verdict rather than an exception.
     return tempfile.mkdtemp(prefix = "unsloth-probe-")
 
 
 def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict[str, str]) -> str:
-    """Prove on the host that every control would otherwise come out the other way.
-
-    Returns "" when the host is sane, or the reason the probe cannot conclude
-    anything. An unreadable sentinel makes a confined read meaningless; an
-    unwritable base makes a confined write meaningless; a host that cannot itself
-    pass a descriptor means a sandbox failing to do so says nothing about the
-    sandbox.
-    """
+    """Prove on the host that every control would otherwise come out the other
+    way. Returns "" when the host is sane, else why the probe cannot conclude."""
     try:
         with open(sentinel, encoding = "utf-8") as handle:
             if handle.read() != _SENTINEL_TOKEN:
@@ -403,17 +296,9 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
     return ""
 
 
-# ── the probe ────────────────────────────────────────────────────────
-
-
 def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
-    """Whether ``backend`` really isolates on this host, and why.
-
-    Never raises. Every failure -- a missing backend module, a bwrap that will
-    not start, a timeout, a control that came out the wrong way -- becomes
-    ``(False, reason)``, because the caller either falls back to software
-    safeguards or refuses; neither is served by an exception escaping here.
-    """
+    """Never raises: every failure becomes ``(False, reason)``, since the caller
+    either falls back or refuses."""
     backend_name = str(getattr(backend, "BACKEND_NAME", "unknown"))
     try:
         from .os_sandbox import ToolLaunchPlan, _runtime_identity
@@ -432,12 +317,9 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
 
 
 def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, str]:
-    """One live launch, start to verdict.
-
-    The verdict is reached INSIDE the try, before the finally removes the scratch
-    root: the escape check reads a host file the sandboxed process may have
-    written, and a cleanup that ran first would report every escape as a pass.
-    """
+    """The verdict is reached INSIDE the try: the escape check reads a host file
+    the process may have written, and a cleanup that ran first would report every
+    escape as a pass."""
     base = None
     prepared = None
     abstract_listener = None
@@ -445,9 +327,8 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         base = _probe_base()
         workdir = os.path.join(base, "work")
         os.mkdir(workdir)
-        # TMPDIR inside the workdir, matching what a real tool launch gets: the
-        # resource sharer needs a writable temp dir, and pointing it at the host's
-        # would test a directory the sandbox is not supposed to expose.
+        # As a real launch gets: the host's would test a directory the sandbox
+        # is not meant to expose.
         temp_dir = os.path.join(workdir, "tmp")
         os.mkdir(temp_dir)
         sentinel = os.path.join(base, "host-sentinel.txt")
@@ -468,13 +349,10 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         if blocked:
             return False, blocked
 
-        # Positive control for the interpreter leg: asking a confined process to
-        # fail at appending to a file the host cannot write either proves nothing,
-        # so that leg is dropped and disclosed rather than passed for free.
+        # Asking a confined process to fail at appending to a file the host
+        # cannot write either proves nothing, so that leg is dropped, not passed.
         interpreter_writable = os.access(sys.executable, os.W_OK)
-        # And for the abstract-socket leg, which only exists where the kernel has
-        # the scope to enforce it: bound and proven reachable from out here first,
-        # so a refusal inside is the scope and not a socket nobody could reach.
+        # Proven reachable from out here first, so a refusal inside is the scope.
         abstract, abstract_listener = _abstract_control()
 
         plan = plan_cls(
@@ -487,13 +365,9 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             ),
             workdir = workdir,
             env = env,
-            # The one part of a real launch's pre-exec that changes whether the
-            # sandbox starts at all. The setsid and the rlimits are the caller's
-            # concern, but PR_SET_NO_NEW_PRIVS is not: a bubblewrap installed
-            # setuid (how a host with unprivileged user namespaces disabled gets
-            # one at all) cannot raise privileges once it is set, so without this
-            # the probe would qualify a backend on which every real launch dies
-            # after Popen, where auto can no longer fall back.
+            # A setuid bwrap cannot raise privileges once no_new_privs is set,
+            # so without this the probe qualifies a backend whose every real
+            # launch dies after Popen, where auto can no longer fall back.
             preexec_fn = _no_new_privs,
             requested_mode = "required",
             execution_kind = "python",
@@ -518,8 +392,6 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
                 f"the {backend_name} live probe failed "
                 f"(exit {completed.returncode}): {detail or 'no output'}"
             )
-        # Every control inside came out right; the last one can only be answered
-        # from out here.
         if _host_saw_the_write(outside):
             return False, (
                 f"the {backend_name} live probe wrote through to the host: a file created "

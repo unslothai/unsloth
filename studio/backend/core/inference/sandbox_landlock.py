@@ -1,27 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Landlock scope that closes the one hole left in the network namespace.
+"""Landlock ABI 6 scoping, which blocks host abstract AF_UNIX sockets.
 
-The sandbox shares the host's network namespace on purpose: tool calls
-pip-install and download models. An ABSTRACT AF_UNIX socket lives in that
-namespace and not in the filesystem, so no mount, bind or seccomp rule in here
-touches it -- ``/proc/net/unix`` lists every one of them by name and a connect
-needs nothing but the name. On an ordinary Linux desktop that reaches the
-session bus and the X server, and a peer that authenticates on the inherited uid
-will start a process outside the jail. It is a way out of the filesystem
-boundary, through the operation the design leaves open.
-
-seccomp cannot close it: the address is behind a pointer and a filter cannot
-dereference one. ``--unshare-net`` closes it and takes the network with it,
-which is the trade the whole backend exists to avoid. Landlock ABI 6 (Linux
-6.12) added exactly the missing scope, it is designed to be applied unprivileged
-with no_new_privs already set, and it is inherited across the exec into bwrap
-and everything bwrap starts.
-
-Best effort by construction. On an older kernel nothing is applied and
-``sandbox_linux.LIMITATIONS`` says so, because a boundary that fails silently is
-worse than one that is named.
+Those live in the shared network namespace, not the filesystem, so no mount or
+bind rule hides them and seccomp cannot close it either (the address is behind a
+pointer). Best effort: on a pre-6.12 kernel nothing is applied and
+``sandbox_linux.LIMITATIONS`` says so.
 """
 
 from __future__ import annotations
@@ -31,21 +16,18 @@ import os
 import struct
 from typing import Callable
 
-# Same numbers on x86_64 and aarch64: Landlock landed in the shared range.
 _NR_LANDLOCK_CREATE_RULESET = 444
 _NR_LANDLOCK_RESTRICT_SELF = 446
 _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
 _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
-# struct landlock_ruleset_attr: handled_access_fs, handled_access_net, scoped.
-# The third member is what ABI 6 added, so passing this size is itself the
-# version check: an older kernel answers E2BIG rather than silently ignoring it.
+# struct landlock_ruleset_attr; the third member is ABI 6's, so this size is
+# itself the version check -- an older kernel answers E2BIG.
 _RULESET_ATTR = struct.pack("=QQQ", 0, 0, _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
 _PR_SET_NO_NEW_PRIVS = 38
 
 try:
-    # Resolved at import, never after the fork: the pre-exec below runs in the
-    # forked child, where an import can deadlock on the lock a thread held at
-    # fork time. Same rule as tools._sandbox_preexec.
+    # Resolved at import, never in the forked child, where an import can
+    # deadlock on a lock a thread held at fork time.
     _libc = ctypes.CDLL(None, use_errno = True)
     _libc.syscall.restype = ctypes.c_long
 except OSError:  # pragma: no cover - a libc that will not load
@@ -53,11 +35,7 @@ except OSError:  # pragma: no cover - a libc that will not load
 
 
 def abstract_scope_supported() -> bool:
-    """Whether this kernel has the Landlock scope, asked once at import.
-
-    One syscall with a NULL attribute, which only reports the ABI version and
-    changes nothing. The answer cannot change under a running kernel.
-    """
+    """NULL attr only reports the ABI version and changes nothing."""
     if _libc is None:
         return False
     try:
@@ -69,22 +47,13 @@ def abstract_scope_supported() -> bool:
         )
     except (OSError, AttributeError, TypeError):
         return False
-    # ABI 6 is where `scoped` appears; anything below it cannot express this.
     return version >= 6
 
 
 def apply_abstract_scope() -> None:
-    """Put this process, and everything it execs, out of reach of host abstract sockets.
-
-    Runs in the forked child, where there is nothing to report to: it cannot
-    raise without failing the launch after Popen, and it cannot log without
-    touching a lock a thread may have held at fork time. Whether the scope
-    actually took hold is therefore not decided here and not read off the ABI
-    version either -- an outer sandbox or the nesting limit can deny
-    ``landlock_restrict_self`` on a kernel new enough to offer it. The live probe
-    connects to a host abstract socket through this same pre-exec and requires
-    the refusal, which is what makes the capability proven rather than assumed.
-    """
+    """Runs in the forked child, so it must never raise or log. Success cannot be
+    inferred from the ABI version, since an outer sandbox or the nesting limit can
+    still deny restrict_self; the live probe decides."""
     if _libc is None:
         return
     attr = ctypes.create_string_buffer(_RULESET_ATTR, len(_RULESET_ATTR))
@@ -98,9 +67,8 @@ def apply_abstract_scope() -> None:
     if ruleset < 0:
         return
     try:
-        # Required before restrict_self for an unprivileged caller. tools.py's
-        # pre-exec sets it too; setting it twice is free and this must not depend
-        # on which pre-exec it was composed with.
+        # Required before restrict_self for an unprivileged caller. Set again
+        # here so this does not depend on which pre-exec it was composed with.
         _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
         _libc.syscall(_NR_LANDLOCK_RESTRICT_SELF, ctypes.c_int(int(ruleset)), ctypes.c_uint32(0))
     finally:
@@ -111,11 +79,7 @@ def apply_abstract_scope() -> None:
 
 
 def with_abstract_scope(preexec_fn: "Callable[[], None] | None") -> "Callable[[], None]":
-    """*preexec_fn* followed by the scope, as one pre-exec.
-
-    The caller's comes first: it is the setsid every kill path in tools.py
-    signals, and it must run whether or not this kernel has the scope.
-    """
+    """*preexec_fn* first (it is the setsid the kill paths signal), then the scope."""
 
     def preexec() -> None:
         if preexec_fn is not None:

@@ -1,25 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio tool launch contract and the OS-isolation backends.
+"""Studio tool launch contract and the OS-isolation backends (bwrap, Seatbelt).
 
-Python and Terminal tool calls have always run on the host behind software
-safeguards only -- a setsid/rlimit pre-exec, an environment whitelist, and the
-static analysis in ``tools.py``. This module adds a real OS boundary on the two
-platforms that hand you one: bubblewrap on Linux, Seatbelt on macOS.
-
-The default mode is ``auto``: isolate when the host can, and otherwise run
-exactly as before with the tool result labelled honestly. Nothing a user could
-run yesterday stops working because this landed. ``required`` is the opt-in for
-someone who would rather be refused than run unisolated, and ``full`` is the
-existing bypass, unchanged.
-
-What the boundary covers is deliberately narrow, so the label can be true: no
-writes outside the session workdir, and no reads of the user's home beyond the
-runtime paths the interpreter itself needs. The network is NOT confined -- tool
-calls still pip-install and download models -- so a script that reaches a secret
-can still send it. Keeping that gap honest is why the record says
-``network_policy = "unrestricted"`` rather than staying quiet about it.
+The boundary is the write side plus the user's home. The network is NOT
+confined, which is why the record carries ``network_policy = "unrestricted"``.
 """
 
 from __future__ import annotations
@@ -38,25 +23,15 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# "auto" is the default and never refuses. "required" refuses instead of running
-# unisolated. "full" is the pre-existing bypass and keeps its old meaning.
 ToolExecutionMode = Literal["auto", "required", "full"]
 TOOL_EXECUTION_MODES = ("auto", "required", "full")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# Where a session's pip installs live, relative to the workdir. Both backends
-# point PIP_TARGET at it and put it on PYTHONPATH, so a package installed by one
-# isolated call is importable by the next one.
-#
-# tools.py puts it back on the path of an UNISOLATED launch as well, through
-# _with_session_packages, so a session that installed a package while it could
-# isolate keeps it if a later call falls back. Only when the directory already
-# exists, which is what keeps a host that never isolates byte-identical to main.
+# tools.py re-adds this to an UNISOLATED launch only if it already exists, which
+# keeps a host that never isolates byte-identical to main.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
-# What a launch keeps when the OS boundary is NOT in force. This is exactly the
-# set main already applies, named so the record can state it rather than imply it.
 _SOFTWARE_SAFEGUARDS = (
     "process_guard",
     "command_and_code_analysis",
@@ -70,17 +45,12 @@ _SOFTWARE_SAFEGUARDS = (
     "reaping",
     "cleanup",
 )
-# The OS boundary is added to the software set, never a replacement for it.
 _OS_ISOLATION_SAFEGUARDS = _SOFTWARE_SAFEGUARDS + ("filesystem_isolation", "process_isolation")
 _FULL_SAFEGUARDS = ("timeout", "cancellation", "reaping", "cleanup")
 
 
 class SandboxUnavailableError(RuntimeError):
-    """``required`` was asked for on a host that cannot provide it.
-
-    Never raised in ``auto``: that mode's whole contract is that it falls back
-    rather than refusing.
-    """
+    """``required`` on a host that cannot provide it. Never raised in ``auto``."""
 
     def __init__(
         self,
@@ -93,37 +63,20 @@ class SandboxUnavailableError(RuntimeError):
 
 
 class WorkdirUnsafeError(SandboxUnavailableError):
-    """The session workdir itself carries a way out, so this launch is refused.
-
-    Told apart from every other refusal by TYPE rather than by asking the probe
-    again: the workdir is the one thing a tool call can write to, so this is the
-    error that must never be answered by running unisolated, and deciding that
-    from a second probe's verdict means a transient probe failure re-opens the
-    very channel the scan just found.
-    """
+    """Distinguished by TYPE, not by re-probing: a transient probe failure must
+    not re-open the very channel the workdir scan just found."""
 
 
 class SandboxBuildError(SandboxUnavailableError):
-    """The backend is here and the probe passed, but this launch could not be built.
-
-    A sibling of WorkdirUnsafeError and refused for the same reason: the fallback
-    belongs to a host that cannot isolate at all, and this host can. The errno is
-    reachable from inside the jail, which is what makes the distinction matter --
-    a tool call that fills the disk makes the next call's seccomp temporary file
-    fail with ENOSPC, so treating an OS error as "no sandbox here" would let a
-    sandboxed process buy itself an unisolated launch by writing enough data.
-    """
+    """The probe passed but this launch could not be built. Refused, not fallen
+    back: the errno is reachable from inside the jail, so a tool call that fills
+    the disk could otherwise buy itself an unisolated launch."""
 
 
 @dataclass(frozen = True)
 class SandboxCapability:
-    """What this host can actually enforce, proven by a live probe.
-
-    ``available`` is never inferred from a binary being present on disk. The
-    probe launches a real sandbox and checks that its negative controls fail,
-    because an installed bubblewrap on a host that denies user namespaces looks
-    identical to a working one until you try it.
-    """
+    """``available`` is never inferred from a binary being on disk: an installed
+    bwrap on a host that denies user namespaces looks identical until you try."""
 
     backend: str
     available: bool
@@ -139,11 +92,7 @@ class SandboxCapability:
 
 @dataclass(frozen = True)
 class ToolExecutionRecord:
-    """What one launch actually got. Built by the backend, never by the model.
-
-    ``requested_mode`` and ``effective_mode`` differ exactly when ``auto`` fell
-    back, which is the case the UI has to show plainly.
-    """
+    """``requested_mode`` and ``effective_mode`` differ exactly when ``auto`` fell back."""
 
     requested_mode: ToolExecutionMode
     effective_mode: str
@@ -154,8 +103,7 @@ class ToolExecutionRecord:
     os_isolation: bool
     retained_safeguards: tuple[str, ...]
     limitations: tuple[str, ...] = ()
-    # Always "unrestricted": this sandbox confines the filesystem, not the network.
-    # Stated rather than omitted so nobody reads the badge as more than it is.
+    # Always "unrestricted": this confines the filesystem, not the network.
     network_policy: str = "unrestricted"
 
     def as_dict(self) -> dict[str, object]:
@@ -175,8 +123,6 @@ class ToolExecutionRecord:
 
 @dataclass(frozen = True)
 class ToolLaunchPlan:
-    """Complete policy inputs for one Python or Terminal process launch."""
-
     argv: tuple[str, ...]
     workdir: str
     env: dict[str, str]
@@ -185,15 +131,12 @@ class ToolLaunchPlan:
     timeout_seconds: int | None = None
     close_fds: bool = True
     terminate_descendants: bool = True
-    # Set by the trusted tool owner, not inferred from a shell command or model
-    # args. None keeps older direct callers working.
+    # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
 
 
 @dataclass
 class PreparedSandboxLaunch:
-    """A ready argv plus every resource owned until the process exits."""
-
     argv: tuple[str, ...]
     workdir: str
     env: dict[str, str]
@@ -210,12 +153,7 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
 
     def cleanup(self) -> None:
-        """Release everything in LIFO order, and never stop at the first failure.
-
-        A callback that raises must not strand the file handles and private
-        directories queued behind it, so each failure is recorded and the sweep
-        continues.
-        """
+        """Release everything in LIFO order, never stopping at the first failure."""
         while self.cleanup_callbacks:
             callback = self.cleanup_callbacks.pop()
             try:
@@ -241,15 +179,9 @@ class PreparedSandboxLaunch:
 
 
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
-    """Spawn exactly one prepared launch."""
     return subprocess.Popen(prepared.argv, **popen_kwargs)
 
 
-# ── the session workdir ──────────────────────────────────────────────
-
-# The scan runs before every launch, so it is bounded in both directions. A
-# checkpoint tree under the workdir must fail the launch honestly rather than
-# stall it, or be waved through unchecked.
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
 
@@ -257,50 +189,17 @@ WORKDIR_SCAN_SECONDS = 5.0
 def scan_workdir_for_host_channels(workdir: str) -> None:
     """Refuse a session workdir that carries a way out of itself.
 
-    Both backends make this one directory the whole writable set, so a socket or
-    device node under it is a channel neither a mount namespace nor a Seatbelt
-    path rule closes, a hard link whose inode also has a name outside the workdir
-    is a writable path out of it, and a nested mount is somebody else's storage
-    wearing a path inside it -- bubblewrap's workdir bind is recursive and takes
-    it along, and a Seatbelt subpath rule grants writes across it. The workdir
-    itself being a mount point is fine and stays allowed; what is refused is a
-    mount UNDER it. Backend-agnostic on purpose: the invariant is the boundary
-    both profiles claim, not a bubblewrap detail.
-
-    Every anomalous entry is refused under one rule, and that includes three
-    things a tool call CAN create in its own workdir: a unix socket, a FIFO, and
-    more entries than the scan budget allows. This is deliberate but it is not
-    free, and the cost is availability, not safety. A refusal fails the call and
-    never de-isolates it, so the worst such an entry achieves is breaking the
-    session it is in. Measured, both of them: a ``multiprocessing.Manager``
-    leaves a socket behind, and every later call in that session is then refused
-    with the path named until the directory is cleared by hand. And an ordinary
-    ML stack accumulated in ``.unsloth-packages`` crosses the entry budget --
-    a real site-packages tree is refused in 0.93s, well inside
-    ``WORKDIR_SCAN_SECONDS``, so it is the entry count that ends the session and
-    not the clock. Torch alone is about 13,600 entries, so one install does not
-    do it; a few do.
-
-    That second one is worth weighing, because ``PIP_TARGET`` points into that
-    directory: the sandbox's own mechanism for making ``pip install`` work is
-    what eventually refuses the session that used it.
-
-    That trade is worth restating rather than assuming, because it used to read
-    the other way round: sockets, FIFOs and budget exhaustion were all allowed on
-    the grounds that a tool call can make them. The reason they are refused now is
-    that "a tool call can make it" is an argument about who creates the condition,
-    not about what the condition does, and the scan cannot tell a socket the tool
-    call bound from one bound by something on the host.
-
-    Raises ``SandboxUnavailableError``, which fails the call.
+    A socket or device node under it is a channel no path rule closes, a hard link
+    to an inode also named outside is a writable path out, and a nested mount is
+    storage both backends grant writes across. The workdir being a mount point
+    itself is fine. Sockets, FIFOs and exceeding the entry budget are refused
+    even though a tool call can create them, since the scan cannot tell those
+    apart from the host's; the cost is availability, not safety.
     """
     deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
     entries = 0
-    # (device, inode) -> [names found in here, st_nlink, first name]. Counting is
-    # the whole point: refusing every st_nlink > 1 would refuse the workdir of any
-    # session that ran `cp -al`, `git clone --local` or a pip install, all of
-    # which hard-link within a tree, and would then keep refusing for the rest of
-    # the session. Only a link the workdir cannot account for leads outside it.
+    # Refusing every st_nlink > 1 would refuse any tree built by `cp -al`,
+    # `git clone --local` or pip; only an unaccounted link leads outside.
     links: dict[tuple[int, int], list] = {}
 
     def stop(exc: OSError) -> None:
@@ -327,9 +226,7 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # Two stats on a directory the walk already reached, and the same
-                # answer on both platforms. Linux asks the mount table as well,
-                # since this misses a same-filesystem bind mount.
+                # Misses a same-filesystem bind mount; Linux also asks the mount table.
                 if os.path.ismount(path):
                     raise WorkdirUnsafeError(
                         f"the session workdir contains a nested host mount: {path}"
@@ -349,35 +246,22 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
             )
 
 
-# ── host diagnosis ───────────────────────────────────────────────────
-
 _LINUX_REQUIRED_BINARIES = ("bwrap",)
 _FALLBACK_NOTE = "Python and Terminal still run, with software safeguards only and no OS isolation."
 
 
 @functools.lru_cache(maxsize = 1)
 def _linux_userns_blocked_by_apparmor() -> bool:
-    """Whether this host has Ubuntu's AppArmor restriction on unprivileged user namespaces.
-
-    Cached for the process. The diagnosis forks ``unshare``, and it is reached
-    from the remediation string every capability snapshot builds, so without the
-    cache a host that cannot isolate pays an extra fork and exec on every single
-    tool call, forever. The answer cannot change without an operator editing an
-    AppArmor profile or a sysctl, at which point Studio is restarted anyway.
-
-    Ubuntu 23.10+ ships ``kernel.apparmor_restrict_unprivileged_userns=1``, which
-    denies ``unshare(CLONE_NEWUSER)`` to any binary without a permitting profile.
-    bwrap needs that namespace, so an installed bubblewrap still cannot build a
-    sandbox and the probe fails with nothing a user could act on. Read-only:
-    Studio reports the condition and never changes host security policy.
-    """
+    """Whether Ubuntu 23.10+'s ``apparmor_restrict_unprivileged_userns`` denies
+    this host the user namespace bwrap needs. Cached because it forks ``unshare``
+    and every capability snapshot reaches it."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding = "utf-8") as f:
             if f.read().strip() != "1":
                 return False
     except OSError:
         return False
-    # The sysctl alone is not proof: a profile may permit bwrap. Ask the kernel.
+    # The sysctl alone is not proof: a profile may permit bwrap.
     try:
         probe = subprocess.run(
             ["unshare", "--user", "--map-root-user", "true"],
@@ -392,7 +276,6 @@ def _linux_userns_blocked_by_apparmor() -> bool:
 
 
 def linux_unavailable_remediation() -> str:
-    """Name what this host is actually missing, rather than only stating a refusal."""
     missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
     if missing:
         return (
@@ -412,11 +295,8 @@ def linux_unavailable_remediation() -> str:
 
 
 def _runtime_identity() -> str:
-    """Changes when the selected interpreter or this module changes.
-
-    The probe result is cached against it, so swapping the venv under a running
-    Studio re-probes instead of reusing a verdict about a different runtime.
-    """
+    """Changes when the interpreter or this module changes, so swapping the venv
+    under a running Studio re-probes instead of reusing a stale verdict."""
     digest = hashlib.sha256()
     for path in (sys.executable, __file__):
         resolved = os.path.realpath(path)
@@ -429,9 +309,6 @@ def _runtime_identity() -> str:
     digest.update((PROFILE_VERSION + sys.platform + platform.release()).encode())
     digest.update((os.path.abspath(sys.executable) + sys.prefix).encode())
     return digest.hexdigest()
-
-
-# ── capability ───────────────────────────────────────────────────────
 
 
 def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapability:
@@ -449,7 +326,6 @@ def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapabil
 
 
 def capability_snapshot(*, force: bool = False) -> SandboxCapability:
-    """Describe what this host can enforce, via a cached live probe."""
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -458,7 +334,6 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
         from . import sandbox_macos
         backend = sandbox_macos
     else:
-        # Windows and everything else keep main's behaviour exactly.
         return _unavailable(
             "OS isolation for Studio tools is available on Linux and macOS only.",
             f"No sandbox backend exists for this platform. {_FALLBACK_NOTE}",
@@ -492,9 +367,6 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
     )
 
 
-# ── launch preparation ───────────────────────────────────────────────
-
-
 def _record(
     plan: ToolLaunchPlan,
     capability: SandboxCapability,
@@ -522,12 +394,8 @@ def _record(
 
 
 def _software_only_limitations() -> tuple[str, ...]:
-    # Unconditional off Windows. descendant_sweep_supported() says only that this
-    # kernel COULD host the marker-and-pidfd sweep it describes; nothing stamps
-    # the marker and nothing performs the sweep, so teardown is still killpg on
-    # the captured group. A tool that calls setsid (an accepted Terminal wrapper)
-    # and closes stdout survives that, which is exactly what the limitation is
-    # for. It comes off when the sweep is implemented, not when /proc exists.
+    # Unconditional off Windows: teardown is killpg on the captured group, which
+    # a tool that calls setsid and closes stdout survives.
     limitations = ["no_os_isolation", "host_files_readable", "unrestricted_network"]
     if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")
@@ -535,11 +403,7 @@ def _software_only_limitations() -> tuple[str, ...]:
 
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    """Turn a launch plan into the argv that will actually run.
-
-    Three outcomes, and only one of them can refuse: ``required`` on a host
-    without a working sandbox. ``auto`` always returns a runnable launch.
-    """
+    """Only ``required`` on a host without a working sandbox can refuse."""
     if plan.requested_mode not in TOOL_EXECUTION_MODES:
         raise SandboxUnavailableError(f"unknown tool execution mode: {plan.requested_mode!r}")
 
@@ -578,7 +442,6 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
                 remediation = capability.remediation,
             )
-        # auto: run exactly as main does, and say so in the record.
         return PreparedSandboxLaunch(
             argv = plan.argv,
             workdir = plan.workdir,
@@ -608,10 +471,8 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     try:
         prepared = backend.prepare(plan)
     except OSError as exc:
-        # A capable host whose planner hit an OS error is not a host that cannot
-        # isolate, and it must not be treated as one. Left raw it would reach
-        # tools.py's general `except Exception`, which answers `auto` by running
-        # with software safeguards; typed, it lands on the branch that refuses.
+        # Must be typed: raw, this reaches tools.py's general `except Exception`,
+        # which answers `auto` by running with software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc
     prepared.execution_record = _record(
         plan,

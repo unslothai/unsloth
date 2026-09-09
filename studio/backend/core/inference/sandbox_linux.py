@@ -1,25 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The bubblewrap backend: what a Studio tool call on Linux actually runs inside.
+"""The bubblewrap backend: a read-only system, one writable directory, no home.
 
-The shape of the jail is a read-only view of the system the interpreter already
-depends on, one writable directory (the session workdir), and no home. Not a
-minimal container image: a tool call has to be able to run ``git``, import numpy
-and shell out to the same binaries the user has, so /usr and friends are bound
-whole, read-only, and the boundary that matters is the write side.
-
-Two things are deliberately not confined, and both are named in ``LIMITATIONS``
-rather than left for someone to discover. The network is open, because tool
-calls pip-install and download models. And the model-data subdirectories of
-``~/.cache/huggingface`` are bound read-write, because re-downloading gigabytes
-of weights on every tool call is not a sandbox anyone would leave switched on.
-The cache ROOT is not bound: the access token lives directly in it.
-
-The bind list is built from parent directories, never from individual shared
-objects. Enumerating an interpreter's ``.so`` files produces hundreds of binds
-that still miss the one dlopen() reaches for at runtime; binding the directories
-the interpreter reports is both smaller and more complete.
+Binds are parent directories, never individual shared objects: enumerating an
+interpreter's ``.so`` files still misses the one dlopen() reaches at runtime.
 """
 
 from __future__ import annotations
@@ -51,33 +36,19 @@ logger = get_logger(__name__)
 BACKEND_NAME = "bubblewrap"
 PROFILE_ID = f"linux-bwrap-{PROFILE_VERSION}"
 LIMITATIONS = (
-    # The sandbox has the host's network. A tool call that reaches a secret can
-    # still send it; the filesystem boundary is the whole of what is claimed.
     "unrestricted_network",
-    # /usr and friends are readable. Confidentiality of system files is not the
-    # goal, and a jail without them cannot run the tools people call.
     "system_paths_readable",
     "model_cache_writable",
-    # --dev builds a fresh /dev, so /dev/nvidia*, /dev/kfd and /dev/dri are gone.
-    # A sandboxed tool call is CPU-only.
+    # --dev builds a fresh /dev, so a sandboxed tool call is CPU-only.
     "gpu_devices_hidden",
-    # --unshare-pid puts the launch in its own PID namespace, so a backgrounded
-    # process dies with the foreground command instead of outliving the call. It
-    # is what "process_isolation" means and it is stricter than the unisolated
-    # path, where tools.py sweeps such a descendant afterwards: output the
-    # background job would have written after the leader exited is not collected.
+    # --unshare-pid: a backgrounded process dies with the foreground command.
     "detached_processes_die_with_the_call",
-    # The sandbox shares the host's network namespace so tool calls can reach the
-    # internet, and an ABSTRACT AF_UNIX socket lives in that namespace rather than
-    # in the filesystem: the mount boundary does not touch it. On Linux 6.12 and
-    # newer a Landlock scope closes it, and where the kernel cannot, a launch can
-    # reach the session bus and the X server through /proc/net/unix. That is a way
-    # out of the filesystem claim, so it is named rather than left implied.
+    # Abstract AF_UNIX sockets live in the shared network namespace, so without
+    # the Landlock scope (Linux 6.12+) a launch reaches the session bus and X.
     *(() if sandbox_landlock.abstract_scope_supported() else ("host_abstract_sockets_reachable",)),
     "shared_kernel",
 )
 
-# Bound whole and read-only. Parent directories, deliberately: see the module docstring.
 _SYSTEM_ROOTS = (
     "/usr/bin",
     "/usr/sbin",
@@ -92,14 +63,8 @@ _SYSTEM_ROOTS = (
     "/usr/local/sbin",
     "/usr/local/share",
     "/usr/share",
-    # /usr/local/bin is on the sanitized PATH and is commonly a directory of
-    # symlinks into an installation under /opt, which would otherwise dangle in
-    # here and fail an ordinary command with ENOENT. A parent directory, like the
-    # rest of this list and for the reason in the module docstring.
     "/opt",
-    # Headers, for the pip installs that have no wheel and build from source.
-    # Read-only system paths like the rest of this list, and the executor they
-    # replace had them: without them a source build fails at the first #include.
+    # Headers, for a pip install with no wheel that builds from source.
     "/usr/include",
     "/usr/local/include",
     "/bin",
@@ -107,8 +72,7 @@ _SYSTEM_ROOTS = (
     "/lib",
     "/lib64",
 )
-# /etc is a fresh directory in the jail, so the loader and the C library need
-# their own files back by name or nothing dynamically linked starts.
+# /etc is fresh in the jail; without these nothing dynamically linked starts.
 _ETC_FILES = (
     "/etc/alternatives",
     "/etc/ld.so.cache",
@@ -117,17 +81,9 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
-# Resolution and TLS trust. pip carries certifi; curl, git and urllib do not, and
-# Debian keeps the bundle under /etc/ssl where Fedora and RHEL use /etc/pki.
-#
-# The PUBLIC halves of those trees, one by one, never /etc/ssl or /etc/pki whole.
-# Both carry a private-key directory beside the certificates -- a local CA's
-# signing key, the RHEL subscription keys -- and binding the tree and then masking
-# what is secret fails in the wrong direction: the mask list is finished only
-# until the next distribution invents a name for one. Naming the public material
-# fails the other way, which is the way to fail. A miss here breaks certificate
-# verification loudly on the host that has it; a miss in a mask list leaks a key
-# quietly on every host.
+# Resolution and TLS trust. The PUBLIC halves one by one, never /etc/ssl or
+# /etc/pki whole: both carry private keys beside the certificates, and a miss
+# here breaks verification loudly where a miss in a mask list leaks a key quietly.
 _NETWORK_FILES = (
     "/etc/resolv.conf",
     "/etc/hosts",
@@ -135,11 +91,9 @@ _NETWORK_FILES = (
     "/etc/gai.conf",
     "/etc/services",
     "/etc/protocols",
-    # Debian, Alpine, Arch, and the Fedora spelling that symlinks here.
     "/etc/ssl/certs",
     "/etc/ssl/cert.pem",
     "/etc/ssl/openssl.cnf",
-    # Fedora and RHEL, where /etc/pki/tls is the real location.
     "/etc/pki/tls/certs",
     "/etc/pki/tls/cert.pem",
     "/etc/pki/tls/openssl.cnf",
@@ -147,43 +101,20 @@ _NETWORK_FILES = (
     "/etc/ca-certificates",
     "/etc/ca-certificates.conf",
     "/etc/crypto-policies",
-    # SUSE keeps the generated bundle out of /etc entirely.
     "/var/lib/ca-certificates",
 )
-# pip installs into the running interpreter's site-packages, which is bound
-# read-only here, so `pip install X` failed with a read-only filesystem error on
-# a workflow this backend is meant to leave working. It goes to a session-local
-# directory instead, on PYTHONPATH so the install is importable in the same call
-# and the next one. Better than main, where the same command mutates the venv the
-# Unsloth server itself runs from. A dot directory so _snapshot_workdir_files
-# does not offer site-packages to the user as artifacts of their tool call.
-# The one deliberate hole in the home mask. Model weights are gigabytes and a
-# private empty cache per tool call would re-download them every time, which is
-# how a sandbox gets turned off. Bound at the jail's own HOME so the default
-# huggingface_hub location resolves to it, and HF_HOME is pinned to match: a
-# host HF_HOME pointing somewhere unbound would fail on a read-only root.
-# A dot directory on purpose: tools.py's _snapshot_workdir_files skips those, so
-# the cache never presents as an artifact the model created.
+# Bound at the jail's own HOME with HF_HOME pinned to match: a host HF_HOME
+# pointing somewhere unbound would fail on a read-only root.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
-# The DATA subdirectories only, never the cache root: huggingface_hub keeps the
-# access token at $HF_HOME/token and $HF_HOME/stored_tokens, which tools.py
-# already treats as credentials. Anything not named here resolves to the session
-# workdir, so a cache file a future release adds is written per-session rather
-# than shared.
-# "modules" is deliberately NOT here. HF_MODULES_CACHE is where Transformers
-# writes the generated Python for a trust_remote_code model, so a writable share
-# of it is a path from a sandboxed tool call to code a later unsandboxed load
-# imports -- and the consent gate fingerprints the repository's files, not the
-# ones generated into that cache. It resolves per-session in the workdir instead,
-# which costs a regeneration and nothing else.
+# Never the cache root: the access token lives at $HF_HOME/token. "modules" is
+# excluded because it holds the generated Python for a trust_remote_code model,
+# so sharing it writably is a path to code a later unsandboxed load imports.
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
-# NixOS keeps glibc and every interpreter dependency here, so an interpreter from
-# the store cannot dynamically link anything without it.
+# NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
 
 
 def _within(path: str, root: str) -> bool:
-    """Whether ``path`` is ``root`` or sits under it, lexically."""
     path, root = os.path.abspath(path), os.path.abspath(root)
     try:
         return os.path.commonpath((path, root)) == root
@@ -193,11 +124,8 @@ def _within(path: str, root: str) -> bool:
 
 @lru_cache(maxsize = 8)
 def _bwrap_long_options(identity: tuple[str, int, int]) -> frozenset[str]:
-    """Long options the installed bubblewrap accepts, read once from its usage text.
-
-    Keyed by path and file identity so a package upgrade under a running Studio
-    is re-read instead of answered from a verdict about the old binary.
-    """
+    """Keyed by file identity so a package upgrade under a running Studio is
+    re-read, not answered from a verdict about the old binary."""
     try:
         completed = subprocess.run(
             [identity[0], "--help"],
@@ -230,14 +158,8 @@ def _bwrap_supports(bwrap: str, option: str) -> bool:
 
 
 def _host_mount_points() -> tuple[str, ...]:
-    """Every host mount point. Unreadable is a refusal, not an empty list.
-
-    Read straight out of mountinfo without resolving anything: the kernel already
-    reports mount points canonically, and calling realpath on each one would stat
-    every path component of every mount on the host, on every launch. That blocks
-    uninterruptibly on a stale NFS or sshfs mount and triggers automounts that
-    were not otherwise in anyone's way.
-    """
+    """Every host mount point; unreadable is a refusal, not an empty list. Not
+    resolved: realpath on each entry blocks on a stale NFS mount."""
     points: list[str] = []
     try:
         with open("/proc/self/mountinfo", encoding = "utf-8") as stream:
@@ -259,14 +181,9 @@ def _host_mount_points() -> tuple[str, ...]:
 
 
 def _validate_workdir(workdir: str) -> str:
-    """Canonicalise the session workdir, and refuse one that would carry the host in with it.
-
-    The shared scan carries what both backends claim. The mount table is asked
-    again here, and not only through the ``os.path.ismount`` that scan uses,
-    because that test compares device numbers and a bind mount whose source is on
-    the SAME filesystem answers it with a false negative -- and that topology is
-    precisely the one the recursive workdir bind would carry in with write access.
-    """
+    """The mount table is re-read here because the shared scan's ``os.path.ismount``
+    compares device numbers and misses a same-filesystem bind mount, which is what
+    the recursive workdir bind would carry in writable."""
     resolved = os.path.realpath(workdir)
     if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
         raise WorkdirUnsafeError("the session workdir is not a safe canonical directory")
@@ -278,37 +195,18 @@ def _validate_workdir(workdir: str) -> str:
 
 
 def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[str, ...]:
-    """The interpreter roots this Python needs that the system roots do not already cover.
-
-    Asked of the interpreter rather than taken from ``sys.path``, which carries
-    whatever the caller inherited, and kept to directories so the set stays in
-    the tens of entries no matter how large site-packages is.
-    """
-    # All four, because they are not two paths under two names. A uv-managed base
-    # interpreter reports base_prefix as ``cpython-3.12.12-linux-x86_64-gnu`` and
-    # base_exec_prefix as the ``cpython-3.12-...`` alias symlink beside it, and
-    # lib-dynload -- every C extension in the standard library -- hangs off the
-    # alias spelling alone.
+    """Asked of the interpreter, not ``sys.path``, which carries whatever the
+    caller inherited."""
+    # All four: for a uv-managed interpreter base_prefix and base_exec_prefix are
+    # different spellings, and lib-dynload hangs off the alias one alone.
     prefixes = (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
     candidates: list[str] = [
         os.path.dirname(os.path.realpath(sys.executable)),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
-    # The subdirectories a Python installation lives in, never the prefix itself.
-    # "ssl" for the same git: a Conda prefix builds OpenSSL against its own
-    # <prefix>/ssl/cacert.pem, so an https clone reaches git-remote-https and
-    # then fails to verify a certificate without it.
-    # "libexec" for git: a Conda or Homebrew prefix that supplies its own git
-    # keeps git-remote-https and the rest of the helpers there, and PATH selects
-    # that git, so an https clone fails at the helper without it.
-    # "include" is in the list for the same reason /usr/include is a system root:
-    # a pip install with no wheel builds from source and needs Python.h, which
-    # for a uv- or pyenv-managed interpreter lives under the prefix rather than
-    # in /usr/include.
-    # ``python -m venv .`` at a project root makes sys.prefix the project root, so
-    # binding the prefix would hand the jail the entire tree -- sources, .git,
-    # .env -- to reach one lib directory, which is the read side this backend
-    # exists to keep closed.
+    # Subdirectories, never the prefix itself: ``python -m venv .`` at a project
+    # root makes sys.prefix the project root. "ssl" and "libexec" are for a Conda
+    # or Homebrew git-remote-https; "include" is Python.h for a source build.
     for prefix in prefixes:
         candidates.extend(
             os.path.join(prefix, name)
@@ -335,15 +233,12 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
     for candidate in candidates:
         if not candidate or not os.path.isabs(candidate):
             continue
-        # Decided on the candidate as written, before either spelling is
-        # considered: a runtime path that ORIGINATES in the workdir is the one
-        # place a tool call can write, so its target is whatever the last tool
-        # call pointed it at. Checking only the resolved form would skip
+        # On the candidate as WRITTEN: checking only the resolved form would skip
         # <workdir>/venv/lib and then bind the ~/.ssh it was symlinked to.
         if _within(os.path.abspath(candidate), workdir):
             continue
         # Both spellings: a venv reached through a symlink needs the link's own
-        # path to exist inside the jail as well as the directory it lands on.
+        # path bound as well as the directory it lands on.
         for path in (os.path.abspath(candidate), os.path.realpath(candidate)):
             if path == os.path.sep:
                 raise SandboxUnavailableError(
@@ -358,12 +253,8 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
 
 
 def _identity_files() -> tuple[str, str, str]:
-    """Synthesise passwd and group so getpwuid() works without the host account database.
-
-    Every tool that asks who it is running as (git, pip, ssh, Python's own
-    ``os.path.expanduser``) fails or picks up the host's users if /etc/passwd is
-    either missing or bound straight through. One entry, this uid, no home.
-    """
+    """Synthesise passwd and group so getpwuid() works without the host account
+    database. One entry, this uid, no home."""
     directory = tempfile.mkdtemp(prefix = "unsloth-sandbox-identity-")
     uid, gid = os.getuid(), os.getgid()
     passwd, group = os.path.join(directory, "passwd"), os.path.join(directory, "group")
@@ -381,19 +272,9 @@ def _identity_files() -> tuple[str, str, str]:
 
 
 def _tmpdir(plan: ToolLaunchPlan, workdir: str) -> str:
-    """Where the jail's TMPDIR points: the caller's, when it is inside the workdir.
-
-    tools.py puts TMPDIR at ``<workdir>/unsloth-tmp`` so a file a tool call
-    writes through ``tempfile`` is still there when the call returns and is
-    offered to the user as a download. The private /tmp here is a tmpfs that
-    dies with the mount namespace, so pinning TMPDIR at it would silently drop
-    every one of those files. It stays the fallback for a caller that named no
-    temp directory, or one outside the only writable path in here.
-
-    Containment is decided on the canonical form and the ANSWER is the caller's,
-    so a temp directory under a symlinked sandbox home is still spelled the way
-    tools.py spelled it, which is the spelling the workdir is bound at.
-    """
+    """The caller's TMPDIR when it is inside the workdir: the private /tmp dies
+    with the mount namespace, dropping what ``tempfile`` wrote. Containment is
+    decided on the canonical form, but the ANSWER is the caller's spelling."""
     requested = plan.env.get("TMPDIR") or ""
     if not requested:
         return "/tmp"
@@ -401,27 +282,16 @@ def _tmpdir(plan: ToolLaunchPlan, workdir: str) -> str:
 
 
 def _pythonpath(plan: ToolLaunchPlan, packages: str) -> str:
-    """The caller's PYTHONPATH with the session package target appended.
-
-    Appended, never prepended: the first entry is tools.py's sandbox_site shim,
-    a startup hook every launch depends on, and a package installed in here must
-    not be able to shadow it.
-    """
+    """Appended, never prepended: an installed package must not shadow tools.py's
+    sandbox_site shim."""
     inherited = plan.env.get("PYTHONPATH") or ""
     return os.pathsep.join(part for part in (inherited, packages) if part)
 
 
 def _path(plan: ToolLaunchPlan, packages: str) -> str:
-    """The caller's PATH with the package target's script directory appended.
-
-    ``pip install black`` writes its launcher to ``<target>/bin``, so without
-    this the install succeeds and the command that follows it does not.
-
-    LAST, and that placement is the whole safety argument: this directory is
-    writable by the tool call, and _build_safe_env drops user-writable PATH
-    entries precisely so a planted binary cannot shadow a bare command the
-    approval logic treats as safe. Behind every system directory it cannot.
-    """
+    """Caller's PATH plus the package target's ``bin``, LAST: that directory is
+    writable by the tool call, so a planted binary must not shadow a bare command
+    the approval logic treats as safe."""
     inherited = plan.env.get("PATH") or ""
     return os.pathsep.join(part for part in (inherited, os.path.join(packages, "bin")) if part)
 
@@ -429,17 +299,11 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
 def _model_cache_binds(workdir: str) -> dict[str, str]:
     """Inner cache subdirectory -> the host directory to share there.
 
-    Asked of the cache-settings layer rather than read off HF_HOME: moving the
-    cache through Studio Settings deliberately leaves HF_HOME at the default and
-    puts the real paths in HF_HUB_CACHE and HF_XET_CACHE, and those two can point
-    anywhere -- HF_HUB_CACHE=/mnt/models is not /mnt/models/hub. So each component
-    is resolved and bound where it actually is, and only the two that have no
-    variable of their own are derived from the cache home.
-
-    Empty when the cache cannot be resolved or would sit inside the workdir. The
-    child never sees any of these variables -- _build_safe_env drops them as
-    credential locations and the backend sets its own -- so this is the only place
-    they can be honoured.
+    Asked of the cache-settings layer, not HF_HOME: moving the cache in Settings
+    leaves HF_HOME at the default and puts the real paths in HF_HUB_CACHE and
+    HF_XET_CACHE, which can point anywhere -- HF_HUB_CACHE=/mnt/models is NOT
+    /mnt/models/hub, so each component is bound where it actually is. The child
+    never sees these variables, so this is the only place they can be honoured.
     """
     binds: dict[str, str] = {}
     try:
@@ -463,21 +327,10 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
 
 
 def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
-    """Create the cache bind destinations, without ever following a link out.
-
-    bwrap would create a missing destination itself, but these sit under the
-    workdir bind, so it would create them ON THE HOST -- and a ``.cache`` an
-    earlier call pointed at the user's home would have them created out there.
-    Walked with directory descriptors and ``O_NOFOLLOW`` instead, which refuses
-    that and leaves whatever is in the way alone: these names are not reserved
-    from workspace content, and symlinking a cache leaf at another volume is a
-    real layout.
-
-    Nothing is removed afterwards. They are empty directories in a dot directory
-    that ``_holds_no_user_files`` already ignores, so a chat that only printed is
-    still removable without the opt-in, and leaving them is what keeps two
-    overlapping calls in one session from unlinking each other's mount points.
-    """
+    """bwrap would create a missing destination ON THE HOST, following a
+    ``.cache`` symlink an earlier call pointed at the user's home, so this walks
+    with ``O_NOFOLLOW``. Nothing is removed afterwards, so two overlapping calls
+    in one session cannot unlink each other's mount points."""
     levels = _MODEL_CACHE_RELPATH.split(os.sep)
     fds: list[int] = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY)]
     try:
@@ -490,10 +343,8 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
                 raise WorkdirUnsafeError(
                     f"the session workdir's model cache path cannot be prepared: {exc}"
                 ) from exc
-            # Verified whether or not it was just made, and whether or not the
-            # walk descends into it: a leaf left behind as a file or a symlink
-            # fails the --bind-try inside bwrap, after Popen, where auto has no
-            # fallback left.
+            # Verified even when not descended into: a leaf left as a file or
+            # symlink fails --bind-try after Popen, where auto cannot fall back.
             try:
                 opened = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1])
             except OSError as exc:
@@ -513,25 +364,21 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
 
 
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    """Turn a launch plan into the bwrap argv that will run it."""
     bwrap = shutil.which("bwrap")
     if bwrap is None:
         raise SandboxUnavailableError("bubblewrap (bwrap) is not installed on this host")
     if not plan.argv:
         raise SandboxUnavailableError("a sandboxed launch needs a command to run")
     workdir = _validate_workdir(plan.workdir)
-    # The spelling the CALLER used: tools.py built the scratch script path, HOME
-    # and TMPDIR from it, and a sandbox home reached through a symlink
-    # (UNSLOTH_STUDIO_SANDBOX_HOME at another volume) would leave Python unable to
-    # open its own argv. The canonical form stays the bind SOURCE and the one
-    # every safety check is made against.
+    # The spelling the CALLER used, since tools.py built the scratch script path
+    # from it. The canonical form stays the bind SOURCE and what is checked.
     inner = os.path.abspath(plan.workdir)
     system_roots = tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
     runtime_paths = _runtime_read_paths(workdir, system_roots)
     model_cache = _model_cache_binds(workdir)
-    # A runtime under /tmp has to be restored after the private tmpfs replaces it.
+    # A runtime under /tmp has to be restored after the tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
 
     disable_userns = _bwrap_supports(bwrap, "--disable-userns")
@@ -542,13 +389,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     try:
         identity_dir, passwd, group = _identity_files()
     except Exception:
-        # Nothing owns the descriptor until PreparedSandboxLaunch does, and a
-        # leak here is worst exactly when it matters: under descriptor
-        # exhaustion, where every retry made it worse.
         seccomp.close()
         raise
-    # Everything from here on is owned by a PreparedSandboxLaunch that does not
-    # exist yet, so this frame has to release it if the assembly raises.
+    # Owned by a PreparedSandboxLaunch that does not exist yet.
     try:
         argv: list[str] = [
             bwrap,
@@ -560,8 +403,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-cgroup",
-            # bwrap 0.6.1 (Ubuntu 22.04) predates this; there the seccomp filter
-            # refuses nested user namespaces instead.
+            # bwrap 0.6.1 (Ubuntu 22.04) predates this; the seccomp filter
+            # refuses nested user namespaces there instead.
             *(("--disable-userns",) if disable_userns else ()),
             "--cap-drop",
             "ALL",
@@ -586,11 +429,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for path in runtime_paths:
             if path not in tmp_runtime_paths:
                 argv += ["--ro-bind", path, path]
-        # The workdir mount point has to exist before the root goes read-only; the
-        # writable bind onto it, and the private /tmp, come after. Both spellings
-        # need one: the caller's spelling is a separate path inside the jail
-        # whenever the workdir is reached through a symlink, and bwrap cannot
-        # create it once / is read-only.
+        # Mount points must exist before the root goes read-only. Both spellings
+        # need one, since bwrap cannot create either once / is read-only.
         argv += ["--dir", workdir]
         if inner != workdir:
             argv += ["--dir", inner]
@@ -600,8 +440,6 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             argv += ["--ro-bind", path, path]
         argv += ["--bind", workdir, inner]
         if inner != workdir:
-            # Both spellings resolve in here, so a tool that canonicalised a path
-            # for itself is not handed one the jail cannot open either.
             argv += ["--bind", workdir, workdir]
         argv += ["--chdir", inner]
         if model_cache:
@@ -638,10 +476,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             argv = tuple(argv),
             workdir = workdir,
             env = dict(plan.env),
-            # The plan's own pre-exec, plus the Landlock scope. bwrap's
-            # --new-session covers the inner side only; tools.py kills a tool call
-            # with killpg, so the outer setsid the plan carries still has to run,
-            # and dropping it is what _prepare_tool_launch checks for.
+            # --new-session covers the inner side only; tools.py kills with
+            # killpg, so the plan's outer setsid still has to run.
             preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
@@ -662,13 +498,8 @@ def probe_argv(
     payload_argv: tuple[str, ...],
     env: dict[str, str] | None = None,
 ) -> PreparedSandboxLaunch:
-    """Build a probe launch through the argv builder a real tool call uses.
-
-    Returns the whole prepared launch rather than only the argv, because the
-    probe has to inherit the seccomp descriptor and release the private identity
-    directory afterwards. A probe that assembled its own argv would qualify a
-    sandbox that nothing ever runs.
-    """
+    """Built through the argv builder a real tool call uses, so the probe cannot
+    qualify a sandbox nothing ever runs."""
     return prepare(
         ToolLaunchPlan(
             argv = tuple(payload_argv),

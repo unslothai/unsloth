@@ -3,27 +3,9 @@
 
 """What the live probe is allowed to conclude, and from what.
 
-The probe is the only thing standing between "bwrap is installed" and "tool
-calls are isolated", and those two are not the same claim: this very host has
-bubblewrap 0.9.0 and ``kernel.apparmor_restrict_unprivileged_userns=1``, so
-bwrap cannot build a sandbox at all. A probe that inferred availability from the
-binary would advertise a boundary that does not exist.
-
-So the tests here are about the probe's own honesty rather than about any one
-backend:
-
-* a backend that confines nothing must come back unavailable, even though its
-  launch runs perfectly and exits 0;
-* a backend that really does confine must come back available;
-* a control that could not be set up on the HOST (an unreadable sentinel, an
-  unwritable base) makes the whole verdict meaningless, so the probe declines
-  instead of passing;
-* nothing the probe can be handed makes it raise, because its caller either
-  falls back or refuses and neither is served by a traceback.
-
-The confining backend is simulated in-process rather than skipped, because the
-CI host cannot build a real sandbox and "skipped" would leave the positive half
-of every pairing untested.
+The confining backend is simulated in-process rather than skipped: the CI host
+cannot build a real sandbox, and "skipped" would leave the positive half of
+every pairing untested.
 """
 
 from __future__ import annotations
@@ -66,7 +48,6 @@ class _Backend:
 
 
 def _passthrough(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    """A backend that isolates nothing: runs the payload straight on the host."""
     return PreparedSandboxLaunch(
         argv = plan.argv,
         workdir = plan.workdir,
@@ -119,14 +100,8 @@ def _wrap(
     resolve = True,
     leak_writes = False,
 ):
-    """A backend whose launch really does refuse to leave the workdir.
-
-    The confinement is a builtins.open guard rather than a kernel namespace,
-    which is enough for what is under test here: the probe's ability to tell a
-    boundary from the absence of one, and a real boundary from a lookalike.
-    Import machinery uses io.open_code, so the payload's own imports still work,
-    exactly as they would inside bwrap.
-    """
+    """A builtins.open guard, not a kernel namespace. Import machinery uses
+    io.open_code, so the payload's own imports still work."""
     wrapper = _CONFINE_WRAPPER.format(
         workdir = plan.workdir,
         payload = plan.argv[-1],
@@ -137,9 +112,8 @@ def _wrap(
         argv = plan.argv[:-1] + (wrapper,),
         workdir = plan.workdir,
         env = plan.env,
-        # A backend claiming to confine has to carry the abstract-socket scope
-        # like the real one does, or the probe refuses it -- which is the point of
-        # that control, and the reason these stand-ins compose it too.
+        # A backend claiming to confine has to carry the abstract-socket scope or
+        # the probe refuses it, which is the point of that control.
         preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
         backend = name,
     )
@@ -157,15 +131,10 @@ def _leaking_writes(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     return _wrap(plan, "leaky", leak_writes = True)
 
 
-# ── the two halves of every pairing ───────────────────────────────────
-
-
 def test_a_backend_that_confines_nothing_is_not_available():
-    """The whole point. This launch exits 0 on the host and proves nothing."""
     backend = _Backend("passthrough", _passthrough)
     available, reason = sandbox_probe.probe(backend)
     assert available is False
-    # And it says WHICH control came out wrong, so the failure is diagnosable.
     assert "read the host sentinel" in reason, reason
 
 
@@ -177,35 +146,27 @@ def test_a_backend_that_really_confines_is_available():
 
 
 def test_the_symlink_leg_is_judged_on_the_target_not_the_path():
-    """A guard that only compared the SPELLING of the path passes the sentinel leg
-    and fails here, so the two legs are not redundant."""
+    """A spelling-only guard passes the sentinel leg and fails here, so the two legs
+    are not redundant."""
     available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
     assert available is False
     assert "symlink" in reason, reason
 
 
 def test_a_write_that_reaches_the_host_fails_the_probe():
-    """The escape check that cannot be made from inside.
-
-    This backend confines every read and protects the system root, so every
-    control the sandboxed process itself can evaluate comes out right -- and it
-    still lets a write land on the real filesystem. Only the host can see that.
-    """
+    """This backend passes every control the sandboxed process can evaluate and
+    still lands a write on the host, which only the host can see."""
     available, reason = sandbox_probe.probe(_Backend("leaky", _leaking_writes))
     assert available is False
     assert "wrote through to the host" in reason, reason
 
 
 def test_the_escape_check_is_made_before_the_scratch_root_is_removed():
-    """A cleanup that ran first would find nothing and report every escape as a
-    pass, which is why the verdict is reached inside the try."""
     text = inspect.getsource(sandbox_probe._run_probe)
     assert text.index("_host_saw_the_write") < text.index("shutil.rmtree")
 
 
 def test_the_positive_controls_run_before_anything_is_concluded(monkeypatch):
-    """An unreadable sentinel means every in-sandbox failure is uninformative, so
-    the probe must decline rather than report a boundary it never tested."""
     backend = _Backend("confining", _confining)
     seen = []
 
@@ -217,7 +178,6 @@ def test_the_positive_controls_run_before_anything_is_concluded(monkeypatch):
     available, reason = sandbox_probe.probe(backend)
     assert available is False
     assert "the host itself could not read" in reason
-    # And it declined BEFORE launching anything.
     assert backend.calls == 0
     assert seen
 
@@ -238,9 +198,6 @@ def test_the_host_control_really_reads_the_sentinel_it_was_given(tmp_path):
 
 
 def test_a_host_that_fails_the_positive_half_is_not_blamed_on_the_backend():
-    """The bug this pairing exists to prevent: a temp directory too deep for an
-    AF_UNIX address failed the fd-passing leg, and the probe reported it as the
-    sandbox having broken multiprocessing. The reason must name the HOST."""
     backend = _Backend("confining", _confining)
     real = sandbox_probe._host_payload
     sandbox_probe._host_payload = lambda workdir: "raise SystemExit(7)"
@@ -254,18 +211,14 @@ def test_a_host_that_fails_the_positive_half_is_not_blamed_on_the_backend():
 
 
 def test_the_scratch_root_fits_an_af_unix_address():
-    """A deep TMPDIR must not be able to fail a positive control on its own."""
     base = sandbox_probe._probe_base()
     try:
         # base + "/work/tmp" + "/pymp-XXXXXXXX/listener-XXXXXXXX" must fit in
-        # sun_path (108 bytes including the NUL).
+        # sun_path (108 bytes with the NUL).
         assert len(base) + len("/work/tmp") + 32 < 108, base
     finally:
         import shutil as _shutil
         _shutil.rmtree(base, ignore_errors = True)
-
-
-# ── failure is always a verdict, never an exception ───────────────────
 
 
 def test_a_backend_that_cannot_prepare_is_unavailable_not_an_exception():
@@ -287,7 +240,6 @@ def test_a_missing_backend_module_is_unavailable_not_an_exception():
 
 
 def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
-    """A tool call must not be able to block forever behind a stuck helper."""
     monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
 
     def sleeper(plan):
@@ -305,8 +257,6 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
 
 
 def test_a_backend_that_only_prints_the_token_is_not_believed():
-    """Exit 0 plus the token is not enough on its own: the controls have to have
-    run. A payload replaced by a bare print must not qualify."""
 
     def liar(plan):
         return PreparedSandboxLaunch(
@@ -317,9 +267,8 @@ def test_a_backend_that_only_prints_the_token_is_not_believed():
             backend = "liar",
         )
 
-    # The probe cannot detect a backend that rewrites its own payload -- that is
-    # the backend lying to itself -- so this pins the weaker, real guarantee: the
-    # payload it HANDS OVER is the one carrying every control.
+    # The probe cannot detect a backend that rewrites its own payload, so this
+    # pins the weaker guarantee: the payload HANDED OVER carries every control.
     backend = _Backend("liar", liar)
     sandbox_probe.probe(backend)
     handed_over = backend.prepared and True
@@ -344,9 +293,6 @@ def test_the_payload_handed_to_the_backend_carries_every_control():
         assert "opened the interpreter for writing" in payload
 
 
-# ── it goes through the backend's real prepare() ──────────────────────
-
-
 def test_the_launch_is_built_by_the_backend_not_by_the_probe():
     backend = _Backend("confining", _confining)
     sandbox_probe.probe(backend)
@@ -360,8 +306,8 @@ def test_the_launch_is_built_by_the_backend_not_by_the_probe():
 
     sandbox_probe.probe(_Backend("capture", capture))
     assert isinstance(plan, ToolLaunchPlan)
-    # The plan is a real tool launch plan, not a bespoke probe struct: same type
-    # the executors build, so the probe exercises the code path that runs.
+    # A real tool launch plan, not a bespoke probe struct, so the probe exercises
+    # the code path that runs.
     assert plan.execution_kind == "python"
     assert plan.env["HOME"] == plan.workdir
     assert plan.env["TMPDIR"].startswith(plan.workdir + os.sep)
@@ -379,7 +325,6 @@ def test_everything_the_probe_owns_is_released():
     available, reason = sandbox_probe.probe(backend)
     assert available is True, reason
     assert released == ["backend"]
-    # And the probe's own scratch tree is gone, including on the success path.
     assert not os.path.exists(backend.prepared[0].workdir)
 
 
@@ -395,9 +340,6 @@ def test_cleanup_still_happens_when_the_launch_fails():
     assert sandbox_probe.probe(backend)[0] is False
     assert released == ["backend"]
     assert not os.path.exists(backend.prepared[0].workdir)
-
-
-# ── caching ───────────────────────────────────────────────────────────
 
 
 def test_the_verdict_is_cached_so_a_tool_call_does_not_re_probe():
@@ -416,8 +358,6 @@ def test_force_re_probes():
 
 
 def test_the_cache_is_keyed_on_the_backend_as_well_as_the_runtime():
-    """Two backends must never share a verdict; that is how a passing macOS probe
-    would come to vouch for a Linux one."""
     confining = _Backend("confining", _confining)
     passthrough = _Backend("passthrough", _passthrough)
     assert sandbox_probe.probe(confining)[0] is True
@@ -425,9 +365,7 @@ def test_the_cache_is_keyed_on_the_backend_as_well_as_the_runtime():
 
 
 def test_an_expired_verdict_is_re_probed(monkeypatch):
-    """Set before the first probe, because the expiry is stamped when the verdict
-    is stored: a host that gains the AppArmor profile must not wait out a TTL
-    that was already fixed."""
+    """Set before the first probe: the expiry is stamped when the verdict is stored."""
     monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
     backend = _Backend("confining", _confining)
     sandbox_probe.probe(backend)
@@ -441,12 +379,7 @@ def test_the_cache_cannot_grow_without_bound():
     assert len(sandbox_probe._cache) <= sandbox_probe._CACHE_MAX_ENTRIES
 
 
-# ── this host, for real ───────────────────────────────────────────────
-
-
 def test_this_host_reports_unavailable_with_something_actionable():
-    """bubblewrap 0.9.0 is installed here and AppArmor denies it the user
-    namespace, which is precisely the case a binary-presence check gets wrong."""
     if sys.platform != "linux":
         pytest.skip("the AppArmor condition is Linux only")
     capability = os_sandbox.capability_snapshot(force = True)
@@ -469,9 +402,6 @@ def test_this_host_reports_unavailable_with_something_actionable():
 
 
 def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
-    """No control without its positive half: a refusal inside proves nothing
-    unless the host could reach that socket a moment earlier, and there is nothing
-    to prove at all on a kernel with no scope to enforce."""
     from core.inference import sandbox_landlock, sandbox_probe
 
     monkeypatch.setattr(sandbox_landlock, "abstract_scope_supported", lambda: False)
@@ -491,8 +421,6 @@ def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
 
 
 def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
-    """The scope is the only thing that closes an abstract socket, and whether it
-    took hold cannot be read off the kernel's ABI version, so the probe asks."""
     from core.inference import sandbox_probe
 
     with_scope = sandbox_probe._payload(

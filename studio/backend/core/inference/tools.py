@@ -79,9 +79,6 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 
-# The OS-isolation contract for python/terminal launches. Stdlib-only and it
-# probes nothing at import time, so pulling it in here costs nothing; the live
-# probe happens on the first prepare_tool_launch and is cached from there.
 from . import os_sandbox
 
 from loggers import get_logger
@@ -7195,20 +7192,14 @@ def _bypass_preexec():
         pass
 
 
-# The most recent launch's execution record, for the UI badge and for tests to
-# assert what a call actually got rather than what it asked for. Overwritten per
-# call and never read back by the executors themselves, so a concurrent second
-# tool call can only make this stale, never wrong for anyone.
+# Never read back by the executors, so a concurrent second call can only make
+# this stale, never wrong.
 _last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
 
 
 def _note_tool_execution(record) -> None:
-    """Publish what one python/terminal launch actually got.
-
-    The record is built by ``os_sandbox`` from a live probe, never inferred here
-    and never from anything a model said, which is what makes it safe to show as
-    a badge. ``None`` when a direct caller bypassed the planner.
-    """
+    """Built by ``os_sandbox`` from a live probe, never from anything a model
+    said, which is what makes it safe to show as a badge."""
     global _last_tool_execution_record
     if record is None:
         return
@@ -7217,21 +7208,10 @@ def _note_tool_execution(record) -> None:
 
 
 def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
-    """Fold Bypass Permissions and the requested mode into one requested mode.
-
-    ``disable_sandbox`` keeps exactly the meaning it has always had and wins
-    outright: Full access is the operator having already decided, so a stale
-    "required" carried down some other path must not turn it into a refusal.
-
-    It is also the ONLY way to reach "full". The safe environment, the safety
-    analysis and the resource-limited pre-exec are all selected from
-    ``disable_sandbox`` before this is consulted, so a caller-supplied "full"
-    would skip the OS sandbox while every software safeguard stayed on and then
-    label the run "security restrictions disabled" -- a launch weaker than
-    ``auto`` wearing the badge of the mode that was not granted. Refused rather
-    than quietly downgraded to ``auto``: the caller asked for something this
-    argument cannot give.
-    """
+    """``disable_sandbox`` is the ONLY way to reach "full": the safe environment,
+    the analysis and the rlimit pre-exec are all selected from it before this is
+    consulted, so a caller-supplied "full" would skip only the OS sandbox and
+    then label the run "security restrictions disabled"."""
     if disable_sandbox:
         return "full"
     if tool_execution_mode == "full":
@@ -7244,20 +7224,10 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 
 
 def _with_session_packages(env: dict, workdir: str) -> dict:
-    """Keep a session's installed packages importable on a launch that is not isolated.
-
-    The backends point PIP_TARGET at ``<workdir>/.unsloth-packages``, so a package
-    an isolated call installed lives there. A later call in the same session can
-    still land here -- bwrap removed by a package update, the planner breaking --
-    and losing the package and its console scripts halfway through a chat is the
-    visible half of that.
-
-    Only when the directory exists, so a host that never isolated is handed back
-    exactly the environment it handed in. The bin directory goes LAST on PATH for
-    the reason the backends put it last: it is writable by the tool call, and a
-    binary planted there must not shadow a bare command the approval logic treats
-    as safe.
-    """
+    """Only when ``<workdir>/.unsloth-packages`` already exists, so a host that
+    never isolated is handed back exactly the environment it handed in. The bin
+    directory goes LAST on PATH: it is writable by the tool call, and a planted
+    binary must not shadow a bare command the approval logic allows."""
     packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
     if not os.path.isdir(packages):
         return env
@@ -7271,12 +7241,7 @@ def _with_session_packages(env: dict, workdir: str) -> dict:
 
 
 def _software_safeguards_launch(plan, fault: str):
-    """The launch ``auto`` falls back to when no OS boundary can be built.
-
-    Byte-identical to what main runs: the plan's own argv, cwd, env and pre-exec,
-    with nothing added. *fault* is the one limitation that says why, so the
-    record still states what the run got rather than implying isolation.
-    """
+    """Byte-identical to main, with *fault* named in the record as the reason."""
     full = plan.requested_mode == "full"
     return os_sandbox.PreparedSandboxLaunch(
         argv = plan.argv,
@@ -7289,10 +7254,8 @@ def _software_safeguards_launch(plan, fault: str):
         terminate_descendants = plan.terminate_descendants,
         execution_record = os_sandbox.ToolExecutionRecord(
             requested_mode = plan.requested_mode,
-            # Full access keeps its own label even here. The plan it carries is
-            # the bypass one, and a record saying "software safeguards" about a
-            # launch that skipped the analysis and the rlimits would be a badge
-            # claiming more than the run got.
+            # A record saying "software safeguards" about a launch that skipped
+            # the analysis and the rlimits would claim more than the run got.
             effective_mode = "full" if full else "software_safeguards",
             environment = sys.platform,
             backend = "software-safeguards",
@@ -7306,11 +7269,8 @@ def _software_safeguards_launch(plan, fault: str):
                 )
                 if item != "timeout" or plan.timeout_seconds is not None
             ),
-            # The same set the unavailable-host fallback discloses, plus what
-            # went wrong. This launch is that launch: host files readable, network
-            # open, and reaping unqualified unless the sweep is verified. Naming
-            # only the fault made the record depend on which door the fallback
-            # came through.
+            # Naming only the fault made the record depend on which door the
+            # fallback came through.
             limitations = (
                 ("security_restrictions_disabled", fault)
                 if full
@@ -7321,47 +7281,32 @@ def _software_safeguards_launch(plan, fault: str):
 
 
 def _prepare_tool_launch(plan):
-    """``os_sandbox.prepare_tool_launch``, except that ``auto`` cannot fail.
-
-    ``auto`` promises that nothing which ran yesterday stops running, and that
-    promise has to survive the sandbox machinery itself breaking: a probe that
-    raises something nobody anticipated, a backend module that is not importable
-    on this build. Those become a software-safeguards launch identical to what
-    main does, with the fault named in the record. A backend REFUSING a workdir
-    is the other thing entirely and is not covered by it -- see the handler.
-    """
+    """``auto`` cannot fail: the sandbox machinery breaking becomes a
+    software-safeguards launch. A backend REFUSING a workdir is not covered by
+    that; see the handler."""
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
-            # A backend that dropped the pre-exec would leave the OUTER process in
-            # Unsloth's own process group, and every kill path here is killpg
-            # based: a tool timeout would then SIGKILL the server. Put it back --
-            # setsid and the rlimits are harmless on a sandbox helper, and this
-            # failure is otherwise silent until the first timeout takes Studio out.
+            # A dropped pre-exec leaves the OUTER process in Unsloth's own
+            # group, and every kill path here is killpg based, so a tool timeout
+            # would SIGKILL the server. Silent until that first timeout.
             logger.warning(
                 "Sandbox backend %s dropped the launch pre-exec; restoring it",
                 prepared.backend,
             )
             prepared.preexec_fn = plan.preexec_fn
         if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
-            # Both doors into a launch without OS isolation, not just the one that
-            # builds its own: os_sandbox returns the unavailable-capability
-            # fallback itself, and it comes through here.
+            # The other door: os_sandbox returns its own fallback through here.
             prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
     except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
-        # The session workdir is the one thing a tool call can write to, so this
-        # is the refusal that must never become an unisolated launch: answering it
-        # by running on the host would hand model-authored code a switch for its
-        # own boundary. Told apart by TYPE rather than by asking the probe again,
-        # because a transient probe failure would otherwise re-open the very
-        # channel the scan just found. SandboxBuildError rides along: the host can
-        # isolate and the build failed, and the errno for that is reachable from
-        # inside the jail too, so it refuses rather than falling back.
+        # Answering these by running on the host hands model-authored code a
+        # switch for its own boundary. Told apart by TYPE, since a transient
+        # probe failure would re-open the very channel the scan just found.
+        # SandboxBuildError rides along: its errno is reachable from in the jail.
         raise
     except os_sandbox.SandboxUnavailableError:
-        # Any other refusal from a backend means it has stopped being available --
-        # bwrap removed by a package update -- which is the fallback's own case.
+        # Any other refusal means the backend stopped being available.
         if plan.requested_mode == "required" or (
             plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
         ):
@@ -7384,14 +7329,9 @@ def _prepare_tool_launch(plan):
 
 
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
-    """Re-probe next time when the launch itself, not the tool, is what failed.
-
-    ``prepare()`` only builds an argv, so a probe verdict that has gone stale --
-    user namespaces disabled under a running Studio -- is not discovered until
-    bwrap exits at exec. Nothing can rescue the call that already ran, but
-    dropping the cached verdict bounds the damage to that one call instead of
-    every call for the rest of the cache's life.
-    """
+    """``prepare()`` only builds an argv, so a stale probe verdict is not found
+    until bwrap exits at exec. Dropping it bounds the damage to that one call
+    instead of every call for the rest of the cache's life."""
     if prepared is None or prepared.backend == "software-safeguards":
         return
     if not output.startswith("Exit code ") or "bwrap: " not in output[:400]:
@@ -7405,32 +7345,23 @@ def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> N
 
 
 def _sandbox_refusal(exc) -> str:
-    """The tool result for a launch that Required mode refused.
-
-    The remediation is part of the answer, not a log line: the operator reading
-    this is the person who can install the AppArmor profile.
-    """
+    """The remediation is part of the answer, not a log line: the reader is the
+    person who can fix the host."""
     remediation = getattr(exc, "remediation", "") or ""
     return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
 
 
 def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
-    """Point ``popen_kwargs`` at the prepared launch's cwd, env and descriptors.
-
-    ``preexec_fn`` comes from the plan untouched on POSIX: every kill path here
-    (_capture_process_group, _kill_process_tree, _killpg_captured) is killpg
-    based, so the OUTER process must still land in its own session or a timeout
-    would signal the Unsloth server's group instead of the tool's.
-    """
+    """``preexec_fn`` comes from the plan untouched on POSIX: every kill path here
+    is killpg based, so the OUTER process must land in its own session or a
+    timeout signals the Unsloth server's group instead of the tool's."""
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
         popen_kwargs["preexec_fn"] = prepared.preexec_fn
     popen_kwargs["close_fds"] = prepared.close_fds
     if prepared.pass_fds:
-        # A backend that keeps a control descriptor open across the exec (the
-        # macOS helper channel) hands it over here; empty for every fallback, so
-        # Windows never sees the kwarg it cannot accept.
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
         popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
     return popen_kwargs
 
@@ -16331,8 +16262,7 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
-    # Bound before the try so the finally can release the backend's private
-    # mounts and descriptors even when preparation itself raised.
+    # Bound before the try so the finally can release even when prepare raised.
     prepared = None
     workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
@@ -16364,11 +16294,8 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
-            # close_fds leaves 0, 1 and 2 alone, so an unset stdin is the server's
-            # own: an operator terminal, or whatever `unsloth studio < file`
-            # redirected it to. That descriptor is already open, so no path rule
-            # in either sandbox applies to it, and neither tool has an API for
-            # supplying input anyway.
+            # close_fds leaves 0, 1 and 2 alone, so an unset stdin is the
+            # server's own and no path rule applies to an open descriptor.
             stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
@@ -16383,10 +16310,6 @@ def _python_exec(
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        #
-        # The argv, cwd, env and pre-exec all go through the launch planner, which
-        # either wraps them in an OS sandbox or hands them straight back. On a host
-        # without a working sandbox this is the same Popen main always did.
         prepared = _prepare_tool_launch(
             os_sandbox.ToolLaunchPlan(
                 argv = (sys.executable, "-u", tmp_path),
@@ -16474,8 +16397,6 @@ def _python_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
-        # Required mode, on a host that cannot isolate. Refusing is what was asked
-        # for, so say what is missing and how to fix it rather than only refusing.
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped
@@ -16486,8 +16407,7 @@ def _python_exec(
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
-        # After the process is done with them, and on every exit including the
-        # refusal above: these are private mounts and open descriptors.
+        # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
         _forget_tool_pid(locals().get("proc"))
@@ -16545,7 +16465,6 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
-    # See _python_exec: bound before the try so the finally can always release it.
     prepared = None
     try:
         workdir = _get_workdir(session_id)
@@ -16560,7 +16479,7 @@ def _bash_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
-            # See _python_exec: the server's own stdin must not reach a tool call.
+            # See _python_exec: the server's stdin must not reach a tool call.
             stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output
@@ -16572,8 +16491,6 @@ def _bash_exec(
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # Same planner as _python_exec, and the same fallback: on a host without a
-        # working sandbox this is the shell command main already ran.
         prepared = _prepare_tool_launch(
             os_sandbox.ToolLaunchPlan(
                 argv = tuple(_get_shell_cmd(command)),
@@ -16644,7 +16561,6 @@ def _bash_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
-        # Required mode on a host that cannot isolate; see _python_exec.
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped

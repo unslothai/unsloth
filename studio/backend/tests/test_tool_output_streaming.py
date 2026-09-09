@@ -606,9 +606,8 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
 )
 def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
     # The isolated counterpart, and the reason "detached_processes_die_with_the
-    # _call" is in the backend's LIMITATIONS: the background job goes down with
-    # the leader, so the call returns at once with the leader's output rather than
-    # blocking on a pipe nothing will write to again.
+    # _call" is a LIMITATION: the background job goes down with the leader, so the
+    # call returns at once rather than blocking on a pipe nothing will write to.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     started = time.monotonic()
     result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
@@ -1303,11 +1302,9 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    # The cancellation string only when tools.py is the one doing the teardown: in
-    # a PID namespace the leader and its grandchild are already gone before the
-    # cancel fires, so the call completes with the leader's output. Both paths owe
-    # the same two things, and both are asserted: it did not block on the
-    # grandchild, and the grandchild did not survive.
+    # The cancellation string only when tools.py does the teardown: in a PID
+    # namespace both processes are gone before the cancel fires. Both paths owe
+    # the same two things, and both are asserted.
     if not _os_isolated_tools():
         assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)
@@ -1331,11 +1328,9 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    # The cancellation string only when tools.py is the one doing the teardown: in
-    # a PID namespace the leader and its grandchild are already gone before the
-    # cancel fires, so the call completes with the leader's output. Both paths owe
-    # the same two things, and both are asserted: it did not block on the
-    # grandchild, and the grandchild did not survive.
+    # The cancellation string only when tools.py does the teardown: in a PID
+    # namespace both processes are gone before the cancel fires. Both paths owe
+    # the same two things, and both are asserted.
     if not _os_isolated_tools():
         assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)

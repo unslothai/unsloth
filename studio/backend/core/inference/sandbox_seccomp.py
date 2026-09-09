@@ -3,20 +3,11 @@
 
 """The seccomp program bubblewrap installs on a sandboxed tool process.
 
-Four holes a mount namespace cannot close on its own. AF_VSOCK addresses a
-hypervisor rather than a path, so no filesystem view hides it. io_uring submits
-work from a kernel thread holding credentials captured at setup time, which is
-the wrong side of the boundary. The kernel keyrings are not namespaced at all:
-a session keyring is a process credential, inherited across fork and exec, so a
-Kerberos KEYRING: cache or an fscrypt key the operator's login session holds is
-readable from inside the jail without touching a single host path. And a nested
-user namespace hands the process back a full capability set to work with:
-bubblewrap closes that one itself with ``--disable-userns``, but only since
-0.8.0, and Ubuntu 22.04 still ships 0.6.1, so on those hosts this filter is the
-only thing that does.
-
-AF_UNIX and AF_INET stay allowed. This sandbox confines the filesystem, not the
-network, and a filter that quietly broke sockets would make that claim false.
+Four holes a mount namespace cannot close: AF_VSOCK (addresses a hypervisor, not
+a path), io_uring (kernel thread holds credentials captured at setup time),
+keyrings (not namespaced, inherited as a process credential), and nested user
+namespaces (bwrap's ``--disable-userns`` only exists since 0.8.0; Ubuntu 22.04
+ships 0.6.1). AF_UNIX and AF_INET stay allowed on purpose.
 """
 
 from __future__ import annotations
@@ -28,26 +19,23 @@ import sys
 import tempfile
 from typing import BinaryIO
 
-# machine -> (AUDIT_ARCH, socket, socketpair). Only the two ABIs this filter has
-# been reviewed against; anything else is refused rather than left unfiltered.
+# machine -> (AUDIT_ARCH, socket, socketpair). Anything else is refused rather
+# than left unfiltered.
 _ABIS = {
     "x86_64": (0xC000003E, 41, 53),
     "amd64": (0xC000003E, 41, 53),
     "aarch64": (0xC00000B7, 198, 199),
     "arm64": (0xC00000B7, 198, 199),
 }
-# machine -> (clone, unshare, clone3).
 _USERNS_SYSCALLS = {
     "x86_64": (56, 272, 435),
     "amd64": (56, 272, 435),
     "aarch64": (220, 97, 435),
     "arm64": (220, 97, 435),
 }
-_IO_URING = (425, 426, 427)  # setup, enter, register: the same numbers on both ABIs
-# machine -> (add_key, request_key, keyctl). Unlike io_uring these differ per ABI.
-# Denied rather than joining an empty session keyring: joining needs the very
-# syscall being taken away, and nothing a Python or Terminal tool call does
-# touches a keyring.
+_IO_URING = (425, 426, 427)  # setup, enter, register; same on both ABIs
+# machine -> (add_key, request_key, keyctl). Denied rather than joining an empty
+# session keyring, since joining needs the very syscall being taken away.
 _KEYRING_SYSCALLS = {
     "x86_64": (248, 249, 250),
     "amd64": (248, 249, 250),
@@ -81,9 +69,8 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
         (_LOAD, 0, 0, 0),
     ]
     if block_userns:
-        # unshare() always fails; clone3() reports ENOSYS so glibc falls back to
-        # clone(), whose flags word is then checked for CLONE_NEWUSER. Every
-        # other syscall rejoins the checks below with the number still in A.
+        # clone3() must report ENOSYS so glibc falls back to clone(), whose flags
+        # word is then checked. Other syscalls rejoin below with nr still in A.
         clone_nr, unshare_nr, clone3_nr = _USERNS_SYSCALLS[key]
         code += [
             (_JEQ, 0, 1, unshare_nr),
@@ -97,8 +84,8 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
             (_LOAD, 0, 0, 0),
         ]
     if key in ("x86_64", "amd64"):
-        # x32 numbers alias the 64-bit table, so an unfiltered x32 call would
-        # reach a syscall this filter believes it inspected.
+        # x32 numbers alias the 64-bit table, so an unfiltered x32 call reaches a
+        # syscall this filter believes it inspected.
         code += [(_JSET, 0, 1, _X32_SYSCALL_BIT), (_RET, 0, 0, _KILL)]
     for number in (*_IO_URING, *_KEYRING_SYSCALLS[key]):
         code += [(_JEQ, 0, 1, number), (_RET, 0, 0, _EPERM)]
@@ -120,11 +107,8 @@ def program_bytes(*, block_userns: bool = False, machine: str | None = None) -> 
 
 
 def filter_file(*, block_userns: bool = False) -> BinaryIO:
-    """An unlinked temporary file holding the program, rewound for bwrap to read.
-
-    bwrap takes ``--seccomp FD`` and reads it to end of file, so the descriptor
-    is handed over at offset zero and the caller owns it until the child execs.
-    """
+    """Rewound because bwrap reads ``--seccomp FD`` to EOF; the caller owns it
+    until exec."""
     stream = tempfile.TemporaryFile(prefix = "unsloth-sandbox-seccomp-")
     try:
         stream.write(program_bytes(block_userns = block_userns))

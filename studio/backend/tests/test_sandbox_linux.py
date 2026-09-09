@@ -3,13 +3,9 @@
 
 """What the Linux sandbox argv and its seccomp program actually say.
 
-These assert on structure, not on a live sandbox. A host with bubblewrap
-installed still cannot build one when the kernel denies unprivileged user
-namespaces (Ubuntu's ``kernel.apparmor_restrict_unprivileged_userns=1``), which
-is the majority of CI, so a suite that needed a working jail would be a suite
-that never ran. The argv is where the policy lives, and the seccomp program is
-verified by interpreting it: a filter with the wrong jump offset passes every
-length check and then allows the syscall it was written to deny.
+Structure, not a live sandbox: most CI denies unprivileged user namespaces. The
+seccomp program is verified by interpreting it, since a filter with the wrong
+jump offset passes every length check and then allows what it meant to deny.
 """
 
 from __future__ import annotations
@@ -61,7 +57,6 @@ def prepared(tmp_path):
 
 
 def _pairs(argv, flag):
-    """Every (source, destination) a bind-like flag names in this argv."""
     return [
         (argv[index + 1], argv[index + 2])
         for index, token in enumerate(argv)
@@ -69,20 +64,16 @@ def _pairs(argv, flag):
     ]
 
 
-# ── the argv ─────────────────────────────────────────────────────────
-
-
 def test_the_launch_runs_bwrap_and_ends_with_the_payload_after_a_bare_separator(prepared):
     assert os.path.basename(prepared.argv[0]) == "bwrap"
     separator = prepared.argv.index("--")
     assert prepared.argv[separator + 1 :] == ("/bin/true",)
-    # Nothing may be appended after the payload: everything past "--" is argv for
-    # the tool, so a stray option there would become a positional argument.
+    # Everything past "--" is argv for the tool, so an appended option there
+    # becomes a positional argument.
     assert prepared.argv.count("--") == 1
 
 
 def test_the_network_namespace_is_deliberately_left_alone(prepared):
-    """The badge says the network is unrestricted, so the argv must not confine it."""
     assert "--unshare-net" not in prepared.argv
     assert "--unshare-all" not in prepared.argv
 
@@ -110,7 +101,7 @@ def test_capabilities_are_dropped_and_the_filter_arrives_as_an_inherited_descrip
     fd = int(argv[argv.index("--seccomp") + 1])
     assert prepared.pass_fds == (fd,)
     assert [handle.fileno() for handle in prepared.owned_files] == [fd]
-    # The descriptor is rewound: bwrap reads the program from the current offset.
+    # The descriptor is rewound: bwrap reads from the current offset.
     assert os.lseek(fd, 0, os.SEEK_CUR) == 0
 
 
@@ -119,7 +110,7 @@ def test_identity_is_synthesised_rather_than_bound_from_the_host(prepared):
     passwd, group = binds["/etc/passwd"], binds["/etc/group"]
     assert passwd != "/etc/passwd" and group != "/etc/group"
     assert prepared.cleanup_paths == [os.path.dirname(passwd)]
-    # A private 0700 directory, so no other account can swap the files under it.
+    # A private 0700 directory, so no other account can swap the files.
     assert os.stat(os.path.dirname(passwd)).st_mode & 0o777 == 0o700
     with open(passwd, encoding = "utf-8") as stream:
         entries = stream.read().splitlines()
@@ -139,12 +130,6 @@ def test_the_writable_workdir_bind_lands_after_the_root_goes_read_only(prepared,
 
 
 def test_both_spellings_of_a_symlinked_workdir_get_a_mount_point(tmp_path):
-    """A workdir reached through a symlink is TWO paths inside the jail, and both
-    are bound. The mount points for both therefore have to be created before the
-    root goes read-only, or bwrap dies with "Can't mkdir ...: Read-only file
-    system" in exactly the case the second bind exists to serve. Measured in a
-    container with working user namespaces before this assertion was written.
-    """
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -163,7 +148,6 @@ def test_both_spellings_of_a_symlinked_workdir_get_a_mount_point(tmp_path):
         made = [argv[i + 1] for i, token in enumerate(argv[:remount]) if token == "--dir"]
         assert str(link) in made, "the caller's spelling has no mount point"
         assert os.path.realpath(link) in made, "the canonical spelling has no mount point"
-        # And both still resolve, which is why the pair is needed at all.
         bound = _pairs(argv[remount:], "--bind")
         assert (os.path.realpath(link), str(link)) in bound
     finally:
@@ -175,19 +159,14 @@ def test_the_private_tmpfs_replaces_the_shared_directories(prepared):
     remount = argv.index("--remount-ro")
     tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
     assert tmpfs[:2] == ["/dev/shm", "/tmp"]
-    # After the remount, or they would be read-only and every temp file would fail.
+    # After the remount, or every temp file would fail on a read-only path.
     assert argv.index("--tmpfs") > remount
 
 
 def test_no_private_key_directory_enters_the_jail_at_all(prepared):
-    """The public halves of the trust trees are named one by one, so nothing has to
-    remember which distribution called its key directory what. Binding /etc/ssl and
-    /etc/pki whole and masking the secrets fails in the wrong direction: the mask
-    list is finished only until the next name for one."""
     sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
     assert "/etc/ssl/certs" in sources
     assert "/etc/ssl" not in sources and "/etc/pki" not in sources
-    # Not by luck: this host has one, and no bind reaches it.
     secret = "/etc/ssl/private"
     assert os.path.isdir(secret), "no private-key directory here, so this proves nothing"
     for source, _ in (*_pairs(prepared.argv, "--ro-bind-try"), *_pairs(prepared.argv, "--ro-bind")):
@@ -195,9 +174,6 @@ def test_no_private_key_directory_enters_the_jail_at_all(prepared):
 
 
 def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
-    """Every runtime path is read-only in here, so pip's default target is not
-    writable and `pip install X` failed with a read-only filesystem error. The
-    session-local target is on PYTHONPATH so the install imports in the same call."""
     argv = prepared.argv
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
     assert argv[argv.index("PIP_TARGET") + 1] == packages
@@ -210,10 +186,9 @@ def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
     sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
     assert "/usr/lib" in sources
-    # Enumerating shared objects is the failure this backend exists to avoid: it
-    # produces hundreds of binds and still misses the one dlopen() wants. So
-    # every bind of a *file* has to be one of the named configuration files, or
-    # one of the two identities synthesised for this launch.
+    # Enumerating shared objects produces hundreds of binds and still misses
+    # the one dlopen() wants, so every bind of a *file* has to be a named
+    # config file or one of the two synthesised identities.
     named = {*sandbox_linux._ETC_FILES, *sandbox_linux._NETWORK_FILES}
     identity_dir = prepared.cleanup_paths[0]
     for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
@@ -222,8 +197,8 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
                 continue
             if source in named or os.path.dirname(source) == identity_dir:
                 continue
-            # pyvenv.cfg is the one interpreter file with no directory of its own:
-            # without it a venv cannot find its base and the jail has no stdlib.
+            # pyvenv.cfg is the one interpreter file with no directory of its own,
+            # and without it a venv cannot find its base.
             assert os.path.basename(source) == "pyvenv.cfg", source
 
 
@@ -260,10 +235,6 @@ def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
 
 
 def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_path, monkeypatch):
-    """The cache ROOT is never bound. huggingface_hub keeps the access token at
-    $HF_HOME/token and $HF_HOME/stored_tokens, and this sandbox's network is open
-    by design, so binding the root and pointing HF_HOME at it would put a live
-    credential at the first path a model-authored script reads."""
     cache = tmp_path / "hostcache"
     for name in ("hub", "datasets", "modules", "xet", "assets"):
         (cache / name).mkdir(parents = True)
@@ -284,24 +255,19 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         workdir = os.path.realpath(tmp_path)
         inner = os.path.join(workdir, ".cache", "huggingface")
         shared = _pairs(launch.argv, "--bind-try")
-        # Spelled out rather than built from _MODEL_CACHE_SUBDIRS. Deriving the
-        # expected value from the constant under test makes both sides move
-        # together, so the assertion holds no matter what the constant says:
-        # "modules" was dropped from it in d0e30972f and no test changed. A
-        # literal is the only version of this that can fail.
+        # Spelled out rather than built from _MODEL_CACHE_SUBDIRS: deriving the
+        # expectation from the constant under test makes both sides move together.
         assert sorted(shared) == sorted(
             (os.path.join(str(cache), name), os.path.join(inner, name))
             for name in ("hub", "datasets", "xet", "assets")
         )
-        # "modules" is remote code huggingface_hub writes and then imports. It is
-        # deliberately NOT shared with the host: a sandboxed call that fetched a
-        # trust_remote_code model would otherwise leave a module behind that an
-        # unisolated later call imports.
+        # "modules" is remote code huggingface_hub writes and then imports, so
+        # sharing it would let a sandboxed call leave a module an unisolated one
+        # later imports.
         assert not any("modules" in destination for _, destination in shared)
-        # HF_HOME still resolves so the default cache location finds the weights.
         assert launch.argv[launch.argv.index("HF_HOME") + 1] == inner
-        # The credentials are named by no bind of any kind, so inside the jail
-        # HF_HOME/token is a path in the writable session workdir and empty.
+        # No bind names the credentials, so HF_HOME/token resolves into the
+        # writable session workdir and is empty.
         for credential in ("token", "stored_tokens"):
             host_path = os.path.join(str(cache), credential)
             assert not any(host_path in token for token in launch.argv), credential
@@ -310,11 +276,6 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
 
 
 def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
-    """bwrap would create a missing bind destination itself, and these sit under
-    the workdir bind, so it would create them ON THE HOST -- and behind a .cache an
-    earlier call pointed elsewhere. Made here instead, and left: empty directories
-    in a dot directory _holds_no_user_files already ignores, and removing them
-    would let two overlapping calls in one session unlink each other's."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(
@@ -332,15 +293,12 @@ def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
     launch = sandbox_linux.prepare(_plan(workdir))
     launch.cleanup()
     assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
-    # A second, overlapping preparation finds them and does not disturb them.
     second = sandbox_linux.prepare(_plan(workdir))
     second.cleanup()
     assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
 
 
 def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypatch):
-    """Only the mount points are created, and nothing of the user's is removed to
-    make room for them."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(
@@ -376,18 +334,13 @@ def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, mon
 def test_the_inner_home_and_tmpdir_are_set_by_bwrap_not_by_the_caller_environment(prepared):
     argv = prepared.argv
     assert argv[argv.index("HOME") + 1] == prepared.workdir
-    # No TMPDIR in the plan's env, so the private tmpfs is the fallback.
     assert argv[argv.index("TMPDIR") + 1] == "/tmp"
-    # The caller's environment is handed through untouched: bwrap --setenv owns
-    # the inner values, and rewriting them here would desynchronise the two.
+    # bwrap --setenv owns the inner values, so rewriting the caller's env
+    # here would desynchronise the two.
     assert prepared.env == {"PATH": "/usr/bin"}
 
 
 def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(tmp_path):
-    """tools.py points TMPDIR at <workdir>/unsloth-tmp so a file a tool call
-    writes through tempfile is still there when the call returns and is offered as
-    a download. The private /tmp dies with the mount namespace, so overriding
-    TMPDIR with it loses every one of those files."""
     scratch = tmp_path / "unsloth-tmp"
     scratch.mkdir()
     plan = ToolLaunchPlan(
@@ -403,8 +356,6 @@ def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(tmp_path):
 
 
 def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(tmp_path):
-    """A host temp directory is not in the jail at all, so honouring it would
-    break every tempfile call rather than preserve an artifact."""
     plan = ToolLaunchPlan(
         argv = ("/bin/true",),
         workdir = str(tmp_path),
@@ -421,10 +372,9 @@ def test_the_outer_setsid_preexec_is_preserved(tmp_path):
     ran = []
     launch = sandbox_linux.prepare(_plan(tmp_path, preexec_fn = lambda: ran.append("plan")))
     try:
-        # tools.py kills a tool call with killpg. --new-session covers the inside
-        # of the jail; without this the outer process group never exists. Composed
-        # with the Landlock scope rather than handed through, so what is asserted
-        # is that it RUNS, and first, not that it is the same object.
+        # --new-session covers the inside of the jail only, and tools.py kills
+        # with killpg. Composed with the Landlock scope, so what is asserted is
+        # that it RUNS, and first, not that it is the same object.
         assert launch.preexec_fn is not None
         launch.preexec_fn()
         assert ran == ["plan"]
@@ -459,15 +409,9 @@ def test_the_backend_declares_the_two_things_it_does_not_confine():
     assert sandbox_linux.BACKEND_NAME and sandbox_linux.PROFILE_ID
 
 
-# ── the workdir a launch will accept ─────────────────────────────────
-
-
 def test_a_unix_socket_under_the_workdir_is_refused():
-    """The scan cannot tell a socket a tool call left behind from one a host
-    process is serving, and the inode does not record who made it. Refused, which
-    costs a littering tool call its next call and not the boundary."""
-    # Not tmp_path: the AF_UNIX address is capped at 108 bytes and pytest's
-    # per-test directory can exceed it on its own.
+    # Not tmp_path: sun_path is 108 bytes and pytest's per-test directory
+    # can exceed it on its own.
     workdir = tempfile.mkdtemp(prefix = "sbx-")
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -480,7 +424,6 @@ def test_a_unix_socket_under_the_workdir_is_refused():
 
 
 def test_a_fifo_under_the_workdir_is_refused(tmp_path):
-    """Same rule as the socket, and the same reason: no discriminator exists."""
     os.mkfifo(str(tmp_path / "pipe"))
     with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
         sandbox_linux._validate_workdir(str(tmp_path))
@@ -491,20 +434,14 @@ def test_a_file_hard_linked_from_outside_the_workdir_is_refused(tmp_path):
     outside.mkdir()
     workdir.mkdir()
     (outside / "secret").write_text("x")
-    # The workdir is bound read-write, so this second name is a writable path out
-    # of the one directory the sandbox is supposed to confine writes to.
+    # The workdir is bound read-write, so this second name is a writable
+    # path out of it.
     os.link(str(outside / "secret"), str(workdir / "innocent"))
     with pytest.raises(SandboxUnavailableError, match = "hard-linked from outside"):
         sandbox_linux._validate_workdir(str(workdir))
 
 
 def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
-    """Counting the names matters: refusing every st_nlink > 1 breaks normal use.
-
-    pip and uv hard-link wheels into a venv, and `cp -al`, `git clone --local` and
-    `rsync --link-dest` all link within a tree. Refusing those would turn OS
-    isolation off for the rest of any session whose tool call ran one.
-    """
     (tmp_path / "a").write_text("x")
     os.link(str(tmp_path / "a"), str(tmp_path / "b"))
     (tmp_path / "nested").mkdir()
@@ -513,9 +450,6 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
 
 
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
-    """Somebody else's storage wearing a path inside the one writable directory:
-    the workdir bind is recursive and takes it along, and the macOS subpath rule
-    grants writes across it, so the check is in the shared scan rather than here."""
     nested = tmp_path / "mounted"
     nested.mkdir()
     real = os.path.ismount
@@ -527,8 +461,6 @@ def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch)
 
 
 def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch):
-    """Only a mount UNDER the workdir is a boundary problem. The scan walks its
-    contents, so the workdir's own mount status is never asked about."""
     real = os.path.ismount
     monkeypatch.setattr(
         os.path, "ismount", lambda path: os.path.samefile(path, tmp_path) or real(path)
@@ -539,10 +471,6 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
 def test_a_workdir_too_large_to_check_is_refused_rather_than_accepted_unchecked(
     tmp_path, monkeypatch
 ):
-    """An unchecked remainder is not a checked one: a link out or a device node
-    past the cutoff is exposed exactly as if the scan had never run. Refusing
-    costs that session its calls, with the limit named, which is visible and
-    actionable where a boundary that quietly is not there is neither."""
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
@@ -558,24 +486,13 @@ def test_a_workdir_that_is_not_a_directory_is_refused(tmp_path):
 
 
 def test_a_symlinked_directory_under_the_workdir_is_not_followed(tmp_path):
-    # Following it would scan /dev and refuse every launch; the bind does not
-    # follow it either, so the link is dangling inside the jail and harmless.
+    # Following it would scan /dev and refuse every launch; the bind does
+    # not follow it either, so the link dangles inside the jail.
     (tmp_path / "escape").symlink_to("/dev")
     assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
 
-# ── the interpreter paths a launch exposes ───────────────────────────
-
-
 def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_path):
-    """The bind set has to cover the interpreter's own sys.path, spelling and all.
-
-    Caught a real hole: a uv-managed base interpreter reports ``base_prefix`` as
-    ``cpython-3.12.12-linux-x86_64-gnu`` but ``base_exec_prefix`` as the
-    ``cpython-3.12-...`` alias symlink, and lib-dynload sits under the alias. A
-    jail built from ``base_prefix`` alone had no C extensions in the standard
-    library at all, so nothing importing ``select`` or ``_socket`` would start.
-    """
     bound = [
         source
         for flag in ("--ro-bind", "--ro-bind-try", "--bind")
@@ -586,9 +503,8 @@ def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_
     needed = {
         paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib") if paths.get(key)
     }
-    # Every sys.path entry that lives in a lib directory of the interpreter: the
-    # standard library, lib-dynload and site-packages. Whatever else PYTHONPATH
-    # inherited is deliberately left outside, so it must not be required here.
+    # Only sys.path entries in a lib directory of the interpreter; whatever
+    # else PYTHONPATH inherited is deliberately left outside.
     needed |= {
         entry
         for entry in sys.path
@@ -601,8 +517,6 @@ def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_
 
 
 def test_a_venv_at_a_project_root_does_not_expose_the_project(tmp_path, monkeypatch):
-    """`python -m venv .` makes sys.prefix the project root. Binding it would hand
-    the jail the sources, the .git directory and any .env sitting beside them."""
     project = tmp_path / "project"
     (project / "lib").mkdir(parents = True)
     (project / "bin").mkdir()
@@ -640,11 +554,7 @@ def test_runtime_paths_inside_the_workdir_are_left_to_the_writable_bind(tmp_path
     monkeypatch.setattr(sys, "prefix", str(inner))
     roots = tuple(path for path in sandbox_linux._SYSTEM_ROOTS if os.path.isdir(path))
     paths = sandbox_linux._runtime_read_paths(os.path.realpath(tmp_path), roots)
-    # A read-only bind here would shadow part of the one writable directory.
     assert os.path.realpath(inner / "lib") not in paths
-
-
-# ── the probe uses this builder, not one of its own ──────────────────
 
 
 def test_the_probe_builds_its_launch_through_the_real_argv_builder(tmp_path):
@@ -654,7 +564,6 @@ def test_the_probe_builds_its_launch_through_the_real_argv_builder(tmp_path):
     try:
         reference = sandbox_linux.prepare(_plan(tmp_path, argv = ("/bin/true", "-x")))
         try:
-            # Identical but for the per-launch descriptor and identity directory.
             def normalise(argv, launch):
                 fd = str(argv[argv.index("--seccomp") + 1])
                 identity = launch.cleanup_paths[0]
@@ -666,8 +575,6 @@ def test_the_probe_builds_its_launch_through_the_real_argv_builder(tmp_path):
     finally:
         launch.cleanup()
 
-
-# ── the seccomp program, interpreted ─────────────────────────────────
 
 _AUDIT_ARCH = sandbox_seccomp._ABIS.get(platform.machine().lower(), (0,))[0]
 _KILL, _ALLOW = 0x80000000, 0x7FFF0000
@@ -684,7 +591,6 @@ def _evaluate(
     arch = _AUDIT_ARCH,
     args = (0,) * 6,
 ):
-    """Interpret the classic BPF program the way the kernel would."""
     data = struct.pack("=IIQ6Q", nr, arch, 0, *args)
     accumulator, counter = 0, 0
     for _ in range(len(instructions) * 4):
@@ -733,10 +639,6 @@ def test_io_uring_is_denied_on_all_three_entry_points(program):
 
 
 def test_the_keyring_syscalls_are_denied(program):
-    """Keyrings are not namespaced. A session keyring is a process credential
-    carried across fork and exec, so a Kerberos KEYRING: cache or an fscrypt key
-    the operator's login session holds is readable from inside the jail without
-    touching a host path, and the network in here is open."""
     for number in sandbox_seccomp._KEYRING_SYSCALLS[platform.machine().lower()]:
         assert _evaluate(program, nr = number) == _EPERM
 
@@ -746,8 +648,7 @@ def test_an_unrelated_syscall_is_allowed(program):
 
 
 def test_a_foreign_abi_is_killed_rather_than_evaluated(program):
-    # Argument offsets differ per ABI, so a filter that guessed would inspect the
-    # wrong bytes and allow the call it meant to deny.
+    # Argument offsets differ per ABI, so a guess inspects the wrong bytes.
     assert _evaluate(program, nr = 1, arch = 0xDEADBEEF) == _KILL
 
 
@@ -763,7 +664,6 @@ def test_nested_user_namespaces_are_refused_only_when_bwrap_cannot_do_it():
     # ENOSYS, so glibc falls back to clone() where the flags word is checkable.
     assert _evaluate(blocking, nr = clone3_nr) == _ENOSYS
     assert _evaluate(blocking, nr = clone_nr, args = (0x10000000, 0, 0, 0, 0, 0)) == _EPERM
-    # An ordinary thread or fork must still work.
     assert _evaluate(blocking, nr = clone_nr, args = (0x00000100, 0, 0, 0, 0, 0)) == _ALLOW
 
     permissive = sandbox_seccomp.program(platform.machine(), block_userns = False)
@@ -785,13 +685,8 @@ class _SockFprog(ctypes.Structure):
 
 
 def _kernel_verdicts(block_userns):
-    """Install the filter for real in a fork child and report each probe's errno.
-
-    Interpreting the program proves the jumps; only the kernel's own BPF verifier
-    proves it loads. bubblewrap cannot start on a host that denies unprivileged
-    user namespaces, so the child installs the filter directly through prctl,
-    which is the same program bwrap would have installed. 0 means allowed.
-    """
+    """Each probe's errno from a fork child, 0 meaning allowed. Installed through
+    prctl, not bwrap, which cannot start where user namespaces are denied."""
     clone3_nr, unshare_nr = 435, sandbox_seccomp._USERNS_SYSCALLS[platform.machine().lower()][1]
     keyctl_nr = sandbox_seccomp._KEYRING_SYSCALLS[platform.machine().lower()][2]
     read_fd, write_fd = os.pipe()
@@ -848,16 +743,16 @@ def test_the_kernel_loads_the_filter_and_denies_the_channels_it_names():
         assert verdicts["vsock"] == errno.EPERM
         assert verdicts["io_uring"] == errno.EPERM
         assert verdicts["keyctl"] == errno.EPERM
-        # The network is not confined, and a filter that broke sockets would
-        # make the "filesystem isolation only" claim false in the other direction.
+        # A filter that broke sockets would make the "filesystem only" claim
+        # false in the other direction.
         assert verdicts["inet"] == 0 and verdicts["unix"] == 0
         assert verdicts["fork"] == 0
 
 
 def test_the_kernel_refuses_nested_user_namespaces_only_in_the_fallback_filter():
-    # clone3 is the honest discriminator: a host that denies user namespaces on
-    # its own returns EPERM from unshare either way, but only this filter makes
-    # clone3 report ENOSYS so glibc retries through a clone() it can inspect.
+    # clone3 is the honest discriminator: a host that denies user namespaces
+    # returns EPERM from unshare anyway, but only this filter makes clone3
+    # report ENOSYS.
     assert _kernel_verdicts(block_userns = True)["clone3"] == errno.ENOSYS
     assert _kernel_verdicts(block_userns = True)["unshare_userns"] == errno.EPERM
     assert _kernel_verdicts(block_userns = False)["clone3"] != errno.ENOSYS
@@ -882,13 +777,7 @@ def test_the_filter_file_holds_exactly_the_program_and_is_rewound():
         stream.close()
 
 
-# ── nothing that originates in the writable workdir crosses the boundary ──
-
-
 def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monkeypatch):
-    """The workdir is the one place a tool call can write, so a runtime path that
-    starts there points wherever the last call pointed it. Excluding only the
-    resolved spelling would skip <workdir>/venv/lib and bind the ~/.ssh behind it."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     secret = tmp_path / "secrets"
@@ -905,13 +794,8 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monk
 
 
 def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
-    """os.mkdir follows an intermediate symlink, and the workdir scan deliberately
-    permits directory symlinks, so a .cache a previous call pointed at the user's
-    home would have the mount points created out there, on the host, before bwrap
-    starts. Refused, and nothing of the user's deleted to make room: symlinking a
-    cache leaf at another volume is a legitimate layout. Refusing is safe because a
-    refusal no longer de-isolates anything -- on a host that can isolate it is a
-    failed call, not an unisolated one."""
+    """Refused rather than unlinked: symlinking a cache leaf at another volume is a
+    legitimate layout."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(
@@ -931,23 +815,18 @@ def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_p
 
     with pytest.raises(SandboxUnavailableError, match = "not a plain directory"):
         sandbox_linux.prepare(_plan(workdir))
-    # Neither followed nor deleted.
     assert (workdir / ".cache").is_symlink()
     assert sorted(entry.name for entry in outside.iterdir()) == []
 
 
 def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
-    """A bubblewrap installed setuid, which is how a host with unprivileged user
-    namespaces disabled gets one at all, cannot raise privileges once
-    PR_SET_NO_NEW_PRIVS is set. Without it the probe qualifies a backend on which
-    every real launch dies after Popen, where auto can no longer fall back."""
     from core.inference import sandbox_probe
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
     assert "preexec_fn = _no_new_privs" in source
-    # Resolved at import: the pre-exec runs in the forked child, where an import
-    # can deadlock on the lock a thread held at fork time.
+    # Resolved at import: an import in the forked child can deadlock on a
+    # lock a thread held at fork time.
     assert not [
         node
         for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
@@ -956,11 +835,6 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):
-    """pip writes a console entry point to <target>/bin, so `pip install black`
-    followed by `black .` needs it on PATH. LAST, and that placement is the whole
-    safety argument: the directory is writable by the tool call, and
-    _build_safe_env drops user-writable PATH entries precisely so a planted binary
-    cannot shadow a bare command the approval logic treats as safe."""
     argv = prepared.argv
     entries = argv[argv.index("PATH") + 1].split(os.pathsep)
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
@@ -969,10 +843,6 @@ def test_the_pip_targets_script_directory_is_last_on_path(prepared):
 
 
 def test_the_compiler_headers_a_source_build_needs_are_readable(prepared):
-    """A pip install with no wheel builds from source, which the executor this
-    replaces could do: without the include trees it fails at the first #include,
-    and Python.h lives under the interpreter's prefix, not /usr/include, for a uv
-    or pyenv managed runtime."""
     sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
     assert "/usr/include" in sources
     assert "/usr/local/include" in sources
@@ -983,9 +853,6 @@ def test_the_compiler_headers_a_source_build_needs_are_readable(prepared):
 
 
 def test_a_runtime_prefix_contributes_its_git_helpers(tmp_path, monkeypatch):
-    """A Conda or Homebrew prefix that supplies its own git keeps git-remote-https
-    and the rest in <prefix>/libexec, and the sanitized PATH selects that git, so
-    an https clone fails at the helper without it."""
     prefix = tmp_path / "conda"
     for name in ("bin", "libexec", "lib"):
         (prefix / name).mkdir(parents = True)
@@ -995,15 +862,7 @@ def test_a_runtime_prefix_contributes_its_git_helpers(tmp_path, monkeypatch):
     assert str(prefix) not in paths
 
 
-# ── the network namespace is shared, and abstract sockets live in it ──
-
-
 def test_the_launch_pre_exec_scopes_abstract_sockets(tmp_path):
-    """An abstract AF_UNIX socket is in the network namespace, not the filesystem,
-    so no mount, bind or seccomp rule in this backend touches one: /proc/net/unix
-    names every socket on the host and a connect needs nothing else. On an
-    ordinary desktop that reaches the session bus and the X server, which is a way
-    out of the boundary this backend claims."""
     if not sandbox_landlock.abstract_scope_supported():
         pytest.skip("this kernel predates the Landlock abstract-socket scope")
     name = b"\0unsloth-abstract-probe-" + os.urandom(6).hex().encode()
@@ -1033,8 +892,8 @@ def test_the_launch_pre_exec_scopes_abstract_sockets(tmp_path):
         read_fd = -1
         os.waitpid(child, 0)
         assert verdict == str(errno.EPERM).encode(), verdict
-        # The positive control: unscoped, this host can reach that socket, so the
-        # refusal above is the scope and not a socket nobody could have connected to.
+        # Positive control: unscoped, this host reaches that socket, so the
+        # refusal above is the scope and not an unreachable socket.
         control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         control.settimeout(2)
         control.connect(name)
@@ -1047,16 +906,11 @@ def test_the_launch_pre_exec_scopes_abstract_sockets(tmp_path):
 
 
 def test_the_backend_says_so_when_the_kernel_cannot_scope_them(monkeypatch):
-    """A boundary that is not there has to be named. LIMITATIONS is built at import
-    from the kernel's Landlock ABI, so the record on an older host carries the
-    reachable-sockets entry that this host's does not."""
     supported = sandbox_landlock.abstract_scope_supported()
     assert ("host_abstract_sockets_reachable" in sandbox_linux.LIMITATIONS) is not supported
 
 
 def test_the_plan_pre_exec_still_runs_before_the_scope():
-    """Composed, never replaced: the plan's pre-exec is the os.setsid() every kill
-    path in tools.py signals."""
     ran = []
     composed = sandbox_landlock.with_abstract_scope(lambda: ran.append("plan"))
     composed()
@@ -1064,8 +918,6 @@ def test_the_plan_pre_exec_still_runs_before_the_scope():
 
 
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):
-    """A Conda prefix builds OpenSSL against its own <prefix>/ssl/cacert.pem, so
-    an https clone reaches git-remote-https and then cannot verify a certificate."""
     prefix = tmp_path / "conda"
     for name in ("bin", "ssl", "lib"):
         (prefix / name).mkdir(parents = True)
@@ -1075,11 +927,6 @@ def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatc
 
 
 def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(tmp_path):
-    """UNSLOTH_STUDIO_SANDBOX_HOME pointing at another volume is a supported
-    override, and tools.py builds the scratch script path, HOME and TMPDIR from
-    the spelling it was given. Binding only the canonical form starts bwrap fine
-    and then Python cannot open its own argv, after Popen, where auto can no
-    longer fall back."""
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -1088,8 +935,8 @@ def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller
     try:
         binds = _pairs(launch.argv, "--bind")
         assert (str(real), str(link)) in binds
-        # The canonical spelling too, so a tool that resolved a path for itself is
-        # not handed one the jail cannot open either.
+        # The canonical spelling too, so a tool that resolved a path for itself
+        # can still open it.
         assert (str(real), str(real)) in binds
         assert launch.argv[launch.argv.index("--chdir") + 1] == str(link)
         assert launch.argv[launch.argv.index("HOME") + 1] == str(link)
@@ -1098,10 +945,6 @@ def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller
 
 
 def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, monkeypatch):
-    """--bind-try onto a leaf that is not a directory fails inside bwrap, after
-    Popen, so auto cannot fall back and the session stays broken. Refused at
-    preparation instead, and not deleted: these names are not reserved from
-    workspace content."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(
@@ -1123,10 +966,8 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
 
 
 def test_an_unreadable_directory_is_refused(tmp_path):
-    """A mode-000 directory hides whatever is inside it from the check that exists
-    to find a link out, and the process that owns it can chmod it back. Refusing
-    costs a tool call that made one its own next call, which is a self-inflicted
-    and visible failure; accepting it costs the boundary."""
+    """A mode-000 directory hides a link out from the scan, and the process that
+    owns it can chmod it back."""
     locked = tmp_path / "locked"
     locked.mkdir()
     (locked / "inside").write_text("x")
@@ -1139,9 +980,8 @@ def test_an_unreadable_directory_is_refused(tmp_path):
 
 
 def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch):
-    """HF_HUB_CACHE and HF_XET_CACHE can point anywhere -- HF_HUB_CACHE=/mnt/models
-    is not /mnt/models/hub -- so each component is bound where it actually is, and
-    only the two with no variable of their own are derived from the cache home."""
+    """HF_HUB_CACHE=/mnt/models is NOT /mnt/models/hub, so each component is bound
+    where it actually is."""
     hub = tmp_path / "mnt" / "models"
     xet = tmp_path / "fast" / "xet"
     home = tmp_path / "cachehome"
