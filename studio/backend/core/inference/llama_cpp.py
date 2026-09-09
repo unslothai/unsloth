@@ -8418,56 +8418,6 @@ class LlamaCppBackend:
         logger.info("Model Memory: dropping the managed --load-mode dio; %s", reason)
         return stripped
 
-    def _refresh_dio_for_devices(self, ask, *, live_env, hypothetical_env) -> list[str]:
-        """Re-ask the DirectIO question for a device set that just changed.
-
-        Returns the pair to append for THIS child, and updates the applicability
-        record, which is the forced-on answer a later save is compared against.
-        Every rung that moves the effective device set needs both, and asking them
-        apart is how one of them went stale three times.
-        """
-        self._memory_dio_applicable = bool(ask(hypothetical_env, forced_on = True))
-        return ask(live_env, forced_on = False)
-
-    def _managed_dio_for_confirmed_offload(
-        self,
-        extra_args,
-        *,
-        server_caps,
-        binary,
-        gpu_indices,
-        detected_gpus,
-        is_vulkan_backend: bool,
-        requested_load_mode,
-        env_view,
-        settings,
-    ) -> list[str]:
-        """The managed DirectIO pair for a placement now known to be a full offload.
-
-        One place, because the launch and the --fit off retry must not disagree
-        about the same child: the retry reaches this only after re-asking
-        ``_weights_in_host_memory``, so the confirmation is the caller's.
-        """
-        confirmed = bool(
-            self._build_offers_gpu_backend(binary)
-            and (detected_gpus or gpu_indices)
-            and (not is_vulkan_backend or self._vulkan_offload_is_discrete(binary, gpu_indices))
-        )
-        emitted, effective = resolve_launch_load_mode(
-            extra_args,
-            supports_load_mode = bool(server_caps.get("supports_load_mode")),
-            weights_in_host_memory = False,
-            gpu_offload_confirmed = confirmed,
-            requested_load_mode = requested_load_mode,
-            env = env_view,
-            settings = settings,
-        )
-        # Both halves. `effective` alone is true for a user's own "dio", where the
-        # policy contributed nothing: appending a redundant pair there marks the
-        # launch active and, with both toggles off, `not policy_active` then fails
-        # forever and the reload hint and dedup restart a healthy child on a loop.
-        return list(MANAGED_DIO_FLAGS) if (emitted and effective) else []
-
     @staticmethod
     def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
         """True only when the probe ANSWERED and every device in play is discrete.
@@ -23594,6 +23544,71 @@ class LlamaCppBackend:
                     (_mem_keep_resident, True), _mem_env_view_no_reserve
                 )
                 self._memory_dio_applicable = _hypo_emitted and _hypo_effective
+
+                # The child as it would be with the policy off entirely, for the
+                # "does this differ from unmanaged" question activity really asks.
+                _off_view = dict(_mem_env)
+                scrub_memory_env(_off_view, (False, False))
+
+                def _dio_decision_for(devices, *, fully_offloaded):
+                    """``(pair, applicable, active)`` for a CHANGED device set.
+
+                    Everything the launch above asks, asked again for the devices a
+                    rung has just narrowed to: the host-residency verdict, the
+                    backend and probe confirmation, the live and forced-on answers,
+                    and the toggles-off comparison that decides activity. The rungs
+                    used to ask a subset each, and every missing piece became its own
+                    review round: a partial offload getting the pair, a narrowed set
+                    never gaining it, a redundant pair recorded as activity.
+                    """
+                    host_resident = self._weights_in_host_memory(
+                        fully_gpu_offloaded = fully_offloaded,
+                        gpu_memory_mode = gpu_memory_mode,
+                        gpu_layers = gpu_layers,
+                        extra_args = _mem_extra_args,
+                        gpu_indices = devices,
+                        is_vulkan_backend = is_vulkan_backend,
+                        binary = binary,
+                        env = _mem_env,
+                        probe_vulkan = _mem_probe_for_dio or _mem_should_mlock,
+                        fit_active = fit_is_effectively_on(
+                            [*cmd, *(_mem_extra_args or [])], _mem_env
+                        ),
+                    )
+                    confirmed = bool(
+                        not host_resident
+                        and self._build_offers_gpu_backend(binary)
+                        and (_detected_gpus or devices)
+                        and (
+                            not is_vulkan_backend
+                            or self._vulkan_offload_is_discrete(binary, devices)
+                        )
+                    )
+
+                    def _for(pair, env_view):
+                        return resolve_launch_load_mode(
+                            extra_args,
+                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            weights_in_host_memory = host_resident,
+                            gpu_offload_confirmed = confirmed,
+                            requested_load_mode = _resolved_load_mode,
+                            env = env_view,
+                            settings = pair,
+                        )
+
+                    live_emitted, live_effective = _for(
+                        _mem_settings, _fit_load_mode_env_view
+                    )
+                    hypo_emitted, hypo_effective = _for(
+                        (_mem_keep_resident, True), _mem_env_view_no_reserve
+                    )
+                    pair = (
+                        list(MANAGED_DIO_FLAGS) if (live_emitted and live_effective) else []
+                    )
+                    # Redundant with a loader the user picked themselves changes nothing
+                    # a relaunch could undo, so it is not activity.
+                    active = bool(pair) and live_effective != _for((False, False), _off_view)[1]
+                    return pair, (hypo_emitted and hypo_effective), active
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -23755,8 +23770,6 @@ class LlamaCppBackend:
                 # "dio" makes redundant, both leave the child running the command it
                 # would run unmanaged; counting either made turning no-reserve OFF
                 # demand a reload whose only effect is removing an inert flag.
-                _off_view = dict(_mem_env)
-                scrub_memory_env(_off_view, (False, False))
                 _mem_managed_is_effective = bool(_mem_managed) and (
                     tuple(_mem_managed) != MANAGED_DIO_FLAGS
                     or self._memory_direct_io != _ask((False, False), _off_view)[1]
@@ -24250,29 +24263,20 @@ class LlamaCppBackend:
                         # child can be a confirmed discrete full offload after all, and
                         # nothing downstream re-asked: the reactive retry has this, the
                         # proactive one did not. Same helper, same rule.
-                        _gate_dio = self._refresh_dio_for_devices(
-                            lambda env_view, forced_on: (
-                                self._managed_dio_for_confirmed_offload(
-                                    extra_args,
-                                    server_caps = server_caps,
-                                    binary = binary,
-                                    gpu_indices = _survivors,
-                                    detected_gpus = _detected_gpus,
-                                    is_vulkan_backend = is_vulkan_backend,
-                                    requested_load_mode = _resolved_load_mode,
-                                    env_view = env_view,
-                                    settings = (
-                                        (_mem_keep_resident, True) if forced_on else _mem_settings
-                                    ),
-                                )
-                            ),
-                            live_env = _fit_load_mode_env_view,
-                            hypothetical_env = _mem_env_view_no_reserve,
+                        # fully_offloaded False: this arm is the unpinned "--fit on" /
+                        # manual-ratio shape, so the fitter still owns placement and the
+                        # survivors may not hold the model. The decision re-runs the
+                        # host-residency check for exactly that.
+                        _gate_dio, _gate_applicable, _gate_active = _dio_decision_for(
+                            _survivors, fully_offloaded = False
                         )
+                        self._memory_dio_applicable = _gate_applicable
                         if _gate_dio and not self._memory_dio_flags:
                             cmd = [*cmd, *_gate_dio]
                             self._memory_dio_flags = list(_gate_dio)
-                            self._memory_policy_active = True
+                            self._memory_policy_active = (
+                                _gate_active or self._memory_policy_active
+                            )
                             self._record_memory_state(cmd, env)
                             logger.info(
                                 "Model Memory: applying %s; the arch gate pins this "
@@ -24801,31 +24805,18 @@ class LlamaCppBackend:
                                 # fitted attempt read as host-resident, and that is the
                                 # verdict this retry just overturned. Appended, so the
                                 # last-wins parse still leaves a hand-typed flag on top.
-                                _retry_dio = self._refresh_dio_for_devices(
-                                    lambda env_view, forced_on: (
-                                        self._managed_dio_for_confirmed_offload(
-                                            extra_args,
-                                            server_caps = server_caps,
-                                            binary = binary,
-                                            gpu_indices = gpu_indices,
-                                            detected_gpus = _detected_gpus,
-                                            is_vulkan_backend = is_vulkan_backend,
-                                            requested_load_mode = _resolved_load_mode,
-                                            env_view = env_view,
-                                            settings = (
-                                                (_mem_keep_resident, True)
-                                                if forced_on
-                                                else _mem_settings
-                                            ),
-                                        )
-                                    ),
-                                    live_env = _fit_load_mode_env_view,
-                                    hypothetical_env = _mem_env_view_no_reserve,
+                                # This rung turned the fitter OFF, so -ngl falls back to
+                                # every layer: that is the full offload to establish.
+                                _retry_dio, _retry_applicable, _retry_active = (
+                                    _dio_decision_for(gpu_indices, fully_offloaded = True)
                                 )
+                                self._memory_dio_applicable = _retry_applicable
                                 if _retry_dio and not self._memory_dio_flags:
                                     run_cmd = [*run_cmd, *_retry_dio]
                                     self._memory_dio_flags = list(_retry_dio)
-                                    self._memory_policy_active = True
+                                    self._memory_policy_active = (
+                                        _retry_active or self._memory_policy_active
+                                    )
                                     logger.info(
                                         "Model Memory: applying %s for the --fit off "
                                         "retry; it offloads every layer.",
@@ -25402,25 +25393,36 @@ class LlamaCppBackend:
                         # resident mmap path with applicability cleared, so the enabled
                         # setting never asks for the corrective reload. Re-ask on the
                         # narrowed set; the --fit on rung removes it if that stops holding.
+                        # Both directions, and unconditionally: narrowing onto the
+                        # surviving discrete card can GAIN a full offload that the
+                        # original set (an unsupported unified-memory APU among them)
+                        # never had, so guarding this on an existing pair left the
+                        # successful retry on mmap with nothing to correct it.
+                        _arch_dio, _arch_applicable, _arch_active = _dio_decision_for(
+                            _remaining, fully_offloaded = fully_gpu_offloaded
+                        )
+                        self._memory_dio_applicable = _arch_applicable
                         _dio_left_cmd = False
-                        if self._memory_dio_flags and not (
-                            self._managed_dio_for_confirmed_offload(
-                                extra_args,
-                                server_caps = server_caps,
-                                binary = binary,
-                                gpu_indices = _remaining,
-                                detected_gpus = _detected_gpus,
-                                is_vulkan_backend = is_vulkan_backend,
-                                requested_load_mode = _resolved_load_mode,
-                                env_view = _fit_load_mode_env_view,
-                                settings = _mem_settings,
-                            )
-                        ):
+                        if self._memory_dio_flags and not _arch_dio:
                             _dio_left_cmd = True
                             cmd = self._drop_managed_dio(
                                 cmd,
                                 "the arch-crash retry's remaining devices no longer "
                                 "confirm a full offload",
+                            )
+                            self._memory_dio_applicable = _arch_applicable
+                        elif _arch_dio and not self._memory_dio_flags:
+                            _dio_left_cmd = True
+                            cmd = [*cmd, *_arch_dio]
+                            self._memory_dio_flags = list(_arch_dio)
+                            self._memory_policy_active = (
+                                _arch_active or self._memory_policy_active
+                            )
+                            logger.info(
+                                "Model Memory: applying %s; the arch-crash retry's "
+                                "remaining GPU(s) %s confirm a full offload.",
+                                " ".join(_arch_dio),
+                                _remaining,
                             )
                         # ...except the load-mode pair just removed: the snapshot was
                         # taken while `cmd` still carried it, so restoring it would

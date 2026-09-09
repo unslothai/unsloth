@@ -2751,10 +2751,10 @@ class TestTheLaunchWithdrawsTheDio:
         a surviving discrete GPU can still be a confirmed full offload. Dropping
         unconditionally left a healthy child on mmap with applicability cleared."""
         src = self._src()
-        arm = src[src.index("_dio_left_cmd = False") :]
+        arm = src[src.index("_arch_dio, _arch_applicable, _arch_active =") :]
         arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
-        assert "self._managed_dio_for_confirmed_offload(" in arm
-        assert "gpu_indices = _remaining," in arm
+        assert "_dio_decision_for(" in arm
+        assert "_remaining" in arm
         # and the restore still precedes any bookkeeping the strip would clear
         assert src.index(") = _mem_policy_for_cmd") < src.index("_dio_left_cmd = False")
 
@@ -2784,34 +2784,6 @@ class TestTheLaunchWithdrawsTheDio:
         b._memory_policy_extras_touched = True
         b._drop_managed_dio(["-m", "x", *_lsa.MANAGED_DIO_FLAGS], "cpu")
         assert b._memory_policy_active is True
-
-
-class TestTheFitOffRetryReAsks:
-    """Under no-reserve nothing is emitted when the fitted attempt reads as
-    host-resident, and that is the verdict the --fit off retry overturns. The
-    page-lock arm cannot reach this: _mem_managed is empty precisely because the
-    placement looked host-resident."""
-
-    def test_the_retry_applies_the_pair_when_the_offload_is_proved(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        arm = src[src.index('run_cmd = [*run_cmd, "--fit", "off"]') :]
-        arm = arm[: arm.index("_did_fit_retry = True")]
-        assert "self._managed_dio_for_confirmed_offload(" in arm
-        assert "run_cmd = [*run_cmd, *_retry_dio]" in arm
-        # and the drop arm no longer hides behind a non-empty _mem_managed
-        assert "if _mem_managed and _mem_host_resident:" not in src
-
-    def test_the_emission_rule_lives_in_one_place(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend._managed_dio_for_confirmed_offload)
-        assert "resolve_launch_load_mode(" in src
-        assert "self._build_offers_gpu_backend(binary)" in src
-        assert "self._vulkan_offload_is_discrete(binary, gpu_indices)" in src
 
 
 class TestThePlacementProbes:
@@ -2879,9 +2851,10 @@ class TestThePlacementProbes:
 
 class TestEveryDeviceSetChangeReAsks:
     """A rung that changes the effective device set changes the placement, and the
-    pair is a question about placement. Both the reactive arch retry and the
-    proactive arch gate narrow onto discrete cards; only the reactive one used to
-    re-ask, so an APU-plus-dGPU host stayed on the resident mmap path."""
+    pair is a question about placement. Each rung used to ask a SUBSET of what the
+    launch asks, and every missing piece became its own review round: a partial
+    offload getting the pair, a narrowed set never gaining it, a redundant pair
+    recorded as activity. They now share one decision."""
 
     @staticmethod
     def _src():
@@ -2889,25 +2862,52 @@ class TestEveryDeviceSetChangeReAsks:
         import inspect
         return inspect.getsource(LlamaCppBackend.load_model)
 
-    def test_the_proactive_gate_re_asks(self):
+    def test_the_partial_helpers_are_gone(self):
         src = self._src()
-        arm = src[src.index("_launch_pinned_ids = list(_survivors)") :]
-        arm = arm[: arm.index("_did_fit_retry") if "_did_fit_retry" in arm else len(arm)]
-        assert "self._refresh_dio_for_devices(" in arm
-        assert "gpu_indices = _survivors," in arm
+        for retired in ("_managed_dio_for_confirmed_offload", "_refresh_dio_for_devices"):
+            assert retired not in src, retired
 
-    def test_all_three_moving_rungs_use_one_refresh(self):
-        """Asking the live and the forced-on answers apart is how one of them went
-        stale three times, so they are taken together or not at all."""
+    def test_all_three_rungs_use_the_one_decision(self):
         src = self._src()
-        assert src.count("self._refresh_dio_for_devices(") == 2  # gate + fit-off retry
-        # the arch-crash rung asks the confirmation directly, to strip rather than add
-        assert src.count("self._managed_dio_for_confirmed_offload(") == 3
+        assert src.count("_dio_decision_for(") == 4  # 1 def + 3 rungs
+        flat = "".join(src.split())
+        assert "_dio_decision_for(_survivors,fully_offloaded=False)" in flat
+        assert "_dio_decision_for(gpu_indices,fully_offloaded=True)" in flat
+        assert "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded)" in flat
 
-    def test_the_refresh_updates_both_answers(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
+    def test_the_decision_re_runs_the_placement_check(self):
+        """Backend and probe discreteness are not a full offload: the fitter may
+        still leave layers on the CPU, where dio buffers them."""
+        src = self._src()
+        arm = src[src.index("def _dio_decision_for(") :]
+        arm = arm[: arm.index("return pair,")]
+        assert "host_resident = self._weights_in_host_memory(" in arm
+        assert "not host_resident" in arm
+        assert "fully_gpu_offloaded = fully_offloaded," in arm
 
-        src = inspect.getsource(LlamaCppBackend._refresh_dio_for_devices)
-        assert "self._memory_dio_applicable = bool(ask(hypothetical_env, forced_on = True))" in src
-        assert "return ask(live_env, forced_on = False)" in src
+    def test_the_decision_answers_all_three_questions(self):
+        src = self._src()
+        arm = src[src.index("def _dio_decision_for(") :]
+        arm = arm[: arm.index("return pair,")]
+        flat = "".join(arm.split())
+        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat          # live
+        assert "_for((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat  # forced on
+        assert "_for((False,False),_off_view)" in flat                        # toggles off
+
+    def test_the_reactive_gate_can_gain_the_pair_not_only_lose_it(self):
+        """Narrowing onto the surviving discrete card can gain a full offload the
+        original set (with an unsupported APU in it) never had."""
+        src = self._src()
+        arm = src[src.index("_arch_dio, _arch_applicable, _arch_active = _dio_decision_for") :]
+        arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
+        assert "elif _arch_dio and not self._memory_dio_flags:" in arm
+        assert "cmd = [*cmd, *_arch_dio]" in arm
+
+    def test_no_rung_sets_activity_unconditionally(self):
+        """A pair redundant with a loader the user picked changes nothing a
+        relaunch could undo, so appending it is not activity."""
+        src = self._src()
+        # Each dio rung ORs its own answer against the existing value rather than
+        # asserting True. (A fourth such OR belongs to the pre-existing mlock re-arm.)
+        for marker in ("_gate_active", "_retry_active", "_arch_active"):
+            assert f"{marker} or self._memory_policy_active" in src, marker
