@@ -2526,26 +2526,22 @@ def _extract_model_size_b(model_id: str):
     return extract_model_size_b(model_id)
 
 
-_TOOL_TEMPLATE_MARKERS = (
-    "{%- if tools %}",
-    "{%- if tools -%}",
-    "{% if tools %}",
-    "{% if tools -%}",
-    # Defensive templates guard with `tools is defined` before truth-testing
-    # (e.g. Inkling: `{%- if tools is defined and tools -%}`).
-    "{%- if tools is defined",
-    "{% if tools is defined",
-    '"role" == "tool"',
-    "'role' == 'tool'",
-    'message.role == "tool"',
-    "message.role == 'tool'",
-    # DeepSeek: no top-level ``{% if tools %}`` block; it gates emission on
-    # ``message['role'] == 'tool'`` plus ``message['tool_calls'] is defined``.
-    "message['role'] == 'tool'",
-    'message["role"] == "tool"',
-    "message['tool_calls']",
-    'message["tool_calls"]',
-    "tool_calls is defined",
+# Tool support, matched on the Jinja construct rather than on one spelling of it. The literal
+# list this replaced held `"{%- if tools %}"` and three whitespace variants, so Granite 3.3
+# (`{%- if tools and not available_tools -%}`) and Phi-4-mini (tools on the system message)
+# read as tool-less. A false greys out the Search and Code pills, so the user cannot correct it.
+_TOOL_TEMPLATE_PATTERNS = (
+    # Any if/elif testing `tools`, whatever the trim markers, spacing or predicate.
+    # `\btools\b` keeps Llama 3.1's `builtin_tools` and `tools_in_user_message` out: those are
+    # separate switches and neither renders a schema.
+    re.compile(r"\{%[-+]?\s*(?:el)?if\b[^%]*\btools\b"),
+    # No guard at all, straight into the loop.
+    re.compile(r"\{%[-+]?\s*for\b[^%]*\bin\s+tools\b"),
+    # message.role == "tool" / message['role'] == 'tool', either quoting, == or !=.
+    re.compile(r"""(?:\.role|\[\s*['"]role['"]\s*\])\s*[!=]=\s*['"]tool['"]"""),
+    re.compile(r"""['"]role['"]\s*[!=]=\s*['"]tool['"]"""),
+    # DeepSeek gates on tool_calls rather than on `tools`.
+    re.compile(r"\btool_calls\b"),
 )
 
 
@@ -2719,7 +2715,9 @@ def detect_reasoning_flags(
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
 
-    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+    # "tool" first: one pass, and it skips the regex arms for most templates. This classifier
+    # is re-derived several times per request.
+    if "tool" in tpl and any(pattern.search(tpl) for pattern in _TOOL_TEMPLATE_PATTERNS):
         flags["supports_tools"] = True
         _log(f"{prefix}model supports tool calling")
 
