@@ -221,6 +221,8 @@ class TestTheLaunchArgs:
             (["-ot", "attn=CUDA0", "--override-tensor", "exps=CPU"], ["--override-tensor"]),
             (["--n-cpu-moe", "8", "-ncmoe", "0"], ["--n-cpu-moe"]),
             (["-ncmoe", "0", "--n-cpu-moe", "8"], ["--n-cpu-moe"]),
+            (["-ncmoe", "+1"], ["-ncmoe"]),
+            (["--n-cpu-moe=+4"], ["--n-cpu-moe"]),
             (
                 ["--cpu-moe", "-ot", "exps=CPU"],
                 ["--cpu-moe", "-ot"],
@@ -239,6 +241,11 @@ class TestTheLaunchArgs:
             ({"LLAMA_ARG_CPU_MOE": "0"}, []),
             ({"LLAMA_ARG_N_CPU_MOE": "8"}, ["LLAMA_ARG_N_CPU_MOE=8"]),
             ({"LLAMA_ARG_N_CPU_MOE": "0"}, []),
+            # std::stoi takes a sign and the leading integer.
+            ({"LLAMA_ARG_N_CPU_MOE": "+1"}, ["LLAMA_ARG_N_CPU_MOE=+1"]),
+            ({"LLAMA_ARG_N_CPU_MOE": "-1"}, []),
+            ({"LLAMA_ARG_N_CPU_MOE": "2x"}, ["LLAMA_ARG_N_CPU_MOE=2x"]),
+            ({"LLAMA_ARG_N_CPU_MOE": "x2"}, []),
             ({"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}, ["LLAMA_ARG_OVERRIDE_TENSOR=exps=CPU"]),
             ({"LLAMA_ARG_OVERRIDE_TENSOR": "attn=CUDA0"}, []),
             ({"LLAMA_ARG_KV_UNIFIED": "0"}, []),

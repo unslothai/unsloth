@@ -292,6 +292,16 @@ class TestServerParkingSwitchedOffThroughTheEnvironment:
         assert not _preempt_ram_disabled_in(["--kv-unified"], env = {"LLAMA_ARG_PREEMPT_RAM": "8192"})
         assert not _preempt_ram_disabled_in(["--kv-unified"], env = {})
 
+    @pytest.mark.parametrize("zero", ["00", "+0", " 0 ", "-0"])
+    def test_every_numeric_zero_switches_parking_off(self, zero):
+        # llama.cpp parses the budget as an integer, so these are the same zero.
+        assert _preempt_ram_disabled_in(["--kv-unified", "--preempt-ram", zero])
+        assert _preempt_ram_disabled_in([f"--preempt-ram={zero}"])
+        assert _preempt_ram_disabled_in(["--kv-unified"], env = {"LLAMA_ARG_PREEMPT_RAM": zero})
+
+    def test_an_unparseable_budget_is_not_a_zero(self):
+        assert not _preempt_ram_disabled_in(["--preempt-ram", "none"])
+
 
 # ── 3. Exact concurrency needs evidence the binary implements it ─────────────
 

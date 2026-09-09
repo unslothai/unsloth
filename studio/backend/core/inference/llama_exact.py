@@ -205,6 +205,12 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
 _CPU_PLACEMENT_ENV = ("LLAMA_ARG_CPU_MOE", "LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_OVERRIDE_TENSOR")
 
 
+def _positive_count(value: Optional[str]) -> bool:
+    """A layer count above zero as llama.cpp's std::stoi reads it, ``+1`` included."""
+    leading = re.match(r"\s*[+-]?\d+", str(value or ""))
+    return leading is not None and int(leading.group(0)) > 0
+
+
 def contradicting_env(env: Optional[Mapping[str, str]]) -> list[str]:
     """The inherited variables exact mode cannot run with, spelled as ``NAME=value``."""
     found: list[str] = []
@@ -215,7 +221,7 @@ def contradicting_env(env: Optional[Mapping[str, str]]) -> list[str]:
         if name == "LLAMA_ARG_CPU_MOE":
             hit = value.lower() in ("1", "on", "true", "yes")
         elif name == "LLAMA_ARG_N_CPU_MOE":
-            hit = value.isdigit() and int(value) > 0
+            hit = _positive_count(value)
         else:
             hit = _places_tensors_on_cpu(value)
         if hit:
@@ -243,8 +249,7 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
             value = (_flag_value(token, following) or "").strip().lower()
             contradicts = value in ("off", "0", "false", "disabled")
         elif name in ("--n-cpu-moe", "-ncmoe"):
-            value = (_flag_value(token, following) or "").strip()
-            contradicts = value.isdigit() and int(value) > 0
+            contradicts = _positive_count(_flag_value(token, following))
         elif name in ("--override-tensor", "-ot"):
             contradicts = _places_tensors_on_cpu(_flag_value(token, following))
         elif name in _BARE_CONTRADICTIONS:

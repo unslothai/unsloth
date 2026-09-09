@@ -314,10 +314,16 @@ class TestTheNamedBudgetIsJudged:
         # budget too small: `auto` runs without the mode and `on` fails the load.
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
-        window = source[site : site + 1600]
+        window = source[site : site + 2600]
+        # Judged for every budget in force, not only the one sized here: a named budget
+        # that holds every park can still be more than the host has.
+        assert "if _exact_kv_bytes > 0: _exact_cap = _exact_budget" in window
+        assert "_exact_cap = _named_preempt_ram_mib(" in window
+        assert "_exact_cap = _PREEMPT_RAM_DEFAULT_MIB" in window
+        assert "_exact_writes = min(_exact_cap, _exact_writes)" in window
         assert "_available_host_memory_mib()" in window
-        assert "_exact_budget > _host_free_mib" in window
-        assert "self._exact_host_short = (_exact_budget, _host_free_mib)" in window
+        assert "_exact_writes > _host_free_mib" in window
+        assert "self._exact_host_short = (_exact_writes, _host_free_mib)" in window
         assert "if _exact_setting == _exact.EXACT_AUTO: _exact_wanted = False" in window
         assert "parking_holds = _exact_short is None and _exact_host_short is None" in source
         assert "self._exact_host_short = None" in source

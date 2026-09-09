@@ -2053,15 +2053,23 @@ def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> b
     carries ``set_env("LLAMA_ARG_PREEMPT_RAM")``: a zero in the environment disables parking with
     nothing on the launch line, and a Studio-managed budget still beats an inherited zero."""
     value = (os.environ if env is None else env).get("LLAMA_ARG_PREEMPT_RAM")
-    disabled = value is not None and str(value).strip() == "0"
+    disabled = value is not None and _preempt_ram_value_is_zero(value)
     tokens = [str(a) for a in (args or ())]
     for i, tok in enumerate(tokens):
         if tok == "--preempt-ram":
             value = tokens[i + 1] if i + 1 < len(tokens) else ""
-            disabled = value.strip() == "0"
+            disabled = _preempt_ram_value_is_zero(value)
         elif tok.startswith("--preempt-ram="):
-            disabled = tok.split("=", 1)[1].strip() == "0"
+            disabled = _preempt_ram_value_is_zero(tok.split("=", 1)[1])
     return disabled
+
+
+def _preempt_ram_value_is_zero(text) -> bool:
+    """Numerically zero the way llama.cpp reads the budget (``00``, ``+0``), not the one spelling."""
+    try:
+        return int(str(text).strip()) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 # llama-server's own default for --preempt-ram, in MiB.
@@ -23750,18 +23758,34 @@ class LlamaCppBackend:
                                 _exact_draft_bytes // (1024 * 1024),
                                 n_parallel,
                             )
-                            # A cap, not an allocation: a park past what the host can give
-                            # fails its allocation and is re-prefilled, so a budget the host
-                            # cannot back is judged like one too small.
+                        # A cap, not an allocation: a park past what the host can give fails
+                        # its allocation and is re-prefilled, so the budget in force, named or
+                        # sized here, is judged against the host like one too small. What the
+                        # parks write is the smaller of the cap and every park's state.
+                        if _exact_kv_bytes > 0:
+                            _exact_cap = _exact_budget
+                            if _exact_cap is None:
+                                _exact_cap = _named_preempt_ram_mib(
+                                    list(cmd) + [str(a) for a in (extra_args or ())], os.environ
+                                )
+                            if _exact_cap is None:
+                                _exact_cap = _PREEMPT_RAM_DEFAULT_MIB
+                            _exact_writes = _exact_parking_need_mib(
+                                _exact_kv_bytes,
+                                draft_bytes = _exact_draft_bytes,
+                                parallel = n_parallel,
+                            )
+                            if _exact_cap >= 0:
+                                _exact_writes = min(_exact_cap, _exact_writes)
                             _host_free_mib = _available_host_memory_mib()
-                            if _host_free_mib is not None and _exact_budget > _host_free_mib:
-                                self._exact_host_short = (_exact_budget, _host_free_mib)
+                            if _host_free_mib is not None and _exact_writes > _host_free_mib:
+                                self._exact_host_short = (_exact_writes, _host_free_mib)
                                 self._record_load_warning(
                                     "Exact concurrency may park up to %d MiB of KV state in host "
                                     "RAM, and this host has %d MiB free. A park the host cannot "
                                     "hold is re-prefilled, which is not byte-identical. The load "
                                     "will run without exact concurrency, or fail, depending on "
-                                    "the setting." % (_exact_budget, _host_free_mib)
+                                    "the setting." % (_exact_writes, _host_free_mib)
                                 )
                                 if _exact_setting == _exact.EXACT_AUTO:
                                     _exact_wanted = False
