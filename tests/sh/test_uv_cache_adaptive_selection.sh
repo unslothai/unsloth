@@ -26,7 +26,7 @@
 #   * caller-set UV_CACHE_DIR            -> custom, left exactly as the caller wrote it
 #   * unset, uv's default is populated   -> shared, and the launch repoint becomes live
 #   * unset, uv's default is empty       -> studio
-#   * populated but not writable         -> studio; uv aborts on a cache it cannot init
+#   * populated but not writable, root or bucket -> studio; uv aborts on either
 #   * a relative cache-dir               -> resolved against UV_WORKING_DIR before scanning
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
@@ -120,6 +120,19 @@ _readonly="$_TMP/uvro"
 mkdir -p "$_readonly/archive-v0/torch"
 : > "$_readonly/archive-v0/torch/libtorch.so"
 chmod a-w "$_readonly"
+# The other half: the root is ours but a bucket is not, which is what a `sudo -E` run leaves
+# behind. uv renames each extracted distribution INTO archive-*, so this fails just as hard.
+_readonly_bucket="$_TMP/uvrobucket"
+mkdir -p "$_readonly_bucket/archive-v0/torch" "$_readonly_bucket/wheels-v6"
+: > "$_readonly_bucket/wheels-v6/index.msgpack"
+: > "$_readonly_bucket/archive-v0/torch/libtorch.so"
+chmod a-w "$_readonly_bucket/archive-v0"
+# And the case that must NOT read as blocked: the artifact is found in the first bucket, and a
+# LATER writable bucket must not be skipped by an early exit that never probed it.
+_readonly_late="$_TMP/uvrolate"
+mkdir -p "$_readonly_late/archive-v0/torch" "$_readonly_late/sdists-v9"
+: > "$_readonly_late/archive-v0/torch/libtorch.so"
+chmod a-w "$_readonly_late/sdists-v9"
 # uv prints a relative cache-dir from uv.toml verbatim and resolves it against UV_WORKING_DIR,
 # so a same-named decoy beside the installer must not be what gets scanned.
 mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
@@ -151,10 +164,14 @@ if [ "$(id -u)" = "0" ]; then
     echo "  SKIP: unwritable-cache case (root writes through the mode bits)"
 else
     _out=$(_run "$_TMP/f" '' "$_readonly")
-    assert_eq "unwritable default -> studio"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    assert_eq "unwritable root -> studio"     "studio" "$(echo "$_out" | cut -d' ' -f1)"
     assert_eq "and the Studio cache is used"  "$_TMP/f/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+    _out=$(_run "$_TMP/i" '' "$_readonly_bucket")
+    assert_eq "unwritable bucket -> studio"   "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/j" '' "$_readonly_late")
+    assert_eq "a later bucket is probed too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
 fi
-chmod u+w "$_readonly"
+chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9"
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"

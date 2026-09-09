@@ -736,12 +736,24 @@ _configure_uv_cache() {
         _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
     fi
 
+    # Readable is not usable. uv writes CACHEDIR.TAG into the cache root and renames each
+    # extracted distribution into a bucket, and it aborts on either ("Failed to initialize
+    # cache" / "failed to rename file ... Permission denied"), so a cache owned by another
+    # account -- or writable at the root and root-owned one level down, which is what a
+    # `sudo -E` run leaves -- would fail an install that used to work. -w reads the mode
+    # rather than the filesystem, so probe with a real create as the early block does; mktemp
+    # because a predictable name in another account's directory can be a planted symlink.
     _uv_default_populated=false
     _uv_default_writable=true
     _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        _uv_probe=$(mktemp "$_uv_default_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+            || _uv_default_writable=false
+        [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
         # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
         # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+        # One pass, so the bucket list stays single-sourced; no early exit, because a
+        # bucket AFTER the one holding the artifact is one uv may still have to write.
         for _uv_bucket in \
             "$_uv_default_cache"/archive-* \
             "$_uv_default_cache"/builds-* \
@@ -754,31 +766,18 @@ _configure_uv_cache() {
                 _uv_scan_blocked=true
                 continue
             fi
-            _uv_artifact=$(find -L "$_uv_bucket" -type f \
-                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
-                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                -print 2>/dev/null | head -n 1) || _uv_artifact=""
-            if [ -n "$_uv_artifact" ]; then
-                _uv_default_populated=true
-                break
+            _uv_probe=$(mktemp "$_uv_bucket/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+                || _uv_default_writable=false
+            [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
+            if [ "$_uv_default_populated" != true ]; then
+                _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                    ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                    ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                    -print 2>/dev/null | head -n 1) || _uv_artifact=""
+                [ -z "$_uv_artifact" ] || _uv_default_populated=true
             fi
         done
-    fi
-
-    # Readable is not usable: uv writes CACHEDIR.TAG into the cache root and aborts when it
-    # cannot ("Failed to initialize cache ... Permission denied"), so selecting a root-owned
-    # or read-only-mounted cache would fail an install that used to work. -w reads the mode
-    # rather than the filesystem, so probe with a real create as the early block does; mktemp
-    # because a predictable name in another account's directory can be a planted symlink.
-    if [ "$_uv_default_populated" = true ]; then
-        _uv_shared_probe=$(mktemp "$_uv_default_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-            || _uv_shared_probe=""
-        if [ -z "$_uv_shared_probe" ]; then
-            _uv_default_writable=false
-        else
-            rm -f "$_uv_shared_probe" 2>/dev/null || true
-        fi
-        unset _uv_shared_probe
+        unset _uv_probe
     fi
 
     if [ "$_uv_default_populated" = true ] && [ "$_uv_default_writable" = true ]; then
@@ -796,7 +795,9 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            if [ "$_uv_default_writable" = false ]; then
+            # Populated and still in studio mode means the probe refused it; nothing else
+            # reaches here with a warm cache.
+            if [ "$_uv_default_populated" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             elif [ "$_uv_scan_blocked" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
