@@ -47,8 +47,13 @@ TOOL_EXECUTION_MODES = ("auto", "required", "full")
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
 # Where a session's pip installs live, relative to the workdir. Both backends
-# point PIP_TARGET at it and tools.py keeps it on the path of a launch that
-# fell back, so a package survives a call that could not be isolated.
+# point PIP_TARGET at it and put it on PYTHONPATH, so a package installed by one
+# isolated call is importable by the next one.
+#
+# tools.py puts it back on the path of an UNISOLATED launch as well, through
+# _with_session_packages, so a session that installed a package while it could
+# isolate keeps it if a later call falls back. Only when the directory already
+# exists, which is what keeps a host that never isolates byte-identical to main.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 # What a launch keeps when the OS boundary is NOT in force. This is exactly the
@@ -96,6 +101,18 @@ class WorkdirUnsafeError(SandboxUnavailableError):
     error that must never be answered by running unisolated, and deciding that
     from a second probe's verdict means a transient probe failure re-opens the
     very channel the scan just found.
+    """
+
+
+class SandboxBuildError(SandboxUnavailableError):
+    """The backend is here and the probe passed, but this launch could not be built.
+
+    A sibling of WorkdirUnsafeError and refused for the same reason: the fallback
+    belongs to a host that cannot isolate at all, and this host can. The errno is
+    reachable from inside the jail, which is what makes the distinction matter --
+    a tool call that fills the disk makes the next call's seccomp temporary file
+    fail with ENOSPC, so treating an OS error as "no sandbox here" would let a
+    sandboxed process buy itself an unisolated launch by writing enough data.
     """
 
 
@@ -251,12 +268,30 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     mount UNDER it. Backend-agnostic on purpose: the invariant is the boundary
     both profiles claim, not a bubblewrap detail.
 
-    Nothing it raises on can be created from inside the jail. A socket or a FIFO
-    is not refused: a tool call can make one and one inside the workdir addresses
-    nothing outside it. A device node is, because the kernel refuses mknod of one
-    in a user namespace. Running out of budget is not a refusal either, since a
-    tool call can write 50,000 files; the scan stops, having accounted for what it
-    did reach.
+    Every anomalous entry is refused under one rule, and that includes three
+    things a tool call CAN create in its own workdir: a unix socket, a FIFO, and
+    more entries than the scan budget allows. This is deliberate but it is not
+    free, and the cost is availability, not safety. A refusal fails the call and
+    never de-isolates it, so the worst such an entry achieves is breaking the
+    session it is in. Measured, both of them: a ``multiprocessing.Manager``
+    leaves a socket behind, and every later call in that session is then refused
+    with the path named until the directory is cleared by hand. And an ordinary
+    ML stack accumulated in ``.unsloth-packages`` crosses the entry budget --
+    a real site-packages tree is refused in 0.93s, well inside
+    ``WORKDIR_SCAN_SECONDS``, so it is the entry count that ends the session and
+    not the clock. Torch alone is about 13,600 entries, so one install does not
+    do it; a few do.
+
+    That second one is worth weighing, because ``PIP_TARGET`` points into that
+    directory: the sandbox's own mechanism for making ``pip install`` work is
+    what eventually refuses the session that used it.
+
+    That trade is worth restating rather than assuming, because it used to read
+    the other way round: sockets, FIFOs and budget exhaustion were all allowed on
+    the grounds that a tool call can make them. The reason they are refused now is
+    that "a tool call can make it" is an argument about who creates the condition,
+    not about what the condition does, and the scan cannot tell a socket the tool
+    call bound from one bound by something on the host.
 
     Raises ``SandboxUnavailableError``, which fails the call.
     """
@@ -577,7 +612,16 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     else:
         from . import sandbox_macos as backend
 
-    prepared = backend.prepare(plan)
+    try:
+        prepared = backend.prepare(plan)
+    except OSError as exc:
+        # A capable host whose planner hit an OS error is not a host that cannot
+        # isolate, and it must not be treated as one. Left raw it would reach
+        # tools.py's general `except Exception`, which answers `auto` by running
+        # with software safeguards; typed, it lands on the branch that refuses.
+        raise SandboxBuildError(
+            f"the sandbox could not be built on this host: {exc}"
+        ) from exc
     prepared.execution_record = _record(
         plan,
         capability,

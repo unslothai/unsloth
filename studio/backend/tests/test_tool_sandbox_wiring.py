@@ -31,6 +31,8 @@ defaulted, and ``disable_sandbox`` keeps exactly the meaning it had.
 from __future__ import annotations
 
 import ast
+import errno
+import importlib
 import inspect
 import os
 import shutil
@@ -782,3 +784,40 @@ def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):
         prepared, "Exit code 1:\nbwrap: setting up uid map: Permission denied\n"
     )
     assert reset == [True]
+
+
+def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
+    """The type above has to cover a build failure too, and this is why.
+
+    The fallback belongs to a host that cannot isolate. A host whose planner hit
+    an OS error can: the backend is still installed and the probe still passes.
+    And that errno is reachable from inside the jail, because filling the disk
+    makes the next call's seccomp temporary file fail with ENOSPC, so letting it
+    reach the general `except Exception` would sell an unisolated launch for the
+    price of writing enough data. Measured in a container before the wrap existed:
+    "the call ran on the host with the boundary silently off".
+    """
+    backend = importlib.import_module(
+        "core.inference.sandbox_linux" if sys.platform == "linux" else "core.inference.sandbox_macos"
+    )
+
+    def full_disk(plan):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    # Through the real prepare_tool_launch, because the wrap that types this lives
+    # in it. Patching the entry point instead would test nothing.
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kwargs: os_sandbox.SandboxCapability(
+            backend = backend.BACKEND_NAME,
+            available = True,
+            reason = "probe passed",
+            profile_id = backend.PROFILE_ID,
+        ),
+    )
+    monkeypatch.setattr(backend, "prepare", full_disk)
+    tools._last_tool_execution_record = None
+    out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
+    assert "SHOULD_NOT_RUN" not in out
+    assert tools._last_tool_execution_record is None

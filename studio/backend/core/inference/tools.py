@@ -7349,13 +7349,15 @@ def _prepare_tool_launch(plan):
             # fallback itself, and it comes through here.
             prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
-    except os_sandbox.WorkdirUnsafeError:
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
         # The session workdir is the one thing a tool call can write to, so this
         # is the refusal that must never become an unisolated launch: answering it
         # by running on the host would hand model-authored code a switch for its
         # own boundary. Told apart by TYPE rather than by asking the probe again,
         # because a transient probe failure would otherwise re-open the very
-        # channel the scan just found.
+        # channel the scan just found. SandboxBuildError rides along: the host can
+        # isolate and the build failed, and the errno for that is reachable from
+        # inside the jail too, so it refuses rather than falling back.
         raise
     except os_sandbox.SandboxUnavailableError:
         # Any other refusal from a backend means it has stopped being available --
