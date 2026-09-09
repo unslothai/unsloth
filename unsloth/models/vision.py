@@ -464,6 +464,34 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     return True
 
 
+def _pin_device_to_decoder(model):
+    # `model.device` is the device of the first parameter, and the embedding we offload is it, so
+    # the documented `inputs.to(model.device)` hands a CUDA model CPU ids. The lookup itself still
+    # works through the hooks above, but `cache_position` is built from `input_ids.device`, so
+    # `position_ids` stays on the CPU while the hidden states are already on CUDA and the rotary
+    # embedding dies on a cpu/cuda matmul. Report the first parameter still on an accelerator
+    # instead, read live so `model.to()` moves are followed and a whole-model move to the CPU
+    # falls back to the original answer.
+    cls = type(model)
+    if not cls.__dict__.get("_unsloth_device_skips_offload", False):
+        original = getattr(cls, "device", None)
+        if not isinstance(original, property):
+            return False
+
+        def _unsloth_device(self):
+            if getattr(self, "_unsloth_embedding_offloaded", False):
+                for param in self.parameters():
+                    if param.device.type != "cpu":
+                        return param.device
+            return original.fget(self)
+
+        cls.device = property(_unsloth_device)
+        cls._unsloth_device_skips_offload = True
+    # A plain bool, so nn.Module.__setattr__ leaves it off the parameter and module registries.
+    model._unsloth_embedding_offloaded = True
+    return True
+
+
 def _embeddings_are_tied(input_embeddings, output_embeddings):
     # A tied lm_head reuses this weight, so offloading to CPU would strand the output projection.
     if input_embeddings is None or output_embeddings is None:
@@ -1709,6 +1737,7 @@ class FastBaseModel:
 
                     # Device-safe embedding offload.
                     _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    _pin_device_to_decoder(model)
                     # GPU memory must be freed explicitly or it will not be freed.
                     clean_gpu_cache()
                     gc.collect()

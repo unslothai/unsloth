@@ -645,8 +645,9 @@ export function AgentsTab() {
     keepUnsupportedTags: false,
     enabled: online,
   });
-  // Seed a remote command from the client platform; the shell picker below can override it for
-  // SSH, WSL or containers. Anchor the match: a bare includes("win") would also match "darwin".
+  // Seed a remote command from the client platform; the page's shell selector can
+  // override it for SSH, WSL, containers, or any other paste destination.
+  // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
     return p.startsWith("win") || p.includes("windows");
@@ -1294,6 +1295,46 @@ export function AgentsTab() {
         {t("settings.agents.intro")}
       </p>
 
+      <fieldset className="flex min-w-0 items-center gap-0.5">
+        <legend className="mb-2 text-xs font-medium text-foreground">
+          {t("settings.agents.commandShell")}
+        </legend>
+        <button
+          type="button"
+          onClick={() => {
+            setCommandOsOverride("unix");
+            setStoredOs("unix");
+            resetCopied();
+          }}
+          aria-pressed={commandOs === "unix"}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            commandOs === "unix"
+              ? "hub-tab-toggle-pill text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("settings.apiKeys.osUnix")}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setCommandOsOverride("windows");
+            setStoredOs("windows");
+            resetCopied();
+          }}
+          aria-pressed={commandOs === "windows"}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            commandOs === "windows"
+              ? "hub-tab-toggle-pill text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("settings.apiKeys.osWindows")}
+        </button>
+      </fieldset>
+
       <section
         aria-label={t("settings.agents.commandBuilder")}
         className="flex w-full flex-col gap-6"
@@ -1571,50 +1612,9 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            <fieldset className="flex min-w-0 items-center gap-0.5">
-              <legend className="sr-only">
-                {t("settings.agents.generatedCommand")}
-              </legend>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("unix");
-                  setStoredOs("unix");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "unix"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "unix"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osUnix")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("windows");
-                  setStoredOs("windows");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "windows"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "windows"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osWindows")}
-              </button>
-            </fieldset>
-          </div>
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>

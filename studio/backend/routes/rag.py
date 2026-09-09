@@ -98,8 +98,12 @@ def _sanitize_filename(name: str) -> str:
     return stem[: 200 - len(ext)] + ext
 
 
-def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str]:
-    """Copy a validated document stream into the managed uploads root."""
+def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str, str]:
+    """Copy a validated document stream into the managed uploads root.
+
+    Returns ``(stored_path, filename, content_hash)``; the digest spares ingestion a
+    second full read of the file.
+    """
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
@@ -110,6 +114,7 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     size = 0
     cap = config.MAX_UPLOAD_BYTES
+    digest = hashlib.sha256()
     try:
         with open(stored_path, "wb") as out:
             while True:
@@ -120,6 +125,7 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
                 if cap and size > cap:
                     break
                 out.write(block)
+                digest.update(block)
     except OSError:
         _remove_stored_upload(stored_path)
         raise
@@ -132,11 +138,11 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     if size == 0:
         _remove_stored_upload(stored_path)
         raise HTTPException(status_code = 400, detail = empty_detail)
-    return stored_path, filename
+    return stored_path, filename, digest.hexdigest()
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist a browser upload; returns (stored_path, filename)."""
+def _save_upload(file: UploadFile) -> tuple[str, str, str]:
+    """Persist a browser upload; returns (stored_path, filename, content_hash)."""
     filename = _sanitize_filename(file.filename or "document")
     return _persist_upload_stream(
         file.file,
@@ -145,9 +151,11 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     )
 
 
-def _save_native_path_upload(lease: str) -> tuple[str, str]:
-    """Persist a desktop drop; returns (stored_path, filename). The webview never gets to name a path directly:
-    Rust signs the path it saw and we re-verify + re-stat that grant here before reading a byte.
+def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
+    """Persist a desktop drop; returns (stored_path, filename, content_hash).
+
+    The webview never gets to name a path directly: Rust signs the path it saw and we
+    re-verify + re-stat that grant here before reading a byte.
     """
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -176,7 +184,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str]:
 
 def _resolve_document_upload(
     file: UploadFile | None, native_path_lease: str | None
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     if native_path_lease:
         return _save_native_path_upload(native_path_lease)
     if file is None:
@@ -460,8 +468,10 @@ def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being d
         raise HTTPException(status_code = 409, detail = detail)
 
 
+# The three upload routes stay sync so FastAPI runs them in the threadpool; their
+# copy + start_ingestion work would stall every other request on the event loop.
 @router.post("/knowledge-bases/{kb_id}/documents")
-async def upload_kb_document(
+def upload_kb_document(
     kb_id: str,
     file: UploadFile | None = File(None),
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
@@ -478,14 +488,21 @@ async def upload_kb_document(
         conn.close()
     scope = store.kb_scope(kb_id)
     _raise_if_scope_retired(scope)
-    stored_path, filename = _resolve_document_upload(file, native_path_lease)
+    stored_path, filename, content_hash = _resolve_document_upload(file, native_path_lease)
     try:
         with folder_sync.scope_lock(scope):
             _require_scope_owner("knowledge_base", kb_id)
             _raise_if_scope_retired(scope)
             with _rag_unavailable_as_503(stored_path):
                 document_id, job_id = ingestion.start_ingestion(
-                    scope, kb_id, None, filename, stored_path, ocr = ocr, caption = caption
+                    scope,
+                    kb_id,
+                    None,
+                    filename,
+                    stored_path,
+                    ocr = ocr,
+                    caption = caption,
+                    content_hash = content_hash,
                 )
     except Exception:
         _remove_stored_upload(stored_path)
@@ -515,8 +532,9 @@ def link_kb_folder(
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/threads/{thread_id}/documents")
-async def upload_thread_document(
+def upload_thread_document(
     thread_id: str,
     file: UploadFile | None = File(None),
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
@@ -525,7 +543,7 @@ async def upload_thread_document(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    stored_path, filename = _resolve_document_upload(file, native_path_lease)
+    stored_path, filename, content_hash = _resolve_document_upload(file, native_path_lease)
     with _rag_unavailable_as_503(stored_path):
         document_id, job_id = ingestion.start_ingestion(
             store.thread_scope(thread_id),
@@ -535,6 +553,7 @@ async def upload_thread_document(
             stored_path,
             ocr = ocr,
             caption = caption,
+            content_hash = content_hash,
         )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -564,8 +583,9 @@ def _discard_document(document_id: str) -> None:
     _remove_stored_upload(document.get("stored_path"))
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/projects/{project_id}/documents")
-async def upload_project_document(
+def upload_project_document(
     project_id: str,
     file: UploadFile | None = File(None),
     native_path_lease: str | None = Form(None, alias = "nativePathLease"),
@@ -580,7 +600,7 @@ async def upload_project_document(
         raise HTTPException(status_code = 404, detail = "Project not found")
     scope = store.project_scope(project_id)
     _raise_if_scope_retired(scope, "Project is being deleted")
-    stored_path, filename = _resolve_document_upload(file, native_path_lease)
+    stored_path, filename, content_hash = _resolve_document_upload(file, native_path_lease)
     try:
         with folder_sync.scope_lock(scope):
             _require_scope_owner("project", project_id)
@@ -595,6 +615,7 @@ async def upload_project_document(
                     project_id = project_id,
                     ocr = ocr,
                     caption = caption,
+                    content_hash = content_hash,
                 )
     except Exception:
         _remove_stored_upload(stored_path)
