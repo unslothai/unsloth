@@ -21,8 +21,14 @@ that had to mknod would need root, which is the one account this bug cannot reac
 
 from __future__ import annotations
 
+import builtins
+import getpass
+import grp
+import inspect
 import io
+import json
 import os
+import pwd
 import re
 import shlex
 import subprocess
@@ -65,8 +71,6 @@ def _the_account_this_process_runs_as(monkeypatch):
     A stubbed passwd answer rather than the runner's own, which differs per machine. The
     environment fallback, for a uid with no passwd entry, has its own test.
     """
-    import pwd
-
     # A real struct_passwd, not a SimpleNamespace: getpass.getuser() falls through to
     # pwd.getpwuid(os.getuid())[0] when none of LOGNAME/USER/LNAME/USERNAME is set, and
     # pytest calls it while building tmp_path. A non-subscriptable stub raises TypeError
@@ -172,16 +176,12 @@ def test_an_nvidia_hosts_closed_render_nodes_are_not_reported(monkeypatch, linux
 def test_the_vendor_is_read_from_sysfs(monkeypatch):
     """The reader itself, since the test above stubs it. sysfs is world-readable, so
     ownership is answerable without the access being tested for."""
-    import builtins
-
     real_open = builtins.open
 
     def _fake(path, *a, **k):
         if str(path) == "/sys/class/drm/renderD128/device/vendor":
-            import io
             return io.StringIO("0x1002\n")
         if str(path) == "/sys/class/drm/renderD129/device/vendor":
-            import io
             return io.StringIO("0x10de\n")
         return real_open(path, *a, **k)
 
@@ -209,8 +209,6 @@ def test_the_hint_names_the_nodes_the_groups_and_the_account(monkeypatch, linux)
 
 def _no_passwd_entry(monkeypatch):
     """A uid the passwd database does not know, which is where the environment is read."""
-    import pwd
-
     def _missing(_uid):
         raise KeyError(_uid)
 
@@ -553,21 +551,14 @@ def _kernel_stack_hint_runs(
     condition is taken, and its two probes are stubbed true so the answer depends on
     nothing but the closed-node reasoning.
     """
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     # Anchored on the part of the condition this change does NOT touch, then walked
     # back over the continuations to the "if". Anchoring on the new closed-node text
     # instead would make the control vacuous: reverting the guard would stop the
     # extraction finding anything, and "the text changed" would read as "the
     # behaviour changed".
-    end = next(
-        i
-        for i, line in enumerate(lines)
-        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
-    )
-    start = end
-    while not lines[start].lstrip().startswith("if "):
-        start -= 1
+    end = _install_sh_anchor(lines, _PCI_SENTENCE)
+    start = _install_sh_if_above(lines, end)
     guard = "\n".join(line.strip() for line in lines[start : end + 1])
     script = "\n".join(
         [
@@ -580,21 +571,7 @@ def _kernel_stack_hint_runs(
             "OS=linux",
             # The run-scope predicate the guard now asks in place of a bare SKIP_TORCH
             # test. Lifted, not stubbed, so this arm goes through the installer's own rule.
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            # _torch_opens_amd_nodes classifies a ROCm index through this,
-            # so lifting one without the other measures a missing function.
-            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
-            _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
-            # live one would answer from the runner's own hardware. False by default, so
-            # every arm below reads as the AMD-only host it was written for.
-            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
-            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
-            _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it interpolates into a pasted command through
-            # this. Lifted rather than stubbed: without it the substitutions come back
-            # EMPTY and the arms below read as commands that name nobody.
-            _shell_fn(lines, "_shell_quote"),
+            *_run_scope_defs(lines, nvidia = nvidia),
             # The route gate. True by default for the same reason the two probes are
             # stubbed: this harness asks about the closed-node reasoning, and the route
             # has its own tests below.
@@ -833,8 +810,6 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
     and a two-argument lambda takes the whole session down with it rather than failing
     the test that installed it.
     """
-    import grp as _grp
-
     def _stat(path, *, follow_symlinks = True):
         if str(path) not in modes:
             raise OSError("gone")
@@ -857,7 +832,7 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
         return type("gr", (), {"gr_name": names[gid]})()
 
     monkeypatch.setattr(amd.os, "stat", _stat)
-    monkeypatch.setattr(_grp, "getgrgid", _getgrgid)
+    monkeypatch.setattr(grp, "getgrgid", _getgrgid)
 
 
 def test_the_group_derivation_reads_the_node(monkeypatch):
@@ -927,18 +902,42 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     )
 
 
-def _install_sh_if(lines: "list[str]", tail: str) -> int:
-    """The index of the `if` opening the block whose condition ENDS with ``tail``.
+# The sentence the kernel-stack branch prints. The harnesses that lift that branch anchor
+# on it rather than on either condition, because neither condition is stable enough: the
+# mapping one is what an earlier change edited, and a revert that stopped the extraction
+# finding anything would read "the text changed" as "the behaviour changed". The predicate
+# _amd_gpu_present_via_pci is named twice in this installer, so it is not an anchor either.
+_PCI_SENTENCE = "An AMD GPU is on the PCI bus but ROCm cannot see it"
 
-    Anchored on the condition and walked back, as _install_sh_missing_kfd already does:
-    a multi-line condition puts the `if` and its last test on different lines, so requiring
+
+def _install_sh_lines() -> "list[str]":
+    """install.sh, split into lines. Every harness below lifts what it needs out of this."""
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    return install_sh.read_text(encoding = "utf-8").splitlines()
+
+
+def _install_sh_if_above(lines: "list[str]", i: int) -> int:
+    """Walk back from a line inside a condition to the `if` opening its block.
+
+    A multi-line condition puts the `if` and its last test on different lines, so requiring
     both on one line stopped finding anything the moment a gate was added -- and a harness
     that finds nothing raises here rather than silently testing a shorter script.
     """
-    i = next(j for j, line in enumerate(lines) if line.rstrip().endswith(tail))
     while not lines[i].lstrip().startswith("if "):
         i -= 1
     return i
+
+
+def _install_sh_anchor(lines: "list[str]", text: str) -> int:
+    """The index of the line containing ``text``."""
+    return next(i for i, line in enumerate(lines) if text in line)
+
+
+def _install_sh_if(lines: "list[str]", tail: str) -> int:
+    """The index of the `if` opening the block whose condition ENDS with ``tail``."""
+    return _install_sh_if_above(
+        lines, next(j for j, line in enumerate(lines) if line.rstrip().endswith(tail))
+    )
 
 
 def _shell_fn(lines: "list[str]", name: str) -> str:
@@ -958,6 +957,35 @@ def _shell_fn(lines: "list[str]", name: str) -> str:
         if depth == 0:
             return "\n".join(lines[start : end + 1])
     raise AssertionError(f"unterminated {name}() in install.sh")
+
+
+def _run_scope_defs(lines: "list[str]", *, nvidia: bool = False) -> "list[str]":
+    """The run-scope predicates the install.sh harnesses below share.
+
+    Lifted rather than restated so every arm goes through the installer's own rule.
+    _is_pip_rocm_family_leaf comes with _torch_opens_amd_nodes, which classifies a ROCm
+    index through it, and _shell_quote with anything that pastes a command: without it
+    every interpolated name comes back EMPTY and the arm reads as a command naming nobody.
+    _has_usable_nvidia_gpu is the exception, stubbed because the real one runs nvidia-smi
+    and would answer from the runner's own hardware -- false by default, so each arm reads
+    as the AMD-only host it was written for.
+    """
+    return [
+        _shell_fn(lines, "_torch_index_url_leaf"),
+        _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+        _shell_fn(lines, "_torch_opens_amd_nodes"),
+        f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
+        _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
+        _shell_fn(lines, "_run_may_open_kfd"),
+        _shell_fn(lines, "_shell_quote"),
+    ]
+
+
+def _install_sh_run(script: str, *, env: "dict | None" = None) -> str:
+    """Run a lifted script under bash and return its stdout, failing with its own stderr."""
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
 
 
 def _install_sh_env(
@@ -1005,22 +1033,12 @@ def _install_sh_hint(
     the script would put a literal backslash-n inside shell quotes and turn two nodes into
     one unmatched line.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    text = install_sh.read_text(encoding = "utf-8")
-    lines = text.splitlines()
+    lines = _install_sh_lines()
     start = _install_sh_if(lines, '[ -n "$_closed_amd_nodes" ]; then')
     end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
     block = "\n".join(lines[start : end + 1])
 
-    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_repairs() {"))
-    depth = 0
-    for fn_end in range(fn_start, len(lines)):
-        depth += lines[fn_end].count("{") - lines[fn_end].count("}")
-        if depth == 0:
-            break
-    helper = "\n".join(lines[fn_start : fn_end + 1])
+    helper = _shell_fn(lines, "_amd_node_repairs")
 
     script = "\n".join(
         [
@@ -1102,8 +1120,6 @@ def _a_node_a_membership_would_open(tmp_path, *, mode: int = 0o660):
     an ordinary account may only use one it belongs to, and skips when every one of those
     is privileged, since there is no node it could build that would test anything.
     """
-    import grp
-
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(mode)
@@ -1132,8 +1148,6 @@ def test_the_group_fixture_never_hands_back_a_group_the_rule_refuses(tmp_path, m
     fail -- it makes the arms below assert the wrong sentence, which is how this was
     found. Standing in for the root runner by making the group this account would
     otherwise inherit privileged, so the search has to move off it."""
-    import grp
-
     monkeypatch.setattr(
         amd,
         "_PRIVILEGED_GROUPS",
@@ -1151,8 +1165,6 @@ def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
     The expected group is read with the same stat the installer uses rather than assumed,
     since a test runner's primary group is not knowable in advance -- but asserting it is
     NOT render,video is what makes that comparison mean something."""
-    import subprocess
-
     # 0660, the mode a real render node has: the installer now reads the mode as well as
     # the group, and a default 0644 is a node no membership opens.
     node, _group = _a_node_a_membership_would_open(tmp_path)
@@ -1373,25 +1385,16 @@ def _installer_index_summary(
     WHERE the diagnosis sits relative to the case: a copy of the condition would answer
     the same whichever arm it had been left in.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     start = max(i for i, line in enumerate(lines) if line == 'case "$TORCH_INDEX_URL" in')
     anchor = next(i for i in range(start, len(lines)) if "needs a recent kernel" in lines[i])
     # Through the closed-node block as well, so one run shows which of the two
     # diagnoses this index gets.
     last = next(i for i in range(anchor, len(lines)) if "membership opens it" in lines[i])
     end = next(i for i in range(last, len(lines)) if lines[i] == "fi")
-    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_repairs() {"))
-    depth = 0
-    for fn_end in range(fn_start, len(lines)):
-        depth += lines[fn_end].count("{") - lines[fn_end].count("}")
-        if depth == 0:
-            break
     script = "\n".join(
         [
-            *lines[fn_start : fn_end + 1],
+            _shell_fn(lines, "_amd_node_repairs"),
             'substep() { echo "$1"; }',
             'C_WARN=""',
             "_amd_gpu_radeon=false",
@@ -1401,25 +1404,12 @@ def _installer_index_summary(
             "SKIP_TORCH=false",
             "OS=linux",
             "_amd_render_node_present() { return 0; }",
-            # The route gate classifies the index by its canonical leaf, so both
+            # The route gate classifies the index by its canonical leaf, so the
             # classifiers are lifted rather than stubbed: stubbing them would make the
-            # per-URL cases below assert about the stub instead of about the rule.
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
-            # Defined above the case in install.sh, so the span lifted below calls them
-            # without carrying them; a shell function has to exist before the call.
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
-            # live one would answer from the runner's own hardware. False by default, so
-            # every arm below reads as the AMD-only host it was written for.
-            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
-            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
-            _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it interpolates into a pasted command through
-            # this. Lifted rather than stubbed: without it the substitutions come back
-            # EMPTY and the arms below read as commands that name nobody.
-            _shell_fn(lines, "_shell_quote"),
+            # per-URL cases below assert about the stub instead of about the rule. They
+            # are defined above the case in install.sh, so the span lifted below calls
+            # them without carrying them; a shell function has to exist before the call.
+            *_run_scope_defs(lines, nvidia = nvidia),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
         ]
@@ -1613,10 +1603,7 @@ def _diag_route(
     Lifted from install.sh rather than restated, since the thing under test is which
     patterns the case actually lists.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     esac_at = next(i for i in range(start, len(lines)) if lines[i] == "esac")
     # The --no-torch override and the explicit-backend case below it are part of the same
@@ -1807,8 +1794,6 @@ def test_the_installer_reports_an_acl_rather_than_prescribing_membership(tmp_pat
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o660)
-    import subprocess
-
     try:
         _set = subprocess.run(["setfacl", "-m", "u:nobody:rw", str(node)], capture_output = True)
     except OSError:
@@ -2242,16 +2227,9 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
     branch was wrong. This lifts the guard AND its body, through the closing `fi`, so a
     revert changes the text this returns.
     """
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
-    end = next(
-        i
-        for i, line in enumerate(lines)
-        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
-    )
-    start = end
-    while not lines[start].lstrip().startswith("if "):
-        start -= 1
+    lines = _install_sh_lines()
+    end = _install_sh_anchor(lines, _PCI_SENTENCE)
+    start = _install_sh_if_above(lines, end)
     close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
     block = "\n".join(lines[start : close + 1])
     script = "\n".join(
@@ -2264,21 +2242,7 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
             "OS=linux",
             "C_WARN=",
             "_amd_node_diag_route=true",
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            # _torch_opens_amd_nodes classifies a ROCm index through this,
-            # so lifting one without the other measures a missing function.
-            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
-            _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
-            # live one would answer from the runner's own hardware. False by default, so
-            # every arm below reads as the AMD-only host it was written for.
-            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
-            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
-            _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it interpolates into a pasted command through
-            # this. Lifted rather than stubbed: without it the substitutions come back
-            # EMPTY and the arms below read as commands that name nobody.
-            _shell_fn(lines, "_shell_quote"),
+            *_run_scope_defs(lines, nvidia = nvidia),
             block,
         ]
     )
@@ -2343,21 +2307,14 @@ def _install_sh_missing_kfd(
     """
     if os.path.exists(amd._KFD_NODE):
         pytest.skip("this arm needs a host with no /dev/kfd, and cannot remove a device node")
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     # Anchored on the kernel-stack SENTENCE, then walked back to the `if` above it, since
     # neither branch's condition is stable enough to anchor on: the mapping one is what an
     # earlier change edited, and a revert that stopped the extraction finding anything would
     # read "the text changed" as "the behaviour changed". The predicate _amd_gpu_present_via_pci
     # is named twice in this installer, so it is not an anchor either.
-    end = next(
-        i
-        for i, line in enumerate(lines)
-        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
-    )
-    start = end
-    while not lines[start].lstrip().startswith("if "):
-        start -= 1
+    end = _install_sh_anchor(lines, _PCI_SENTENCE)
+    start = _install_sh_if_above(lines, end)
     close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
     script = "\n".join(
         [
@@ -2366,21 +2323,7 @@ def _install_sh_missing_kfd(
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "OS=linux",
             "_amd_node_diag_route=true",
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            # _torch_opens_amd_nodes classifies a ROCm index through this,
-            # so lifting one without the other measures a missing function.
-            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
-            _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
-            # live one would answer from the runner's own hardware. False by default, so
-            # every arm below reads as the AMD-only host it was written for.
-            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
-            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
-            _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it interpolates into a pasted command through
-            # this. Lifted rather than stubbed: without it the substitutions come back
-            # EMPTY and the arms below read as commands that name nobody.
-            _shell_fn(lines, "_shell_quote"),
+            *_run_scope_defs(lines, nvidia = nvidia),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
             # Stubbed when the arm is about something else and only needs a verdict; run
             # for real over stubbed command lookups when the arm IS about which probe the
@@ -2656,10 +2599,7 @@ def _install_sh_classify(stat_line: str, *, self_uid: str = "4242") -> str:
     GID this host does not name, and a root-owned one needs root. The record is exactly what
     `stat -c '%a|%G|%g|%n|%u'` prints, so the input under test is the shipped format.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     script = "\n".join(
         [
             f"stat() {{ printf '%s\\n' {shlex.quote(stat_line)}; }}",
@@ -2669,9 +2609,7 @@ def _install_sh_classify(stat_line: str, *, self_uid: str = "4242") -> str:
             "_amd_node_repairs /dev/kfd",
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+    return _install_sh_run(script).strip()
 
 
 def _install_sh_diag_route(leaf: str) -> str:
@@ -2681,10 +2619,7 @@ def _install_sh_diag_route(leaf: str) -> str:
     are the shipped ones; only the leaf it reads is supplied, through a stubbed extractor,
     because the URL-to-leaf step has its own tests.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
     script = "\n".join(
@@ -2696,9 +2631,7 @@ def _install_sh_diag_route(leaf: str) -> str:
             'printf "%s" "$_amd_node_diag_route"',
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+    return _install_sh_run(script).strip()
 
 
 def _install_sh_kfd_scope(
@@ -2715,10 +2648,7 @@ def _install_sh_kfd_scope(
     harness extracts -- deliberately, so the diagnosis itself stays one self-contained
     block -- and the thing under test here is which nodes reach it.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     _filter_start = next(
         i for i, line in enumerate(lines) if line == "if ! _run_may_open_kfd; then"
     )
@@ -2735,21 +2665,7 @@ def _install_sh_kfd_scope(
             "OS=linux",
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
-            _shell_fn(lines, "_torch_index_url_leaf"),
-            # _torch_opens_amd_nodes classifies a ROCm index through this,
-            # so lifting one without the other measures a missing function.
-            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
-            _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed like _amd_render_node_present: the real one runs nvidia-smi, so a
-            # live one would answer from the runner's own hardware. False by default, so
-            # every arm below reads as the AMD-only host it was written for.
-            f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
-            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
-            _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it interpolates into a pasted command through
-            # this. Lifted rather than stubbed: without it the substitutions come back
-            # EMPTY and the arms below read as commands that name nobody.
-            _shell_fn(lines, "_shell_quote"),
+            *_run_scope_defs(lines, nvidia = nvidia),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "\n".join(lines[_filter_start : _filter_end + 1]),
             "\n".join(lines[block_start : end + 1]),
@@ -3192,8 +3108,6 @@ def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
     """The shell twin, checked the same way and then actually parsed: `bash -n` on the two
     emitted lines is the assertion that a placeholder would fail. Without the parse this
     would only be testing that a string changed."""
-    import subprocess
-
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
     _cmds = [
         _line.strip()
@@ -3214,10 +3128,7 @@ def test_a_render_node_the_installer_cannot_read_the_vendor_of_is_not_absent(tmp
 
     Only the two path ROOTS are substituted, so the logic under test is the shipped one.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     fn = _shell_fn(lines, "_amd_render_node_present")
     fn = fn.replace("/dev/dri/renderD*", f"{tmp_path}/dev/dri/renderD*")
     fn = fn.replace("/sys/class/drm/", f"{tmp_path}/sys/class/drm/")
@@ -3243,10 +3154,7 @@ def test_a_render_node_the_installer_reads_as_another_vendor_is_still_absent(tmp
     """The control, and the reason the rule is "unknown", not "any node": a readable vendor
     that is not AMD is a real answer, and treating it as presence would claim an AMD card on
     an NVIDIA-only host."""
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     fn = _shell_fn(lines, "_amd_render_node_present")
     fn = fn.replace("/dev/dri/renderD*", f"{tmp_path}/dev/dri/renderD*")
     fn = fn.replace("/sys/class/drm/", f"{tmp_path}/sys/class/drm/")
@@ -3477,8 +3385,6 @@ def test_the_passwd_stub_answers_a_positional_read(monkeypatch):
     carries pw_name raises TypeError there, which pytest does not catch, so the whole suite
     would die in fixture setup on a runner with no username in its environment rather than
     run. Reproduced by clearing all four, which is the only thing that makes it reachable."""
-    import getpass
-
     for _var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
         monkeypatch.delenv(_var, raising = False)
     assert getpass.getuser() == "ada"
@@ -3868,8 +3774,6 @@ def _icd_manifest(
     Written rather than named, because the rule under test is that a manifest has to point
     at a library that is actually there: a path string alone proves nothing.
     """
-    import json
-
     lib = tmp_path / library
     if present:
         lib.write_bytes(b"")
@@ -4274,10 +4178,7 @@ def test_the_same_rejected_value_on_an_amd_only_host_still_reports(tmp_path):
 
 def _nvidia_probe_calls(backend = None):
     """How many times the two scope predicates run the NVIDIA probe for one install."""
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     script = "\n".join(
         [
             "SKIP_TORCH=true",
@@ -4792,8 +4693,6 @@ def _bare_soname_manifest(
     writes an absolute path so it can put the library on disk, which is exactly the case
     this is not.
     """
-    import json
-
     path = tmp_path / name
     path.write_text(
         json.dumps(
@@ -4887,8 +4786,6 @@ def test_the_mask_fixture_isolates_every_selector_the_rule_reads():
 
     Read out of the rule's own source rather than restated, so adding a fifth selector
     fails here instead of drifting."""
-    import inspect
-
     _source = inspect.getsource(amd._a_per_gpu_mask_narrows_the_runtime)
     _read = set(re.findall(r'"([A-Z_]+(?:VISIBLE_DEVICES|DEVICE_ORDINAL))"', _source))
     assert _read, "the rule named no selector, so this test proves nothing"
@@ -4936,10 +4833,7 @@ def _install_sh_closed_nodes(nodes, *, vendors, topology: bool) -> "list[str]":
     are stubbed and the node files themselves are real: the mode tests are the rule under
     test and must run against actual permissions.
     """
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     _vendor_cases = " ".join(
         f"{shlex.quote(str(_path))}) printf %s {shlex.quote(_vendor)} ;;"
         for _path, _vendor in vendors.items()
@@ -5021,8 +4915,6 @@ def _icd_manifest_with(
     elf = None,
 ):
     """An ICD manifest with a declared architecture, an ELF library, or neither."""
-    import json
-
     icd = {"api_version": "1.3.0"}
     if library is not None:
         lib = tmp_path / library
@@ -5141,10 +5033,7 @@ def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
     """Both halves print the same command, so a value one quotes and the other does not is
     a host where the two disagree about what the user should paste. Run against the real
     shell function rather than a restatement of it."""
-    import subprocess
-
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     helper = _shell_fn(lines, "_shell_quote")
     for value in (
         "ada",
@@ -5193,8 +5082,7 @@ def test_the_rocm_probe_calls_nothing_the_shell_harnesses_do_not_lift():
     That is not hypothetical. Splitting the probe into a wrapper over a private
     _amd_rocm_gpu_visible did exactly this, and the NVIDIA veto now lives inside the
     function so there is nothing to forget. Fails if the split comes back."""
-    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
-    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    lines = _install_sh_lines()
     defined = {line.split("(")[0] for line in lines if re.match(r"^_?[A-Za-z0-9_]+\(\) \{", line)}
     body = _shell_fn(lines, "_has_amd_rocm_gpu").splitlines()[1:]
     called = {
@@ -5239,8 +5127,6 @@ def _multilib_soname(tmp_path, *, bitnesses):
     sorted(glob) puts i386-linux-gnu ahead of x86_64-linux-gnu, so a search that stops at
     the first hit reads the wrong copy on the commonest multilib layout there is.
     """
-    import json
-
     dirs = []
     for _arch, _bits in (("i386-linux-gnu", 32), ("x86_64-linux-gnu", 64)):
         _dir = tmp_path / _arch
@@ -5288,8 +5174,6 @@ def test_a_soname_only_the_wrong_bitness_answers_is_still_32_bit(monkeypatch, tm
 
 def _manifest_missing(tmp_path, name, *, drop):
     """A manifest with one loader-required field removed, and its library on disk."""
-    import json
-
     lib = tmp_path / f"{name}.so"
     lib.write_bytes(b"\x7fELF\x02" + b"\x00" * 11)
     icd = {"library_path": str(lib), "api_version": "1.3.0"}
@@ -5318,8 +5202,6 @@ def test_a_version_the_loader_does_not_recognise_is_still_a_driver(tmp_path):
     """The control, and the line between the two. An unknown file_format_version major is
     the one thing here the loader does NOT skip for: it logs "may cause errors" and carries
     on, so refusing it would drop a driver that loads. Only absence decides."""
-    import json
-
     lib = tmp_path / "libvk.so"
     lib.write_bytes(b"\x7fELF\x02" + b"\x00" * 11)
     path = tmp_path / "future_icd.json"
