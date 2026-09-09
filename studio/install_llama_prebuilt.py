@@ -7852,7 +7852,9 @@ _CR_SUCCESS = 0x00000000
 _CR_BUFFER_SMALL = 0x0000001A
 _DN_HAS_PROBLEM = 0x00000400
 _CM_PROB_NEED_RESTART = 0x0000000E
-_DN_NEED_RESTART = 0x00000100  # cfg.h spells this one DN_LIAR.
+# cfg.h calls it DN_LIAR and lists it under "Device Instance status flags", so it is a bit
+# in pulStatus. CM_PROB_ codes stop at 0x39, so it can never appear in pulProblemNumber.
+_DN_NEED_RESTART = 0x00000100
 _CM_DEVICE_LIST_ATTEMPTS = 4
 
 
@@ -7944,9 +7946,13 @@ def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst:
         != _CR_SUCCESS
     ):
         return False
+    # Read before the problem word and independently of DN_HAS_PROBLEM: this one is a status
+    # bit, and a devnode that reports it without also raising a problem still needs the reboot.
+    if status.value & _DN_NEED_RESTART:
+        return False
     if not status.value & _DN_HAS_PROBLEM:
         return True
-    return problem.value not in (_CM_PROB_NEED_RESTART, _DN_NEED_RESTART)
+    return problem.value != _CM_PROB_NEED_RESTART
 
 
 def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:

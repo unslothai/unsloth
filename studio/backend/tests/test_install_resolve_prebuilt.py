@@ -3545,19 +3545,31 @@ def test_a_multi_sz_registration_keeps_only_the_absolute_entries_that_exist(monk
 # ---------------------------------------------------------------------------
 
 
-_DN_HAS_PROBLEM = 0x00000400  # cfg.h
-_CM_PROB_NEED_RESTART = 0x0000000E
-_DN_NEED_RESTART = 0x00000100  # DN_LIAR
+_DN_HAS_PROBLEM = 0x00000400  # cfg.h status flags
+_DN_NEED_RESTART = 0x00000100  # DN_LIAR, a STATUS bit and not a CM_PROB_ code
+_CM_PROB_NEED_RESTART = 0x0000000E  # cfg.h problem codes, which stop at 0x39
+_CM_PROB_DISABLED = 0x00000016
 
 
-@pytest.mark.parametrize("problem", [_CM_PROB_NEED_RESTART, _DN_NEED_RESTART])
-def test_a_device_pending_reboot_is_not_evidence_of_a_loadable_driver(monkeypatch, problem):
+@pytest.mark.parametrize(
+    "status, problem",
+    [
+        (_DN_HAS_PROBLEM, _CM_PROB_NEED_RESTART),
+        # DN_NEED_RESTART lives in the status word, and a devnode can raise it without
+        # also setting DN_HAS_PROBLEM. Reading it out of pulProblemNumber instead never
+        # matches (no CM_PROB_ code reaches 0x100) and let this device through.
+        (_DN_NEED_RESTART, 0),
+        (_DN_NEED_RESTART | _DN_HAS_PROBLEM, _CM_PROB_DISABLED),
+    ],
+    ids = ["problem-code", "status-bit-alone", "status-bit-with-other-problem"],
+)
+def test_a_device_pending_reboot_is_not_evidence_of_a_loadable_driver(monkeypatch, status, problem):
     # Present with its manifest on disk, yet unloadable until the reboot binds it.
     device = "PCI\\VEN_1002&DEV_1586\\0"
     fake = _FakeCfgMgr(
         {_DISPLAY_GUID: [device]},
         driver_of = {device: _DISPLAY_GUID + "\\0000"},
-        status_of = {device: (_DN_HAS_PROBLEM, problem)},
+        status_of = {device: (status, problem)},
     )
     _with_cfgmgr(monkeypatch, fake)
     assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == set()
@@ -3573,7 +3585,7 @@ def test_an_unrelated_device_problem_does_not_hide_a_working_adapter(monkeypatch
             working: _DISPLAY_GUID + "\\0000",
             disabled: _DISPLAY_GUID + "\\0003",
         },
-        status_of = {disabled: (_DN_HAS_PROBLEM, 0x00000016)},  # CM_PROB_DISABLED
+        status_of = {disabled: (_DN_HAS_PROBLEM, _CM_PROB_DISABLED)},
     )
     _with_cfgmgr(monkeypatch, fake)
     assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == {
