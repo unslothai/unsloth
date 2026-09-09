@@ -3795,8 +3795,7 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
-        # Before the transformer quant, the first mutator, and registered at once: until the state commit a
-        # failure has to restore them itself.
+        # Before the transformer quant, the first mutator; until the state commit a failure restores them itself.
         backend_flags = snapshot_backend_flags()
         self._precommit_globals = (_load_token, backend_flags)
 

@@ -1545,7 +1545,6 @@ def test_fp8_config_disables_torchao_inductor_config_and_keeps_its_kwargs(monkey
     cfg = tq._make_quant_config(TQ_FP8)
     assert isinstance(cfg, _RecordingConfig)
     assert cfg.set_inductor_config is False
-    # The quiet flag must not displace the per-row granularity the fp8 path depends on.
     assert cfg.kw["granularity"] == "per_row"
 
 

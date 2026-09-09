@@ -1018,7 +1018,6 @@ def test_torchao_intmm_installer_patches_the_new_home_when_already_imported(monk
 
 
 def test_torchao_intmm_patch_wired_into_gpu_init():
-    """The patch must be installed at startup, not only importable."""
     source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
     source = source.read_text(encoding = "utf-8")
     assert "fix_torchao_safe_int_mm_repr_probe()" in source, (

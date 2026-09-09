@@ -78,7 +78,6 @@ def _function_dump(path: Path, name: str) -> str:
 
 @pytest.mark.parametrize("name", _SHARED_FUNCTIONS)
 def test_studio_copy_matches_unsloth_import_fixes(name):
-    """Compared as ast dumps with docstrings removed, so wording may differ per home but code may not."""
     if not _IMPORT_FIXES.is_file():
         pytest.skip("unsloth/import_fixes.py is not in this checkout")
     assert _function_dump(_PATCH_MODULE, name) == _function_dump(_IMPORT_FIXES, name), (
@@ -110,8 +109,6 @@ def test_patch_leaves_an_already_patched_module_alone():
 
 
 def test_patch_refuses_an_unrecognised_body():
-    """The copy may only stand in for a body that still matches: no cuBLAS guards, no patch."""
-
     def rewritten_upstream(input, mat2):
         # None of the markers the gate looks for
         return input @ mat2
@@ -153,7 +150,6 @@ def test_finder_answers_for_both_torchao_homes(monkeypatch):
 
 
 def test_real_torchao_int_mm_is_patched_and_bit_identical():
-    """The copy returns exactly what the original returned, over shapes covering both cuBLAS guards."""
     pytest.importorskip("torchao")
     torch = pytest.importorskip("torch")
     import importlib
