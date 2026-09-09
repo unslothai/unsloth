@@ -7913,7 +7913,6 @@ def _mlx_payload_present() -> bool:
     """
     try:
         import importlib.util
-
         return all(
             importlib.util.find_spec(name) is not None
             for name in ("mlx", "mlx_lm", "mlx_vlm", "transformers")
