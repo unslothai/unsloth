@@ -59,21 +59,20 @@ mean no P2P.
 
 ### Partially bridged boxes, and which pairs get checked
 
-The matrix is keyed by nvidia-smi index (PCI enumeration order) while the GPU selection is
-in CUDA index order, and CUDA defaults to `CUDA_DEVICE_ORDER=FASTEST_FIRST`, so the two
-are not interchangeable. Studio joins them on GPU UUID, which torch and nvidia-smi both
-report, and then checks only the pairs actually selected.
+Only the pairs actually selected are checked, so on a 4-way or 8-way box with NVLink
+bridges over pairs (0-1 and 2-3, say) and PCIe between the islands, running on a bridged
+pair keeps P2P while a selection spanning the islands does not.
 
-If that join cannot be completed (no `nvidia-smi`, a partial device list, a torch build
-that does not expose `uuid`) and `CUDA_DEVICE_ORDER` is not `PCI_BUS_ID`, Studio does not
-guess. It requires **every** pair on the box to be `NV#`, so that the answer is the same
-whichever permutation is real. On a 4-way or 8-way box with NVLink bridges over pairs
-(0-1 and 2-3, say) and PCIe between the islands, that is stricter than necessary: a
-genuinely bridged pair loses P2P because an unrelated cross-island pair is `SYS`. Setting
-`CUDA_DEVICE_ORDER=PCI_BUS_ID` restores the per-pair check.
+Both index spaces here come from nvidia-smi: the GPU selection is sourced from
+`nvidia-smi --query-gpu=index` and the matrix from `nvidia-smi topo -m`, one enumeration,
+so the selection indexes the matrix directly. Do not "translate" it into CUDA ordinals.
+CUDA enumerates in `FASTEST_FIRST` order by default, so under a permutation that remapping
+would turn a PCIe-crossing selection into an NVLinked-looking one and enable the flag this
+gate exists to withhold.
 
-This is why reading `NV12` for your own pair in `topo -m` is not on its own a guarantee
-that Studio will enable P2P. The log line names the pair that vetoed it.
+When no explicit selection is given, every pair on the visible box must be `NV#`.
+
+The log line names the pair that vetoed it.
 
 ## Checking a host
 

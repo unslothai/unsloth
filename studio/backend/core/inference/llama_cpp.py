@@ -9178,70 +9178,6 @@ class LlamaCppBackend:
             cls._NVLINK_TOPO_CACHE = (cls._probe_nvlink_topology(),)
         return cls._NVLINK_TOPO_CACHE[0]
 
-    # Physical-id -> nvidia-smi-index join, same 1-tuple convention as above.
-    _SMI_INDEX_CACHE = None
-
-    @classmethod
-    def _physical_to_smi_index(cls, refresh = False) -> Optional[dict]:
-        """Map CUDA physical id -> nvidia-smi index by joining on GPU UUID, or None
-        when the join cannot be completed.
-
-        The matrix is keyed by nvidia-smi index (PCI order) while gpu_indices are
-        CUDA physical ids (FASTEST_FIRST by default), and the two coincide only
-        under CUDA_DEVICE_ORDER=PCI_BUS_ID. That variable is only a proxy; the UUID
-        IS the mapping, so the join is exact under any ordering, which lets a
-        partially bridged box keep P2P for a genuinely NVLinked pair instead of
-        being vetoed by an unrelated pair elsewhere in the matrix."""
-        if not refresh and cls._SMI_INDEX_CACHE is not None:
-            return cls._SMI_INDEX_CACHE[0]
-        result = None
-        try:
-            import torch
-
-            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                raise RuntimeError("no CUDA")
-            physical_ids = cls._resolve_visible_physical_ids()
-            uuid_to_physical: dict[str, int] = {}
-            for ordinal in range(torch.cuda.device_count()):
-                raw = getattr(torch.cuda.get_device_properties(ordinal), "uuid", None)
-                if raw is None:
-                    raise RuntimeError("torch exposes no device uuid")
-                pid = (
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-                uuid_to_physical[str(raw).strip().lower().removeprefix("gpu-")] = pid
-
-            probe = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            if probe.returncode != 0:
-                raise RuntimeError("nvidia-smi uuid query failed")
-            mapping: dict[int, int] = {}
-            for line in probe.stdout.splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 2:
-                    continue
-                pid = uuid_to_physical.get(parts[1].lower().removeprefix("gpu-"))
-                if pid is not None:
-                    mapping[pid] = int(parts[0])
-            # Partial joins are refused: a missing device would silently narrow the
-            # pairs checked, which is the failure mode this exists to prevent.
-            result = mapping if len(mapping) == len(uuid_to_physical) else None
-        except Exception as e:
-            logger.debug(f"GPU uuid join failed: {e}")
-            result = None
-        cls._SMI_INDEX_CACHE = (result,)
-        return result
-
     @staticmethod
     def _running_virtualized() -> bool:
         """True when this kernel runs under a hypervisor. CUDA supports peer copies
@@ -9379,30 +9315,17 @@ class LlamaCppBackend:
 
         gpu_ids = sorted({i for pair in matrix for i in pair})
 
-        # Physical id -> nvidia-smi index, best evidence first: a UUID join is exact
-        # under any ordering; PCI_BUS_ID makes the two spaces identical by
-        # construction; otherwise the mapping is unknown.
-        join = cls._physical_to_smi_index()
-        exact = join is not None or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
-        if exact:
-            if gpu_indices is not None:
-                physical = sorted(set(gpu_indices))
-            else:
-                visible = cls._resolve_visible_physical_ids()
-                physical = sorted(set(visible)) if visible is not None else None
-            if physical is None:
-                selected = list(gpu_ids)
-            elif join is not None:
-                translated = [join[p] for p in physical if p in join]
-                # A partly translated selection would check the wrong pairs, so
-                # fall back to demanding the whole box qualify.
-                selected = translated if len(translated) == len(physical) else list(gpu_ids)
-            else:
-                selected = physical
-        else:
-            # Mapping unknown: every pair on the box must be NVLinked, so that
-            # whichever pair is really selected, the answer is the same.
-            selected = list(gpu_ids)
+        # gpu_indices are ALREADY nvidia-smi indices, so they index the matrix
+        # directly and any remapping here is wrong. _get_gpu_memory sources them
+        # from `nvidia-smi --query-gpu=index`, the same tool and enumeration as
+        # `topo -m`. Translating them as if they were CUDA ordinals would, on a
+        # partially bridged host under the default FASTEST_FIRST ordering, turn a
+        # PCIe-crossing selection into an NVLinked-looking one and enable the very
+        # flag this gate exists to withhold. The invariant holds wherever this
+        # runs: a usable matrix means nvidia-smi answered, so the selection came
+        # from its branch too. With no selection, check the whole visible box
+        # rather than guessing which pair is meant.
+        selected = sorted(set(gpu_indices)) if gpu_indices is not None else list(gpu_ids)
 
         if len(selected) < 2:
             return "fewer than two GPUs resolved in the interconnect matrix"
@@ -9415,16 +9338,7 @@ class LlamaCppBackend:
                 if label is None:
                     return f"GPU {a} and GPU {b} are absent from the interconnect matrix"
                 if not cls._TOPO_NVLINK_RE.match(label):
-                    reason = f"GPU {a} to GPU {b} is {label}, not NVLink"
-                    if not exact:
-                        # Without a shared index space the whole box must qualify,
-                        # so this pair may not even be in the selection.
-                        reason += (
-                            " (every pair is checked because CUDA_DEVICE_ORDER is not "
-                            "PCI_BUS_ID, so CUDA and nvidia-smi may not agree on which "
-                            "GPU is which; set it to check only the selected pair)"
-                        )
-                    return _pcie(reason)
+                    return _pcie(f"GPU {a} to GPU {b} is {label}, not NVLink")
         return None
 
     @staticmethod
@@ -24175,21 +24089,28 @@ class LlamaCppBackend:
                 # A multi-GPU box that is NOT a datacenter part never reaches the
                 # block below, so warn here or not at all: the 2x RTX 3090 case,
                 # whose own truthy GGML_CUDA_P2P rides through to the child.
+                # Only when the fabric is NOT confirmed: on a verified NV# pair the
+                # flag is the benchmarked configuration, and warning there would
+                # push users off a working optimisation.
                 if (
                     env.get("GGML_CUDA_P2P")
                     and self._effective_gpu_count(gpu_indices) > 1
                     and not LlamaCppBackend._warned_no_nvlink
                 ):
-                    LlamaCppBackend._warned_no_nvlink = True
-                    logger.warning(
-                        "GGML_CUDA_P2P=%s is set in the environment on a multi-GPU "
-                        "host. Peer copies over PCIe can be discarded silently while "
-                        "CUDA still reports success, which surfaces as garbled output "
-                        "rather than an error. Verify with scripts/p2p_integrity_probe.py "
-                        "and unset the variable entirely (not =0, which reads as ON "
-                        "upstream) if it fails (#10613).",
-                        env["GGML_CUDA_P2P"],
-                    )
+                    _p2p_veto = self._p2p_veto_reason(gpu_indices)
+                    if _p2p_veto is not None:
+                        LlamaCppBackend._warned_no_nvlink = True
+                        logger.warning(
+                            "GGML_CUDA_P2P=%s is set in the environment but this "
+                            "selection has no confirmed NVLink fabric: %s. Peer copies "
+                            "over PCIe can be discarded silently while CUDA still "
+                            "reports success, which surfaces as garbled output rather "
+                            "than an error. Verify with scripts/p2p_integrity_probe.py "
+                            "and unset the variable entirely (not =0, which reads as ON "
+                            "upstream) if it fails (#10613).",
+                            env["GGML_CUDA_P2P"],
+                            _p2p_veto,
+                        )
 
                 # DC NVIDIA GPUs: FP32 accum and launch queues, plus P2P once a
                 # multi-GPU selection has a CONFIRMED NVLink fabric (#10613). Opt
