@@ -902,6 +902,24 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
+    /** The reply as it stands: cards restored, search sources trailing it where the live path
+     *  yields them. Both the save and the finalisation read it, so a settled turn cannot report
+     *  no tool calls while showing cards. */
+    const rebuild = () =>
+      toolRecovery.withSources(
+        restoreCarriedPartsFromRaw(
+          reasoningOpen ? `${raw}</think>` : raw,
+          carried,
+        ),
+      ) as MessageRecord["content"];
+    const toolNames = (content: MessageRecord["content"]): string[] =>
+      (Array.isArray(content) ? content : []).flatMap((part) => {
+        const card = part as { type?: string; toolName?: unknown };
+        return card.type === "tool-call" && typeof card.toolName === "string"
+          ? [card.toolName]
+          : [];
+      });
+
     /** Write one state of the reply to storage and to every view showing it. `running` is the
      *  caller's, not derived here: a follow that hit its no-progress deadline settles the message
      *  while its persisted run status is still non-terminal. */
@@ -910,14 +928,7 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      // Restore cards before persisting the rebuilt reply. Search sources trail the reply, which
-      // is where the live path yields them.
-      const content = toolRecovery.withSources(
-        restoreCarriedPartsFromRaw(
-          reasoningOpen ? `${raw}</think>` : raw,
-          carried,
-        ),
-      ) as MessageRecord["content"];
+      const content = rebuild();
       await saveStoredChatMessage({
         id: storedMessage.id,
         threadId,
@@ -997,6 +1008,7 @@ function scheduleGenerationRecovery(
           timings: recoveryTimings,
           firstChunkAt,
           totalChunks,
+          toolCalls: toolNames(rebuild()),
         });
       }
       await commit(nextMetadata, generationNeedsRecovery(nextMetadata));

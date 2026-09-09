@@ -142,6 +142,9 @@ export function recoveredGenerationFinalMetadata(options: {
   timings?: RecoveryTimings;
   firstChunkAt?: number;
   totalChunks: number;
+  /** Tool names on the rebuilt reply. A recovered turn shows its cards, so the response details
+   *  must not report none; the adapter's own metadata is not persisted on these saves. */
+  toolCalls?: string[];
 }): Record<string, unknown> {
   const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
   const modelId =
@@ -201,7 +204,7 @@ export function recoveredGenerationFinalMetadata(options: {
       finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
       cancelId: run.id,
-      toolCalls: [],
+      toolCalls: options.toolCalls ?? [],
     };
   }
   if (next.timing === undefined) {
@@ -213,7 +216,7 @@ export function recoveredGenerationFinalMetadata(options: {
       tokenCount: completionTokens,
       tokensPerSecond,
       totalChunks,
-      toolCallCount: 0,
+      toolCallCount: options.toolCalls?.length ?? 0,
     };
   }
   return next;
@@ -368,7 +371,15 @@ function followingCarriedMatches(matches: (number | undefined)[]) {
 }
 
 function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
-  const byId = new Map(recovered.map((entry, i) => [carriedPartKey(entry), i]));
+  // Every occurrence, not the last: the adapter does not deduplicate sources, so one url can
+  // appear twice and a single index would leave the second occurrence looking absent forever.
+  const byId = new Map<string, number[]>();
+  recovered.forEach((entry, i) => {
+    const key = carriedPartKey(entry);
+    const seen = byId.get(key);
+    if (seen) seen.push(i);
+    else byId.set(key, [i]);
+  });
   const byGeneration = new Map<string, number>();
   recovered.forEach(({ part }, i) => {
     const id = (part as ToolIdentity).generationToolCallId;
@@ -378,7 +389,7 @@ function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
   const matches = view.map((entry) => {
     const id = (entry.part as ToolIdentity).generationToolCallId;
     const index =
-      byId.get(carriedPartKey(entry)) ??
+      byId.get(carriedPartKey(entry))?.shift() ??
       (id ? byGeneration.get(id) : undefined);
     if (index === undefined || used.has(index)) return undefined;
     used.add(index);

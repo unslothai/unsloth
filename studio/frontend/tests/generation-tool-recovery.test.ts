@@ -421,6 +421,7 @@ async function recoverRun(
     shown: shown.messages[0].message.content,
     imports,
     replayFrom,
+    snapshots,
   };
 }
 
@@ -1052,4 +1053,40 @@ test("a saved completed card still yields to a new round on its id", async () =>
       .map((part) => part.result),
     ["first", "second"],
   );
+});
+
+test("a settled recovery reports the tool calls it restored", async () => {
+  const { content, snapshots } = await recoverRun(
+    [],
+    [
+      { type: "tool_start", tool_call_id: "call_0", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "call_0", result: "ok" },
+    ],
+  );
+  assert.equal(content.filter((part) => part.type === "tool-call").length, 1);
+  const final = snapshots.at(-1);
+  const details = final?.metadata.responseDetails as { toolCalls: string[] };
+  const timing = final?.metadata.timing as { toolCallCount: number };
+  assert.deepEqual(details.toolCalls, ["edit_file"]);
+  assert.equal(timing.toolCallCount, 1);
+});
+
+test("repeated source ids pair one to one instead of multiplying", () => {
+  const url = "https://docs.unsloth.ai/";
+  const source = () => ({ type: "source", sourceType: "url", id: url, url });
+  const view = [{ type: "text", text: "answer" }, source(), source()];
+  const recovered = [{ type: "text", text: "answer" }, source(), source()];
+  let carriedView = view;
+  // Every publish re-imports; a duplicate that reads as missing would grow each round.
+  for (let round = 0; round < 3; round++) {
+    carriedView = recovery.recoveredContentToImport(
+      carriedView,
+      recovered,
+    ) as typeof view;
+    assert.equal(
+      carriedView.filter((part) => part.type === "source").length,
+      2,
+      `round ${round}`,
+    );
+  }
 });
