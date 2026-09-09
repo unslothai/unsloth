@@ -3386,21 +3386,39 @@ def apply_chat_template_for_generation(
 _BLOCKED_IMAGE_WINERRORS = frozenset({225, 577, 1260})
 
 
-def _looks_like_a_blocked_import(exc: BaseException | None) -> bool:
-    """Whether an exception is a native module that would not load.
+"""Loader wording, for the case where the winerror did not survive the re-raise.
 
-    The winerror is checked first because it is unambiguous; the text match is the
-    fallback for a wrapper that re-raises without one, which is what a tokenizer class
-    raising ImportError from its own backend guard looks like. The chain is walked
-    because transformers wraps the original.
+Deliberately not the package name. "sentencepiece" appears in the ordinary message
+transformers emits when the package is simply not installed, and calling that a
+security block would tell an operator to go looking through their antivirus for a
+file that was never there. Only a refusal to load an image counts.
+"""
+_BLOCKED_IMAGE_PHRASES = (
+    "dll load failed",
+    "is not a valid win32 application",
+    "cannot verify the digital signature",
+    "blocked by",
+    "violated code integrity",
+)
+
+
+def _looks_like_a_blocked_import(exc: Optional[BaseException]) -> bool:
+    """Whether an exception is a native module the loader refused.
+
+    Optional[...] rather than the PEP 604 spelling: this module has no
+    ``from __future__ import annotations`` and the project floor is 3.9, where the
+    union is evaluated at definition time and would stop the module importing.
+
+    The winerror is checked first because it is unambiguous. The wording match is the
+    fallback for a wrapper that re-raised without one. The chain is walked because
+    transformers raises its own error from the original.
     """
     while exc is not None:
         if getattr(exc, "winerror", None) in _BLOCKED_IMAGE_WINERRORS:
             return True
-        if isinstance(exc, ImportError):
-            text = str(exc).lower()
-            if "dll load failed" in text or "sentencepiece" in text:
-                return True
+        text = str(exc).lower()
+        if any(phrase in text for phrase in _BLOCKED_IMAGE_PHRASES):
+            return True
         exc = exc.__cause__ or exc.__context__
     return False
 

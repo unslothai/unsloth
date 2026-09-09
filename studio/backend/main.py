@@ -240,14 +240,17 @@ if sys.platform == "win32":
     # transformers decides the package is available from find_spec and metadata alone,
     # so is_sentencepiece_available() answers True while every import of it raises. The
     # quiet consequence is a model generating under a substituted chat template, since
-    # get_native_chat_template catches the failure. Corrected here, at the top of the
+    # resolve_native_chat_template catches the failure. Corrected here, at the top of
     # process, so no tokenizer is ever built while the flag still reads True.
     #
     # Windows only, so no other platform pays the probe, and a no-op unless the import
-    # really fails. The unsloth package is installed into this venv; the guard living
-    # there rather than here keeps the CLI and the backend on one implementation.
+    # really fails. Deliberately NOT unsloth.import_fixes, which carries the same guard
+    # for pip users: importing it would run unsloth/__init__.py, whose GPU branch pulls
+    # torch, Triton, transformers and the model stack into this long-lived parent and can
+    # open a competing GPU context. The ML work happens in spawned workers and the parent
+    # stays light. utils.sentencepiece_guard imports nothing heavy.
     try:
-        from unsloth.import_fixes import disable_sentencepiece_if_blocked
+        from utils.sentencepiece_guard import disable_sentencepiece_if_blocked
         disable_sentencepiece_if_blocked()
     except Exception:
         pass
