@@ -20,7 +20,12 @@ import { preferFullToolOutput } from "./tool-output-preference";
 // The frame -> part shaping the live stream applies to a tool result, applied HERE too. A replay that copies
 // `event.result` verbatim renders the wire's marker (`__IMAGES__:...`) as content; shaped, a reopened chart card is
 // the same object a watched one was.
-import { shapeToolResult } from "./tool-result-shape";
+import { searchResultText } from "../search-images/search-images";
+import {
+  documentCitationToSource,
+  parseSourcesFromResult,
+  shapeToolResult,
+} from "./tool-result-shape";
 import {
   findStreamedToolCallPartIndex,
   mintStreamedToolCallId,
@@ -147,6 +152,9 @@ export function createRecoveryReplay(
   const slots = parts as unknown as StreamedToolCallPart[];
 
   const liveOutput = new Map<string, string>();
+  // What `document_citations` frames collected. Web sources are NOT stored here: like live they are
+  // DERIVED from the web_search/web_fetch parts at assembly time, so both readers derive them alike.
+  const citationParts: ContentPart[] = [];
   let raw = seeded.raw;
   // The live stream times a thought against `Date.now()` between two chunks. A replay has no such clock:
   // every frame it folds arrived before this tab existed, so timing them against now collapses every
@@ -273,6 +281,27 @@ export function createRecoveryReplay(
 
   const applyToolEvent = (event: Record<string, unknown>): boolean => {
     const type = event.type;
+    // A citation frame belongs to no call and carries its parts whole: live converts them where they
+    // land and appends them after the reply's own parts, so here they only need collecting, deduped
+    // by id exactly as live dedups among themselves.
+    if (type === "document_citations") {
+      const cited = event.citations;
+      let citationsChanged = false;
+      if (Array.isArray(cited)) {
+        cited.forEach((entry, idx) => {
+          if (!entry || typeof entry !== "object") return;
+          const part = documentCitationToSource(
+            entry as Record<string, unknown>,
+            idx,
+          );
+          if (part && !citationParts.some((p) => p.id === part.id)) {
+            citationParts.push(part);
+            citationsChanged = true;
+          }
+        });
+      }
+      return citationsChanged;
+    }
     // Transient store traffic has no part to write to: a status line, a diffusion frame, a
     // container id. It is dropped here on purpose, exactly as the live stream `continue`s past it.
     if (
@@ -456,6 +485,38 @@ export function createRecoveryReplay(
     return assembled;
   };
 
+  /** The reply as published: the assembled parts, then what live's FINAL yield appends after them and a
+   *  reopened tab would otherwise never see — web sources derived from the web_search/web_fetch calls that
+   *  ran (same derivation, same order), then collected citation parts. Parts already present under a known
+   *  id are not re-appended: a reply persisted AFTER its run ended already carries them at their stored
+   *  positions, and deriving them again from the very call they came from would land each one twice. */
+  const content = (): ContentPart[] => {
+    const built = assembledParts();
+    const seen = new Set<string>();
+    for (const part of built) {
+      if (part.type === "source" && typeof part.id === "string") seen.add(part.id);
+    }
+    const derived: ContentPart[] = [];
+    for (const part of built) {
+      if (
+        (part.toolName === "web_search" || part.toolName === "web_fetch") &&
+        part.result
+      ) {
+        for (const src of parseSourcesFromResult(searchResultText(part.result))) {
+          if (!seen.has(src.id)) {
+            seen.add(src.id);
+            derived.push(src);
+          }
+        }
+      }
+    }
+    return [
+      ...built,
+      ...derived,
+      ...citationParts.filter((p) => !seen.has(String(p.id))),
+    ];
+  };
+
   /** The group bookkeeping the live adapter does per chunk, run on the frame's own timestamp. The same
    *  three calls in the same order, and the same rule that the timer stops the moment the block the
    *  chunk left is closed -- which is why a call landing on the reply closes the thought that ran before
@@ -524,7 +585,8 @@ export function createRecoveryReplay(
       if (changed) timeGroups();
       return changed;
     },
-    content: assembledParts,
+    content,
+
     durations: () => groupTiming.metadata(),
     recordServerDuration: (reasoningMs: unknown) =>
       groupTiming.recordServerDuration(reasoningMs),

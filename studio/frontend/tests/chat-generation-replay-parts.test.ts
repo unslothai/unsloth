@@ -365,3 +365,104 @@ test("a replayed python card names the session that ran, not the tab that reopen
     "the replayed card must carry the run's session, split out of the wire's marker",
   );
 });
+
+test("a reopened tab reads the sources of a run it did not watch", () => {
+  // Live derives Sources from the call's result at its final yield and appends them after the reply;
+  // a follower that only assembled text and calls showed pills with no panel. Same parts, same order,
+  // byte-identical ids: one source is one entry on both sides or the panel disagrees between tabs.
+  const replay = createRecoveryReplay("");
+  replay.applyChunk({ choices: [{ delta: { content: "as cited." } }] });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_start", tool_call_id: "call_0", tool_name: "web_search", arguments: {} },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result: "Title: Alpha\nURL: https://example.com/a\nSnippet: says it.",
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(parts.map((part) => part.type), ["text", "tool-call", "source"]);
+  const src = parts[2] as Record<string, unknown>;
+  assert.equal(src.sourceType, "url");
+  assert.equal(src.id, "https://example.com/a");
+  assert.equal((src.metadata as { description: string }).description, "says it.");
+
+  // And the citations a frame carried land AFTER everything else, exactly where live appends them —
+  // under the id live folds from citation type and position, so inline [N] markers match their entry.
+  const citedFrame = {
+    source: "https://doc.example/x",
+    document_title: "Doc X",
+    cited_text: "quoted",
+    type: "document",
+    start_char_index: 10,
+    end_char_index: 20,
+  };
+  replay.applyChunk({ _toolEvent: { type: "document_citations", citations: [citedFrame] } });
+  const after = replay.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(after.map((part) => part.type), ["text", "tool-call", "source", "source"]);
+  assert.equal(after[3].id, "https://doc.example/x#document:10:20");
+});
+
+test("a citation frame that arrives twice lands once", () => {
+  // Live dedups citation parts by id; a follower folding a re-delivered frame must not double-list [1].
+  const replay = createRecoveryReplay("");
+  replay.applyChunk({ choices: [{ delta: { content: "per [1]" } }] });
+  const cit = { source: "https://doc.example/x", document_title: "Doc X", cited_text: "quoted" };
+  replay.applyChunk({ _toolEvent: { type: "document_citations", citations: [cit] } });
+  replay.applyChunk({ _toolEvent: { type: "document_citations", citations: [cit] } });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  assert.equal(parts.filter((part) => part.type === "source").length, 1);
+});
+
+test("a source the closed tab already persisted is not derived a second time", () => {
+  // A run that finished after its writer saved leaves BOTH shapes on disk: the call and the source it
+  // produced. Deriving again from the call would list the same url twice under one id.
+  const seededSource = {
+    type: "source",
+    sourceType: "url",
+    id: "https://example.com/a",
+    url: "https://example.com/a",
+    title: "Alpha",
+  };
+  const replay = createRecoveryReplay([
+    { type: "text", text: "as cited." },
+    {
+      type: "tool-call",
+      toolCallId: "call_0:uuid",
+      toolName: "web_search",
+      args: {},
+      argsText: "{}",
+      result: "Title: Alpha\nURL: https://example.com/a\nSnippet: as cited.",
+    },
+    seededSource,
+  ]);
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  assert.equal(parts.filter((part) => part.type === "source").length, 1);
+});
+
+test("derived web sources land before the citation parts, as live appends them", () => {
+  const replay = createRecoveryReplay("");
+  replay.applyChunk({ choices: [{ delta: { content: "both kinds" } }] });
+  replay.applyChunk({
+    _toolEvent: { type: "tool_start", tool_call_id: "call_0", tool_name: "web_fetch", arguments: {} },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result: "Title: Web\nURL: https://web.example/b\nSnippet: fetched.",
+    },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "document_citations",
+      citations: [{ source: "https://doc.example/c", document_title: "Doc C", cited_text: "quoted" }],
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(parts.map((part) => part.type), ["text", "tool-call", "source", "source"]);
+  assert.equal(parts[2].id, "https://web.example/b");
+  assert.ok(String(parts[3].id).startsWith("https://doc.example/c#"), "citations last, after the web source");
+});
