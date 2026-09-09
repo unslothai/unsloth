@@ -176,6 +176,74 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
     }
 
 
+def test_compat_inventory_lists_hermes_downloads(tmp_path):
+    # /api/models/local and /v1/models are served by this scan, not the hub inventory, so
+    # the recipe picker, the chat auto-load and the OpenAI catalog see only what it returns.
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(hermes / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(hermes_dirs = (hermes,))
+
+    rows = models_route.collect_local_models(
+        models_root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {("hermes", weight)}
+    assert rows[0].display_name == "Qwen3.8-27B-UD-Q4_K_M"
+
+
+def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tmp_path):
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    # Something else the user keeps in that folder stays a custom row.
+    extra = _touch(hermes / "extra" / "Other-Q4_K_M.gguf")
+    sources = _empty_compat_sources(tmp_path)._replace(hermes_dirs = (hermes,))
+
+    rows = models_route.collect_local_models(
+        models_root,
+        custom_folders = [{"path": str(hermes)}],
+        sources = sources,
+    )
+
+    assert sorted((row.source, Path(row.path)) for row in rows) == [
+        ("custom", extra.parent),
+        ("hermes", weight),
+    ]
+
+
+def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
+    # The scanner builds the Hub inventory's row class; this route answers with its own, so a
+    # Hermes row must cross that boundary or the route is a 500 for anyone with a download.
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    sources = models_route._CompatLocalInventorySources(
+        hf_cache_dir = models_dir,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        known_hf_caches = (),
+        hermes_dirs = (hermes,),
+    )
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    response = asyncio.run(
+        models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
+    )
+
+    assert response.hermes_dirs == [str(hermes)]
+    assert [(m.source, Path(m.path)) for m in response.models] == [("hermes", weight)]
+
+
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     root = tmp_path / "ollama"
     digest = "sha256-model"

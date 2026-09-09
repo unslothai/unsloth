@@ -283,6 +283,36 @@ def test_json_body_and_the_studio_mount_work_too(client, backend):
     assert backend.last_generate_kwargs["width"] is None
 
 
+@pytest.mark.parametrize("path", ["/v1/videos", "/api/inference/videos"])
+def test_new_jobs_rearm_progress_but_busy_requests_preserve_it(client, backend, monkeypatch, path):
+    from loggers import media_progress
+
+    events = []
+    monkeypatch.setattr(
+        media_progress.logger, "info", lambda *args, **kwargs: events.append(kwargs)
+    )
+    progress = {"active": True, "phase": "denoise", "step": 10, "total": 10}
+    media_progress.reset_media_generation_progress("video")
+    try:
+        for _ in range(2):
+            media_progress.log_media_generation_progress("video", progress)
+            events.clear()
+            backend.gate.clear()
+            response = client.post(path, json = {"prompt": "a cat"})
+            assert response.status_code == 200, response.json()
+            media_progress.log_media_generation_progress("video", progress)
+            assert len(events) == 1
+            busy = client.post(path, json = {"prompt": "another"})
+            assert busy.status_code == 409, busy.json()
+            media_progress.log_media_generation_progress("video", progress)
+            assert len(events) == 1
+            backend.gate.set()
+            _wait_terminal(client, response.json()["id"])
+    finally:
+        backend.gate.set()
+        media_progress.reset_media_generation_progress("video")
+
+
 def test_omitted_seconds_and_size_use_the_family_defaults(client, backend):
     resp = client.post("/v1/videos", json = {"prompt": "a cat"})
     assert resp.status_code == 200, resp.json()

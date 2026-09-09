@@ -22,6 +22,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
       return "LM Studio";
     case "ollama":
       return "Ollama";
+    case "hermes":
+      return "Hermes";
     case "custom":
       return "Custom folder";
     case "models_dir":
@@ -235,10 +237,12 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
       return 2;
     case "ollama":
       return 3;
-    case "hf_cache":
+    case "hermes":
       return 4;
-    default:
+    case "hf_cache":
       return 5;
+    default:
+      return 6;
   }
 }
 

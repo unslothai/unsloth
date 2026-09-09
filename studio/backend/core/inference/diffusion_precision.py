@@ -468,8 +468,7 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     filter_fn = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
-    # No-op today (the prototype config has no set_inductor_config knob) but keeps the invariant that no torchao
-    # config is built outside _quiet_config, which test_diffusion_precision checks by AST.
+    # No-op today (the prototype config has no set_inductor_config knob), but no torchao config is built bare.
     quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn = filter_fn)
 
 

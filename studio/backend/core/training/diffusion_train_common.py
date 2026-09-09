@@ -45,7 +45,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 # does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
 install_torchao_windows_rocm_stub()
-# Same child, same reason: the int8 base-weight quantisation the DiT trainer does goes through torchao.
+# Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
 
 # Default LoRA target modules: the attention projections common to the SDXL U-Net and the DiTs (the
