@@ -1668,9 +1668,7 @@ def test_the_remote_code_scan_refuses_a_cached_repo_it_cannot_authorize(monkeypa
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
     # config.json cached, which is what makes the scan answerable off disk.
-    monkeypatch.setattr(
-        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
-    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json")
 
     async def _call():
         return await models_routes.scan_model_remote_code(
@@ -2103,9 +2101,7 @@ def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
     # config.json cached, which is what makes the scan answerable off disk.
-    monkeypatch.setattr(
-        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
-    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json")
     monkeypatch.setattr(
         "core.inference.native_audio.native_audio_security_targets",
         lambda target, **_k: [target, "acme/private-base"],
@@ -2151,9 +2147,7 @@ def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
     # config.json cached, which is what makes the scan answerable off disk.
-    monkeypatch.setattr(
-        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
-    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json")
 
     def _must_not_run(*_a, **_k):
         raise AssertionError("target expansion ran for a caller that was already refused")
@@ -2462,9 +2456,7 @@ def test_an_external_auto_map_repo_is_authorized_before_it_is_scanned(monkeypatc
     )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        "huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json"
-    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json")
     monkeypatch.setattr(
         "core.inference.native_audio.native_audio_security_targets",
         lambda target, **_k: [target],
@@ -2498,9 +2490,7 @@ def test_the_cached_alias_is_looked_up_before_the_literal_name_is_judged(monkeyp
     )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
-    monkeypatch.setattr(
-        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
-    )
+    monkeypatch.setattr(settings_routes, "_local_sentence_transformer_is_present", lambda _m: False)
     monkeypatch.setattr(
         settings_routes,
         "_cached_st_source",

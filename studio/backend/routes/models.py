@@ -2609,9 +2609,7 @@ async def scan_model_remote_code(
                 return True
             try:
                 from huggingface_hub import try_to_load_from_cache
-                return isinstance(
-                    try_to_load_from_cache(repo_id = repo, filename = "config.json"), str
-                )
+                return isinstance(try_to_load_from_cache(repo_id = repo, filename = "config.json"), str)
             except Exception:
                 return True
 
