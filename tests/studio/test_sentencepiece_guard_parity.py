@@ -92,7 +92,11 @@ def _refuse_every_import(monkeypatch, reason):
     monkeypatch.setattr(importlib, "import_module", _explode)
 
 
-def _blocked_import(monkeypatch, winerror = 577, flag = "0"):
+def _blocked_import(
+    monkeypatch,
+    winerror = 577,
+    flag = "0",
+):
     """A Windows box whose sentencepiece is installed and refuses to load.
 
     The flag defaults to "0" because the block path is only reachable that way now: with
@@ -508,9 +512,7 @@ def test_the_auto_tokenizer_mapping_is_built_before_the_flag_is_changed(
         "the auto tokenizer module must be imported so its mapping is materialised while "
         "sentencepiece still reads as available"
     )
-    first_write = next(
-        (i for i, (kind, _) in enumerate(order) if kind == "mapping"), len(order)
-    )
+    first_write = next((i for i, (kind, _) in enumerate(order) if kind == "mapping"), len(order))
     first_import = order.index(("import", "transformers.models.auto.tokenization_auto"))
     assert first_import < first_write, (
         "the mapping must be built BEFORE anything is rebound, or the correction sends "
@@ -531,15 +533,13 @@ def test_a_synthetic_module_does_not_drag_in_real_transformers(
         "import_module",
         lambda name, *a, **k: (calls.append(name), types.ModuleType(name))[1],
     )
-    import_utils = _transformers_5x()          # __name__ is "fake_import_utils"
+    import_utils = _transformers_5x()  # __name__ is "fake_import_utils"
     assert getattr(module, patcher)(import_utils) is True
     assert calls == [], f"nothing should have been imported, got {calls}"
 
 
 @pytest.mark.parametrize("module,probe,patcher,policy,entry,cache", COPIES)
-def test_a_versioned_backend_entry_is_corrected_too(
-    module, probe, patcher, policy, entry, cache
-):
+def test_a_versioned_backend_entry_is_corrected_too(module, probe, patcher, policy, entry, cache):
     """BACKENDS_MAPPING is matched by key as well as by function identity.
 
     Latent today: every shipped `@requires(backends=("sentencepiece",))` uses the bare

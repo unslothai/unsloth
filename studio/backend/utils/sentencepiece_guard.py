@@ -231,7 +231,10 @@ def tell_transformers_sentencepiece_is_absent(import_utils) -> bool:
             # By key as well as by identity. Identity alone misses an entry transformers
             # built from a different callable, and key alone would rewrite an unrelated
             # backend, so either match is enough but the name is checked too.
-            if entry[0] is original or str(key).split(">")[0].split("=")[0].strip() == "sentencepiece":
+            if (
+                entry[0] is original
+                or str(key).split(">")[0].split("=")[0].strip() == "sentencepiece"
+            ):
                 mapping[key] = (_sentencepiece_is_absent,) + tuple(entry[1:])
 
     try:

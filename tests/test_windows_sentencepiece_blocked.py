@@ -129,9 +129,7 @@ def test_a_working_sentencepiece_is_left_alone(monkeypatch, transformers_flag):
     assert caught == []
 
 
-def test_windows_disables_by_default_without_touching_the_extension(
-    monkeypatch, transformers_flag
-):
+def test_windows_disables_by_default_without_touching_the_extension(monkeypatch, transformers_flag):
     """The temporary Windows default, against the transformers actually installed here.
 
     Disabled because the platform is Windows, not because anything was probed: the point
