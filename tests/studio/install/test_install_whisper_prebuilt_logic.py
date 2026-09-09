@@ -2536,6 +2536,37 @@ def test_an_unreachable_lookup_keeps_a_validated_install(tmp_path, monkeypatch, 
     assert (marker_path.read_bytes(), server.read_bytes(), server.stat().st_mtime_ns) == before
 
 
+def test_a_raw_network_error_from_the_release_fetch_still_keeps_the_install(
+    tmp_path, monkeypatch, capsys
+):
+    """The real fetch raises URLError, not PrebuiltFallback: a refused connection or a
+    proxy answering 403 reached install_prebuilt as "unexpected error" and the keep path
+    never ran. Patched at the shared core seam, so the wrapper in this module is what is
+    under test rather than a stand-in that already speaks PrebuiltFallback."""
+    import urllib.error
+
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    before = marker_path.read_bytes()
+    _no_network(monkeypatch)
+
+    def refused(*_args, **_kwargs):
+        raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+    monkeypatch.setattr(M, "fetch_release_for_install", M.fetch_release_for_install)
+    monkeypatch.setattr(M.core, "fetch_release_for_install", refused)
+
+    rc, output = _cli_install(capsys, install_dir)
+
+    assert rc == M.EXIT_SUCCESS
+    assert KEPT_LINE in output
+    assert "prebuilt update reason: could not fetch release" in output
+    assert "unexpected error" not in output
+    assert FAILED_LINE not in output
+    assert calls["n"] == 1
+    assert marker_path.read_bytes() == before
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason = "os.access(X_OK) is always true on Windows, so the unusable-tree half is POSIX only",

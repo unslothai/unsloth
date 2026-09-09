@@ -1230,7 +1230,20 @@ def resolve_release_tag(published_repo: str, *, published_release_tag: str | Non
 def fetch_release_for_install(
     repo: str, *, published_release_tag: str | None
 ) -> tuple[ReleaseBundle, dict[str, str]]:
-    return core.fetch_release_for_install(_OPS, repo, published_release_tag = published_release_tag)
+    try:
+        return core.fetch_release_for_install(
+            _OPS, repo, published_release_tag = published_release_tag
+        )
+    except PrebuiltFallback:
+        raise
+    except (OSError, ValueError) as exc:
+        # A refused connection, a proxy that answers 403, a timeout or an unparseable
+        # payload arrive here as URLError / OSError / ValueError, and install_prebuilt's
+        # keep path only reads PrebuiltFallback. Without this wrap an offline update
+        # printed "unexpected error" and "prebuilt install failed" over an intact tree.
+        raise PrebuiltFallback(
+            f"could not fetch release {repo}@{published_release_tag or 'latest'}: {exc}"
+        ) from exc
 
 
 @dataclass(frozen = True)
