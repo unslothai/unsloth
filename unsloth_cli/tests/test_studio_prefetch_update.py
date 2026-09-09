@@ -1105,3 +1105,53 @@ def test_the_uv_search_runs_inside_the_budget(managed, monkeypatch):
     with pytest.raises(_studio_prefetch.PrefetchSkipped):
         _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
     assert seen and all(deadline is not None for deadline in seen)
+
+
+def test_a_source_only_pin_is_named_but_not_recorded_as_fetched(tmp_path, monkeypatch):
+    """The desktop reads a recorded pin missing from the cache as a stale marker. A
+    source-only package is never in the cache, so recording it beside the fetched pins
+    made every marker with one stale on arrival and the preparation repeat forever."""
+    requirement = tmp_path / "extras.txt"
+    requirement.write_text("soundfile\nopenai-whisper\n", encoding = "utf-8")
+    commands = []
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        commands.append(cmd)
+        if "--dry-run" in cmd:
+            return _plan_response(" + openai-whisper==20250625\n + soundfile==0.13.1\n")
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    record = _studio_prefetch._prefetch_requirement_file(
+        tmp_path / "python",
+        requirement,
+        target = tmp_path / "site",
+        constraints = None,
+        no_deps = False,
+        env = None,
+        uv = "uv",
+        step = lambda line: None,
+        label = "extras.txt",
+    )
+    assert record == {"pins": {"soundfile": "0.13.1"}, "source_only": ["openai-whisper"]}
+    assert "skipped_reason" not in record
+    fetch = [cmd for cmd in commands if "--target" in cmd]
+    assert fetch and not any("openai-whisper" in arg for arg in fetch[0])
+
+
+def test_every_uv_call_runs_from_the_directory_the_update_runs_from(tmp_path, monkeypatch):
+    """uv discovers uv.toml / pyproject.toml from its working directory and setup.sh
+    runs from the script directory; a prefetch resolving from the caller's directory
+    could plan under a configuration the update never sees."""
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("cwd"))
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch.subprocess, "run", fake_run)
+    with _studio_prefetch._working_directory(tmp_path):
+        _studio_prefetch._run(["uv", "--version"], None)
+    _studio_prefetch._run(["uv", "--version"], None)
+    assert seen == [str(tmp_path), None]

@@ -3838,7 +3838,10 @@ def prefetch_update() -> None:
     shell_version = (os.environ.get(_studio_stage.SHELL_VERSION_ENV) or "").strip() or None
     # The same cache the swap will read, chosen the same way and from the same
     # working directory as _run_setup_script picks it, or the prefetch would warm
-    # a cache the update never looks in.
+    # a cache the update never looks in. The uv calls run from that directory too,
+    # so a uv.toml or pyproject.toml the update's uv would discover (setup.sh runs
+    # from the script directory) is the one the prefetch resolves under, and one in
+    # the caller's directory is not.
     script = _find_setup_script(None)
     setup_cwd = None if (platform.system() == "Windows" or script is None) else script.parent
     env = _with_studio_uv_cache(None, cwd = setup_cwd)
@@ -3850,6 +3853,7 @@ def prefetch_update() -> None:
                 shell_version = shell_version,
                 env = env,
                 echo = typer.echo,
+                cwd = setup_cwd,
             )
     except _studio_prefetch.PrefetchBusy:
         # Its own exit code: "already running" is not a failure the desktop should

@@ -739,6 +739,24 @@ def _run_timeout(cmd: Sequence[str]) -> float:
     return min(float(SUBPROCESS_TIMEOUT_SECONDS), remaining)
 
 
+# The directory every uv call below runs from, set by `run` for the whole prefetch.
+# uv discovers uv.toml / pyproject.toml from its working directory, and the update runs
+# setup.sh from the script directory: a prefetch resolving from the caller's directory
+# could read a configuration the update never sees and plan against another index.
+_RUN_CWD: Optional[str] = None
+
+
+@contextlib.contextmanager
+def _working_directory(cwd: Optional[Path]) -> Iterator[None]:
+    global _RUN_CWD
+    previous = _RUN_CWD
+    _RUN_CWD = str(cwd) if cwd is not None else None
+    try:
+        yield
+    finally:
+        _RUN_CWD = previous
+
+
 def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess:
     return subprocess.run(
         list(cmd),
@@ -747,6 +765,7 @@ def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess
         encoding = "utf-8",
         errors = "replace",
         env = env,
+        cwd = _RUN_CWD,
         timeout = _run_timeout(cmd),
     )
 
@@ -886,6 +905,33 @@ def _fetched_studio_root(target: Path) -> Optional[Path]:
 
 
 def run(
+    *,
+    studio_home: Path,
+    floor: str = "",
+    shell_version: Optional[str] = None,
+    env: Optional[dict] = None,
+    echo: Callable[[str], None] = print,
+    python: Optional[Path] = None,
+    cwd: Optional[Path] = None,
+) -> dict:
+    """Prepare the next update in the background. Returns the marker payload.
+
+    `cwd` is the directory the update's own uv calls run from (setup.sh changes into
+    the script directory); every uv call here runs from the same place, so both read
+    the same uv configuration, if any.
+    """
+    with _working_directory(cwd):
+        return _run_unguarded(
+            studio_home = studio_home,
+            floor = floor,
+            shell_version = shell_version,
+            env = env,
+            echo = echo,
+            python = python,
+        )
+
+
+def _run_unguarded(
     *,
     studio_home: Path,
     floor: str = "",
@@ -1193,9 +1239,17 @@ def _prefetch_requirement_file(
     if not planned:
         return {"pins": {}}
     pins = pins_from_plan(planned, only_binary = True)
+    # Recorded are the pins that were fetched: the desktop reads the marker as stale
+    # when a recorded pin is not in the cache, and a source-only package never is.
+    # What was left to swap time is named beside them.
+    wanted = set(pins)
+    fetched_plan = {
+        name: version for name, version in planned.items() if f"{name}=={version}" in wanted
+    }
+    source_only = sorted(name for name in planned if name not in fetched_plan)
     if not pins:
         # Everything this file plans is built from source; there is no wheel to warm.
-        return {"pins": dict(planned)}
+        return {"pins": {}, "source_only": source_only}
     step(f"prefetch downloading {len(pins)} package(s) for {label}")
     try:
         # --only-binary: a source distribution would be BUILT here, against the
@@ -1214,4 +1268,7 @@ def _prefetch_requirement_file(
             "pins": dict(planned),
             "skipped_reason": "download failed: " + _failure_text(fetched, 400),
         }
-    return {"pins": dict(planned)}
+    record: dict = {"pins": fetched_plan}
+    if source_only:
+        record["source_only"] = source_only
+    return record

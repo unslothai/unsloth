@@ -4,6 +4,7 @@ use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -95,7 +96,11 @@ pub fn begin_prefetch(
     if is_prefetch_running(prefetch_state) {
         return Err(PREFETCH_BUSY.to_string());
     }
-    reserve_update_start(&prefetch_state.process).map_err(|_| PREFETCH_BUSY.to_string())
+    let reservation =
+        reserve_update_start(&prefetch_state.process).map_err(|_| PREFETCH_BUSY.to_string())?;
+    // A fresh reservation starts clean; a cancel belongs to the run it interrupted.
+    prefetch_state.cancelled.store(false, Ordering::SeqCst);
+    Ok(reservation)
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -121,6 +126,8 @@ const PREFETCH_BUSY_EXIT: i32 = 3;
 pub const PREFETCH_UNSUPPORTED: &str = "prefetch-unsupported";
 /// Another prefetch owns the work. Whatever it produces is what gets adopted.
 pub const PREFETCH_BUSY: &str = "prefetch-busy";
+/// Stopped between its reservation and its spawn; the cache keeps whatever was there.
+pub const PREFETCH_CANCELLED: &str = "prefetch-cancelled";
 
 pub(crate) enum UpdateKind {
     Backend,
@@ -604,6 +611,14 @@ pub struct PrefetchState {
     /// from the shared slot. So a cancel does not return until the runner has
     /// settled, and nothing starts while it is active.
     runner: Arc<(Mutex<bool>, Condvar)>,
+    /// Set by `stop_prefetch`, cleared by `begin_prefetch`.
+    ///
+    /// Between `begin_prefetch` and the runner's spawn the prefetch exists only as a
+    /// reservation: there is no child to kill and no runner to wait for, so a stop in
+    /// that window would return and the queued runner would then spawn the child
+    /// beside the update that stopped it. The runner checks this flag, under the
+    /// start lock, before it spawns.
+    cancelled: Arc<AtomicBool>,
 }
 
 pub fn new_prefetch_state() -> PrefetchState {
@@ -611,6 +626,7 @@ pub fn new_prefetch_state() -> PrefetchState {
         process: new_update_state(),
         running_version: Arc::new(Mutex::new(None)),
         runner: Arc::new((Mutex::new(false), Condvar::new())),
+        cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -686,6 +702,8 @@ pub fn running_prefetch_version(state: &PrefetchState) -> Option<String> {
 }
 
 pub fn stop_prefetch(state: &PrefetchState) -> Result<(), String> {
+    // First, so a runner that has not spawned yet sees it before it does.
+    state.cancelled.store(true, Ordering::SeqCst);
     let stopped = stop_update(&state.process);
     // Whether or not the kill went cleanly, the runner that owns the child is what
     // a caller about to start a replacement has to wait for.
@@ -784,29 +802,48 @@ pub(crate) fn run_prefetch_update(
         None => return Err("Unsloth binary not found. Cannot prepare an update.".to_string()),
     };
 
-    // Held until this function returns, by every path: it is what `stop_prefetch`
-    // waits on, and what keeps a second runner out of the shared slot.
-    let Some(_runner) = PrefetchRunnerGuard::acquire(&state.runner) else {
-        return Err(PREFETCH_BUSY.to_string());
-    };
     info!("[prefetch] Preparing the next update via {:?}", bin);
     let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
-    // Recorded BEFORE the spawn, and cleared on every way out, so there is no window
-    // where the status says a prefetch is running and cannot say what for. A reader
-    // that saw that window would read the run it just started as one for an older
-    // offer, and cancel it.
-    if let Ok(mut running) = state.running_version.lock() {
-        *running = shell_version;
-    }
-    let (stdout, stderr) = match spawn_prefetch(&bin, &state.process, &kind) {
-        Ok(streams) => streams,
-        Err(msg) => {
-            if let Ok(mut running) = state.running_version.lock() {
-                *running = None;
+    let (_runner, stdout, stderr) = {
+        // Under the start lock, and the runner guard taken inside it: a `begin_update`
+        // that stops this prefetch either finds the child already in the slot, or has
+        // set the cancel flag checked here before this could spawn. Taking the guard
+        // first would have the stop wait on a runner that is waiting on the lock.
+        let _starts = START_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.cancelled.load(Ordering::SeqCst) {
+            info!("[prefetch] Stopped before it started");
+            return Err(PREFETCH_CANCELLED.to_string());
+        }
+        // Held until this function returns, by every path: it is what `stop_prefetch`
+        // waits on, and what keeps a second runner out of the shared slot.
+        let Some(runner) = PrefetchRunnerGuard::acquire(&state.runner) else {
+            return Err(PREFETCH_BUSY.to_string());
+        };
+        // Recorded BEFORE the spawn, and cleared on every way out, so there is no window
+        // where the status says a prefetch is running and cannot say what for. A reader
+        // that saw that window would read the run it just started as one for an older
+        // offer, and cancel it.
+        if let Ok(mut running) = state.running_version.lock() {
+            *running = shell_version;
+        }
+        match spawn_prefetch(&bin, &state.process, &kind) {
+            Ok((stdout, stderr)) => (runner, stdout, stderr),
+            Err(msg) => {
+                if let Ok(mut running) = state.running_version.lock() {
+                    *running = None;
+                }
+                return Err(format!("spawn_prefetch: {msg}"));
             }
-            return Err(format!("spawn_prefetch: {msg}"));
         }
     };
+    // A cancel that took the (still empty) child slot before the spawn above found
+    // nothing to kill; it is honoured here, and the wait below sees the child exit.
+    if state.cancelled.load(Ordering::SeqCst) {
+        info!("[prefetch] Stopped as it started");
+        let _ = stop_update(&state.process);
+    }
     let threads = stream_prefetch_output(&app, outcome.clone(), stdout, stderr);
 
     let result = wait_for_exit(&state.process);
@@ -982,6 +1019,23 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_arriving_while_a_prefetch_is_only_reserved_cancels_it() {
+        // Between begin_prefetch and the runner's spawn there is no child and no runner:
+        // the stop must still reach the runner, which checks the flag before it spawns.
+        let prefetch = new_prefetch_state();
+        let update = new_update_state();
+        let reservation = begin_prefetch(&prefetch, &update).expect("the slot was free");
+        assert!(is_prefetch_running(&prefetch));
+        let held = begin_update(&update, &prefetch).expect("the update starts");
+        assert!(prefetch.cancelled.load(Ordering::SeqCst));
+        drop(held);
+        drop(reservation);
+        // A fresh reservation starts clean.
+        let _again = begin_prefetch(&prefetch, &update).expect("free again");
+        assert!(!prefetch.cancelled.load(Ordering::SeqCst));
+    }
     use std::io::Cursor;
 
     /// The window between deciding to update and having a child is the one a prefetch
