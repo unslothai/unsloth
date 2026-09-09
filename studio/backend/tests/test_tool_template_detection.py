@@ -605,6 +605,48 @@ def test_reviewed_round_seven_paths_match_rendered_catalog(template, expected):
     assert detect_reasoning_flags(template)["supports_tools"] is expected
 
 
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        # `loop.first` reprs identically in every loop, so an outer loop's condition
+        # facts must not prune a branch of a nested one.
+        (
+            "{% for m in messages %}{% if loop.first %}{% for t in tools %}"
+            "{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}"
+            "{% endif %}{% endfor %}",
+            True,
+        ),
+        (
+            "{% for m in messages %}{% if loop.first %}{% for t in tools %}"
+            "{% if loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}"
+            "{% endif %}{% endfor %}",
+            True,
+        ),
+        # A template without the do extension mutates through `{% set _ = ... %}`.
+        ("{% set catalog=[] %}{% set _x = catalog.append(tools) %}{{ catalog|tojson }}", True),
+        # Methods outside append/extend/clear still move tool data into the receiver.
+        ("{% set catalog=[] %}{% do catalog.insert(0, tools) %}{{ catalog|tojson }}", True),
+        ("{% set d={} %}{% do d.update({'c': tools}) %}{{ d.c|tojson }}", True),
+        # An unrecognised method handed nothing tool-shaped still changes nothing.
+        ("{% set catalog=[] %}{% do catalog.insert(0, 'plain') %}{{ catalog|tojson }}", False),
+    ],
+)
+def test_loop_facts_and_mutation_shapes_match_rendered_catalog(template, expected):
+    render = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]).from_string(
+        template
+    )
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {}}},
+        {"type": "function", "function": {"name": "get_time", "parameters": {}}},
+    ]
+    output = render.render(
+        tools = tools,
+        messages = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+    )
+    assert ("get_weather" in output) is expected
+    assert template_supports_tools(template) is expected
+
+
 def test_an_unresolved_subscript_key_still_selects_every_field():
     """The constant-key resolution narrows a subscript only when the key is known.
     An unknown key has to keep selecting every field, or a catalog reached through a

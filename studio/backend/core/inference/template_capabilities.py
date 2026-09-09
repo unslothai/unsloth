@@ -384,7 +384,9 @@ def _bind_paths(target, paths, state):
     if isinstance(target, nodes.Name):
         state.assigned.add(target.name)
         state.macros.pop(target.name, None)
-    else:
+    elif key[0] not in state.assigned:
+        # Recorded when the write happens, not when the scope closes: a mutation that
+        # ran BEFORE a local rebind hit the outer object and still has to escape.
         state.mutated.add(key)
 
 
@@ -401,19 +403,25 @@ def _mutate(call, state, active):
     if key is None:
         return
     method = call.node.attr
-    if method not in ("append", "extend", "clear"):
-        return
     paths = set().union(*(_value_aliases(arg, state, active) for arg in call.args))
-    if method == "append":
+    if method == "clear":
+        paths = set()
+    elif not paths:
+        return
+    elif method != "extend":
+        # append, insert, add, update, setdefault: the argument lands somewhere under
+        # the receiver rather than being spliced into it. Any unrecognised method that
+        # is handed tool data is treated the same way rather than ignored.
         paths = {(_UNKNOWN, *suffix) for suffix in paths}
     # Mutation goes through the object, not the name, so every name currently bound
     # to this container sees it.
     for target in _same_object(key, state):
         if method == "clear":
             _replace(state.aliases, target, set())
-        elif paths:
+        else:
             state.aliases.update((*target, *suffix) for suffix in paths)
-        state.mutated.add(target)
+        if target[0] not in state.assigned:
+            state.mutated.add(target)
         _forget(target, state)
 
 
@@ -427,8 +435,6 @@ def _export_scope(parent, child):
         }
     )
     for key in child.mutated:
-        if key[0] in child.assigned:
-            continue
         _replace(
             result.aliases,
             key,
@@ -479,6 +485,9 @@ def _scan_loop(node, state, active, guarded):
                 )
             else:
                 _bind(node.target, value, local, active)
+            # `loop.first` reprs the same in every loop, so an outer loop's facts would
+            # otherwise prune branches of a nested one.
+            _forget(("loop",), local)
             candidates = [local] if node.test is None else _assume(node.test, True, local)
             for candidate in candidates:
                 emits, children = _scan(
@@ -523,6 +532,9 @@ def _scan(
                 ):
                     return True, []
             elif isinstance(node, nodes.Assign):
+                # `{% set _ = xs.append(...) %}` is how templates mutate without the do
+                # extension, so the call mutates even though this is an assignment.
+                _mutate(node.node, current, active)
                 _bind(node.target, node.node, current, active)
             elif isinstance(node, nodes.ExprStmt):
                 _mutate(node.node, current, active)
