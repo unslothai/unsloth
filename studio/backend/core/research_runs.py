@@ -580,6 +580,23 @@ def _synthesis_length_limit_error(
     return "Local model report reached its output limit before completion"
 
 
+async def _response_format_unsupported(response: httpx.Response) -> bool:
+    """Only the API's explicit guided-decoding refusal permits a prompt-only retry."""
+    if response.status_code != 400:
+        return False
+    try:
+        await response.aread()
+        body = response.json()
+    except Exception:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "unsupported_parameter"
+        and error.get("param") == "response_format"
+    )
+
+
 async def _model_unloaded(response: httpx.Response) -> str | None:
     """Which "not servable right now" refusal this is, or None for any other failure.
 
@@ -1687,6 +1704,20 @@ class ResearchSupervisor:
                             first_output_deadline = loop.time() + first_output_budget
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched, so a re-send cannot duplicate report text.
+                            if (
+                                not _external_provider_run(inference)
+                                and payload.get("response_format") == {"type": "json_object"}
+                                and isinstance(exc, httpx.HTTPStatusError)
+                                and await _response_format_unsupported(exc.response)
+                            ):
+                                # MLX/transformers cannot enforce a grammar. Research already
+                                # prompts for JSON and validates it; retry once without guided
+                                # decoding. Negotiate after routing, including any model switch.
+                                del payload["response_format"]
+                                await exc.response.aclose()
+                                response = None
+                                await self._check_active(run["id"])
+                                continue
                             unloaded = (
                                 await _model_unloaded(exc.response)
                                 if isinstance(exc, httpx.HTTPStatusError)
