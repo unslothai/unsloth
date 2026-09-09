@@ -7302,7 +7302,9 @@ def _prepare_tool_launch(plan):
     except Exception as exc:
         if plan.requested_mode == "full":
             return _software_safeguards_launch(plan, "sandbox_planner_error")
-        raise os_sandbox.SandboxBuildError(f"OS_ISOLATION_UNAVAILABLE: Sandbox preparation failed: {exc}") from exc
+        raise os_sandbox.SandboxBuildError(
+            f"OS_ISOLATION_UNAVAILABLE: Sandbox preparation failed: {exc}"
+        ) from exc
 
 
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
@@ -7326,7 +7328,10 @@ def _sandbox_refusal(exc) -> str:
     person who can fix the host."""
     remediation = getattr(exc, "remediation", "") or ""
     from .tool_loop_controller import ToolIsolationUnavailableResult
-    return ToolIsolationUnavailableResult(_truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}"))
+
+    return ToolIsolationUnavailableResult(
+        _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+    )
 
 
 def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:

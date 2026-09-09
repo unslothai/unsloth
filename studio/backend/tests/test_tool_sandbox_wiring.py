@@ -385,6 +385,7 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
 def test_auto_refuses_when_the_planner_itself_breaks(monkeypatch):
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
+
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
     tools._last_tool_execution_record = None
     result = tools._python_exec("print('PAYLOAD_EXECUTED')", None, 60, _SESSION)
@@ -600,7 +601,9 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
 
 
 def test_a_backend_that_becomes_unavailable_during_preparation_refuses(monkeypatch):
-    _declining_backend(monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe=False)
+    _declining_backend(
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+    )
     tools._last_tool_execution_record = None
     result = tools._python_exec("print('PAYLOAD_EXECUTED')", None, 60, _SESSION)
     assert "PAYLOAD_EXECUTED" not in result

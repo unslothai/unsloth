@@ -654,7 +654,9 @@ async def lifespan(app: FastAPI):
 
     if sys.platform == "win32":
         from core.inference.os_sandbox import capability_snapshot
-        threading.Thread(target=capability_snapshot, name="windows-sandbox-check", daemon=True).start()
+        threading.Thread(
+            target = capability_snapshot, name = "windows-sandbox-check", daemon = True
+        ).start()
 
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.

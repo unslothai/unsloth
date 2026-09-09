@@ -27,6 +27,7 @@ PROBE_DEADLINE_SECONDS = 60
 setup_in_progress = threading.Event()
 _network_cache = None
 
+
 def _executable_identity(path):
     if not path:
         return None
@@ -168,10 +169,12 @@ def invalidate_cache(*, setup_conflict = False):
         _setup_conflict_identity = _setup_identity() if setup_conflict else None
 
 
-def _native_probe(*, execution_kind=None, selected_executable=None):
+def _native_probe(*, execution_kind = None, selected_executable = None):
     if sys.platform != "win32":
         return False, ProbeReason("operation_unsupported", "probe")
-    return _supported_platform_probe(execution_kind=execution_kind, selected_executable=selected_executable)
+    return _supported_platform_probe(
+        execution_kind = execution_kind, selected_executable = selected_executable
+    )
 
 
 def _windows_proxy_port_available(request):

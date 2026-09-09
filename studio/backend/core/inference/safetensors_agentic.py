@@ -1354,7 +1354,11 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, execution_callback, _decision = decision):
+                def _invoke_tool(
+                    _output_callback,
+                    execution_callback,
+                    _decision = decision,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1475,7 +1479,11 @@ def run_safetensors_tool_loop(
                         _invoke_tool,
                         tool_name = decision.tool_name,
                         tool_call_id = decision.tool_call_id,
-                        launch_event_factory = lambda record: {"type": "tool_execution", "tool_call_id": decision.tool_call_id, "execution": record},
+                        launch_event_factory = lambda record: {
+                            "type": "tool_execution",
+                            "tool_call_id": decision.tool_call_id,
+                            "execution": record,
+                        },
                         cancel_event = cancel_event,
                     )
                 except Exception as exc:

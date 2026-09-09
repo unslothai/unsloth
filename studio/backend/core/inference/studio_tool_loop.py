@@ -1755,7 +1755,11 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, execution_callback, call = decision) -> str:
+            def _invoke(
+                output_callback: Any,
+                execution_callback,
+                call = decision,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1799,7 +1803,11 @@ async def stream_with_studio_tools(
                 _invoke,
                 tool_name = name,
                 tool_call_id = card_id,
-                launch_event_factory = lambda record: {"type": "tool_execution", "tool_call_id": card_id, "execution": record},
+                launch_event_factory = lambda record: {
+                    "type": "tool_execution",
+                    "tool_call_id": card_id,
+                    "execution": record,
+                },
                 cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}

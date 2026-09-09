@@ -82,8 +82,13 @@ def node_executable() -> str:
 
 
 def read_roots(executable: str) -> list[str]:
-    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix,
-             str(Path(__file__).with_name("sandbox_site")), *site.getsitepackages()]
+    roots = [
+        os.path.dirname(os.path.abspath(executable)),
+        sys.prefix,
+        sys.base_prefix,
+        str(Path(__file__).with_name("sandbox_site")),
+        *site.getsitepackages(),
+    ]
     return sorted({os.path.realpath(root) for root in roots if os.path.exists(root)})
 
 
@@ -98,7 +103,9 @@ def request_for(
 ) -> dict:
     try:
         if sys.platform != "win32":
-            raise SrtError("Studio SRT is Windows-only", code="operation_unsupported", stage="policy")
+            raise SrtError(
+                "Studio SRT is Windows-only", code = "operation_unsupported", stage = "policy"
+            )
         request = _request_for(
             argv,
             cwd,
@@ -244,7 +251,7 @@ def spawn(
         return _spawn_windows(
             request, cancel_event = cancel_event, launch_deadline = launch_deadline, **kwargs
         )
-    raise SrtError("Studio SRT is Windows-only", code="operation_unsupported", stage="launch")
+    raise SrtError("Studio SRT is Windows-only", code = "operation_unsupported", stage = "launch")
 
 
 def _spawn_windows(

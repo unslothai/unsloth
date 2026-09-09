@@ -325,10 +325,17 @@ def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapabil
     )
 
 
-def capability_snapshot(*, force: bool = False, execution_kind=None, selected_executable=None) -> SandboxCapability:
+def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+) -> SandboxCapability:
     if sys.platform == "win32":
         from .sandbox_windows import capability_snapshot as windows_capability
-        return windows_capability(force=force, execution_kind=execution_kind, selected_executable=selected_executable)
+        return windows_capability(
+            force = force, execution_kind = execution_kind, selected_executable = selected_executable
+        )
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -439,7 +446,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
-    capability = capability_snapshot(execution_kind=plan.execution_kind, selected_executable=plan.argv[0])
+    capability = capability_snapshot(
+        execution_kind = plan.execution_kind, selected_executable = plan.argv[0]
+    )
     if plan.cancel_event is not None and plan.cancel_event.is_set():
         raise SandboxBuildError("Execution cancelled before launch")
 

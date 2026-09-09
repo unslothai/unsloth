@@ -24323,7 +24323,7 @@ async def produce_openai_chat_completions(
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
-                    tool_execution_mode = payload.tool_execution_mode,
+                tool_execution_mode = payload.tool_execution_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
@@ -36113,15 +36113,21 @@ async def _generate_openai_images(
 
 
 @router.get("/tool-isolation/capability")
-async def tool_isolation_capability(force: bool = False, current_subject = Depends(get_current_subject)):
+async def tool_isolation_capability(
+    force: bool = False, current_subject = Depends(get_current_subject)
+):
     from dataclasses import asdict
     from core.inference.os_sandbox import capability_snapshot
-    return asdict(await run_in_threadpool(capability_snapshot, force=force))
+    return asdict(await run_in_threadpool(capability_snapshot, force = force))
 
 
 @router.post("/tool-isolation/windows-setup")
-async def setup_windows_tool_isolation(repair_existing: bool = False, current_subject = Depends(get_current_subject)):
+async def setup_windows_tool_isolation(
+    repair_existing: bool = False, current_subject = Depends(get_current_subject)
+):
     if sys.platform != "win32":
-        raise HTTPException(status_code=400, detail="Windows sandbox setup is available on Windows only.")
+        raise HTTPException(
+            status_code = 400, detail = "Windows sandbox setup is available on Windows only."
+        )
     from core.inference.srt_setup import install_windows_sandbox
-    return await run_in_threadpool(install_windows_sandbox, repair_existing=repair_existing)
+    return await run_in_threadpool(install_windows_sandbox, repair_existing = repair_existing)

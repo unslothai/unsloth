@@ -31596,7 +31596,11 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, execution_callback, _decision = decision):
+                        def _invoke_tool(
+                            _output_callback,
+                            execution_callback,
+                            _decision = decision,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -31893,7 +31897,11 @@ class LlamaCppBackend:
                                 _invoke_tool,
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
-                                launch_event_factory = lambda record: {"type": "tool_execution", "tool_call_id": decision.tool_call_id, "execution": record},
+                                launch_event_factory = lambda record: {
+                                    "type": "tool_execution",
+                                    "tool_call_id": decision.tool_call_id,
+                                    "execution": record,
+                                },
                                 cancel_event = cancel_event,
                             )
                         except _LlamaStreamCancelled:
