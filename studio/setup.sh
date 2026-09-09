@@ -1035,6 +1035,13 @@ if [ -n "$_MASTER_ROOT" ]; then
         unset _master_root_canon
     fi
 fi
+
+# Ownership applies to node/, llama.cpp/ and whisper.cpp/ whenever a master root moves them,
+# even with STUDIO_HOME left at the legacy path: _STUDIO_HOME_IS_CUSTOM is false there, and
+# "false" is what licenses the installers to os.replace() and rm -rf without checking the
+# Unsloth-owned marker. The Studio home itself, and the venvs under it, keep the other flag.
+_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
+[ -z "$_MASTER_ROOT" ] || _RUNTIME_ROOT_IS_CUSTOM=true
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
 # for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
@@ -1119,11 +1126,14 @@ _report_denied_ancestor() {
     fi
 }
 
+# $3 is the ownership flag: the runtime children pass _RUNTIME_ROOT_IS_CUSTOM, everything
+# under the Studio home keeps _STUDIO_HOME_IS_CUSTOM.
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
+    _aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"
     [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+    if [ "$_aso_custom" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
@@ -1253,8 +1263,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
     # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$NODE_DIR" "Node install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
     # Runs before the venv is activated, so bare `python` may be absent; resolve
@@ -1289,7 +1299,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
@@ -2819,8 +2829,8 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
         [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
@@ -2845,8 +2855,8 @@ fi
 # swap only reaches its own guards after the whole build, so check here instead.
 # Local-link paths are excluded: they already replaced or reused the tree above.
 if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
         _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -2876,8 +2886,8 @@ else
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
     # ownership check below ever runs.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     # The ownership check above misses the default cache; stop before pathlib
     # turns an unreadable one into a traceback.
@@ -2950,7 +2960,7 @@ else
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
@@ -3022,7 +3032,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
     ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
@@ -3549,7 +3559,7 @@ else
 
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
-            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
             # || true: without it a raw rm error aborts under errexit to a bare exit
             # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
@@ -3621,7 +3631,7 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
 fi
 
 if [ ! -L "$LLAMA_CPP_DIR" ] && {
-    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+    [ "$_RUNTIME_ROOT_IS_CUSTOM" != true ] ||
         [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
@@ -3640,8 +3650,8 @@ if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; 
 elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
     verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
 else
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
     fi
     _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
     if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
@@ -3668,7 +3678,7 @@ else
         else
             step "whisper.cpp" "prebuilt installed"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
             : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         rm -f "$_WHISPER_LOG"
@@ -3694,7 +3704,7 @@ else
                     env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
-                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
                     : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
                 fi
             else

@@ -4344,6 +4344,7 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
 substep() { echo "substep: $1"; }

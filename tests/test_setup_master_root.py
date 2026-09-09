@@ -301,6 +301,7 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
             "PATH": "/usr/bin:/bin",
             "PWD": str(caller),
             "UNSLOTH_HOME": "not-created-yet",
+            "_STUDIO_HOME_IS_CUSTOM": "false",
         },
         capture_output = True,
         text = True,
@@ -308,3 +309,78 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == caller / "not-created-yet"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
+    """With only UNSLOTH_HOME set, STUDIO_HOME stays legacy and _STUDIO_HOME_IS_CUSTOM stays
+    false, which is what licenses the installers to os.replace() and rm -rf without checking
+    the Unsloth-owned marker. The runtimes moved, so the guard has to follow them."""
+    root = tmp_path / "portable"
+    root.mkdir()
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    script = "\n".join((
+        "set -u",
+        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+        'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
+    ))
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env = {
+            "HOME": str(home),
+            "PATH": "/usr/bin:/bin",
+            "UNSLOTH_HOME": str(root),
+            "_STUDIO_HOME_IS_CUSTOM": "false",
+        },
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.split() == ["false", "true"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    script = "\n".join((
+        "set -u",
+        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+        'printf "%s %s\\n" "$_STUDIO_HOME_IS_CUSTOM" "$_RUNTIME_ROOT_IS_CUSTOM"',
+    ))
+    for flag in ("false", "true"):
+        completed = subprocess.run(
+            ["bash", "-c", script],
+            env = {
+                "HOME": str(tmp_path / "home"),
+                "PATH": "/usr/bin:/bin",
+                "_STUDIO_HOME_IS_CUSTOM": flag,
+            },
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.split() == [flag, flag]
+
+
+def test_every_runtime_ownership_guard_uses_the_runtime_flag():
+    """The Studio home and its venvs keep _STUDIO_HOME_IS_CUSTOM; every guard that names a
+    runtime child has to move, or a master-root install loses the marker check on it."""
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    for line in src.splitlines():
+        if "_STUDIO_HOME_IS_CUSTOM" not in line:
+            continue
+        assert not any(
+            name in line for name in ("$NODE_DIR", "$LLAMA_CPP_DIR", "$WHISPER_CPP_DIR")
+        ), line
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    assert "$RuntimeRootIsCustom = $StudioHomeIsCustom -or [bool](Get-MasterRootOverride)" in ps
+    for line in ps.splitlines():
+        if "$StudioHomeIsCustom" not in line:
+            continue
+        assert not any(
+            name in line for name in ("$LlamaCppDir", "$WhisperCppDir", "$NodeDir")
+        ), line

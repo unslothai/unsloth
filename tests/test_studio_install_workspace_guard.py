@@ -402,14 +402,21 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     sh_src = SETUP_SH.read_text(encoding = "utf-8")
     sh_idx = sh_src.index("_assert_studio_owned_or_absent() {")
     sh_func = sh_src[sh_idx : sh_idx + 600]
+    # The caller may name the flag (the runtime children pass _RUNTIME_ROOT_IS_CUSTOM), but the
+    # default has to stay the canonical one.
     assert (
-        '"$_STUDIO_HOME_IS_CUSTOM" = true' in sh_func
-    ), "setup.sh _assert_studio_owned_or_absent must gate on _STUDIO_HOME_IS_CUSTOM"
+        '_aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"' in sh_func
+        and '"$_aso_custom" = true' in sh_func
+    ), "setup.sh _assert_studio_owned_or_absent must gate on the canonical custom-root flag"
     assert (
         "_LEGACY_STUDIO_HOME=" in sh_src
         and "_studio_home_canon=" in sh_src
         and "_STUDIO_HOME_IS_CUSTOM=" in sh_src
     ), "setup.sh must compute the canonical custom-root flag"
+    assert (
+        '_RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"' in sh_src
+        and '[ -z "$_MASTER_ROOT" ] || _RUNTIME_ROOT_IS_CUSTOM=true' in sh_src
+    ), "setup.sh must widen the flag to a master root, which moves the runtime children"
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
@@ -417,8 +424,9 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     # out of.
     ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
-        "$StudioHomeIsCustom -and" in ps_func
-    ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on $StudioHomeIsCustom"
+        "$isCustomRoot = $StudioHomeIsCustom" in ps_func
+        and "$isCustomRoot -and" in ps_func
+    ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on the canonical custom-root flag"
     assert (
         "$StudioOwnedMarker) -PathType Leaf" in ps_func
     ), "setup.ps1 marker check must use -PathType Leaf so a directory cannot satisfy it"
@@ -434,8 +442,8 @@ def test_setup_ps1_inplace_git_sync_marks_studio_owned():
         "Mark-StudioOwned -Path $LlamaCppDir" in inplace_block
     ), "in-place git-sync branch must call Mark-StudioOwned on success"
     assert (
-        "$StudioHomeIsCustom" in inplace_block
-    ), "in-place Mark-StudioOwned call should be gated on $StudioHomeIsCustom"
+        "$RuntimeRootIsCustom" in inplace_block
+    ), "in-place Mark-StudioOwned call should be gated on $RuntimeRootIsCustom"
 
 
 def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():

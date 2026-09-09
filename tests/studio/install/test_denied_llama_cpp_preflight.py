@@ -33,6 +33,7 @@ SHARED_FUNCTIONS = (
     "Write-PathAccessDenied",
     "Get-CanonicalDir",
     "Test-StudioHomeIsCustom",
+    "Get-MasterRootOverride",
     "Get-ManagedLlamaCppDir",
     "Invoke-ManagedLlamaCppPreflight",
 )
@@ -214,11 +215,12 @@ def test_a_custom_studio_home_is_never_called_a_cache_we_own() -> None:
     """Do not call an unreadable custom Unsloth home a managed cache."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     # Use the same predicate for path selection and ownership wording.
-    assert "$homeIsCustom = Test-StudioHomeIsCustom" in body
+    # A master root counts as custom too: it moves llama.cpp out of the default location.
+    assert "$homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)" in body
     assert "-OwnershipUnverified:$homeIsCustom" in body
     assert (
         'Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"'
-        " -OwnershipUnverified:$StudioHomeIsCustom" in SETUP_PS1
+        " -OwnershipUnverified:$RuntimeRootIsCustom" in SETUP_PS1
     )
 
 
