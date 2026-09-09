@@ -7777,6 +7777,12 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
+        # The cache this step reads, named on stdout so a background prefetch can be
+        # checked against it: a prefetch that warmed a different one is why an update
+        # would still download the wheels it was supposed to already have.
+        _uv_cache_dir = (os.environ.get("UV_CACHE_DIR") or "").strip()
+        if _uv_cache_dir:
+            _safe_print(f"[TAURI:DIAG] uv cache={_uv_cache_dir}")
         pip_install(
             "Updating core packages",
             "--no-cache-dir",
