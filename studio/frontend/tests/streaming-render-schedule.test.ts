@@ -319,7 +319,8 @@ test("the block split is shared per reply without leaking between replies", () =
   // their calls through it, so the only thing keeping that honest is that the slot is keyed
   // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
   const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
-  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const withReference =
+    "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
   const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
 
   for (const reply of [plain, withReference, other, withReference, plain]) {
@@ -384,24 +385,34 @@ test("a definition that spans lines still moves the render key", () => {
     const eol = (text: string) => text.replaceAll("\n", newline);
     const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
 
+    // marked accounts for a container marker before it stores the definition, so
+    // the label, the destination and the title each have to be found behind one.
     for (const label of labels) {
-      for (const separator of [" ", "\n  "]) {
-        const opened = `${usage}${eol(`[${label}]:${separator}`)}`;
-        const destined = `${opened}https://example.com/reference`;
-        const titled = `${destined}${eol('\n  "reference"')}`;
-        const shape = JSON.stringify(eol(`[${label}]:${separator}`));
+      for (const [container, indent] of [
+        ["", "  "],
+        ["> ", "> "],
+        ["- ", "  "],
+      ] as const) {
+        for (const separator of [" ", `\n${indent}`]) {
+          const opened = `${usage}${eol(`${container}[${label}]:${separator}`)}`;
+          const destined = `${opened}https://example.com/reference`;
+          const titled = `${destined}${eol(`\n${indent}"reference"`)}`;
+          const shape = JSON.stringify(
+            eol(`${container}[${label}]:${separator}`),
+          );
 
-        assert.equal(markdownRenderScope(destined), "document", shape);
-        assert.notEqual(
-          markdownRenderKey(opened),
-          markdownRenderKey(destined),
-          `render key did not move for the destination of ${shape}`,
-        );
-        assert.notEqual(
-          markdownRenderKey(destined),
-          markdownRenderKey(titled),
-          `render key did not move for the title of ${shape}`,
-        );
+          assert.equal(markdownRenderScope(destined), "document", shape);
+          assert.notEqual(
+            markdownRenderKey(opened),
+            markdownRenderKey(destined),
+            `render key did not move for the destination of ${shape}`,
+          );
+          assert.notEqual(
+            markdownRenderKey(destined),
+            markdownRenderKey(titled),
+            `render key did not move for the title of ${shape}`,
+          );
+        }
       }
     }
   }

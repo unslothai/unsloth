@@ -91,8 +91,9 @@ const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // have already been accounted for, so the label may sit behind any mix of them.
 // A block quote marker may be followed by nothing, but a list marker needs whitespace after
 // it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
+const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
 const LINK_DEFINITION_LINE_RE = new RegExp(
-  `^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*${LINK_DEFINITION_RE.source}`,
+  `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
   `m${LINK_DEFINITION_RE.flags}`,
 );
 // The same probe plus everything Marked stores after the label, since that is
@@ -100,7 +101,10 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // break, then an optional title that may sit on the line below it. Deriving it from
 // LINK_DEFINITION_LINE_RE keeps the scope and key on the same definition grammar.
 // Matching per line missed multiline labels. Breaks are plain `\n` because
-// documentProse normalises first.
+// documentProse normalises first, and a continuation carries CONTAINER_PREFIX
+// for the same reason the label does: marked strips the repeated `>` or list
+// indent off `> [g]: /url` + `> "title"` and stores the title, so a continuation
+// that admitted only whitespace went blind to every definition in a container.
 //
 // A wrapped title is the documented residual: this stops at the title's opening
 // line, so the link keeps its old title until the message settles. Following it
@@ -108,7 +112,7 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // capturing to the end of the definition's paragraph, remounts the tree once a
 // frame on any prose that follows a definition.
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?[^\\n]*(?:\\n${CONTAINER_PREFIX}["'(][^\\n]*)?`,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 // The two block shapes whose body is literal code: an opening fence, and an indent that
