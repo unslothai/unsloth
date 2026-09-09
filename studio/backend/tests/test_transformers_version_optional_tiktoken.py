@@ -491,7 +491,37 @@ def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
     monkeypatch.setenv("UV_OFFLINE", "1")
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert len(calls) == 1 and calls[0][0] == "uv"
+    # Without uv there is no cache to answer from, and pip is still not asked.
+    calls.clear()
+    monkeypatch.setattr(tv.shutil, "which", lambda name: None)
+    assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
+    assert calls == []
+    monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setenv("UV_OFFLINE", "0")
     calls.clear()
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert [c[0] for c in calls] == ["uv", tv.sys.executable]
+
+
+def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_path, monkeypatch):
+    """The owned marker lands before the first package; a first install that then fails
+    must not leave a marker-only or partial tree that the next offline call reads as a
+    tree worth keeping and never asks the cache for again."""
+    root = tmp_path / ".venv_t5_550"
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert not root.exists()
+    # The cache is populated now: the next call asks again instead of keeping a husk.
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert installed == list(tv._VENV_T5_550_PACKAGES)
+    # A marker-only directory is not content either.
+    root2 = tmp_path / "marker-only"
+    root2.mkdir()
+    (root2 / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
+    assert tv._sidecar_has_content(str(root2)) is False
+    (root2 / "keep.txt").write_text("", encoding = "utf-8")
+    assert tv._sidecar_has_content(str(root2)) is True

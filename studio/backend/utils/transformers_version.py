@@ -2388,13 +2388,13 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         )
         if result.returncode == 0:
             return True
-        if _runtime_repair_is_offline():
-            # pip has no offline mode: with the network declared absent, uv's answer
-            # from the cache is the only one there is.
-            logger.warning("uv could not install %s from the cache offline", pkg)
-            return False
-        logger.warning("uv install of %s failed, falling back to pip", pkg)
-
+        logger.warning("uv install of %s failed", pkg)
+    if _runtime_repair_is_offline():
+        # pip has no offline mode: with the network declared absent, uv's answer from
+        # the cache is the only one there is, and without uv there is none.
+        logger.warning("%s not installed: the session is offline and pip would use the network", pkg)
+        return False
+    logger.warning("installing %s with pip", pkg)
     result = subprocess.run(
         [
             sys.executable,
@@ -2744,6 +2744,18 @@ def _runtime_repair_is_offline() -> bool:
     return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
 
 
+def _sidecar_has_content(venv_dir: str) -> bool:
+    """Whether a sidecar directory holds anything beyond the ownership marker.
+
+    The owned marker is written before the first package lands, so a directory holding
+    only it is a first install that has not happened yet, not a tree worth keeping.
+    """
+    try:
+        return any(name != _STUDIO_OWNED_MARKER for name in os.listdir(venv_dir))
+    except OSError:
+        return False
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
@@ -2755,7 +2767,7 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     # it (the latest sidecar's staging directory, a first install) has nothing to lose,
     # and uv's offline mode installs from a warm cache; the pip fallback, which would
     # reach for the network, is skipped by _install_to_dir under the same switch.
-    if _runtime_repair_is_offline() and os.path.isdir(venv_dir) and os.listdir(venv_dir):
+    if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
         logger.warning(
             "%s not found or incomplete at %s, and this session is offline -- left as is "
             "until the next online update",
@@ -2783,6 +2795,10 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
                 # would shadow the ambient one and fail at tokenization.
                 _remove_optional_remnants(venv_dir, pkg)
                 continue
+            # Nothing usable was there before this began (it was just wiped), and a
+            # partial tree left behind would count as one next time: offline, the
+            # guard above would then keep it instead of asking the cache again.
+            shutil.rmtree(venv_dir, ignore_errors = True)
             return False
     logger.info("Installed %s to %s", label, venv_dir)
     return True
