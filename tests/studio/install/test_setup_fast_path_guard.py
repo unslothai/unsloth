@@ -165,3 +165,26 @@ def test_the_ps1_sidecar_predicate_reads_the_shim_answer_under_native_error_prom
         "& python $shim sidecar"
     )
     assert "finally" in body
+
+
+def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
+    """An interrupted install leaves tiktoken-*.dist-info with no package beside it; the
+    sidecar predicate accepts that sidecar (tiktoken is optional), so the top-up is the
+    only repair left, and a dist-info-only check would skip it forever."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_sidecar_top_up_tiktoken() {")
+    assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Repair-SidecarTiktoken {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert 'Join-Path $payload "__init__.py"' in body
+
+
+def test_the_ps1_native_error_preference_is_tested_for_existence_not_version():
+    """The variable exists from PowerShell 7.3; under Set-StrictMode reading an absent
+    variable is a terminating error, so 7.0 to 7.2 must not be sent to that read."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "Get-Variable -Name PSNativeCommandUseErrorActionPreference" in body
+    assert "PSVersion.Major -ge 7" not in body
