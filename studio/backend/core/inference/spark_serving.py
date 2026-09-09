@@ -974,7 +974,46 @@ def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[s
 
 
 # The rpc-server under every name the bundles have used, in ``spark_cluster``'s order.
-_RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
+_RPC_SERVER_STEMS = ("ggml-rpc-server", "rpc-server")
+
+
+def executable_suffixes() -> Tuple[str, ...]:
+    """The suffixes a runnable file can carry on this platform, most likely first.
+
+    Windows has no execute bit, so ``os.access(path, os.X_OK)`` is true for ANY existing file
+    there and guards nothing: the name is what decides. POSIX keeps the empty suffix, where
+    the extensionless name is the real one."""
+    if os.name != "nt":
+        return ("",)
+    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    found = tuple(part.strip().lower() for part in raw.split(";") if part.strip().startswith("."))
+    return found or (".exe",)
+
+
+def rpc_server_names() -> Tuple[str, ...]:
+    """Candidate file names for the rpc-server, in the order this platform should try them.
+
+    Built rather than listed, because a fixed list put the extensionless names first for every
+    platform: on Windows a stray extensionless file then beat the real ``.exe`` and was
+    returned as the binary, which is worse than returning nothing."""
+    return tuple(stem + suffix for stem in _RPC_SERVER_STEMS for suffix in executable_suffixes())
+
+
+def is_executable_file(path: Any) -> bool:
+    """Whether ``path`` is a file this platform would run. See ``executable_suffixes``.
+
+    os.path rather than pathlib throughout: ``Path()`` picks its flavour from ``os.name`` at
+    construction, so a test that simulates Windows would build a WindowsPath and this would
+    answer about a path the running system cannot even stat."""
+    name = str(path)
+    try:
+        if not osp.isfile(name):
+            return False
+    except OSError:
+        return False
+    if os.name != "nt":
+        return os.access(name, os.X_OK)
+    return osp.splitext(name)[1].lower() in executable_suffixes()
 
 
 def llama_server_binary() -> Optional[str]:
@@ -1001,14 +1040,13 @@ def rpc_server_binary() -> Optional[str]:
     ships llama-server alone."""
     launched = llama_server_binary()
     if launched:
-        directory = Path(launched).parent
-        for name in _RPC_SERVER_NAMES:
-            candidate = directory / name
-            try:
-                if candidate.is_file() and os.access(candidate, os.X_OK):
-                    return str(candidate)
-            except OSError:
-                continue
+        # os.path, like is_executable_file: this resolution is about names on disk and must
+        # not depend on which pathlib flavour os.name selects.
+        directory = osp.dirname(osp.abspath(launched))
+        for name in rpc_server_names():
+            candidate = osp.join(directory, name)
+            if is_executable_file(candidate):
+                return candidate
     sc = _cluster()
     try:
         found = sc.rpc_server_binary() if sc is not None else None

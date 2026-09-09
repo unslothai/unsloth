@@ -156,7 +156,20 @@ def write_fake_llama_server(
     """A stand-in for the real parser and the real load path. ``hidden_flags`` is a flag the
     fork strips from argv and never prints; ``refuses_groups_with_drafter`` is the fork before
     PR #187, which -- like the real one -- refuses inside ``load_model`` and NOT at ``--help``,
-    which is why the usage text cannot probe it."""
+    which is why the usage text cannot probe it.
+
+    POSIX only, and deliberately so rather than by oversight. The stand-in has to be a file the
+    resolver will name AND the OS will run, and on Windows nothing satisfies both: the backend
+    looks for ``llama-server.exe`` (llama_cpp.py ``_find_llama_server_binary``), which is the
+    right name for a real distribution, and Windows runs a ``.exe`` only if it is a PE image.
+    Renaming this ``/bin/sh`` script to ``.exe`` would get it found and then fail at spawn, so
+    the skip is at the fixture instead: one honest reason on every test that needs to execute a
+    fake server. What those tests cover -- argv assembly, the capability probe, topology -- has
+    no platform branch, so POSIX coverage is the real coverage. The platform-specific code that
+    DOES branch is tested directly, without a spawn, in the ``is_executable_file`` tests above.
+    """
+    if os.name == "nt":
+        pytest.skip("the fake llama-server is a POSIX shell script; Windows cannot exec it")
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
     reject = "--pipeline-groups" not in help_text and "--pipeline-groups" not in hidden_flags
@@ -3026,3 +3039,53 @@ def test_only_files_this_process_wrote_are_copied(tmp_path):
         assert found == [str(inside)]
     finally:
         inside.unlink(missing_ok = True)
+
+
+def test_windows_picks_the_exe_and_refuses_a_file_it_cannot_run(monkeypatch, tmp_path):
+    # os.access(path, os.X_OK) is true for ANY existing file on Windows, so it guarded nothing,
+    # and the candidate list put the extensionless names first for every platform, so a stray
+    # extensionless file beat the real .exe and was returned as the binary.
+    stray = tmp_path / "ggml-rpc-server"
+    stray.write_text("not a program", encoding = "utf-8")
+    real = tmp_path / "ggml-rpc-server.exe"
+    real.write_bytes(b"MZ")
+    server = tmp_path / "llama-server.exe"
+    server.write_bytes(b"MZ")
+    # Held as strings: once os.name says nt, Path() builds a WindowsPath this system refuses.
+    stray, real, server = str(stray), str(real), str(server)
+    missing = os.path.join(str(tmp_path), "missing.exe")
+    directory = str(tmp_path)
+
+    monkeypatch.setattr(ss.os, "name", "nt")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    names = ss.rpc_server_names()
+    assert names[0] == "ggml-rpc-server.com" and "ggml-rpc-server.exe" in names
+    assert "ggml-rpc-server" not in names, "an extensionless file is not runnable on Windows"
+
+    assert ss.is_executable_file(stray) is False
+    assert ss.is_executable_file(real) is True
+    assert ss.is_executable_file(missing) is False
+    assert ss.is_executable_file(directory) is False
+
+    # And the resolver picks the .exe even though the stray file shares the stem.
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: server)
+    assert ss.rpc_server_binary() == real
+
+
+def test_posix_still_answers_on_the_bit_and_the_bare_name(monkeypatch, tmp_path):
+    assert ss.os.name != "nt", "this test describes the POSIX side"
+    assert ss.executable_suffixes() == ("",)
+    assert ss.rpc_server_names() == ("ggml-rpc-server", "rpc-server")
+
+    plain = tmp_path / "ggml-rpc-server"
+    plain.write_text("#!/bin/sh\n", encoding = "utf-8")
+    assert ss.is_executable_file(plain) is False, "no execute bit"
+    plain.chmod(0o755)
+    assert ss.is_executable_file(plain) is True
+
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n", encoding = "utf-8")
+    server.chmod(0o755)
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(server))
+    assert ss.rpc_server_binary() == str(plain)
