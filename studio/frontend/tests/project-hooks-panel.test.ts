@@ -17,7 +17,7 @@ const panel = await readFile(
 );
 const controls = await readFile(
   new URL(
-    "../src/features/chat/components/project-checks-panel.tsx",
+    "../src/features/chat/components/project-hooks-landing-panel.tsx",
     import.meta.url,
   ),
   "utf8",
@@ -30,12 +30,11 @@ const handlerPresentation = await readFile(
   "utf8",
 );
 
-test("project checks mount verification and hook review together", () => {
+test("the hooks landing panel binds review to the saved project", () => {
   assert.match(
     controls,
     /import \{ ProjectHooksPanel \} from "\.\/project-hooks-panel";/,
   );
-  assert.match(controls, /<ProjectVerificationPanel/);
   assert.match(controls, /<ProjectHooksPanel[\s\S]*project=\{project\}/);
 });
 
