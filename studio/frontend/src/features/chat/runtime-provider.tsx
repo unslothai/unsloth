@@ -874,7 +874,28 @@ function scheduleGenerationRecovery(
     // holds nothing yet, and a fresh literal there would hand the new one back an option it has already
     // been folding frames with -- a python card that loses WHICH session ran names a folder from the
     // reader's current scope instead of the run's.
-    const replayOptions: { sandboxSessionId?: string } = {};
+    const replayOptions: {
+      sandboxSessionId?: string;
+      // A call parked on its approval must reopen parked in THIS tab too: live keyed the store's pending
+      // map with `${scopeId}:${approvalId}`, so the replay needs that same scope and a registration of its
+      // own to re-raise the card as awaiting. register/resolve are exactly what live calls at its tool_start.
+      toolConfirmations?: {
+        scopeId?: string;
+        register(id: string, approvalId: string): void;
+        resolve(id: string): void;
+      };
+    } = {};
+    replayOptions.toolConfirmations = {
+      register: (id, approvalId) =>
+        useChatRuntimeStore.getState().setToolConfirmation(
+          id,
+          approvalId,
+          replayOptions.sandboxSessionId ?? "",
+          replayOptions.toolConfirmations?.scopeId ?? "",
+        ),
+      resolve: (id) =>
+        useChatRuntimeStore.getState().clearToolConfirmation(id),
+    };
     let replay = createRecoveryReplay(
       storedMessage.content,
       Array.isArray(metadata.reasoningDurations)
@@ -1032,6 +1053,10 @@ function scheduleGenerationRecovery(
           // happens to be on.
           replayOptions.sandboxSessionId ??=
             update.run.requestPayload.session_id;
+          if (replayOptions.toolConfirmations) {
+            replayOptions.toolConfirmations.scopeId ??= `${update.run.requestPayload
+              .session_id || "_default"}:${threadId}`;
+          }
           if (!identityValidated) {
             if (
               update.run.threadId !== threadId ||

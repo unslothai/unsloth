@@ -122,7 +122,18 @@ export type RecoveryReplay = {
 export function createRecoveryReplay(
   seed: unknown,
   seedDurations?: readonly number[],
-  options?: { sandboxSessionId?: string },
+  options?: {
+    sandboxSessionId?: string;
+    // A call parked on its approval when this tab attached must reopen PARKED: keyed by the run's scope
+    // exactly as live keyed it, and registered with THIS tab's store so Approve/Deny renders. The caller
+    // wires register/resolve to setToolConfirmation/clearToolConfirmation; scopeId mirrors live's
+    // toolConfirmationScopeId, filled lazily beside sandboxSessionId from the first frame that carries a run.
+    toolConfirmations?: {
+      scopeId?: string;
+      register?(id: string, approvalId: string): void;
+      resolve?(id: string): void;
+    };
+  },
 ): RecoveryReplay {
   // Read lazily, at the frame that needs it: a follower builds its accumulator before the stored run is fetched,
   // then fills this in. A replayed python/terminal card that loses WHICH session ran names a folder from the
@@ -345,7 +356,21 @@ export function createRecoveryReplay(
       parts[existingIndex] = { ...part, toolCallId: id, argsText, args };
       return true;
     }
-    const id = partIdFor(backendId || undefined, undefined);
+    // A parked call is keyed by the run's scope, not by whatever id this tab would mint for it. The map
+    // above resolves a backend id through its FIRST colon segment (`<backend>:<uuid>` seeds match that way);
+    // a scoped id's first segment is the SESSION, so routing one through that map misses and mints a second
+    // card. Matched whole here instead, exactly where live writes `${toolConfirmationScopeId}:${approvalId}`.
+    const awaiting = type === "tool_start" && event.awaiting_confirmation === true;
+    const approvalId =
+      awaiting && typeof event.approval_id === "string" ? event.approval_id : "";
+    const openId = backendId ? idsByBackendId.get(backendId) : undefined;
+    const reuseOpenPart =
+      openId !== undefined && parts.some((p) => p.toolCallId === openId);
+    const id =
+      awaiting && approvalId && !reuseOpenPart
+        ? `${options?.toolConfirmations?.scopeId ?? "_default"}:${approvalId}`
+        : partIdFor(backendId || undefined, undefined);
+    if (awaiting && backendId) idsByBackendId.set(backendId, id);
     if (type === "tool_start") {
       const at = cardNamed(backendId);
       const existing = at === -1 ? undefined : parts[at];
@@ -354,7 +379,7 @@ export function createRecoveryReplay(
         typeof event.arguments_text === "string" && event.arguments_text
           ? event.arguments_text
           : JSON.stringify(args);
-      return patchPart(id, {
+      const wrote = patchPart(id, {
         toolName: event.tool_name,
         args: existing ? { ...((existing.args as object) ?? {}), ...args } : args,
         argsText,
@@ -362,7 +387,13 @@ export function createRecoveryReplay(
           ? { provenance: event.provenance }
           : {}),
       });
+      // A parked call reopens parked: the registration live made at its own tool_start now happens in
+      // this tab too, so Approve/Deny renders on the card the run keyed it by.
+      if (awaiting) options?.toolConfirmations?.register?.(id, approvalId);
+      return wrote;
     }
+    // And it stops asking the moment its end arrives -- live clears on every tool_end.
+    if (type === "tool_end") options?.toolConfirmations?.resolve?.(id);
     // tool_end: the call's result. A longer captured stream beats the model-visible result, which
     // is the live path's rule too, so a reopened card shows what actually ran rather than its tail.
     if (existingIndex === -1) return false;

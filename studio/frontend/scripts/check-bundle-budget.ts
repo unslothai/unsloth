@@ -43,9 +43,9 @@ export const BUDGET = {
   // ceiling by a tenth of a kilobyte.
   // Raised again for durable agentic turns (#10365): same build both sides, merge
   // base 191b69c1 at 1,582.0 KB transfer / 5,295.8 KB raw against the branch at
-  // 1,583.9 KB / 5,301.0 KB — the replay/gate code sits inside the chat chunk,
-  // which is entry-static, so it crossed the old 1,620.0 ceiling by 1.9 KB.
-  transferBytes: 1_622_000,
+  // 1,584.3 KB / 5,302.1 KB — replay sources, parked-approval keys and the gate all
+  // sit inside the chat chunk, which is entry-static; nothing here defers to import().
+  transferBytes: 1_623_000,
   rawBytes: 5_500_000,
 };
 

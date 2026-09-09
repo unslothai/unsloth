@@ -325,8 +325,12 @@ test("the follower hands the run its own sandbox session, at both places it buil
     "every accumulator the follower builds must be handed the holder it can still be updated through",
   );
   assert.ok(
-    provider.includes("const replayOptions: { sandboxSessionId?: string } = {};"),
-    "the session has to travel in one object both constructions share",
+    // Pinned on shape, not literal: the holder now carries the approval registration too (scoped ids),
+    // and it is the carrying that matters -- not the exact spelling of the literal.
+    provider.includes("const replayOptions:") &&
+      provider.includes("sandboxSessionId?: string;") &&
+      provider.includes("toolConfirmations?:"),
+    "the session, and a parked call's approval, have to travel in one object both constructions share",
   );
   assert.ok(
     provider.includes("replayOptions.sandboxSessionId ??=") &&
@@ -465,4 +469,89 @@ test("derived web sources land before the citation parts, as live appends them",
   assert.deepEqual(parts.map((part) => part.type), ["text", "tool-call", "source", "source"]);
   assert.equal(parts[2].id, "https://web.example/b");
   assert.ok(String(parts[3].id).startsWith("https://doc.example/c#"), "citations last, after the web source");
+});
+
+test("a parked call reopens on the one card its run keyed it by", () => {
+  // Live keys a parked card `${scopeId}:${approvalId}` and registers that id with the store; the seeded
+  // part already carries it. Matching it WHOLE is what keeps one parked call on one card -- routing the
+  // scoped id through the backend-id map splits at the first colon, reads the session, misses, mints a
+  // second card, and the store never hears that the first one is waiting on an approval.
+  const calls: Array<[string, string]> = [];
+  const replay = createRecoveryReplay(
+    [
+      { type: "text", text: "runs once" },
+      {
+        type: "tool-call",
+        toolCallId: "sess:thread:appr_1",
+        toolName: "bash",
+        args: {},
+        argsText: "{}",
+      },
+    ],
+    undefined,
+    {
+      toolConfirmations: {
+        scopeId: "sess:thread",
+        register: (id, approvalId) => {
+          calls.push([id, approvalId]);
+        },
+        resolve: (id) => {
+          calls.push([id, "resolved"]);
+        },
+      },
+    },
+  );
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_start",
+      tool_call_id: "call_0",
+      tool_name: "bash",
+      arguments: { cmd: "ls" },
+      arguments_text: '{"cmd":"ls"}',
+      approval_id: "appr_1",
+      awaiting_confirmation: true,
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  const cards = parts.filter((part) => part.type === "tool-call");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].toolCallId, "sess:thread:appr_1");
+  assert.deepEqual(calls, [["sess:thread:appr_1", "appr_1"]]);
+
+  // And it stops asking the moment its end arrives -- resolved through the SAME card, not a new one.
+  replay.applyChunk({ _toolEvent: { type: "tool_end", tool_call_id: "call_0", result: "done" } });
+  const done = replay.content() as Array<Record<string, unknown>>;
+  const endCards = done.filter((part) => part.type === "tool-call");
+  assert.equal(endCards.length, 1);
+  assert.equal(String(endCards[0].result).includes("done"), true);
+  assert.deepEqual(calls[1], ["sess:thread:appr_1", "resolved"]);
+});
+
+test("a parked call the reader never saw still asks to be approved", () => {
+  // No seed at all: the frames alone must produce ONE card, keyed scoped like live keys it, and this
+  // tab's store must hear about it exactly as the watching tab did.
+  const calls: Array<[string, string]> = [];
+  const replay = createRecoveryReplay("", undefined, {
+    toolConfirmations: {
+      scopeId: "sess:thread",
+      register: (id, approvalId) => {
+        calls.push([id, approvalId]);
+      },
+    },
+  });
+  replay.applyChunk({ choices: [{ delta: { content: "x" } }] });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_start",
+      tool_call_id: "call_0",
+      tool_name: "bash",
+      arguments: {},
+      approval_id: "appr_9",
+      awaiting_confirmation: true,
+    },
+  });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  const card = parts.find((part) => part.type === "tool-call")!;
+  assert.equal(card.toolCallId, "sess:thread:appr_9");
+  assert.deepEqual(calls, [["sess:thread:appr_9", "appr_9"]]);
 });
