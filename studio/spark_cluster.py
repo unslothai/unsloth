@@ -1458,9 +1458,8 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         # or refuses to run, so an unguarded probe would abort doctor with a traceback.
         try:
             smi_ok = (
-                subprocess.run(
-                    ["nvidia-smi", "-L"], capture_output = True, timeout = 30
-                ).returncode == 0
+                subprocess.run(["nvidia-smi", "-L"], capture_output = True, timeout = 30).returncode
+                == 0
             )
         except Exception:
             smi_ok = False

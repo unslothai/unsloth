@@ -780,8 +780,10 @@ def serve(
     ),
     slots: int = typer.Option(16, "--slots", help = "Server slots per engine."),
     rpc_port: int = typer.Option(
-        None, "--rpc-port", help = "Port for the peer's RPC server. The preflight names this "
-        "option when the default is taken by something else."
+        None,
+        "--rpc-port",
+        help = "Port for the peer's RPC server. The preflight names this "
+        "option when the default is taken by something else.",
     ),
 ) -> None:
     """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.

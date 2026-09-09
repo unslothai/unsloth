@@ -180,7 +180,8 @@ def merge(
             cfgs.append((path, json.load(f)))
     for path, cfg in cfgs[1:]:
         differing = sorted(
-            k for k in set(cfg) | set(cfgs[0][1])
+            k
+            for k in set(cfg) | set(cfgs[0][1])
             if cfg.get(k) != cfgs[0][1].get(k) and k not in _CFG_IGNORED
         )
         if differing:

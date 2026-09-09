@@ -74,7 +74,8 @@ def _unrun_parameters(owner, run_names: Sequence[str]) -> list[str]:
     keeps this honest for models nobody has tried yet."""
     kept = set(run_names)
     return [
-        name for name, child in owner.named_children()
+        name
+        for name, child in owner.named_children()
         if name not in kept and any(p.numel() for p in child.parameters(recurse = True))
     ]
 
@@ -331,7 +332,8 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     # snapshot_download takes a repo id, so handing it a path fails before a tensor is read.
     # Local checkpoints matter most here: --shard-load exists for models too large to refetch.
     snap = (
-        model_name if osp.isdir(model_name)
+        model_name
+        if osp.isdir(model_name)
         else snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
     )
 
@@ -1060,9 +1062,11 @@ def stage_module_cls():
             )
             self.rotary_for = {}
             for name in self.position_params:
-                suffix = name[len("position_embeddings"):].lstrip("_")
-                found = self.rotary_emb if suffix in ("", "global") else getattr(
-                    owner, f"rotary_emb_{suffix}", None
+                suffix = name[len("position_embeddings") :].lstrip("_")
+                found = (
+                    self.rotary_emb
+                    if suffix in ("", "global")
+                    else getattr(owner, f"rotary_emb_{suffix}", None)
                 )
                 self.rotary_for[name] = self.rotary_emb if found is None else found
             self.rotary_wants_layer_type = self.rotary_emb is not None and (
@@ -1080,13 +1084,17 @@ def stage_module_cls():
             # bidirectionally, at a flattering loss, and the checkpoint is not a causal LM.
             impl = getattr(getattr(top, "config", None), "_attn_implementation", "sdpa")
             self.needs_causal_mask = impl not in (
-                "sdpa", "flash_attention_2", "flash_attention_3",
+                "sdpa",
+                "flash_attention_2",
+                "flash_attention_3",
             )
             embed_name, embed = _first_named(owner, _EMBED_NAMES)
             norm_name, norm = _first_named(owner, _FINAL_NORM_NAMES)
             # Every stage checks the whole stack, not just the part it runs: a dropped module is
             # wrong for the model however the layers happen to be divided up.
-            skipped = _unrun_parameters(owner, (embed_name, norm_name, container_name, "rotary_emb"))
+            skipped = _unrun_parameters(
+                owner, (embed_name, norm_name, container_name, "rotary_emb")
+            )
             if skipped:
                 # GPT-2 keeps learned positions in `wpe` and OPT in `embed_positions`, neither of
                 # which lives inside a decoder layer, so running the layers alone gives the model
@@ -1107,9 +1115,10 @@ def stage_module_cls():
             self.pass_position_embeddings = True
             if len(self.layers):
                 try:
-                    self.pass_position_embeddings = "position_embeddings" in inspect.signature(
-                        type(self.layers[0]).forward
-                    ).parameters
+                    self.pass_position_embeddings = (
+                        "position_embeddings"
+                        in inspect.signature(type(self.layers[0]).forward).parameters
+                    )
                 except (TypeError, ValueError):
                     pass
             if self.is_first and not isinstance(self.embed_tokens, torch.nn.Module):
@@ -1129,7 +1138,11 @@ def stage_module_cls():
 
         @staticmethod
         def _layer_type(layer):
-            for holder in (layer, getattr(layer, "self_attn", None), getattr(layer, "attention", None)):
+            for holder in (
+                layer,
+                getattr(layer, "self_attn", None),
+                getattr(layer, "attention", None),
+            ):
                 for name in ("layer_type", "attention_type"):
                     found = getattr(holder, name, None) if holder is not None else None
                     if isinstance(found, str):
@@ -1144,7 +1157,8 @@ def stage_module_cls():
                     continue
                 out[name] = (
                     rotary(h, ids, layer_type = self._layer_type(layer))
-                    if self.rotary_wants_layer_type else rotary(h, ids)
+                    if self.rotary_wants_layer_type
+                    else rotary(h, ids)
                 )
             return out
 
