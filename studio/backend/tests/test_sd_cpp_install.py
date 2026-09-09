@@ -3450,7 +3450,14 @@ def test_a_rate_limited_api_stops_the_fallback_ladder(monkeypatch, capsys):
     three can only fail the same way and push the reset out."""
     seen = []
 
-    def fake_fetch(tag, *, repo, token, timeout = 30.0, allow_latest = True):
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
         seen.append((repo, tag))
         raise urllib.error.HTTPError(f"https://api/{repo}", 403, "rate limited", None, None)
 

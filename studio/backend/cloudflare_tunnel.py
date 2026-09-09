@@ -159,7 +159,12 @@ def find_cloudflared() -> Optional[str]:
 _DOWNLOAD_ATTEMPTS = 3
 
 
-def _download(url: str, dest: Path, *, attempts: int = _DOWNLOAD_ATTEMPTS) -> bool:
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    attempts: int = _DOWNLOAD_ATTEMPTS,
+) -> bool:
     """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool."""
     import tempfile
     import urllib.request

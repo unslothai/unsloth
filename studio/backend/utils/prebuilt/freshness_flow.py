@@ -218,7 +218,9 @@ def _fetch_newest_published_release_blocking(
         if exc.code in GITHUB_RATE_LIMIT_STATUS:
             wait = note_github_rate_limited(exc.headers)
             logger.debug(
-                log_message, repo = repo, error = f"HTTP {exc.code}: rate limited, backing off {int(wait)}s"
+                log_message,
+                repo = repo,
+                error = f"HTTP {exc.code}: rate limited, backing off {int(wait)}s",
             )
         else:
             logger.debug(log_message, repo = repo, error = str(exc))
@@ -273,7 +275,6 @@ def download_host_latest_release_tag(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[str]:
     from utils.utils import call_with_deadline
-
     try:
         return call_with_deadline(
             lambda: _download_host_latest_release_tag_blocking(repo, timeout),
