@@ -3261,9 +3261,7 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
     # And not behind what is installed: `unsloth studio setup` or a manual upgrade can
     # move the core packages past a plan left behind, and the offline retry given the
     # old exact pins would downgrade them and call the update done.
-    installed = {
-        name: _installed_version_in(python, name) for name in ("unsloth", "unsloth-zoo")
-    }
+    installed = {name: _installed_version_in(python, name) for name in ("unsloth", "unsloth-zoo")}
     if not _studio_prefetch.plan_is_not_behind(marker, installed):
         return env
     pins = _studio_prefetch.prefetched_core_pins(marker)

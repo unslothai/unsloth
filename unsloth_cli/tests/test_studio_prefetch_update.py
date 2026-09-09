@@ -1174,11 +1174,17 @@ def test_a_zoo_only_marker_meets_the_floor_through_the_installed_unsloth():
 
 def test_a_plan_behind_the_installed_core_is_not_handed_to_the_offline_retry():
     marker = {"core_plan": {"unsloth": "2026.9.3", "unsloth_zoo": "2026.9.5"}}
-    assert _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.5"})
+    assert _studio_prefetch.plan_is_not_behind(
+        marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.5"}
+    )
     assert _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.1", "unsloth-zoo": None})
     # setup or a manual upgrade moved unsloth past the plan: the old pin would downgrade it.
-    assert not _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.4", "unsloth-zoo": "2026.9.5"})
-    assert not _studio_prefetch.plan_is_not_behind(marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.6"})
+    assert not _studio_prefetch.plan_is_not_behind(
+        marker, {"unsloth": "2026.9.4", "unsloth-zoo": "2026.9.5"}
+    )
+    assert not _studio_prefetch.plan_is_not_behind(
+        marker, {"unsloth": "2026.9.3", "unsloth-zoo": "2026.9.6"}
+    )
     assert _studio_prefetch.plan_is_not_behind({"state": "noop"}, {"unsloth": "2026.9.9"})
 
 
