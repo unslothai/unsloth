@@ -1268,12 +1268,25 @@ def layer_split_extra_args(
     return out
 
 
+# Resolved here rather than in the child. preexec_fn runs between fork and exec, where any lock a
+# non-surviving thread held is held forever, so an import or a library load there can hang the
+# child outright; the docs' rule is that the callable touch as few libraries as possible. None on
+# any platform without glibc, which is also where there is no PDEATHSIG to set.
+try:
+    import ctypes as _ctypes
+
+    _LIBC = _ctypes.CDLL("libc.so.6", use_errno = True)
+except Exception:
+    _LIBC = None
+
+
 def _die_with_parent() -> None:  # pragma: no cover - runs in the forked child
-    """``PR_SET_PDEATHSIG(SIGKILL)``, so the ssh client cannot outlive this process. Runs
-    between fork and exec, so it must not raise."""
+    """``PR_SET_PDEATHSIG(SIGKILL)``, so the ssh client cannot outlive this process. Runs between
+    fork and exec: it must not raise, must not import, and must not load a library."""
+    if _LIBC is None:
+        return
     try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG, SIGKILL
+        _LIBC.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG, SIGKILL
     except Exception:
         pass
 
