@@ -1309,6 +1309,9 @@
       "_BARE_JSON_ARGS_KEYS": {
         "kind": "assign"
       },
+      "_BARE_JSON_CLASSIFY_KEYS": {
+        "kind": "assign"
+      },
       "_BARE_JSON_NAME_RE": {
         "kind": "assign"
       },
@@ -1845,6 +1848,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "probe: str"
+      },
+      "_top_level_maskable_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_trim_param_value": {
         "kind": "assign"

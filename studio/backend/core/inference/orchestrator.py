@@ -980,6 +980,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
+        tool_protocol_active: Optional[bool] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
         frequency_penalty: float = 0.0,
@@ -1019,6 +1020,8 @@ class InferenceOrchestrator:
             cmd["preserve_thinking"] = preserve_thinking
         if continue_final_message:
             cmd["continue_final_message"] = True
+        if tool_protocol_active is not None:
+            cmd["tool_protocol_active"] = tool_protocol_active
         return cmd
 
     def _consume_token_stream(
@@ -1216,6 +1219,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
+        tool_protocol_active: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
@@ -1285,6 +1289,7 @@ class InferenceOrchestrator:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            tool_protocol_active = tool_protocol_active,
             seed = seed,
         )
 
@@ -2052,6 +2057,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
+        tool_protocol_active: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
@@ -2088,6 +2094,7 @@ class InferenceOrchestrator:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            tool_protocol_active = tool_protocol_active,
             stats_holder = stats_holder,
             presence_penalty = presence_penalty,
             seed = seed,
@@ -2149,7 +2156,12 @@ class InferenceOrchestrator:
         # cancelled leaves it empty instead of handing the loop an earlier turn's number.
         turn_stats: dict = {}
 
-        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+        def _single_turn(
+            conv: list,
+            *,
+            active_tools: Optional[list[dict]] = None,
+            tool_protocol_active: Optional[bool] = None,
+        ):
             # ``conv`` already carries any system message. ``active_tools`` lets run_safetensors_tool_loop drop one-shot
             # tools (e.g. render_html) from later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
@@ -2172,6 +2184,7 @@ class InferenceOrchestrator:
                 # Self-limiting: after a tool call the conversation ends on a tool result, so later turns render as
                 # ordinary new turns.
                 continue_final_message = continue_final_message,
+                tool_protocol_active = tool_protocol_active,
                 # Reported per turn and summed below, since the whole loop answers one request.
                 stats_holder = turn_stats,
                 presence_penalty = presence_penalty,
@@ -2307,6 +2320,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
+        tool_protocol_active: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
@@ -2361,6 +2375,7 @@ class InferenceOrchestrator:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                tool_protocol_active = tool_protocol_active,
                 seed = seed,
             )
 

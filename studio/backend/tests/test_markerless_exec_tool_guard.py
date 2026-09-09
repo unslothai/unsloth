@@ -2037,3 +2037,25 @@ def test_a_truncated_execution_call_stays_opaque_through_eof():
     gate = {"terminal", "python"}
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
     assert light(text, enabled_tool_names = gate) == []
+
+
+def test_a_blocked_call_is_opaque_in_every_data_field_not_just_arguments():
+    """A blocked object is opaque as a WHOLE. Masking only ``arguments`` left a wrapper
+    quoted in any other top-level field visible, and the passthrough healer promoted it."""
+    from core.tool_healing import parse_tool_calls_from_text as light
+
+    wrapper = "<function=python><parameter=code>print(1)</parameter></function>"
+    gate = {"terminal", "python"}
+    for label, text in (
+        ("string field", '{"note":"%s","name":"terminal","arguments":{}}' % wrapper),
+        ("array field", '{"tags":["%s"],"name":"terminal","arguments":{}}' % wrapper),
+        ("nested object", '{"m":{"x":"%s"},"name":"terminal","arguments":{}}' % wrapper),
+    ):
+        assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == [], label
+        assert light(text, enabled_tool_names = gate) == [], label
+
+    # The classification keys stay readable, and a promotable call keeps its own fields.
+    promotable = '{"note":"see below","name":"web_search","arguments":{"query":"cats"}}'
+    calls = parse_tool_calls_from_text(promotable, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}

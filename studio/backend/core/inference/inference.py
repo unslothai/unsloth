@@ -1082,6 +1082,7 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        tool_protocol_active: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
@@ -1106,6 +1107,7 @@ class InferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            tool_protocol_active = tool_protocol_active,
             presence_penalty = presence_penalty,
         )
 

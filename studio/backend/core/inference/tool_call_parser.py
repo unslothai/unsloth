@@ -665,6 +665,70 @@ def _decoded_key(literal: str) -> "str | None":
     return value if isinstance(value, str) else None
 
 
+# The keys the scans READ to classify a call. ``arguments`` is handled separately, since a
+# blocked call's arguments keep their own structural treatment.
+_BARE_JSON_CLASSIFY_KEYS = ("name", "function")
+
+
+def _top_level_maskable_values(text: str, start: int, end: int) -> list:
+    """``(begin, stop)`` spans to blank for every top-level DATA field of the object at
+    ``start`` other than the classification keys and ``arguments``.
+
+    A blocked call is opaque as a WHOLE, not only in ``arguments``: a wrapper quoted in any
+    other field, as in ``{"note":"<function=python>...","name":"terminal"}``, stayed visible
+    and the passthrough healer promoted it as a real call. A string field is blanked whole,
+    an object or array only in its string contents, so the shape still parses."""
+    spans: list = []
+    skip = _BARE_JSON_CLASSIFY_KEYS + _BARE_JSON_ARGS_KEYS
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < end and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if depth == 1 and _decoded_key(text[i : j + 1]) not in skip:
+                k = j + 1
+                while k < end and text[k].isspace():
+                    k += 1
+                if k < end and text[k] == ":":
+                    k += 1
+                    while k < end and text[k].isspace():
+                        k += 1
+                    if k < end and text[k] in "{[":
+                        closer = _balanced_brace_end if text[k] == "{" else _balanced_bracket_end
+                        stop = closer(text, k)
+                        if stop is None:
+                            spans.extend(_string_content_spans(text, k + 1, end))
+                            return spans
+                        spans.extend(_string_content_spans(text, k + 1, stop))
+                        i = stop + 1
+                        continue
+                    if k < end and text[k] == '"':
+                        stop = k + 1
+                        while stop < end and text[stop] != '"':
+                            stop += 2 if text[stop] == "\\" else 1
+                        spans.append((k + 1, min(stop, end)))
+                        if stop >= end:
+                            return spans
+                        i = stop + 1
+                        continue
+                    # A scalar holds no markup; keep walking so later fields still mask.
+                    i = k
+                    continue
+            i = j + 1
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return spans
+        i += 1
+    return spans
+
+
 def _top_level_args_values(text: str, start: int, end: int) -> list:
     """``(begin, stop, is_string)`` for EVERY top-level argument value of the JSON call at
     ``start``. ``begin``/``stop`` bound each value's INTERIOR.
@@ -953,6 +1017,10 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
             if probe.startswith("{") and _markerless_execution_class(
                 _top_level_bare_json_name(probe)
             ):
+                spans.extend(
+                    (a + shift, b + shift)
+                    for a, b in _top_level_maskable_values(probe, 0, len(probe))
+                )
                 for begin, stop, is_string in _top_level_args_values(probe, 0, len(probe)):
                     inner = (
                         _escaped_string_content_spans(probe, begin, stop)
@@ -971,8 +1039,11 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
         # Name only, not the enabled gate: a DISABLED execution name must still hide its
         # body, or a wrapper quoted inside it is reconsidered on its own and promoted.
         if _markerless_execution_class(name):
-            # Only the ARGUMENTS: the scans that decide the call is blocked read the NAME out
-            # of this same body. ``arguments`` is accepted as an object or as a JSON string.
+            # Every DATA field, not just the arguments: the scans that decide the call is
+            # blocked read only the name, so the rest of the object can stay opaque.
+            spans.extend(
+                (a + shift, b + shift) for a, b in _top_level_maskable_values(probe, obj, lead)
+            )
             for begin, stop, is_string in values:
                 inner = (
                     _escaped_string_content_spans(probe, begin, stop)

@@ -250,3 +250,44 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+
+
+def test_orchestrator_cmd_carries_the_tool_protocol_flag():
+    """Unrestricted mode runs with an EMPTY tool list, so the worker cannot infer that the
+    tool protocol is live from ``tools`` alone. Without the flag it stripped the wrappers it
+    was about to parse and the markerless guard then read genuine calls as prose."""
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
+    assert o._build_generate_cmd("r", None, tool_protocol_active = True, **base)[
+        "tool_protocol_active"
+    ] is True
+    # Omitted when unset, so an older worker keeps its bool(tools) default.
+    assert "tool_protocol_active" not in o._build_generate_cmd("r", None, **base)
+
+
+def test_the_orchestrator_single_turn_accepts_the_tool_protocol_flag():
+    """``_call_single_turn`` retries without the flag when the callback rejects it, so a
+    callback missing the parameter silently fell back to the stripping default."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    src = inspect.getsource(InferenceOrchestrator.generate_chat_completion_with_tools)
+    signature = src[src.index("def _single_turn(") : src.index("turn_stats.clear()")]
+    assert "tool_protocol_active" in signature, (
+        "the orchestrator's _single_turn must accept the flag or _call_single_turn drops it"
+    )
+
+
+def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
+    """MLX declares no such parameter and takes no ``**kwargs``, so the flag must ride the
+    declares-gated list; forwarding it unconditionally would raise instead of being ignored."""
+    import inspect
+
+    from core.inference import worker
+
+    src = inspect.getsource(worker._handle_generate)
+    gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
+    assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
