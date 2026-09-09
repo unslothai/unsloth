@@ -5433,6 +5433,11 @@ def collect_stage_outputs(
     return None if res.returncode == 0 else (res.stderr or "").strip()[:200]
 
 
+def _is_data_parallel(command: str) -> bool:
+    """Whether a launch command is a data-parallel run rather than a pipeline one."""
+    return "--data-parallel" in shlex.split(command)
+
+
 def _save_dir_of(command: str) -> str:
     tokens = shlex.split(command)
     for i, token in enumerate(tokens[:-1]):
@@ -5554,6 +5559,16 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # directory and says it needs no second Spark, so without this a run that trained
     # correctly still left no mergeable checkpoint on either machine.
     save_dir = _save_dir_of(plan["node0"])
+    if save_dir and _is_data_parallel(plan["node0"]):
+        # Data parallel has no stages. Every rank holds the whole model, rank 0 writes the
+        # complete checkpoint or adapter and rank 1 deliberately writes nothing, so there is no
+        # `DIR/stage1` on the peer and never will be. Collecting it anyway made every
+        # SUCCESSFUL data-parallel save end in an rsync failure and a nonzero exit, after the
+        # whole training run had already finished correctly -- the worst possible moment to
+        # report a failure that is not one. The rank 0 save is the final output.
+        print(f"  data parallel: rank 0 wrote the whole checkpoint to {save_dir}")
+        print("  nothing to collect from the peer; no merge step is needed")
+        return rc
     if save_dir:
         print("  waiting for the peer stage to finish writing ...")
         finished = wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID)

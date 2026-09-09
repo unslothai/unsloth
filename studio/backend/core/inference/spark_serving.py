@@ -434,10 +434,29 @@ def _is_companion_gguf(path: str) -> bool:
 
 
 def _pick_variant(variants: Any, wanted: str) -> Any:
-    """The variant a load naming ``wanted`` resolves to, or the main weight when it names
-    nothing. Both listers sort largest first, so the first entry is the weights."""
+    """The variant a load naming ``wanted`` resolves to, or the one the LOADER would default to.
+
+    Both listers sort largest first, so ``variants[0]`` is a repo's BF16/F16 rather than its
+    default. The load does not open that file: it calls ``_pick_best_gguf``, whose preference
+    list puts UD-Q4 first. Sizing one file and opening another is not a rounding error in the
+    same direction -- a repo whose full precision copy exceeds the pair while its Q4 needs two
+    nodes and fits reads as "no topology fits", and the Q4 is then left to a single node launch
+    that OOMs. Asked of the loader's own picker rather than reimplemented here, for the same
+    reason ``_cached_repo_file_via_loader`` asks the resolver instead of guessing."""
     if not wanted:
-        return variants[0] if variants else None
+        if not variants:
+            return None
+        try:
+            from utils.models.model_config import _pick_best_gguf
+
+            best = _pick_best_gguf([str(getattr(v, "filename", "")) for v in variants])
+        except Exception:
+            best = None
+        if best:
+            for info in variants:
+                if str(getattr(info, "filename", "")) == best:
+                    return info
+        return variants[0]
     for info in variants:
         if wanted in (str(info.quant).casefold(), str(info.filename).casefold()):
             return info
@@ -738,6 +757,32 @@ _SIDECAR_FLAGS = frozenset(
 )
 
 
+# A file operand that is NOT a sidecar weight: one plain path, no comma list and no :SCALE, so
+# it is absolutised and preflighted but never taken apart or charged as resident memory. It has
+# to be here because llama.cpp resolves it relative to the server's working directory, and ssh
+# starts the replica in the peer's login directory: a relative template either is not there,
+# and the peer takes the whole startup window before falling back to one node, or a file of the
+# same name IS there and the replica comes up healthy formatting prompts differently from the
+# primary. The env twin, LLAMA_ARG_CHAT_TEMPLATE_FILE, is already absolutised in
+# _REPLICA_ENV_PATHS -- one setting, two routes, and only one of them was covered.
+_TEMPLATE_FILE_FLAGS = frozenset({"--chat-template-file"})
+
+
+def template_files(args: Sequence[str], *, cwd: Optional[str] = None) -> List[str]:
+    """Every template file ``args`` names, resolved the way llama-server will resolve it."""
+    base = cwd or os.getcwd()
+    out: List[str] = []
+    tokens = [str(a) for a in args]
+    for index, token in enumerate(tokens):
+        name, sep, inline = token.partition("=")
+        if name not in _TEMPLATE_FILE_FLAGS:
+            continue
+        value = (inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")).strip()
+        if value:
+            out.append(value if osp.isabs(value) else osp.join(base, value))
+    return out
+
+
 def _looks_like_a_scale(text: str) -> bool:
     try:
         float(text)
@@ -813,7 +858,7 @@ def launch_files(argv: List[str], gguf_path: str) -> List[str]:
             files.append(arg)
             seen.add(arg)
     # The operand forms above never survive that test, so they are taken apart separately.
-    for path in sidecar_files(argv[1:]):
+    for path in list(sidecar_files(argv[1:])) + list(template_files(argv[1:])):
         if path not in seen and osp.isfile(path):
             files.append(path)
             seen.add(path)
@@ -864,9 +909,16 @@ def replica_argv(
     died looking for a file the preflight had just confirmed. The failure surfaced as a
     fall-back to ``single`` reporting that the peer "did not take host:port", which names
     neither the file nor the reason."""
+    base = cwd or os.getcwd()
+
+    def _absolute_plain(value: str) -> str:
+        text = str(value).strip()
+        return text if (not text or osp.isabs(text)) else osp.join(base, text)
+
     out: List[str] = [binary]
     skip = 0
     pending_sidecar = False
+    pending_template = False
     for arg in local_argv[1:]:
         if skip:
             skip -= 1
@@ -874,6 +926,10 @@ def replica_argv(
         if pending_sidecar:
             pending_sidecar = False
             out.append(absolute_sidecar_operand(arg, cwd = cwd))
+            continue
+        if pending_template:
+            pending_template = False
+            out.append(_absolute_plain(arg))
             continue
         if arg in _REPLICA_DROPPED_FLAGS:
             skip = 1
@@ -887,6 +943,15 @@ def replica_argv(
             else:
                 out.append(arg)
                 pending_sidecar = True
+            continue
+        if name in _TEMPLATE_FILE_FLAGS:
+            # One plain path: no comma list and no :SCALE, so the sidecar splitter is not used
+            # on it. A template path that happens to end in ":<number>" would otherwise be cut.
+            if sep:
+                out.append(f"{name}={_absolute_plain(inline)}")
+            else:
+                out.append(arg)
+                pending_template = True
             continue
         out.append(arg)
     out += ["--host", host, "--port", str(port)]
@@ -2643,7 +2708,22 @@ class SparkServing:
             self._record_launched_mtp(argv)
             if argv_or_env_rpc(argv):
                 # A user-supplied --rpc is recorded, not managed.
-                if self.router is not None:
+                # ``router`` alone was not enough: a managed layer split has a peer
+                # ggml-rpc-server and NO router, so a load bringing its OWN --rpc left the
+                # managed rpc-server running and still tracked. It holds its share of the peer
+                # GPU, so the caller's placement contends with it or does not fit, and the
+                # status route goes on reporting the managed split's metadata for a split
+                # nothing here manages any more.
+                #
+                # Which one it is cannot be read off "is there an --rpc": this branch is
+                # reached by our OWN managed split too, whose argv this module put the --rpc
+                # into. The endpoint tells them apart. Detaching on the flag alone tears down
+                # the live split on every reconcile, which is how the reuse path
+                # (test_before_load_reuses_a_live_rpc_server_and_after_load_reconciles)
+                # catches it.
+                if self.router is not None or (
+                    self.peer_process is not None and not self._argv_names_our_peer(argv)
+                ):
                     await self.detach()
                 self.attached_backend = llama_backend
                 self.attached_port = port
@@ -3071,6 +3151,32 @@ class SparkServing:
             self.relaunch_attempts = 0
             self.relaunch_log.append({"at": time.time(), "event": "recovered"})
             return
+
+    def _argv_names_our_peer(self, argv: Sequence[str]) -> bool:
+        """Whether an ``--rpc`` in *argv* points at the rpc-server this module launched.
+
+        Host AND port: a caller may legitimately run their own rpc-server on the same peer,
+        and host alone would read that as ours and leave both running."""
+        process = self.peer_process
+        if process is None or not self.peer:
+            return False
+        remote = [str(a) for a in (getattr(process, "argv", None) or [])]
+        port = ""
+        for index, token in enumerate(remote):
+            if token == "-p" and index + 1 < len(remote):
+                port = remote[index + 1].strip()
+        if not port:
+            return False
+        ours = f"{self.peer}:{port}"
+        tokens = [str(a) for a in (argv or [])]
+        for index, token in enumerate(tokens):
+            name, sep, inline = token.partition("=")
+            if name != "--rpc":
+                continue
+            value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
+            if any(part.strip() == ours for part in str(value).split(",")):
+                return True
+        return False
 
     def _cancelled(self) -> bool:
         """Whether the load this orchestration belongs to has been cancelled.

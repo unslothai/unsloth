@@ -2145,3 +2145,65 @@ def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
     # And a model that fits on one node is untouched.
     out = sc.recommend_topology(20.0 * 2**30, kv, 2, 512, free)
     assert out["topology"] == "single" and out["fits_any_topology"] is True
+
+
+def test_data_parallel_rejects_a_base_checkpoint_before_it_loads_the_model():
+    """The layer-split path refuses this right after the tokenizer, for a stated reason: the
+    error came out of `apply_chat_template` only once both ranks had loaded and materialised a
+    full model each. The data-parallel path built, moved and possibly FSDP-wrapped the model
+    first and then raised the same unhandled error, so the same input cost the whole load."""
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "studio" / "spark_pipeline.py"
+    text = src.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_main_data_parallel"
+    )
+    body = ast.get_source_segment(text, fn) or ""
+
+    guard = body.index("has none (it is a base checkpoint)")
+    build = body.index("build_stage_model(")
+    tokenize = body.index("make_token_batches(")
+    assert guard < build, "the template check must precede the model build, not follow it"
+    assert build < tokenize, "sanity: the model is still built before the rows are tokenized"
+
+
+def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
+    """Rank 1 deliberately writes nothing in data parallel, so `DIR/stage1` never exists on the
+    peer. Collecting it anyway ended every SUCCESSFUL run in an rsync failure and a nonzero
+    exit, after the whole training had already finished correctly."""
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "studio" / "spark_cluster.py"
+    text = src.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_pipeline"
+    )
+    body = ast.get_source_segment(text, fn) or ""
+
+    bypass = body.index("_is_data_parallel(")
+    wait = body.index("wait_for_peer_stage(")
+    collect = body.index("collect_stage_outputs(")
+    assert bypass < wait < collect, "the bypass must come before the wait and the collection"
+
+    # Only the pure helper is needed, and importing the module for real drags the whole CLI in.
+    helper = ast.parse(
+        next(
+            ast.get_source_segment(text, n)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_is_data_parallel"
+        )
+    )
+    namespace: dict = {"shlex": __import__("shlex")}
+    exec(compile(helper, "<helper>", "exec"), namespace)
+    is_dp = namespace["_is_data_parallel"]
+    assert is_dp("torchrun x.py --data-parallel --save out m") is True
+    assert is_dp("torchrun x.py --layer-split --save out m") is False
+    # Not a substring match: a checkpoint path that merely contains the word must not count.
+    assert is_dp("torchrun x.py --save /runs/my--data-parallel-run m") is False

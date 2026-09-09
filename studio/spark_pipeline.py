@@ -1870,6 +1870,17 @@ def _main_data_parallel(args) -> int:
     # Right padding keeps every real token preceded only by real tokens, so a causal model
     # needs no padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
+    # And the third: the layer-split path rejects a base checkpoint here, right after the
+    # tokenizer and before the model, precisely because `apply_chat_template` raised only once
+    # both ranks had loaded and materialised a full model each. This path built, moved and
+    # possibly FSDP-wrapped the model first and then raised the same unhandled tokenizer error
+    # out of `make_token_batches`. Same message, same place in the sequence.
+    if args.data and getattr(tok, "chat_template", None) is None:
+        raise SystemExit(
+            f"--data formats each row with the tokenizer's chat template, and {args.model} "
+            f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
+            f"checkpoint, or drop --data to train on synthetic ids."
+        )
     # Seed BEFORE the adapters exist. The only other manual_seed on this path is inside
     # make_token_batches, which runs after the model is built, so LoRA's A/B matrices were
     # drawn from an unseeded generator: two identical invocations -- including the documented

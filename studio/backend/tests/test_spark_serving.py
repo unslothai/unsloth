@@ -3615,3 +3615,157 @@ def test_rail_discovery_is_not_walked_again_on_every_status_poll(cluster, monkey
     ss.reset_peer_discovery_cache()
     assert ss.enabled()
     assert len(calls) == 2
+
+
+def test_the_size_is_taken_from_the_variant_the_loader_would_open(monkeypatch):
+    # Both listers sort largest first, so variants[0] is a repo's BF16 rather than its default.
+    # The load calls _pick_best_gguf, which prefers UD-Q4. Sizing one file and opening another
+    # is not a rounding error: a repo whose BF16 exceeds the pair while its Q4 needs two nodes
+    # and fits reads as "no topology fits", and the Q4 is left to a single node that OOMs.
+    import sys
+    import types
+
+    class _Variant:
+        def __init__(self, filename, quant, size_bytes):
+            self.filename, self.quant, self.size_bytes = filename, quant, size_bytes
+
+    bf16 = _Variant("Qwen3-8B-BF16.gguf", "BF16", 300 * 1024**3)
+    q4 = _Variant("Qwen3-8B-UD-Q4_K_XL.gguf", "UD-Q4_K_XL", 120 * 1024**3)
+
+    module = types.ModuleType("utils.models.model_config")
+    module.list_gguf_variants = lambda repo_id, hf_token = None: ([bf16, q4], False)
+    module._pick_best_gguf = lambda names: next(
+        (n for n in names if "UD-Q4_K_XL" in n), names[0] if names else None
+    )
+    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
+
+    assert ss.remote_gguf_size_bytes("unsloth/Qwen3-8B-GGUF", None) == 120 * 1024**3
+    # A caller who names a variant still gets exactly that one, largest or not.
+    assert ss.remote_gguf_size_bytes("unsloth/Qwen3-8B-GGUF", "BF16") == 300 * 1024**3
+
+
+def test_a_repo_whose_picker_cannot_answer_still_gets_a_size(monkeypatch):
+    # The picker is asked, not depended on: an import failure or an unrecognised naming scheme
+    # falls back to the old answer rather than to no answer, which would plan `single`.
+    import sys
+    import types
+
+    class _Variant:
+        filename, quant, size_bytes = "weights.gguf", "F16", 42
+
+    module = types.ModuleType("utils.models.model_config")
+    module.list_gguf_variants = lambda repo_id, hf_token = None: ([_Variant()], False)
+
+    def _boom(names):
+        raise RuntimeError("no picker here")
+
+    module._pick_best_gguf = _boom
+    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
+    assert ss.remote_gguf_size_bytes("org/repo", None) == 42
+
+
+def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkeypatch, tmp_path):
+    # llama.cpp resolves --chat-template-file against the server's working directory, and ssh
+    # starts the replica in the peer's LOGIN directory. A relative path either is not there --
+    # and the peer burns the whole startup window before falling back to one node -- or a file
+    # of the same name IS there, and the replica comes up healthy formatting prompts
+    # differently from the primary, which every parity check still calls a matched pair.
+    # The env twin LLAMA_ARG_CHAT_TEMPLATE_FILE was already absolutised; the argv route was not.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.chdir(tmp_path)
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    template = tmp_path / "mine.jinja"
+    template.write_text("{{ x }}", encoding = "utf-8")
+
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+    backend = _FakeBackend(12345, str(model))
+    backend._process.args = list(backend._process.args) + ["--chat-template-file", "mine.jinja"]
+    run(ss.after_load(backend, 16))
+
+    assert started and ss.state().topology == "replicas"
+    peer_argv = started[0].argv
+    assert str(template) in peer_argv, "the peer was handed a path relative to its own login dir"
+    assert "mine.jinja" not in peer_argv
+    # And it is preflighted, so a peer that does not have it is found out before the launch
+    # rather than after the startup window.
+    checks = [c for c in _calls if c.startswith("stat -c")]
+    assert checks and str(template) in checks[0]
+
+
+def test_the_inline_form_of_the_template_flag_is_absolutised_too(tmp_path):
+    # `--flag=value` is the form the env-vs-argv sweep keeps finding on the wrong side of a
+    # guard, so it is pinned rather than assumed.
+    argv = ["/bin/llama-server", "-m", "/m.gguf", "--chat-template-file=mine.jinja"]
+    out = ss.replica_argv(argv, binary = "/bin/llama-server", host = "h", port = 1, cwd = "/base")
+    assert "--chat-template-file=/base/mine.jinja" in out
+    # An absolute path is left exactly as it is, and a colon in it is not read as a :SCALE.
+    argv = ["/bin/llama-server", "--chat-template-file", "/tmp/t:1.5.jinja"]
+    out = ss.replica_argv(argv, binary = "/bin/llama-server", host = "h", port = 1, cwd = "/base")
+    assert "/tmp/t:1.5.jinja" in out
+
+
+def test_a_managed_split_is_retired_before_a_callers_own_rpc_is_adopted(
+    cluster, monkeypatch, tmp_path
+):
+    # A managed layer split has a peer ggml-rpc-server and NO router, so testing the router
+    # alone left the old rpc-server running and still tracked while the new llama-server used
+    # the caller's own placement: it holds its share of the peer GPU, so the manual topology
+    # contends with it or does not fit, and status goes on reporting the managed split.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _calls, started = _patch_remote(monkeypatch)
+
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    managed = ss.state().peer_process
+    assert managed is not None and ss.state().router is None, "a managed split, no router"
+
+    stopped = []
+    real_stop = ss.PeerProcess.stop
+
+    async def counting_stop(self, timeout = 10.0):
+        stopped.append(self.name)
+        return await real_stop(self, timeout = timeout)
+
+    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
+
+    # The next load brings its own --rpc at a DIFFERENT endpoint, so nothing here manages the
+    # placement any more. A different endpoint, not merely a different flag: our own managed
+    # split reaches this same branch with an --rpc this module put there.
+    backend = _FakeBackend(12345, str(model), argv_extra = ["--rpc", "10.0.0.9:50052"])
+    run(ss.after_load(backend, 16))
+
+    assert stopped, "the managed rpc-server was left running beside the caller's own split"
+    assert ss.state().peer_process is None
+    assert ss.state().topology == "layer_split"
+    assert "user-supplied --rpc" in ss.state().reason
+
+
+def test_our_own_managed_split_is_not_torn_down_by_its_own_rpc_flag(cluster, monkeypatch, tmp_path):
+    # The reconcile branch is reached by the managed split too, whose --rpc this module wrote.
+    # Detaching on the presence of the flag rather than on the endpoint kills the live split
+    # on every reconcile, which is a worse failure than the one being fixed.
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _calls, started = _patch_remote(monkeypatch)
+
+    request = run(ss.before_load(_FakeRequest(str(model)), 4))
+    managed = ss.state().peer_process
+    assert managed is not None
+    ours = [a for a in request.llama_extra_args if a.count(":")] or []
+    endpoint = next(a for a in ours if a.startswith("127.0.0.1:"))
+
+    backend = _FakeBackend(12345, str(model), argv_extra = ["--rpc", endpoint])
+    run(ss.after_load(backend, 16))
+
+    assert ss.state().peer_process is managed, "the managed split was torn down by its own flag"
+    assert ss.state().topology == "layer_split"
