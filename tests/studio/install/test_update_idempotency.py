@@ -63,7 +63,6 @@ import pytest
 
 E2E = os.environ.get("UNSLOTH_IDEMPOTENCY_E2E") == "1"
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PROXY = pathlib.Path(__file__).resolve().parent / "idempotency_proxy.py"
 IS_WINDOWS = sys.platform == "win32"
 # Where each run's update log and proxy journal are kept. Under pytest's tmp dir by
