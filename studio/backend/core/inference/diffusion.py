@@ -1751,7 +1751,18 @@ class DiffusionBackend:
             return None
         try:
             from .diffusion_transformer_quant import auto_scheme_candidates
-            candidates = auto_scheme_candidates(target, getattr(fam, "name", None))
+            candidates = auto_scheme_candidates(
+                target,
+                getattr(fam, "name", None),
+                base_repo = base_repo,
+                # The retry only ever proposes a rung that HAS a usable checkpoint (it re-checks
+                # below), so answering the ladder's own prequant requirement with the same probe
+                # keeps the two from disagreeing about which rungs exist.
+                has_prequant = lambda candidate: usable_prequant_source(
+                    fam, candidate, path_override = path_override, base_repo = base_repo
+                )
+                is not None,
+            )
         except Exception:  # noqa: BLE001 -- no candidates is just "no retry"
             return None
         seen_chosen = False
@@ -4761,7 +4772,25 @@ class DiffusionBackend:
         """
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
+        scheme = select_transformer_quant_scheme(
+            target,
+            mode,
+            family = getattr(fam, "name", None),
+            # The base decides two things the family cannot: whether a gate record lifts the nvfp4
+            # deny for THESE weights, and whether the per-family auto head applies at all.
+            base_repo = base,
+            # Under auto, a scheme that only ships as a gated checkpoint is offered only where that
+            # checkpoint is actually resolvable for this load. usable_ (not resolve_) so a local
+            # override counts only when this loader would accept it -- the same question step 1
+            # below asks, so the ladder cannot pick a rung the very next line then cannot serve.
+            has_prequant = lambda candidate: (
+                fam is not None
+                and usable_prequant_source(
+                    fam, candidate, path_override = prequant_path, base_repo = base
+                )
+                is not None
+            ),
+        )
         if scheme is None:
             # Bail BEFORE the multi-GB dense download: an unsupported scheme (fp8 on Ampere, nvfp4 off Blackwell) would
             # materialise the transformer only to fail at quantize, after eviction. load_pipeline falls back to GGUF.

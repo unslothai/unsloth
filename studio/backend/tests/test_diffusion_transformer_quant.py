@@ -1070,7 +1070,7 @@ def test_fp8_config_pins_torch_kernel_preference():
 
 def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: TQ_FP8
     )
     seen: dict = {}
 
@@ -1097,7 +1097,7 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
 
 def test_quantize_transformer_none_when_unsupported(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: None
     )
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert quantize_transformer(pipe, _target(), mode = "auto") is None
@@ -1105,7 +1105,7 @@ def test_quantize_transformer_none_when_unsupported(monkeypatch):
 
 def test_quantize_transformer_tolerates_failure(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_INT8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: TQ_INT8
     )
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: "cfg")
     tqz = types.ModuleType("torchao.quantization")
@@ -1578,14 +1578,23 @@ def _nvfp4_head(**kw):
     return tq._AutoPrefer(floor = (10, 0), schemes = (TQ_NVFP4,), **kw)
 
 
+# nvfp4 is in the selector's ``require_prequant`` set, so AUTO offers it only where the caller can
+# say a usable checkpoint exists for this load. These tests are about the ORDERING, so they answer
+# yes; the tests below own the "no checkpoint" half.
+_HAS_PREQUANT = {"has_prequant": lambda scheme: True}
+
+
 def test_a_prefer_row_leads_the_tier_on_datacenter_blackwell(monkeypatch):
     # The head is tried BEFORE the global tier, and the tier still follows it in order, so a family
     # whose measurements put nvfp4 first does not lose the fallbacks the ladder gives everyone else.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
-    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
-    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_NVFP4
+    )
+    assert tq.auto_scheme_candidates(_target(), "fake-video", **_HAS_PREQUANT) == (
         TQ_NVFP4,
         TQ_FP8,
         TQ_MXFP8,
@@ -1633,11 +1642,17 @@ def test_a_prefer_row_needs_consumer_ok_to_apply_to_a_consumer_gpu(monkeypatch):
     _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _prefer(monkeypatch, _nvfp4_head())
-    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_INT8
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_INT8
+    )
     _prefer(monkeypatch, _nvfp4_head(consumer_ok = True))
-    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_NVFP4
+    )
     # The consumer reorder still applies to the tier behind the head.
-    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+    assert tq.auto_scheme_candidates(_target(), "fake-video", **_HAS_PREQUANT) == (
         TQ_NVFP4,
         TQ_INT8,
         TQ_FP8,
@@ -1690,14 +1705,39 @@ def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
 
 
 def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
-    # The table ships empty until a family's promotion gates pass, so auto must behave exactly as
-    # the ladder alone says. This is the test that fails first when a row is added without its
-    # own coverage.
+    # Every row the table ships is GATED, and no gate record ships, so auto must behave exactly as
+    # the ladder alone says -- for the families that have a row as much as for those that do not.
+    # This is the test that fails first when a row is added without its own coverage, or when an
+    # ungated row is added at all.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
-    assert tq._FAMILY_AUTO_PREFER == {}
-    for family in (None, "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-ti2v-5b"):
+    assert all(row.gated for row in tq._FAMILY_AUTO_PREFER.values())
+    assert set(tq._FAMILY_AUTO_PREFER) == {"z-image", "flux.1", "qwen-image"}
+    families = (
+        None,
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+        "wan2.2-ti2v-5b",
+        "z-image",
+        "flux.1",
+    )
+    for family in families:
+        # With a base and a checkpoint, and still no gate record: the head stays off.
+        assert (
+            select_transformer_quant_scheme(
+                _target(),
+                "auto",
+                family = family,
+                base_repo = "Tongyi-MAI/Z-Image-Turbo",
+                **_HAS_PREQUANT,
+            )
+            == TQ_FP8
+        )
         assert select_transformer_quant_scheme(_target(), "auto", family = family) == TQ_FP8
+    # qwen's deny is unlifted too, so it never sees nvfp4 or mxfp8 whatever its row says.
+    assert tq.auto_scheme_candidates(
+        _target(), "qwen-image", base_repo = "Qwen/Qwen-Image", **_HAS_PREQUANT
+    ) == (TQ_FP8, TQ_INT8)
 
 
 # ── GEMM alignment floors ─────────────────────────────────────────────────────
@@ -1903,3 +1943,233 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
         assert cfg.set_inductor_config is False, scheme
     if ic is not None:
         assert getattr(ic, "coordinate_descent_tuning", None) == before
+
+
+# ── the gate record, the prequant requirement and the gated preference rows ────
+#
+# nvfp4 reaches AUTO through exactly two doors, and both have to be open: a reviewed gate record
+# for THIS base at the policy this commit resolves (which also lifts the qwen deny), and a usable
+# prequant checkpoint for this load (the gate measured the hosted artifact, not an on-the-fly
+# build). These tests open and close each door in turn. The record is a real file read through the
+# real verdict logic rather than a stubbed boolean, so a change to either half is caught here.
+
+_ZIMAGE_BASE = "Tongyi-MAI/Z-Image-Turbo"
+_QWEN_BASE = "Qwen/Qwen-Image"
+
+
+def _gate_row(family, base_repo, policy_id, **overrides):
+    row = {
+        "family": family,
+        "base_repo": base_repo,
+        "policy_id": policy_id,
+        "policy_version": 1,
+        "checkpoint_sha256": "b" * 64,
+        "all_pass": True,
+    }
+    row.update(overrides)
+    return row
+
+
+def _gate(monkeypatch, tmp_path, *rows):
+    """Point the gate module at a record file holding ``rows`` (none = the shipped, empty state)."""
+    import json
+
+    import core.inference.diffusion_nvfp4_gate as gate
+
+    path = tmp_path / "nvfp4_gate_record.json"
+    path.write_text(json.dumps({"version": 1, "records": list(rows)}), encoding = "utf-8")
+    monkeypatch.setattr(gate, "GATE_RECORD_PATH", path)
+    return path
+
+
+def _zimage_candidates(
+    monkeypatch,
+    *,
+    has_prequant = True,
+    base_repo = _ZIMAGE_BASE,
+):
+    return tq.auto_scheme_candidates(
+        _target(),
+        "z-image",
+        base_repo = base_repo,
+        has_prequant = (lambda scheme: True) if has_prequant else (lambda scheme: False),
+    )
+
+
+def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, tmp_path):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    # No record: the head is dropped and z-image walks the plain Blackwell tier.
+    _gate(monkeypatch, tmp_path)
+    assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    # A record for this base at this policy: the row applies, and nvfp4 sits BELOW fp8 -- it is a
+    # memory lever at fp8-parity quality, so it may never displace the winner.
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)
+    assert (
+        select_transformer_quant_scheme(
+            _target(),
+            "auto",
+            family = "z-image",
+            base_repo = _ZIMAGE_BASE,
+            has_prequant = lambda scheme: True,
+        )
+        == TQ_FP8
+    )
+    # fp8 unavailable: NOW the gated rung is the one that runs, which is the whole point of the row.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert (
+        select_transformer_quant_scheme(
+            _target(),
+            "auto",
+            family = "z-image",
+            base_repo = _ZIMAGE_BASE,
+            has_prequant = lambda scheme: True,
+        )
+        == TQ_NVFP4
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", all_pass = False),
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", policy_version = 2),
+        _gate_row("z-image", "some-org/Z-Image-Fork", "zimg_f8mod_toq34_v1"),
+        _gate_row("flux.1", "black-forest-labs/FLUX.1-schnell", "flux_mod_single_v1"),
+    ],
+    ids = ["absent", "failed", "version-bump", "another-base", "another-family"],
+)
+def test_nvfp4_stays_out_of_auto_unless_the_record_matches_exactly(monkeypatch, tmp_path, row):
+    # Every way a record can fail to cover this load reads the same as no record at all. The
+    # version bump is the one worth stating twice: a retuned policy is a different set of layer
+    # precisions, and carrying the old verdict forward would ship a model nothing measured.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _gate(monkeypatch, tmp_path, *([] if row is None else [row]))
+    assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
+def test_auto_will_not_offer_nvfp4_without_a_checkpoint_to_run(monkeypatch, tmp_path):
+    # The gate measured the HOSTED artifact. With a record but no usable checkpoint for this load,
+    # auto would have to build the policy on the fly, which is a model with the measured layer set
+    # and unverified weights, so it declines and takes fp8 instead. An EXPLICIT nvfp4 still runs:
+    # naming the scheme is opting into the build.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    assert _zimage_candidates(monkeypatch, has_prequant = False) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    # No probe at all is the same answer: a caller that cannot say has not said yes.
+    assert tq.auto_scheme_candidates(_target(), "z-image", base_repo = _ZIMAGE_BASE) == (
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+
+    # A probe that raises is not evidence a checkpoint exists either.
+    def _boom(scheme):
+        raise RuntimeError("hub unreachable")
+
+    assert tq.auto_scheme_candidates(
+        _target(), "z-image", base_repo = _ZIMAGE_BASE, has_prequant = _boom
+    ) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    assert (
+        select_transformer_quant_scheme(
+            _target(), TQ_NVFP4, family = "z-image", base_repo = _ZIMAGE_BASE
+        )
+        == TQ_NVFP4
+    )
+
+
+def test_a_record_lifts_the_qwen_nvfp4_deny_for_the_gated_base_only(monkeypatch, tmp_path):
+    # T-11. The deny was measured on WHOLE-MODEL nvfp4 (LPIPS 0.51); a per-layer policy checkpoint
+    # that passed the 28-pair gate is a different model. The lift is per base -- qwen-image-edit
+    # shares the DiT but not the weights, and has its own policy row and its own gate to run.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _gate(monkeypatch, tmp_path)
+    assert tq._family_denied("qwen-image", TQ_NVFP4, _QWEN_BASE) is True
+    assert (
+        select_transformer_quant_scheme(
+            _target(), TQ_NVFP4, family = "qwen-image", base_repo = _QWEN_BASE
+        )
+        is None
+    )
+
+    _gate(monkeypatch, tmp_path, _gate_row("qwen-image", _QWEN_BASE, "qwen_p02_v1"))
+    assert tq._family_denied("qwen-image", TQ_NVFP4, _QWEN_BASE) is False
+    assert (
+        select_transformer_quant_scheme(
+            _target(), TQ_NVFP4, family = "qwen-image", base_repo = _QWEN_BASE
+        )
+        == TQ_NVFP4
+    )
+    # Another base of the same family, the edit sibling, and the family asked WITHOUT a base all
+    # keep the deny.
+    for family, base in (
+        ("qwen-image", "Qwen/Qwen-Image-2509"),
+        ("qwen-image-edit", "Qwen/Qwen-Image-Edit"),
+        ("qwen-image", None),
+    ):
+        assert tq._family_denied(family, TQ_NVFP4, base) is True, (family, base)
+    # mxfp8 is denied by measurement and no nvfp4 record speaks for it.
+    assert tq._family_denied("qwen-image", TQ_MXFP8, _QWEN_BASE) is True
+    assert tq.auto_scheme_candidates(
+        _target(), "qwen-image", base_repo = _QWEN_BASE, has_prequant = lambda scheme: True
+    ) == (TQ_FP8, TQ_NVFP4, TQ_INT8)
+
+
+def test_the_refusal_message_names_the_missing_gate_record(monkeypatch, tmp_path):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _gate(monkeypatch, tmp_path)
+    message = tq.explain_unusable_scheme("qwen-image", TQ_NVFP4, _QWEN_BASE)
+    assert "nvfp4_gate_record.json" in message and _QWEN_BASE in message
+    # The other half of the deny table still says what it always said: a measured breakage, not a
+    # missing measurement.
+    assert "measured accuracy gate" in tq.explain_unusable_scheme("qwen-image", TQ_MXFP8)
+
+
+def test_training_is_denied_nvfp4_for_every_family_gated_or_not(monkeypatch, tmp_path):
+    # A rule, not a table: the evidence behind nvfp4 is an inference gate on a frozen forward, and
+    # a LoRA over 4-bit frozen linears is a convergence question nobody has run. A gate record
+    # lifts the INFERENCE deny and must not reach training.
+    from core.inference.diffusion_families import supported_family_names
+
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    assert tq._family_denied("z-image", TQ_NVFP4, _ZIMAGE_BASE) is False
+    for family in (*supported_family_names(), "wan2.2-ti2v-5b", "minimax-h3", None, ""):
+        assert tq._family_train_denied(family, TQ_NVFP4) is True, family
+        assert tq._family_train_denied(family, TQ_NVFP4, _ZIMAGE_BASE) is True, family
+    # And it is nvfp4 only: the rest of the training table is untouched.
+    assert tq._family_train_denied("z-image", TQ_INT8) is False
+    assert tq._family_train_denied("z-image", TQ_FP8) is False
+
+
+@pytest.mark.parametrize("has_prequant", [True, False])
+@pytest.mark.parametrize("gated", [True, False])
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8},
+        {TQ_NVFP4, TQ_MXFP8, TQ_INT8},
+        {TQ_NVFP4},
+        {TQ_INT8},
+        set(),
+    ],
+)
+def test_the_candidate_head_stays_the_selector_winner_under_the_gate(
+    monkeypatch, tmp_path, allowed, gated, has_prequant
+):
+    # The anti-drift invariant, extended to the two new kwargs: however the record and the prequant
+    # probe reshape the order, both entry points must still walk the same one, or the retry path
+    # could propose a rung auto itself refuses.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, allowed)
+    rows = [_gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1")] if gated else []
+    _gate(monkeypatch, tmp_path, *rows)
+    kwargs = {"base_repo": _ZIMAGE_BASE, "has_prequant": lambda scheme: has_prequant}
+    candidates = tq.auto_scheme_candidates(_target(), "z-image", **kwargs)
+    chosen = select_transformer_quant_scheme(_target(), "auto", family = "z-image", **kwargs)
+    assert (candidates[0] if candidates else None) == chosen, (allowed, gated, has_prequant)
+    assert (TQ_NVFP4 in candidates) == (gated and has_prequant and TQ_NVFP4 in allowed)
