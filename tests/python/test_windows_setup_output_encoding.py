@@ -595,7 +595,20 @@ def _console_less_probe(path: Path) -> str:
         r"[ \t]*try \{ \$script:StudioStdoutRedirected = \[Console\]::IsOutputRedirected \} catch \{ \}",
     )
     parts += [redirect_probe or "$script:StudioStdoutRedirected = $false", ""]
-    for name in ("Write-StudioLine", "Enable-StudioVirtualTerminal", "Get-StudioAnsi"):
+    # Enable-StudioVirtualTerminal's own helpers come first, because it calls them. They were
+    # added when the emitted-type path was extracted, and the reconstruction that this test
+    # builds to represent the predecessor calls them too: without them the probe dies with an
+    # unrecognised command, which reads as "the predecessor disagreed" when in truth it never
+    # ran. Anything the sliced functions call has to be sliced with them.
+    for name in (
+        "Test-StudioCanDefineNativeTypes",
+        "Test-StudioEmitInChildProcess",
+        "New-StudioDynamicAssembly",
+        "New-StudioEmittedNativeType",
+        "Write-StudioLine",
+        "Enable-StudioVirtualTerminal",
+        "Get-StudioAnsi",
+    ):
         if _function_match(masked, name):
             lo, hi = _function_span(masked, name)
             parts += [_dedent(source[lo:hi]), ""]
@@ -784,6 +797,10 @@ def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path) -> None:
     assert new_code == old_code == 0, (
         f"probe exit codes {new_code} (with the fast path) and {old_code} (without)"
         f"{_explain(path, new_code, new_raw, new_err)}"
+        # Both sides. Reporting only the new run hid the whole failure once: the new run was
+        # the one that passed, and the reconstruction's stderr, which named the missing
+        # command, was never printed.
+        f"\n  reconstructed predecessor stderr:\n{old_err}"
     )
     assert _vt_verdict(new_err) == _vt_verdict(old_err) == "False", (
         f"a redirected stream cannot render VT: the fast path returned "
