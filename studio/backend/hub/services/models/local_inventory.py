@@ -596,10 +596,7 @@ def _local_model_path_is_symlink(raw_path: str) -> bool:
         return False
 
 
-def _prefer_local_inventory_row(
-    candidate: LocalModelInfo,
-    existing: LocalModelInfo,
-) -> bool:
+def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelInfo) -> bool:
     """True when *candidate* should replace *existing* for one physical model."""
     if candidate.partial != existing.partial:
         return not candidate.partial
@@ -617,9 +614,7 @@ def _prefer_local_inventory_row(
     )
 
 
-def _dedupe_custom_local_models(
-    custom_models: List[LocalModelInfo],
-) -> list[LocalModelInfo]:
+def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     """Collapse scanner overlap without folding distinct symlink aliases.
 
     Multiple symlinks to the same on-disk model each appear as their own Hub row so
@@ -960,9 +955,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values()) + _dedupe_custom_local_models(
-        custom_models
-    )
+    deduped_values = list(deduped.values()) + _dedupe_custom_local_models(custom_models)
     custom_values = [model for model in deduped_values if model.source == "custom"]
     return sorted(
         [model for model in deduped_values if model.source != "custom"]
