@@ -1811,12 +1811,12 @@ function ProjectLanding({
                 data-active={projectTab === "checks"}
                 className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
-                Checks &amp; hooks
+                Verification
               </button>
             </div>
 
             {projectTab === "checks" ? (
-              <Suspense fallback={<p className="mt-8 text-sm text-muted-foreground">Loading checks and hooks…</p>}>
+              <Suspense fallback={<p className="mt-8 text-sm text-muted-foreground">Loading verification…</p>}>
                 <ProjectChecksPanel key={projectId} projectId={projectId} />
               </Suspense>
             ) : projectTab === "sources" ? (

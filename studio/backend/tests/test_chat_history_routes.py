@@ -332,7 +332,7 @@ def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
 
     with pytest.raises(OSError, match = "workspace is busy"):
         asyncio.run(
-            chat_history._delete_retired_project(
+            chat_history.delete_project(
                 "project-1",
                 SimpleNamespace(),
                 delete_files = True,

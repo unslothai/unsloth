@@ -3,7 +3,6 @@
 
 import { useChatProjects } from "../hooks/use-chat-projects";
 import { ProjectVerificationPanel } from "./project-verification-panel";
-import { ProjectHooksPanel } from "./project-hooks-panel";
 
 export function ProjectChecksPanel({ projectId }: { projectId: string }) {
   const { projects, hasLoaded } = useChatProjects();
@@ -14,7 +13,6 @@ export function ProjectChecksPanel({ projectId }: { projectId: string }) {
   return (
     <div className="mt-8 flex flex-col gap-6">
       <ProjectVerificationPanel key={`verification:${project.id}`} project={project} />
-      <ProjectHooksPanel key={`hooks:${project.id}`} project={project} />
     </div>
   );
 }

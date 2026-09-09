@@ -1123,23 +1123,7 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    if patch.get("archived") is True:
-        from core.agent_workspace import verification
-        from core.agent_workspace.verification_context import AgentWorkspaceError
-
-        if get_chat_project(project_id) is None:
-            raise HTTPException(status_code = 404, detail = "Project not found.")
-        try:
-            verification.begin_project_deletion(project_id)
-            try:
-                verification.cancel_project_verifications_and_wait(project_id)
-                project = update_chat_project(project_id, patch)
-            finally:
-                verification.finish_project_deletion(project_id)
-        except AgentWorkspaceError as exc:
-            raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    else:
-        project = update_chat_project(project_id, patch)
+    project = update_chat_project(project_id, patch)
     if project is not None:
         project = ensure_chat_project_workspace(project_id)
     if project is None:
@@ -1183,24 +1167,6 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    from starlette.concurrency import run_in_threadpool
-    from core.agent_workspace import verification
-    from core.agent_workspace.verification_context import AgentWorkspaceError
-
-    if await run_in_threadpool(get_chat_project, project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found.")
-    try:
-        await run_in_threadpool(verification.begin_project_deletion, project_id)
-        try:
-            await run_in_threadpool(verification.cancel_project_verifications_and_wait, project_id)
-            return await _delete_retired_project(project_id, request, delete_files, current_subject)
-        finally:
-            await run_in_threadpool(verification.finish_project_deletion, project_id)
-    except AgentWorkspaceError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-
-
-async def _delete_retired_project(project_id, request, delete_files, current_subject):
     from starlette.concurrency import run_in_threadpool
 
     # Rows first, files last: a member chat can still be running a tool in the

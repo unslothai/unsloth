@@ -37,11 +37,14 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
     if project is None or project.get("archived"):
         raise AgentWorkspaceError("Project not found.")
     try:
-        project = ensure_chat_project_workspace(project_id) or project
+        project = ensure_chat_project_workspace(project_id)
     except OSError as exc:
         raise AgentWorkspaceError(
             "The project folder is unavailable. Reconnect it and reopen the project."
         ) from exc
+
+    if project is None or project.get("archived"):
+        raise AgentWorkspaceError("Project not found.")
 
     kind = str(project.get("workspaceKind") or "managed")
     if kind != "managed":
@@ -75,6 +78,7 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
         kind = kind,
         device_id = expected_device,
         file_id = expected_file,
+        revision = int(project.get("workspaceRevision") or 0),
     )
 
 

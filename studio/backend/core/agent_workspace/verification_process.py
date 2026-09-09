@@ -42,6 +42,16 @@ class ProjectProcessResult:
 
 def _native_runner():
     try:
+        from core.project_retirement import PROJECT_RETIREMENT_PROTOCOL
+    except ImportError as exc:
+        raise ProjectExecutionUnavailable(
+            "Project lifecycle support must be installed before verification can run."
+        ) from exc
+    if PROJECT_RETIREMENT_PROTOCOL != 1:
+        raise ProjectExecutionUnavailable(
+            "Project lifecycle support must be updated before verification can run."
+        )
+    try:
         runner = importlib.import_module(__package__ + ".supervisor")
     except ModuleNotFoundError as exc:
         if exc.name != __package__ + ".supervisor":
