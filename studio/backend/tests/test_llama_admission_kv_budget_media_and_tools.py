@@ -20,6 +20,9 @@ from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     _openai_llama_admission_tokens,
 )
+from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
+from routes.inference import _openai_llama_admission_budget
+import asyncio
 
 
 class _Payload:
@@ -280,9 +283,6 @@ class TestMediaIsCharged:
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
-        import asyncio
-
-        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
             queue = LlamaAdmissionQueue("media")
@@ -323,9 +323,6 @@ class TestMediaIsCharged:
 
     def test_two_image_chats_are_not_both_admitted(self):
         """The live failure, with images instead of text."""
-        import asyncio
-
-        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
             queue = LlamaAdmissionQueue("media")
@@ -436,26 +433,20 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
     """
 
     def test_the_partitioned_total_wins_over_one_slot(self):
-        from routes.inference import _openai_llama_admission_budget
         backend = _Payload(context_length = 4096, _kv_cache_context_total = 16384)
         assert _openai_llama_admission_budget(backend) == 16384
 
     def test_a_unified_cache_is_unchanged(self):
-        from routes.inference import _openai_llama_admission_budget
-
         # slots == 1 under --kv-unified, so the total IS the per-request window.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = 8192)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_an_unread_backend_falls_back_to_context_length(self):
-        from routes.inference import _openai_llama_admission_budget
-
         # Nothing read back yet: the two agree, so the fallback is not a guess.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = None)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_a_backend_that_cannot_say_keeps_slot_only_admission(self):
-        from routes.inference import _openai_llama_admission_budget
         assert _openai_llama_admission_budget(_Payload()) is None
 
 
@@ -486,9 +477,6 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
 
     def _round_zero(self, payload, *, output_tokens):
         """Open a tool lease from ``payload``, then re-cost it before it has grown."""
-        import asyncio
-
-        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
         from routes.inference import (
             _openai_llama_admission_recost,
             _openai_llama_admission_tokens,
@@ -549,35 +537,31 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         )
 
     def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
-        """No max_tokens and no max_completion_tokens: generation is bounded only by the
-        window, which is why the reservation charges ``budget - prompt``. Flattening the
-        absent cap to zero drops the loop to its share while its generations can still
-        fill most of the cache."""
-        from routes.inference import _effective_openai_max_tokens
+        """No max_tokens and no max_completion_tokens.
+
+        The invariant: the round-zero re-cost must not SHRINK the opening lease, because it
+        fires before the conversation has grown, so anything given back is room
+        llama-server is already using. The allowance SIZE is a separate question and it
+        changed, so this asserts the two sides agree rather than asserting a number.
+        """
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+            _effective_openai_max_tokens,
+        )
 
         payload = _Payload(
             messages = [{"role": "user", "content": "summarise the news"}],
             enable_tools = True,
         )
         assert _effective_openai_max_tokens(payload) is None
-        opened, committed, queue = self._round_zero(
+        opened, committed, _queue = self._round_zero(
             payload, output_tokens = _effective_openai_max_tokens(payload)
         )
-        assert opened == 4096, opened
+        assert opened < 4096, f"an uncapped loop still opens on the whole {4096} cache ({opened})"
+        assert opened <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64, opened
         assert (
             committed == opened
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
-        # And the room it would have released must not admit anyone.
-        import asyncio
-
-        from core.inference.llama_admission import LlamaAdmissionConfig
-
-        async def _newcomer():
-            return queue.reserve(
-                capacity = 4, config = LlamaAdmissionConfig(), tokens = 2000, budget = 4096
-            ).lease_nowait()
-
-        assert asyncio.run(_newcomer()) is None
 
     def test_round_zero_keeps_a_top_level_system_prompt(self):
         """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that

@@ -56,7 +56,13 @@ import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-
  * imperative DOM readers (screenshot capture, the #9016 harness census) not necessarily in the React
  * tree, and a thread can be mounted twice at once (the Compare panes).
  */
-const activeCompleters = new Set<() => Promise<void>>();
+interface ActiveCompleter {
+  complete: () => Promise<void>;
+  /** The scroll viewport these withheld rows belong to, so a caller can ask for only its own. */
+  viewportRef: RefObject<HTMLElement | null>;
+}
+
+const activeCompleters = new Set<ActiveCompleter>();
 
 /**
  * Force every in-flight progressive mount to completion, resolving once the commit has painted.
@@ -67,7 +73,18 @@ const activeCompleters = new Set<() => Promise<void>>();
  */
 export const PROGRESSIVE_MOUNT_SEARCH_MS = 400;
 
-export async function completeProgressiveMounts(): Promise<void> {
+export async function completeProgressiveMounts(
+  /**
+   * Force only the threads whose viewport this accepts. Every one of them by default. Find-in-page
+   * passes one: the shell keeps each workspace mounted and marks the off-route ones `inert`, and
+   * mounting a retained conversation's withheld rows serves nobody looking at another route.
+   */
+  wants?: (viewport: HTMLElement | null) => boolean,
+): Promise<void> {
+  const wanted = () =>
+    wants === undefined
+      ? [...activeCompleters]
+      : [...activeCompleters].filter((entry) => wants(entry.viewportRef.current));
   // Two waits, failing in opposite directions.
   //
   // Draining is easy: ask every completer that exists to finish. Reading the set ONCE is not enough,
@@ -84,14 +101,17 @@ export async function completeProgressiveMounts(): Promise<void> {
   const deadline = Date.now() + PROGRESSIVE_MOUNT_SEARCH_MS;
   let observed = false;
   for (;;) {
-    if (activeCompleters.size > 0) {
+    const pending = wanted();
+    if (pending.length > 0) {
       observed = true;
-      await Promise.all([...activeCompleters].map((complete) => complete()));
+      await Promise.all(pending.map((entry) => entry.complete()));
     }
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
-    if (activeCompleters.size === 0 && (observed || Date.now() >= deadline)) {
+    // The filtered set, not the whole one: a completer this caller does not want would otherwise
+    // hold the loop open forever.
+    if (wanted().length === 0 && (observed || Date.now() >= deadline)) {
       return;
     }
   }
@@ -498,11 +518,12 @@ function useProgressiveMountWindow(
         completionWaiters.current.push(resolve);
         setMountWindow(null);
       });
-    activeCompleters.add(complete);
+    const entry: ActiveCompleter = { complete, viewportRef };
+    activeCompleters.add(entry);
     return () => {
-      activeCompleters.delete(complete);
+      activeCompleters.delete(entry);
     };
-  }, [isWithholding]);
+  }, [isWithholding, viewportRef]);
 
   // Resolve on the commit that actually dropped the window, then after a paint. A bare two-frame
   // timer started at the call raced the commit it had just asked for: measured, it resolved with 16

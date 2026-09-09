@@ -19,11 +19,12 @@ from core.inference.tool_loop_controller import (
     canonical_tool_call_key,
     coerce_arguments_by_schema,
     coerce_tool_arguments,
+    is_tool_error,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
-from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
 
 
@@ -283,6 +284,31 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model("plain text") == "plain text"
 
 
+def test_the_card_text_keeps_digits_the_browser_would_round():
+    """`JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the
+    parsed arguments in the browser would show a record the tool is not being run with."""
+    exact = 9007199254740993
+    controller = ToolLoopController(tools = [_tool("del_rec")])
+    decision = controller.prepare_call(_call("del_rec", {"id": exact}))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"]["id"] == exact
+    assert payload["arguments_text"] == '{"id":9007199254740993}'
+    assert payload["arguments_text"] == decision.as_assistant_tool_call()["function"]["arguments"]
+
+
+def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
+    """The replay substitutes a summary for the fragment, so the two texts are meant to differ."""
+    truncated = '{"path": "a.py", "edits"'
+    controller = ToolLoopController(tools = [_tool("edit_file")])
+    decision = controller.prepare_call(_call("edit_file", truncated))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"] == {"raw": truncated}
+    assert json.loads(payload["arguments_text"]) == {"raw": truncated}
+    assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
+
+
 # --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
@@ -419,3 +445,30 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+
+
+@pytest.mark.parametrize(
+    "result, failed",
+    [
+        ("Error: boom", True),
+        ("  Error: boom", True),
+        ("Error executing tool remote_thing: disk full", True),
+        ("Error running command `git push`: permission denied", True),
+        ("Errors: 0", False),
+        ("Errors: none found", False),
+        ("Errored, then recovered", False),
+        ("Error-free run", False),
+    ],
+)
+def test_only_a_delimited_error_marks_a_result_failed(result, failed):
+    assert is_tool_error(result) is failed
+
+
+def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", {"url": "https://example.com/log"}))
+
+    completion = controller.record_result(decision, "Errors: 0 across 128 files")
+
+    assert not completion.is_error
+    assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]

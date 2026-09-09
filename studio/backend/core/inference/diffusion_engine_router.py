@@ -49,8 +49,10 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
-# Resolved device backend -> the prebuilt sd-cli accelerator to install, used only for a force-native load on a GPU host:
-# without it the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU. Unknown -> "auto".
+# without this the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU
+# Resolved device backend -> the prebuilt sd-cli accelerator to install, used only for a force-native load on a GPU
+# host: without it the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU. Unknown ->
+# "auto".
 _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 
 
@@ -95,11 +97,13 @@ def active_engine_name() -> str:
 
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
-    # Serialize check -> unload -> publish without holding _lock across the slow unload(), closing the window where a second
-    # _activate reads the still-old active engine and loads onto the engine this call is unloading.
+    # without holding _lock across the slow unload()
     with _transition_lock:
-        # Switching engines: unload the deactivated one first, else its model stays resident but unreachable (the evictor only
-        # targets the active engine), leaking 10+ GB. The unload is slow, so resolve under _lock but run unload() OUTSIDE it.
+        # unload the deactivated engine first, else its model stays resident but unreachable (the evictor only targets
+        # the active one), leaking 10+ GB
+        # Switching engines: unload the deactivated one first, else its model stays resident but unreachable (the
+        # evictor only targets the active engine), leaking 10+ GB. The unload is slow, so resolve under _lock but run
+        # unload() OUTSIDE it.
         engine_to_unload = None
         old_name = None
         with _lock:
@@ -107,17 +111,20 @@ def _activate(name: str, reason: Optional[str]) -> Any:
                 engine_to_unload = get_active_diffusion_engine()
                 old_name = _active_engine_name
             else:
-                # No engine change: publish the (possibly refreshed) fallback reason now.
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
         if engine_to_unload is not None:
-            # Publish the new engine only AFTER the old one unloads: the evictor unloads get_active_diffusion_engine(), so flipping
-            # the name first would let a concurrent acquire_for evict the new (empty) engine while the old model frees VRAM.
+            # publish only AFTER the old engine unloads
+            # Publish the new engine only AFTER the old one unloads: the evictor unloads get_active_diffusion_engine(),
+            # so flipping the name first would let a concurrent acquire_for evict the new (empty) engine while the old
+            # model frees VRAM.
             try:
                 engine_to_unload.unload()
             except Exception as exc:
-                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server) still holds its memory, and flipping the
-                # name would hide it from get_active_diffusion_engine(), which the evictor, /images/unload and the next load all resolve through, so the leak
-                # would be permanent. Leaving the old engine active keeps it reclaimable and lets the caller retry.
+                # do NOT publish after a failed teardown: the old model still holds its memory
+                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server) still
+                # holds its memory, and flipping the name would hide it from get_active_diffusion_engine(), which the
+                # evictor, /images/unload and the next load all resolve through, so the leak would be permanent. Leaving
+                # the old engine active keeps it reclaimable and lets the caller retry.
                 logger.error("failed to unload previous engine %s: %s", old_name, exc)
                 raise RuntimeError(
                     f"Could not switch the diffusion engine to {name}: unloading the current "
@@ -164,7 +171,6 @@ def select_and_activate_engine(
     a usable GPU, MPS is not enabled, the family has no native asset, or the binary is unavailable
     -- always BEFORE the slow load, so a fallback never strands a half-native load.
     """
-    # Non-GGUF loads run on diffusers only (the native engine consumes single-file GGUF only).
     if model_kind and model_kind != "gguf":
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
@@ -179,15 +185,18 @@ def select_and_activate_engine(
 
     target = resolve_diffusion_device_target()
     backend = target.backend
-    # Policy: CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced.
+    # CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     fam_ok = family_sd_cpp_supported(fam)
 
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to native and should
-        # not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU load gets the GPU server.
+        # probe the resident sd-server FIRST: a server-only install must route to native without paying an sd-cli
+        # download
+        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to native
+        # and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU load gets
+        # the GPU server.
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed(),
             accelerator = _install_accelerator_for(backend),
@@ -197,8 +206,9 @@ def select_and_activate_engine(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
             server_binary = None
-        # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no usable server.
-        # Probe runnability first, else a present but non-runnable binary passes as available and fails inside the background load.
+        # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
+        # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
+        # inside the background load.
         binary = ensure_sd_cpp_binary(
             allow_install = _install_allowed() and server_binary is None,
             accelerator = _install_accelerator_for(backend),
@@ -297,7 +307,7 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
     if family_pipeline_available(fam):
         return True
-    # Only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs.
+    # only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs
     if model_kind != "gguf" or not family_sd_cpp_supported(fam):
         return False
     try:

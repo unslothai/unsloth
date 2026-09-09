@@ -138,9 +138,9 @@ class _Pacer:
         return list(self.streams)
 
 
-#: (action name, timing key, value). The three actions `scoring.from_payload.ACTION_SOURCES`
-#: reads, so a cell that completes carries enough weight to be scored rather than failing the
-#: coverage floor for an unrelated reason.
+#: (action name, timing key, value). The three actions `scoring.from_payload.ACTION_SOURCES` reads,
+#: so a cell that completes carries enough weight to be scored rather than failing the coverage
+#: floor for an unrelated reason.
 SCENE_ACTIONS = (
     ("keystroke", "p95_ms", 40.0),
     ("message_menu", "open_ms", 90.0),
@@ -279,8 +279,8 @@ def cell_runner(monkeypatch, tmp_path):
 
 
 def _cell():
-    # NOT the 10K rung: that one additionally runs the seeded-vs-streamed equivalence check, which
-    # is a different subject.
+    # NOT the 10K rung: that one additionally runs the seeded-vs-streamed equivalence check, which is a
+    # different subject.
     return Cell(cell_id = "r1K.A0.rep0", rung = "1K", rung_tokens = 1_000, tier = "quick")
 
 
@@ -331,8 +331,7 @@ def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
     assert row["completed"] is False
     assert row["failure"]["kind"] == "RuntimeError"
     assert "never finished" in row["failure"]["message"]
-    # The evidence ships in the same row as the failure: how long was waited, and how much the
-    # pacer actually delivered.
+    # The evidence ships in the same row as the failure: how long was waited, and how much the pacer actually delivered.
     assert row["stream"]["finished"] is False
     assert row["pacer"]["last"]["chunks"] == 150
     assert row["pacer"]["streams"][0]["tag"] == "r1K.A0.rep0"

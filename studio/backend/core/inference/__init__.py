@@ -42,7 +42,7 @@ def __getattr__(name):
     from importlib import import_module
 
     value = getattr(import_module(f"{__name__}.{submodule}"), attr)
-    globals()[name] = value  # cache so later access skips __getattr__
+    globals()[name] = value
     return value
 
 
@@ -50,7 +50,7 @@ def __dir__():
     return sorted(set(globals()) | set(__all__))
 
 
-if TYPE_CHECKING:  # keep static analysers / IDEs aware of the lazy names
+if TYPE_CHECKING:
     from .llama_cpp import LlamaCppBackend
     from .orchestrator import InferenceOrchestrator, get_inference_backend
     InferenceBackend = InferenceOrchestrator

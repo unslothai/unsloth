@@ -18,8 +18,9 @@ import {
   importDiffusionDatasetExample,
 } from "../api";
 
-// Best-effort preview thumbnails from the public HF datasets-server, cached per repo (module level) so re-renders do not
-// refetch. A repo the server cannot serve resolves to an empty list and the card renders without previews.
+// Best-effort preview thumbnails from the public HF datasets-server, cached per repo at module
+// level so re-renders do not refetch. A repo the server cannot serve resolves to an empty list
+// and the card renders without previews.
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
@@ -83,8 +84,9 @@ function ExamplePreviews({ repo }: { repo: string }) {
   );
 }
 
-// One-click example-dataset importers. Each card shows the license (terms before import) plus preview thumbnails; on success the parent refreshes
-// its dataset list and selects the folder. One card per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
+// One-click example-dataset importers. Each card shows the license before import plus preview
+// thumbnails; on success the parent refreshes its dataset list and selects the folder. One card
+// per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
 export function ExampleDatasetCards({
   examples,
   busyId,

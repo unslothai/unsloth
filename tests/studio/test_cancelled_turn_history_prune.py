@@ -36,10 +36,7 @@ TEMP = WORKDIR / "temp" / "cancelled_turn_history_prune"
 
 SOURCES = (ADAPTER, CODEX, CONTINUATION)
 
-# Fixtures the sliced code reads through. Only the tool-call helpers are stand-ins, and they stay
-# real enough to prove a turn carrying a call is NOT abandoned: ``canReplayToolCallWithoutRoleTool``
-# is driven off the fixture rather than pinned, so the resultless call the replay has to drop
-# stays reachable here instead of being stubbed out of existence.
+# Fixtures the sliced code reads through.
 HARNESS = """
 // @ts-nocheck
 function readCodexReasoning(_metadata: any): any {
@@ -112,7 +109,7 @@ def _harness_source() -> str:
         HARNESS
         + _adapter_slice("function collectTextParts(", "function normalizeOpenAIReasoningItem(")
         + _adapter_slice(
-            "// Refusal flag stamped on assistant metadata",
+            "function isAnthropicRefusalMessage(",
             "type SerializedMessage = {",
         )
         + _adapter_slice(
@@ -130,7 +127,7 @@ def _harness_source() -> str:
         )
         + slice_between(
             read(CONTINUATION),
-            "/** Why a turn ended before the model was done. */",
+            "export type IncompleteReason =",
             "const INCOMPLETE_LABELS",
         )
         + """

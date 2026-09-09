@@ -2,8 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -13,6 +11,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 
 export const CARD_GAP_PX = 16;
 const CAROUSEL_TOP_PADDING_PX = 8;
@@ -44,11 +46,11 @@ export function CarouselArrow({
           : "pointer-events-none opacity-0",
       )}
     >
-      <HugeiconsIcon
-        icon={side === "left" ? ArrowLeft01Icon : ArrowRight01Icon}
-        strokeWidth={2}
-        className="size-4"
-      />
+      {side === "left" ? (
+        <ChevronLeftIcon strokeWidth={2} className="size-4" />
+      ) : (
+        <ChevronRightIcon strokeWidth={2} className="size-4" />
+      )}
     </button>
   );
 }

@@ -141,7 +141,6 @@ type AgentDetails = {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 };
@@ -169,8 +168,8 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    icon: "hermes.svg",
-    invertIconInDark: true,
+    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
+    icon: "hermes.png",
   },
   {
     id: "openclaw",
@@ -184,6 +183,12 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://unsloth.ai/docs/integrations/opencode",
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
+  },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+    logo: "deepseek",
   },
 ];
 
@@ -408,14 +413,12 @@ function AgentIcon({
   logo,
   icon,
   darkIcon,
-  invertIconInDark,
   color,
   mark,
 }: {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 }) {
@@ -437,11 +440,7 @@ function AgentIcon({
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn(
-            "size-5 object-contain",
-            darkIconSrc && "dark:hidden",
-            invertIconInDark && "dark:invert",
-          )}
+          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
         />
         {darkIconSrc ? (
           <img
@@ -652,7 +651,7 @@ export function AgentsTab() {
     keepUnsupportedTags: false,
     enabled: online,
   });
-  // Seed a remote command from the client platform; the shell picker below can
+  // Seed a remote command from the client platform; the page's shell selector can
   // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
@@ -1277,8 +1276,8 @@ export function AgentsTab() {
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
-  // picker only ever offers GGUF models.
+  // No GGUF warning for `codex` or `claude` (unsloth_cli's
+  // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-8">
@@ -1316,6 +1315,46 @@ export function AgentsTab() {
         </a>{" "}
         {t("settings.agents.intro")}
       </p>
+
+      <fieldset className="flex min-w-0 items-center gap-0.5">
+        <legend className="mb-2 text-xs font-medium text-foreground">
+          {t("settings.agents.commandShell")}
+        </legend>
+        <button
+          type="button"
+          onClick={() => {
+            setCommandOsOverride("unix");
+            setStoredOs("unix");
+            resetCopied();
+          }}
+          aria-pressed={commandOs === "unix"}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            commandOs === "unix"
+              ? "hub-tab-toggle-pill text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("settings.apiKeys.osUnix")}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setCommandOsOverride("windows");
+            setStoredOs("windows");
+            resetCopied();
+          }}
+          aria-pressed={commandOs === "windows"}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            commandOs === "windows"
+              ? "hub-tab-toggle-pill text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("settings.apiKeys.osWindows")}
+        </button>
+      </fieldset>
 
       <section
         aria-label={t("settings.agents.commandBuilder")}
@@ -1368,7 +1407,6 @@ export function AgentsTab() {
                         logo={selectedAgentDetails.logo}
                         icon={selectedAgentDetails.icon}
                         darkIcon={selectedAgentDetails.darkIcon}
-                        invertIconInDark={selectedAgentDetails.invertIconInDark}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
                       />
@@ -1388,7 +1426,6 @@ export function AgentsTab() {
                             logo={agent.logo}
                             icon={agent.icon}
                             darkIcon={agent.darkIcon}
-                            invertIconInDark={agent.invertIconInDark}
                             color={agent.color}
                             mark={agent.mark}
                           />
@@ -1596,50 +1633,9 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            <fieldset className="flex min-w-0 items-center gap-0.5">
-              <legend className="sr-only">
-                {t("settings.agents.generatedCommand")}
-              </legend>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("unix");
-                  setStoredOs("unix");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "unix"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "unix"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osUnix")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("windows");
-                  setStoredOs("windows");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "windows"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "windows"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osWindows")}
-              </button>
-            </fieldset>
-          </div>
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>

@@ -15,8 +15,10 @@ export function useMlxTrainingConfigPolicy(): void {
     })),
   );
 
+  // Only loftq: clearing a persisted `dora` selection would silently substitute plain
+  // LoRA.
   useEffect(() => {
-    if (isMac && (loraVariant === "loftq" || loraVariant === "dora")) {
+    if (isMac && loraVariant === "loftq") {
       useTrainingConfigStore.setState({ loraVariant: "lora" });
     }
   }, [isMac, loraVariant]);

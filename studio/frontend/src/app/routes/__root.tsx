@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -21,13 +22,14 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
-  SettingsDialog,
+  SettingsDialogMount,
   useSettingsDialogStore,
   useShortcut,
 } from "@/features/settings";
@@ -79,14 +81,19 @@ function RouteFallback() {
 // Retires the retained reload shell (public/reload-snapshot.js). It rides
 // inside the route's own Suspense boundary, so a lazy page that is still
 // resolving keeps the shell up instead of uncovering RouteFallback.
-function signalReloadSnapshotReady() {
-  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+function InitialReadyPage({
+  children,
+}: {
+  children: (signalReady: () => void) => ReactNode;
+}) {
+  return children(useAppShellReadySignal());
 }
 
 function ReloadSnapshotReady() {
+  const signalReady = useAppShellReadySignal();
   useLayoutEffect(() => {
-    signalReloadSnapshotReady();
-  }, []);
+    signalReady();
+  }, [signalReady]);
   return null;
 }
 
@@ -161,12 +168,23 @@ function ChatSettingsHydrationMount() {
 }
 
 
-function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+function CredentialBootstrapGate({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
   const [ready, setReady] = useState(false);
   const runRevision = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    if (!active) {
+      runRevision.current += 1;
+      setReady(false);
+      return;
+    }
+    let mounted = true;
     const reconcile = () => {
       const revision = ++runRevision.current;
       if (!hasAuthToken()) {
@@ -176,7 +194,7 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
       setReady(false);
       void bootstrapPersistedCredentials().finally(() => {
         if (
-          active &&
+          mounted &&
           revision === runRevision.current &&
           hasAuthToken()
         ) {
@@ -189,13 +207,18 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     reconcile();
     return () => {
-      active = false;
+      mounted = false;
       runRevision.current += 1;
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     };
-  }, []);
-  return ready ? children : <RouteFallback />;
+  }, [active]);
+  return (
+    <>
+      <SettingsDialogMount active={active && ready} />
+      {active && !ready ? <RouteFallback /> : children}
+    </>
+  );
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -521,7 +544,6 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
-      {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
@@ -548,8 +570,13 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
+              {/* The find bar floats over this region and searches it: the workspace on screen,
+                  without the sidebar, the navbar, or the off-route workspaces parked here under
+                  `inert`. Gated off behind a modal, which owns Escape while it is up. */}
+              <FindInPage enabled={routeShortcutEnabled} />
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
                   `active` lets ChatPage close its body-portaled surfaces (model
@@ -577,10 +604,11 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage
-                      active={isImagesRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <ImagesPage active={isImagesRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -595,10 +623,11 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage
-                      active={isVideoRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <VideoPage active={isVideoRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -613,10 +642,11 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage
-                      active={isAudioRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <AudioPage active={isAudioRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -650,11 +680,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute ? (
-        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
-      ) : (
-        content
-      )}
+      <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        {content}
+      </CredentialBootstrapGate>
     </AppProvider>
   );
 }

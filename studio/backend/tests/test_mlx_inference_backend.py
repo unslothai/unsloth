@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import ast
+import asyncio
 import contextlib
+import copy
 import json
 import subprocess
 import sys
@@ -10,6 +13,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+class _Resp:
+    def __init__(self, text, tok):
+        self.text = text
+        self.token = tok
 
 
 class _DummyMetal:
@@ -28,6 +37,10 @@ class _DummyMX:
     @staticmethod
     def device_info():
         return {"max_recommended_working_set_size": 1024}
+
+    @staticmethod
+    def synchronize(_stream = None):
+        return None
 
 
 class _DummyTokenizer:
@@ -49,6 +62,7 @@ def _install_fake_mlx(monkeypatch):
     mlx_core.metal = _DummyMetal()
     mlx_core.set_wired_limit = _DummyMX.set_wired_limit
     mlx_core.device_info = _DummyMX.device_info
+    mlx_core.synchronize = _DummyMX.synchronize
     mlx_utils.tree_unflatten = dict
     mlx_pkg.core = mlx_core
     mlx_pkg.utils = mlx_utils
@@ -89,8 +103,9 @@ class _AdapterTree:
 
 
 def test_temporary_mlx_adapter_state_bypasses_and_restores_wrappers(monkeypatch):
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import _temporary_mlx_adapter_state
+
+    _install_fake_mlx(monkeypatch)
 
     base = object()
     wrapper = SimpleNamespace(lora_a = object(), lora_b = object(), linear = base, m = object())
@@ -129,13 +144,13 @@ def test_temporary_mlx_adapter_state_validates_requests():
 
 
 def test_temporary_mlx_adapter_state_uses_real_mlx_module_tree():
+    from core.inference.mlx_inference import _temporary_mlx_adapter_state
+
     nn = pytest.importorskip("mlx.nn")
     pytest.importorskip("mlx_lm")
     from mlx_lm.models.switch_layers import SwitchLinear
     from mlx_lm.tuner.dora import DoRALinear
     from mlx_lm.tuner.lora import LoRAEmbedding, LoRALinear, LoRASwitchLinear
-
-    from core.inference.mlx_inference import _temporary_mlx_adapter_state
 
     class _Layer(nn.Module):
         def __init__(self):
@@ -171,11 +186,11 @@ def test_temporary_mlx_adapter_state_uses_real_mlx_module_tree():
 
 
 def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
-
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
@@ -211,11 +226,11 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
     # A LoRA adapter's own tokenizer often ships no chat template; the native tool-calling template
     # lives on the base model.
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
-
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(
@@ -235,6 +250,8 @@ def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
 def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewrite(
     monkeypatch, tmp_path
 ):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
@@ -251,8 +268,6 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
     cfg_path = adapter_dir / "adapter_config.json"
     original_cfg = '{"base_model_name_or_path": "fake/base", "rank": 8}\n'
     cfg_path.write_text(original_cfg)
-
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(
@@ -290,10 +305,11 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
 
 
 def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     group = SimpleNamespace(size = lambda: 2, rank = lambda: 0)
     config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
@@ -545,8 +561,8 @@ def test_worker_share_object_oversize_notifies_peers(monkeypatch):
 
 
 def test_mlx_generate_chat_response_accepts_template_kwargs():
-    import inspect
     from core.inference.mlx_inference import MLXInferenceBackend
+    import inspect
 
     sig = inspect.signature(MLXInferenceBackend.generate_chat_response)
     params = sig.parameters
@@ -567,6 +583,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     the UI renders the thinking block during prefill and a pre-first-token
     cancel does not drop it. Mirrors _generate_text."""
     from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
@@ -623,6 +640,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
 
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
@@ -712,19 +730,22 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
-    from core.inference.mlx_inference import MLXInferenceBackend, _prompt_serializes_vlm_media
+    # Moved to chat_template_helpers so the transformers vision path shares it (#10092).
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    from core.inference.chat_template_helpers import prompt_serializes_structured_media
 
     media = [{"type": "image"}]
     quoted = [{"role": "user", "content": media}, {"role": "user", "content": f"Explain {media}"}]
-    assert _prompt_serializes_vlm_media(f"<image>\n{media[0]}", quoted[:1])
-    assert not _prompt_serializes_vlm_media(f"<image>\nExplain {media}", quoted)
-    assert _prompt_serializes_vlm_media(f"User: {media}\nExplain {media}", quoted)
+    assert prompt_serializes_structured_media(f"<image>\n{media[0]}", quoted[:1])
+    assert not prompt_serializes_structured_media(f"<image>\nExplain {media}", quoted)
+    assert prompt_serializes_structured_media(f"User: {media}\nExplain {media}", quoted)
     quoted[1]["content"] = [{"type": "text", "text": f'Explain "this" {media}'}]
-    assert not _prompt_serializes_vlm_media(f'<image>\nExplain "this" {media}', quoted)
+    assert not prompt_serializes_structured_media(f'<image>\nExplain "this" {media}', quoted)
     json_media = [{"type": "image_url"}]
     json_repr = '{"type": "image_url"}'
-    assert _prompt_serializes_vlm_media(f"<image>\n{json_repr}", [{"content": json_media}])
-    assert not _prompt_serializes_vlm_media(
+    assert prompt_serializes_structured_media(f"<image>\n{json_repr}", [{"content": json_media}])
+    assert not prompt_serializes_structured_media(
         f"<image>\nExplain {json_repr}",
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
     )
@@ -760,8 +781,11 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""
-    _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+    import types as _types
+
+    _install_fake_mlx(monkeypatch)
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
     real_adapter_state = mlx_inference._temporary_mlx_adapter_state
@@ -782,7 +806,6 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
     # mlx_lm.stream_generate yields response objects with .token; use a
     # one-token generator so _generate_text returns without the real stack.
-    import types as _types
 
     mlx_lm_pkg = _types.ModuleType("mlx_lm")
     mlx_lm_sample = _types.ModuleType("mlx_lm.sample_utils")
@@ -889,8 +912,9 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
 
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
@@ -910,11 +934,6 @@ def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatc
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("<|channel>thought\n", 10)
@@ -955,8 +974,9 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     outside reasoning would leak the post-tool reasoning and a raw ``<channel|>``
     into the visible answer.
     """
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
 
     post_tool_prompt = (
         "<|turn>model\n<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
@@ -981,11 +1001,6 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("The search says 18C.", 10)
@@ -1035,8 +1050,9 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
 
 
 def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatch):
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
@@ -1056,11 +1072,6 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("reason", 10)
@@ -1092,8 +1103,9 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
 
 
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
@@ -1102,11 +1114,6 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     )
 
     mlx_vlm_pkg = types.ModuleType("mlx_vlm")
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
         yield _Resp("<|channel>thought\n", 10)
@@ -1142,8 +1149,9 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
 
 def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     """The VLM snapshot path must derive channel state from its rendered prompt too."""
-    _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
 
     post_tool_prompt = "<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
     monkeypatch.setattr(
@@ -1153,11 +1161,6 @@ def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     )
 
     mlx_vlm_pkg = types.ModuleType("mlx_vlm")
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
         yield _Resp("looking at it", 10)
@@ -1280,8 +1283,9 @@ def test_mlx_prompt_cache_max_bytes_budget(monkeypatch):
 
 
 def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
-    _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
 
     history = _MLXPromptCacheHistory(6, 1 << 30)
     tokens = list(range(10))
@@ -1307,9 +1311,10 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
 
 
 def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_prompt_cache_api(monkeypatch)
     _install_fake_mlx(monkeypatch)
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     class _Tok:
         bos_token = None
@@ -1344,9 +1349,9 @@ def _install_fake_text_stack(
     captured,
     markers = None,
 ):
-    import types as _types
-
     from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+    import types as _types
 
     _install_fake_mlx(monkeypatch)
     monkeypatch.setattr(
@@ -1415,8 +1420,6 @@ def _install_fake_text_stack(
             skip_special_tokens = False,
         ):
             return "".join(str(i) for i in ids)
-
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     backend._model = object()
@@ -1501,10 +1504,11 @@ def test_mlx_presence_penalty_latches_the_first_decode_step():
 
 
 def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_prompt_cache_api(monkeypatch)
     _install_fake_mlx(monkeypatch)
     sys.modules["mlx.core"].clear_cache = lambda: None
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     backend.active_model_name = "model-a"
@@ -1519,8 +1523,9 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
 
 
 def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
-    _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
 
     history = _MLXPromptCacheHistory(6, 1000)
     history.insert("key", [1, 2, 3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
@@ -1533,8 +1538,9 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
 
 
 def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
-    _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
 
     class _Entry:
         def __init__(
@@ -1556,6 +1562,8 @@ def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
 
 
 def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
     mx = pytest.importorskip("mlx.core")
     from mlx_lm.models.cache import CacheList, ChunkedKVCache, KVCache, RotatingKVCache
 
@@ -1595,6 +1603,74 @@ def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
 
     history.insert("key", list(range(30)), [plain])
     assert tuple(range(30)) in history._lru.entries["key"]
+
+
+def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.models.cache import (
+        ArraysCache,
+        CacheList,
+        KVCache,
+        RotatingKVCache,
+        can_trim_prompt_cache,
+    )
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _kv_prefix_coverage, _MLXPromptCacheHistory
+
+    def attention(entry, n):
+        for _ in range(n):
+            block = mx.zeros((1, 2, 1, 4), dtype = mx.float16)
+            entry.update_and_fetch(block, block)
+        mx.eval(entry.state)
+        return entry
+
+    def recurrent():
+        # A GatedDeltaNet layer: conv + recurrent state, neither grows with the prompt.
+        entry = ArraysCache(size = 2)
+        entry[0] = mx.zeros((1, 4, 4), dtype = mx.float16)
+        entry[1] = mx.zeros((1, 2, 4, 4), dtype = mx.float16)
+        mx.eval(entry.state)
+        return entry
+
+    assert getattr(recurrent(), "offset", None) is None
+
+    # qwen3_5/qwen3_next: a full-attention layer every fourth layer.
+    hybrid = [recurrent(), recurrent(), recurrent(), attention(KVCache(), 30)]
+    assert _kv_prefix_coverage(hybrid) == 30
+    # falcon_h1: both halves inside one CacheList.
+    nested = [CacheList(recurrent(), attention(KVCache(), 30))]
+    assert _kv_prefix_coverage(nested) == 30
+
+    # Pin it: an mlx-lm that made these trimmable must fail here, not reuse stale state.
+    assert can_trim_prompt_cache(hybrid) is False
+    assert can_trim_prompt_cache(nested) is False
+
+    class _TrimmableOpaqueState:
+        def is_trimmable(self):
+            return True
+
+    assert _kv_prefix_coverage([_TrimmableOpaqueState(), attention(KVCache(), 30)]) is None
+
+    # mamba/rwkv: nothing attests to a token count.
+    assert _kv_prefix_coverage([recurrent(), recurrent()]) is None
+
+    # A recurrent entry does not excuse an attention sibling that cannot attest.
+    windowed = attention(RotatingKVCache(max_size = 10, keep = 2), 30)
+    assert _kv_prefix_coverage([recurrent(), windowed]) is None
+    assert (
+        _kv_prefix_coverage([recurrent(), attention(KVCache(), 30), attention(KVCache(), 29)])
+        is None
+    )
+
+    history = _MLXPromptCacheHistory(6, 1 << 40)
+    history.insert("recurrent", list(range(40)), [recurrent(), recurrent()])
+    assert "recurrent" not in history._lru.entries
+
+    history.insert("hybrid", list(range(40)), hybrid)
+    assert tuple(range(30)) in history._lru.entries["hybrid"]
 
 
 # ── Tests: audio-input capability + generation ───────────────────────
@@ -1828,11 +1904,12 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     """The official checkpoint capitalizes its model type while mlx-vlm's
     registry uses lowercase. Unsloth must reach the registered renderer rather
     than rejecting the checkpoint before the loader's normalization can run."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
     # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
     # backend CI ships neither, so skip rather than error.
     pytest.importorskip("mlx_vlm.prompt_utils")
     loader = pytest.importorskip("unsloth_zoo.mlx.loader")
-    from core.inference.mlx_inference import _render_registered_vlm_prompt
 
     loader._ensure_vlm_prompt_utils_patched()
     published = "NemotronH_Nano_Omni_Reasoning_V3"
@@ -2112,9 +2189,8 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
     """The wire carries the selection only when the caller set it."""
-    import inspect
-
     from core.inference import worker
+    import inspect
 
     src = inspect.getsource(worker._handle_generate_audio_input)
     assert 'cmd.get("use_adapter")' in src
@@ -2233,9 +2309,10 @@ def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     Static proxies were wrong both ways: a declared head_dim a model ignores,
     and windows spelled differently from `max_size`.
     """
+    from core.inference import mlx_inference
+
     pytest.importorskip("mlx_lm")
     from mlx_lm.models import cache as lm_cache
-    from core.inference import mlx_inference
 
     def elig(factory, dim = 128):
         lm = _tiny_lm(factory, dim)
@@ -2370,6 +2447,7 @@ def test_chat_template_override_crosses_both_ipc_hops():
     """The backend runs in a subprocess; the parent rebuilds its entry from an
     enumerated key set at each hop, and /status and the reload check read the
     parent's copy."""
+    from core.inference import worker
     import inspect
 
     from core.inference import orchestrator, worker
@@ -2780,6 +2858,8 @@ def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch)
     Nothing reads them once the audio and image checks have run, and the worker
     outlives the model, so holding them defeats part of what unload releases.
     """
+    from core.inference.mlx_inference import MLXInferenceBackend
+
     _install_fake_mlx(monkeypatch)
     _install_fake_fast_mlx(monkeypatch, [])
     # A text model with no template of its own is the one case an override may create.
@@ -2788,7 +2868,6 @@ def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch)
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda target, messages, **kwargs: "rendered",
     )
-    from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
@@ -2895,6 +2974,8 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     unplaced with no error, and recovery is unavailable anyway once tools or
     reasoning controls are set.
     """
+    from core.inference import mlx_inference
+
     _install_fake_mlx(monkeypatch)
     _install_fake_fast_mlx(monkeypatch, [])
     monkeypatch.setattr(_DummyProcessor, "chat_template", "{{ native }}", raising = False)
@@ -2915,7 +2996,6 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation", render
     )
-    from core.inference import mlx_inference
 
     # The native template fails the check, which used to skip the override's.
     assert mlx_inference._image_marker_survives(_DummyTokenizer(), _DummyProcessor(), None) is False
@@ -3012,8 +3092,9 @@ def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
     factory_name, factory_args, vocab, sequence, expected
 ):
     # MLX does no bounds checking, so a stray id is undefined behaviour.
-    mx = pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
+
+    mx = pytest.importorskip("mlx.core")
 
     proc = getattr(mlx_inference, factory_name)(*factory_args)
     proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
@@ -3139,6 +3220,8 @@ def test_rng_capture_reinterprets_signed_words(monkeypatch, words, expected):
     finally and replace the probe's own outcome, the failure shape #9478 set out
     to remove.
     """
+    from core.inference import mlx_inference
+
     mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
 
     captured = mlx_inference._mlx_rng_key_words()
@@ -3160,6 +3243,8 @@ def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
     unprobed run. Declining is the outcome the caller already handles, and it is
     the only one that says so out loud.
     """
+    from core.inference import mlx_inference
+
     mlx_inference, seeded = _fake_rng_state(monkeypatch, words)
     warnings = _capture_rng_warnings(monkeypatch, mlx_inference)
 
@@ -3177,6 +3262,8 @@ def test_rng_capture_declines_words_that_are_not_32_bit(monkeypatch, words):
 def _capture_rng_warnings(monkeypatch, mlx_inference):
     """Collect this module's warnings. It logs through structlog, which caplog
     does not see."""
+    from core.inference import mlx_inference
+
     warnings = []
     monkeypatch.setattr(
         mlx_inference.logger,
@@ -3217,3 +3304,851 @@ def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
 
     assert mlx_inference._mlx_rng_key_words() is None
     assert warnings == []
+
+
+_BACKEND_SOURCE = Path(__file__).resolve().parents[1] / "core" / "inference" / "mlx_inference.py"
+_BACKEND_TREE = ast.parse(_BACKEND_SOURCE.read_text(encoding = "utf-8"))
+
+
+def _is_call(
+    node,
+    name,
+    receiver = "mx",
+):
+    if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+        return False
+    func = node.value.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == name and isinstance(func.value, ast.Name) and func.value.id == receiver
+    return isinstance(func, ast.Name) and func.id == name
+
+
+def _clear_cache_sites():
+    for node in ast.walk(_BACKEND_TREE):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for index, statement in enumerate(block):
+                if _is_call(statement, "clear_cache"):
+                    yield statement.lineno, (block[index - 1] if index else None)
+
+
+def test_backend_has_mlx_cache_clear_sites():
+    assert list(_clear_cache_sites()), "no mx.clear_cache() found -- test is stale"
+
+
+def test_every_cache_clear_drains_gpu_work_first():
+    """MLX does not pin a dropped output array, so every clear must drain first."""
+    unguarded = [
+        line
+        for line, previous in _clear_cache_sites()
+        if not _is_call(previous, "_drain_generation_streams", receiver = None)
+    ]
+    assert not unguarded, (
+        f"mx.clear_cache() at line(s) {unguarded} is not immediately preceded by "
+        "_drain_generation_streams()"
+    )
+
+
+def test_the_drain_covers_both_generation_stream_modules():
+    """Draining only the default stream would miss the stream generation actually uses."""
+    assigned = [
+        node
+        for node in ast.walk(_BACKEND_TREE)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_GENERATION_STREAM_MODULES" for t in node.targets)
+    ]
+    assert len(assigned) == 1
+    names = {element.value for element in assigned[0].value.elts}
+    assert names == {
+        "mlx_lm.generate",
+        "mlx_vlm.generate",
+        "mlx_vlm.generate.dispatch",
+        "mlx_vlm.generate.ar",
+        # A second stream since 0.6.0, never wired-limited.
+        "mlx_vlm.speculative.common",
+    }
+
+
+def _fake_stream_module(monkeypatch, name, stream):
+    monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(generation_stream = stream))
+
+
+def _recording_mx(monkeypatch, synchronize = None):
+    from core.inference import mlx_inference
+
+    events = []
+    mx = types.SimpleNamespace(
+        synchronize = synchronize
+        or (
+            lambda stream = None: events.append(
+                f"synchronize:{'default' if stream is None else stream}"
+            )
+        ),
+    )
+    for name in mlx_inference._GENERATION_STREAM_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    return mlx_inference, mx, events
+
+
+def test_a_stream_that_cannot_be_drained_does_not_stop_the_caller(monkeypatch):
+    """A plain mx.new_stream raises when synchronized off its creating thread."""
+    from core.inference import mlx_inference
+
+    def synchronize(stream = None):
+        if stream == "foreign":
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
+        events.append(f"synchronize:{'default' if stream is None else stream}")
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch, synchronize)
+    _fake_stream_module(monkeypatch, "mlx_lm.generate", "foreign")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_a_module_getattr_that_raises_does_not_stop_the_caller(monkeypatch):
+    from core.inference import mlx_inference
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    module = types.ModuleType("mlx_vlm.generate")
+    module.__getattr__ = lambda name: (_ for _ in ()).throw(RuntimeError(name))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_one_stream_shared_by_several_modules_is_drained_once(monkeypatch):
+    """0.6.x defines the stream once and re-exports it from every candidate name."""
+    from core.inference import mlx_inference
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    for name in ("mlx_vlm.generate", "mlx_vlm.generate.dispatch", "mlx_vlm.generate.ar"):
+        _fake_stream_module(monkeypatch, name, "shared")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:shared", "synchronize:default"]
+
+
+def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
+    from core.inference import mlx_inference
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    _fake_stream_module(monkeypatch, "mlx_vlm.speculative.common", "speculative")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:speculative", "synchronize:default"]
+
+
+def test_a_runtime_without_synchronize_is_not_an_error():
+    from core.inference import mlx_inference
+    mlx_inference._drain_generation_streams(types.SimpleNamespace())
+
+
+# Llama 3.1 carries the second beside its scaled window, mlx-lm's Kimi Linear the third.
+@pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
+def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
+    from core.inference.mlx_inference import mlx_native_context_length
+
+    # One term per family, matched by shape rather than by name.
+    args = SimpleNamespace(**{name: 40960})
+    assert mlx_native_context_length(SimpleNamespace(args = args)) == 40960
+    # Pre-load metadata answers by the same rule.
+    from routes.models import _get_max_position_embeddings
+
+    assert _get_max_position_embeddings(SimpleNamespace(**{name: 40960})) == 40960
+    # The wrapper counts too: mlx-vlm's Phi-3-V keeps a 4096 text config beside its real 131072.
+    stub = SimpleNamespace(args = SimpleNamespace(**{name: 4096}))
+    text = SimpleNamespace(**{name: 4096})
+    cfg = SimpleNamespace(model_type = "x", text_config = text, **{name: 131072})
+    vlm = SimpleNamespace(language_model = stub, config = cfg)
+    assert mlx_native_context_length(vlm) == 131072
+
+
+# Real enough for the capability classifier to read. The named one is the shape that made
+# classifying without tools wrong: its tool markup lives only in the tool_use branch.
+_PLAIN_TEMPLATE = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+_TOOL_TEMPLATE = (
+    "{% if tools %}{% for t in tools %}{{ t.function.name }}{% endfor %}{% endif %}"
+    "{% for m in messages %}{{ m['content'] }}"
+    "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
+    "{% endfor %}"
+)
+_NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
+
+
+def _mirror(template = None):
+    """The parent's view of a worker-held MLX model, template included."""
+    return {
+        "mlx/model": {
+            "is_mlx": True,
+            "is_vision": False,
+            "is_audio": False,
+            "chat_template_info": {"template": template},
+        }
+    }
+
+
+class _RenderRecordingBackend:
+    active_model_name = "mlx/model"
+
+    def __init__(self):
+        self.messages = self.system = self.tools = None
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        self.messages, self.system = messages, system_prompt
+        self.tools = kwargs.get("tools")
+        return 11, "mlx/model"
+
+
+def _count_route(
+    monkeypatch,
+    backend,
+    template = _TOOL_TEMPLATE,
+    models = None,
+    request = None,
+    generations = None,
+    **fields,
+):
+    """Drive the endpoint against `backend`, classifying from a real template."""
+    from routes import inference as route
+
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    backend.models = models or _mirror(template)
+    monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", generations or (lambda: 0))
+    return asyncio.run(
+        route.chat_count_tokens(
+            route.ChatCountTokensRequest(**fields),
+            request = request,
+            current_subject = "tester",
+        )
+    )
+
+
+def _count_hi(
+    *args,
+    messages = [{"role": "user", "content": "hi"}],
+    **kwargs,
+):
+    """_count_route over the one-message chat every case counts."""
+    return _count_route(*args, messages = messages, **kwargs)
+
+
+def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
+    """llama.cpp not being loaded used to be the whole answer, for vision models too."""
+    from fastapi import HTTPException
+
+    hello = [{"role": "user", "content": "hello"}]
+    served = _count_route(monkeypatch, _RenderRecordingBackend(), messages = hello)
+    assert json.loads(served.body) == {"input_tokens": 11, "model": "mlx/model"}
+    served = _count_route(
+        monkeypatch,
+        _RenderRecordingBackend(),
+        messages = hello,
+        models = {"mlx/model": {"is_mlx": True, "is_vision": True, "is_audio": False}},
+    )
+    assert json.loads(served.body)["input_tokens"] == 11
+
+    with pytest.raises(HTTPException) as refused:
+        _count_route(monkeypatch, _RenderRecordingBackend(), messages = [])
+    assert refused.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "template, expected_tools",
+    [
+        (_PLAIN_TEMPLATE, None),
+        (_TOOL_TEMPLATE, ["web_search"]),
+        # Tool markup only in tool_use: classifying with no tools reads `default`.
+        (_NAMED_TOOL_TEMPLATE, ["web_search"]),
+    ],
+    ids = ["renders-none", "renders-tools", "renders-tools-in-a-named-branch"],
+)
+def test_an_mlx_count_prices_the_tools_the_completion_would_render(
+    monkeypatch, template, expected_tools
+):
+    """`unsloth studio run` defaults tools on, so a count naming none inherits that: mostly
+    the nudge's length, but not stale markup the completion strips."""
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        template = template,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "sure <tool_call>{}</tool_call> done"},
+        ],
+        enabled_tools = ["web_search"],
+    )
+    names = None if backend.tools is None else [t["function"]["name"] for t in backend.tools]
+    assert names == expected_tools, "the count must render what the completion would"
+    if expected_tools is None:
+        assert not backend.system, "no tools rendered, so no nudge either"
+        return
+
+    from routes.inference import _apply_rag_nudge, _build_tool_action_nudge
+
+    plain = _build_tool_action_nudge(tools = backend.tools, model_name = "mlx/model", full_access = False)
+    nudge = asyncio.run(_apply_rag_nudge(plain, backend.tools, rag_scope = None))
+    assert backend.system == nudge
+    assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
+
+
+def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
+    """A declined request carrying tool history goes to the relay, which keeps the
+    structured tool_calls the extraction flattens away."""
+    from routes import inference as route
+
+    fn = {"name": "web_search", "arguments": '{"q": "x"}'}
+    call = {"id": "c1", "type": "function", "function": fn}
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "a result"},
+    ]
+
+    backend = _RenderRecordingBackend()
+    _count_route(monkeypatch, backend, messages = history, enable_tools = False)
+    assert backend.messages[1].get("tool_calls"), "the relay renders structured calls, not prose"
+    assert backend.messages[1]["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
+    assert backend.tools is None, "the loop declined it, so no server catalog is rendered"
+
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "developer", "content": ""}, *history],
+        enable_tools = False,
+    )
+    assert backend.messages[0]["role"] == "system"
+
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = history,
+        enable_tools = False,
+        tools = [{"function": {"name": "mine", "parameters": {}}}],
+    )
+    assert backend.tools[0]["type"] == "function"
+
+    # Outside the MLX branch it returns before normalizing anything, yet the request
+    # still arrives normalized.
+    route = sys.modules["routes.inference"]
+    monkeypatch.setattr(route, "get_inference_backend", lambda: SimpleNamespace(models = {}))
+    payload = route.ChatCountTokensRequest(
+        messages = [{"role": "developer", "content": ""}],
+        tools = [{"function": {"name": "mine", "parameters": {}}}],
+    )
+    with contextlib.suppress(Exception):
+        asyncio.run(route.chat_count_tokens(payload, current_subject = "tester"))
+    assert payload.messages[0].role == "system"
+    assert payload.tools[0]["type"] == "function"
+
+
+def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
+    """A request wins verbatim; asking for nothing takes the trained window; unreadable
+    dims resolve to nothing rather than to a number of their own."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    resolve = MLXInferenceBackend._resolve_context_lengths
+    wide = SimpleNamespace(args = SimpleNamespace(max_position_embeddings = 262144))
+    blank = SimpleNamespace(args = SimpleNamespace())
+    assert resolve(None, wide, 0) == (262144, 262144, 262144)
+    assert resolve(None, wide, 8192) == (8192, 262144, 262144)
+    assert resolve(None, wide, 1048576) == (1048576, 262144, 262144)  # above native, still verbatim
+    held = SimpleNamespace(args = wide.args, max_seq_length = 4096)
+    assert resolve(None, held, 0) == (4096, 262144, 262144)  # what the load attached wins
+    assert resolve(None, blank, 0) == (None, None, None)
+    assert resolve(None, blank, 8192) == (8192, None, None)
+
+
+def test_the_resident_context_gate_compares_requests_not_served_windows():
+    """Reuse on model identity alone leaves a context change with no reload to carry it.
+    Served windows cannot answer it: auto-sized to 32768 and pinned at 32768 are equal."""
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from routes.inference import _resident_context_satisfies as gate
+
+    # Absent or null: the mirror always writes the key, so reading presence alone would
+    # reload every transformers model on its own reuse path.
+    assert gate({}, 8192) is True
+    assert gate({"requested_context_length": None}, 8192) is True
+
+    # Same request, either spelling of "size it yourself".
+    assert gate({"requested_context_length": 8192}, 8192) is True
+    assert gate({"requested_context_length": 0}, 0) is True
+    assert gate({"requested_context_length": 0}, None) is True
+
+    # Different request: pinning and unpinning both reload.
+    assert gate({"requested_context_length": 0}, 8192) is False
+    assert gate({"requested_context_length": 8192}, 0) is False
+
+    # The served window is not the request and cannot stand in for it.
+    assert gate({"requested_context_length": 0, "context_length": 32768}, 32768) is False
+
+
+def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monkeypatch):
+    """mlx-lm cannot quantize a rotating cache (to_quantized raises, from the first token),
+    so exactly one applies. A pin is an explicit memory instruction; a self-chosen window
+    is not. An unenforceable pin buys nothing, so it does not spend the quantization."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    pytest.importorskip("mlx_lm.models.cache")
+    from mlx_lm.models.cache import KVCache
+
+    # About the pin/enforceability combination, not the eligibility probe.
+    monkeypatch.setattr(
+        mlx_inference, "_kv_quant_eligibility", lambda *_a, **_k: ("full", "", True)
+    )
+    honours = SimpleNamespace(layers = [object(), object()])
+    # llama without sliding layers: quantizable, never bounded.
+    owns = SimpleNamespace(layers = [object(), object()], make_cache = lambda: [KVCache(), KVCache()])
+
+    unset = object()
+
+    def policy(
+        model,
+        kv_bits,
+        requested,
+        served = unset,
+    ):
+        backend = MLXInferenceBackend()
+        backend._model = model
+        backend._is_vlm = False
+        quant, window, enforced = backend._resolve_kv_policy(
+            False, kv_bits, requested, requested if served is unset else served
+        )
+        return quant["kv_bits"], window, enforced
+
+    assert policy(honours, 4, 8192) == (None, 8192, True)  # enforceable pin outranks quant
+    # Auto yields to quantization, and a window that bounds nothing says so.
+    assert policy(honours, 4, 0, 262144) == (4, None, False)
+    assert policy(honours, None, 8192) == (None, 8192, True)
+    assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
+
+    # An unenforceable pin spends nothing, and the verdict still travels to the API.
+    assert policy(owns, 4, 8192) == (4, None, False)
+    assert policy(owns, None, 8192) == (None, None, False)
+
+    # A window nobody could read bounds nothing rather than bounding at zero.
+    assert policy(honours, None, 0, None) == (None, None, False)  # unreadable
+    assert policy(honours, None, 0, 0) == (None, None, False)  # non-positive
+
+    # A shape the probe cannot judge is null, not a confirmed "not enforced".
+    unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
+    assert policy(unreadable, None, 8192) == (None, None, None)
+
+
+def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_stream():
+    """Left to mlx-lm this surfaces as NotImplementedError on the first generated token."""
+    from core.inference.mlx_inference import _kv_quant_status
+
+    status = _kv_quant_status(4, None, False, context_pinned = True)
+
+    assert status["kv_bits"] is None
+    assert status["eligibility"] == "refused"
+    assert "quantize a limited cache" in status["reason"]
+
+
+def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
+    """make_cache ignores max_kv_size, and those caches range from constant-state to
+    unbounded, so the argument does not say whether it applied. Nor does an
+    architecture-chosen cap serve a narrower request."""
+    from core.inference.mlx_inference import _kv_window_enforced
+
+    pytest.importorskip("mlx_lm.models.cache")
+    from mlx_lm.models.cache import ArraysCache, ChunkedKVCache, KVCache, RotatingKVCache
+
+    honours = SimpleNamespace(layers = [object(), object()])
+    hybrid = SimpleNamespace(
+        layers = [object(), object()],
+        make_cache = lambda: [RotatingKVCache(1024), KVCache()],
+    )
+    undeclared = SimpleNamespace(layers = [object()], make_cache = lambda: [ArraysCache(2)])
+    chunked = SimpleNamespace(layers = [object()], make_cache = lambda: [ChunkedKVCache(512)])
+    native = SimpleNamespace(layers = [object()], make_cache = lambda: [RotatingKVCache(2048)])
+    # mlx-vlm's Florence2: tuples of a class that concatenates forever.
+    nested = SimpleNamespace(
+        layers = [object()],
+        make_cache = lambda: [(SimpleNamespace(keys = None), SimpleNamespace(keys = None))],
+    )
+
+    assert _kv_window_enforced(honours, False, 4096) is True
+    assert _kv_window_enforced(hybrid, False, 4096) is False  # a full-attention layer survives
+    assert _kv_window_enforced(chunked, False, 4096) is True
+    # Nothing that declares no cap is taken on trust, however it is packaged.
+    assert _kv_window_enforced(undeclared, False, 4096) is False
+    assert _kv_window_enforced(nested, False, 4096) is False
+    # Recurrent Gemma: its own window outlives a narrower pin.
+    assert _kv_window_enforced(native, False, 128) is False
+    assert _kv_window_enforced(native, False, 4096) is True
+    # A window a rotating cache cannot rotate within retains everything instead.
+    assert _kv_window_enforced(honours, False, 4) is False
+    assert _kv_window_enforced(SimpleNamespace(), False, 4096) is None  # unreadable
+    # The VLM branch reaches mlx-vlm's factory and unwraps the language tower.
+    assert _kv_window_enforced(SimpleNamespace(language_model = honours), True, 4096) is True
+
+
+def test_the_probe_reads_a_cache_shape_without_needing_the_mlx_wheels(monkeypatch):
+    """Same branches as the real-cache test, through an injected factory. That one
+    importorskips, so it proves nothing without mlx; this runs everywhere."""
+    from core.inference.mlx_inference import _kv_window_enforced
+
+    def factory(make):
+        """Stand in for mlx_lm.models.cache, present or not; return a model."""
+        cache_mod = types.ModuleType("mlx_lm.models.cache")
+        cache_mod.make_prompt_cache = make
+        models_mod = types.ModuleType("mlx_lm.models")
+        models_mod.cache = cache_mod
+        root = types.ModuleType("mlx_lm")
+        root.models = models_mod
+        for name, module in (
+            ("mlx_lm", root),
+            ("mlx_lm.models", models_mod),
+            ("mlx_lm.models.cache", cache_mod),
+        ):
+            monkeypatch.setitem(sys.modules, name, module)
+        return SimpleNamespace(layers = [object()])
+
+    def caches(*entries):
+        return factory(lambda _model, max_kv_size = None: list(entries))
+
+    bounded = SimpleNamespace(max_size = 4096, keep = 4)
+    wider = SimpleNamespace(max_size = 8192, keep = 4)
+    undeclared = SimpleNamespace()
+    unrotatable = SimpleNamespace(max_size = 4, keep = 4)
+    chunked = SimpleNamespace(chunk_size = 512)
+
+    assert _kv_window_enforced(caches(bounded, bounded), False, 4096) is True
+    assert _kv_window_enforced(caches(bounded, undeclared), False, 4096) is False
+    assert _kv_window_enforced(caches(wider), False, 4096) is False
+    assert _kv_window_enforced(caches(unrotatable), False, 4096) is False
+    assert _kv_window_enforced(caches(chunked), False, 4096) is True
+    assert _kv_window_enforced(caches(), False, 4096) is False
+    # A factory that answers with a shape this cannot walk is unknown, not a failed load.
+    for broken in (None, object(), SimpleNamespace(caches = 7)):
+        model = factory(lambda _m, max_kv_size = None, _b = broken: _b)
+        assert _kv_window_enforced(model, False, 4096) is None
+
+
+def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
+    """The runtimes read max_kv_size only when no prompt_cache is passed, so each route
+    building its own cache carries the bound. The audio route once did not."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+    import types as _types
+
+    kwargs = MLXInferenceBackend._kv_window_generate_kwargs
+    assert kwargs(SimpleNamespace(_kv_cache_window = None)) == {}
+    assert kwargs(SimpleNamespace()) == {}
+    assert kwargs(SimpleNamespace(_kv_cache_window = 8192)) == {"max_kv_size": 8192}
+
+    # The prompt-cache history builds its own cache; it has to carry the window too.
+    pytest.importorskip("mlx_lm.models.cache")
+
+    model = SimpleNamespace(layers = [object(), object()])
+    bounded = _MLXPromptCacheHistory(4, 1 << 20, 512).fetch(model, "k", [1, 2])[0]
+    unbounded = _MLXPromptCacheHistory(4, 1 << 20, None).fetch(model, "k", [1, 2])[0]
+    assert {getattr(e, "max_size", None) for e in bounded} == {512}
+    assert {getattr(e, "max_size", None) for e in unbounded} == {None}
+
+    captured: list = []
+    backend = _install_fake_text_stack(monkeypatch, {"P1": [1], "generated": [1]}, captured)
+    backend._kv_cache_window = 8192
+    _run_turn(backend, "P1")
+    assert captured[0]["max_kv_size"] == 8192
+
+    seen: list = []
+
+    def _vlm_stream(*_args, **kw):
+        seen.append(kw)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm = _types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"m": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> p",
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._temporary_mlx_adapter_state",
+        lambda _m, _s: contextlib.nullcontext(),
+    )
+    vlm = MLXInferenceBackend()
+    vlm._kv_cache_window = 4096
+    vlm._model = SimpleNamespace(config = {"model_type": "m"})
+    vlm._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    next(
+        vlm._generate_vlm(
+            [{"role": "user", "content": [{"type": "image"}]}],
+            object(),
+            0,
+            1,
+            0,
+            0,
+            1,
+            1,
+            None,
+            _adapter_state = False,
+        )
+    )
+    assert seen[-1]["max_kv_size"] == 4096
+
+    vlm.active_model_name = "m"
+    vlm.models["m"] = {"audio_type": "audio_vlm"}
+    next(vlm.generate_audio_input_response([{"role": "user", "content": "x"}], "", object()))
+    assert seen[-1]["max_kv_size"] == 4096, "the audio route must carry the bound too"
+
+
+class _BlockMLX:
+    """Make `import mlx_lm...` fail the way it does on a box without the wheels."""
+
+    def __init__(self, *names):
+        self.names = names
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname in self.names or fullname.startswith(tuple(f"{n}." for n in self.names)):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
+        return None
+
+
+@contextmanager
+def _without_mlx(*names):
+    blocker = _BlockMLX(*names)
+    dropped = {k: v for k, v in sys.modules.items() if k.split(".")[0] in names}
+    for key in dropped:
+        del sys.modules[key]
+    sys.meta_path.insert(0, blocker)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(dropped)
+
+
+def test_the_mlx_module_imports_on_a_machine_with_no_mlx_wheels():
+    """Linux and Windows import this tree without mlx. The backend is constructed behind
+    the Darwin gate, but an mlx import at module scope would fail every non-Mac boot."""
+    import importlib
+
+    with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
+        module = importlib.reload(importlib.import_module("core.inference.mlx_inference"))
+        assert (
+            module.mlx_native_context_length(
+                SimpleNamespace(config = SimpleNamespace(max_position_embeddings = 131072))
+            )
+            == 131072
+        )
+    importlib.reload(module)
+
+
+def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
+    """Nothing can be built to judge, which is "unknown", not "unbounded"."""
+    from core.inference.mlx_inference import _kv_window_enforced
+    with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
+        assert _kv_window_enforced(SimpleNamespace(layers = [object()]), False, 4096) is None
+
+
+def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatch):
+    """The completion applies this once for both non-GGUF backends before it branches, so
+    skipping it under-reports every interactive MLX prompt and the usage bar claims room."""
+    from starlette.datastructures import Headers
+
+    # No API key, which is what makes the prompt Studio's to compose.
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_hi(monkeypatch, backend, template = _PLAIN_TEMPLATE, request = interactive)
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert line, "the harness must actually produce a date line"
+    assert backend.system.startswith(
+        line
+    ), f"the count dropped the date line the completion prepends: {backend.system!r}"
+
+
+def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
+    """An archive adds search_conversation and a compaction nudge, both gated on the
+    thread id, so a count that drops it under-reports."""
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(route, "_thread_has_conversation_archive", lambda tid: bool(tid))
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        thread_id = "thread-with-an-archive",
+    )
+    names = [t["function"]["name"] for t in (backend.tools or [])]
+    assert (
+        "search_conversation" in names
+    ), f"the archive tool the completion renders was not priced: {names}"
+    from routes.inference import _apply_compaction_nudge
+
+    assert _apply_compaction_nudge("", backend.tools), "the nudge must be non-empty here"
+    assert (
+        _apply_compaction_nudge("", backend.tools) in backend.system
+    ), "the count omitted the compaction nudge the completion appends"
+
+
+def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
+    """`_wants_current_date` is false for an API-key request, but the tool-loop completion
+    reapplies it with include_api_key, so a count that did not would be short that line."""
+    from state import tool_policy
+
+    from starlette.datastructures import Headers
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    keyed = SimpleNamespace(
+        headers = Headers({"authorization": "Bearer sk-unsloth-test"}),
+        query_params = {},
+        cookies = {},
+    )
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        request = keyed,
+        enabled_tools = ["web_search"],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = keyed)
+    assert line, "the harness must produce a date line"
+    assert (
+        line in backend.system
+    ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+
+
+def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
+    """The caller drops a count naming a different model, so one loaded from a resolved
+    path must still answer as the repo id."""
+    from routes import inference as route
+
+    backend = _RenderRecordingBackend()
+    monkeypatch.setattr(route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id")
+    served = _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hello"}])
+    assert json.loads(served.body)["model"] == "org/advertised-repo-id"
+
+
+def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):
+    """The active name cannot see a same-ID reload, which is how a template override lands.
+    A count routed from the old entry must not be published."""
+    from fastapi import HTTPException
+
+    backend = _RenderRecordingBackend()
+    backend.load_generation = 7
+
+    real_count = backend.count_chat_tokens
+
+    def _reload_midway(*args, **kwargs):
+        # Lands while the tokenizer runs: same name, new generation.
+        backend.load_generation = 8
+        return real_count(*args, **kwargs)
+
+    backend.count_chat_tokens = _reload_midway
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hi"}])
+    assert excinfo.value.status_code == 503
+    assert "changed while counting" in str(excinfo.value.detail)
+
+
+def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monkeypatch):
+    """Everything between admission and the tokenizer awaits, so a chat starting in the gap
+    would wait behind this count for the orchestrator lock. GGUF re-checks; this must too."""
+    from fastapi import HTTPException
+
+    backend = _RenderRecordingBackend()
+    counts = iter([0, 1])  # admitted at the entry check, busy by the last checkpoint
+    with pytest.raises(HTTPException) as excinfo:
+        _count_hi(monkeypatch, backend, generations = lambda: next(counts, 1))
+    assert excinfo.value.status_code == 503
+    assert "generation is in progress" in str(excinfo.value.detail)
+
+
+def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses():
+    """The MCP handlers hold this guard across the row change and the schema-cache
+    invalidation, so a snapshot outside it can pair a new row with a stale schema."""
+    from routes import inference as route
+    import inspect
+
+    body = inspect.getsource(route._mlx_count_chat_tokens)
+    assert "mcp_server_snapshot_guard" in body, "the MLX snapshot is unguarded"
+    guard = body.index("async with mcp_server_snapshot_guard():")
+    snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
+    assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+# --- VLM prompt snapshots -------------------------------------------------------
+
+
+def _fake_image(
+    pixels,
+    raw = None,
+    orientation = None,
+):
+    """A PIL-like image whose RGB conversion holds ``pixels``; a palette image's own
+    bytes are indices (``raw``) saying nothing about its colors."""
+    rgb = SimpleNamespace(mode = "RGB", size = (2, 2), tobytes = lambda: pixels)
+    return SimpleNamespace(
+        mode = "P" if raw else "RGB",
+        size = (2, 2),
+        tobytes = lambda: raw or pixels,
+        convert = lambda _mode: rgb,
+        getexif = lambda: {0x0112: orientation} if orientation else {},
+    )
+
+
+def test_mlx_vlm_snapshots_are_keyed_by_what_the_vision_tower_sees():
+    from core.inference.mlx_inference import MLXInferenceBackend as backend
+
+    digest = backend._vlm_image_digest
+    assert digest([_fake_image(b"aaaa")]) == digest([_fake_image(b"aaaa")])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"bbbb")])
+    assert digest([_fake_image(b"red!", raw = b"idx")]) != digest([_fake_image(b"blue", raw = b"idx")])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"aaaa", orientation = 6)])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"aaaa"), _fake_image(b"bbbb")])
+
+
+def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
+    from core.inference.mlx_inference import _vlm_add_special_tokens as rule
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", types.ModuleType("mlx_vlm.utils"))
+    template = SimpleNamespace(chat_template = "t")
+    assert rule("gemma4", template) is False and rule("gemma4", SimpleNamespace()) is True
+    assert rule("qwen2_vl", template) is True
+    sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
+    assert rule("gemma4", template) == "mlx-vlm's answer"

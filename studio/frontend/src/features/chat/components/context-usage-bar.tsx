@@ -31,6 +31,8 @@ export const ContextUsageBar: FC<
   cacheWrites,
   promptTokens,
   completionTokens,
+  isMlx,
+  contextEnforced,
   className,
 }) => {
   const state = deriveContextUsageBar({
@@ -40,10 +42,12 @@ export const ContextUsageBar: FC<
     cacheWrites,
     promptTokens,
     completionTokens,
+    isMlx,
+    contextEnforced,
   });
   if (!state) return null;
 
-  const { percent } = state;
+  const { percent, advice } = state;
   const severity = getSeverityColor(percent ?? 0);
 
   return (
@@ -122,11 +126,38 @@ export const ContextUsageBar: FC<
             <span className="text-muted-foreground">{state.totalRowName}</span>
             <span className="font-mono tabular-nums">{state.totalRowValue}</span>
           </div>
-          {percent !== null && percent > 85 ? (
+          {advice !== "none" ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
-              Close to the context limit. Generation will stop at 100%.
-              Increase <span className="font-medium">Context Length</span> in
-              the chat Settings panel to keep going.
+              {advice === "mlx-past-limit" ? (
+                <>
+                  Past the context limit. The chat keeps going rather than
+                  stopping here, but the model can no longer hold the whole
+                  conversation: answers get slower and less accurate, and a
+                  long enough chat can still run out of memory. Increase{" "}
+                  <span className="font-medium">Context Length</span> in the
+                  chat Settings panel to fit it all.
+                </>
+              ) : advice === "mlx-near-limit" ? (
+                <>
+                  Close to the context limit. Past it the chat keeps going, but
+                  answers get slower and less accurate. Increase{" "}
+                  <span className="font-medium">Context Length</span> in the
+                  chat Settings panel to fit the whole conversation.
+                </>
+              ) : advice === "unenforced-limit" ? (
+                <>
+                  This model builds its own cache, so{" "}
+                  <span className="font-medium">Context Length</span> is the
+                  window it was sized for, not a limit on it: the cache keeps
+                  growing and lowering the setting will not save memory.
+                </>
+              ) : (
+                <>
+                  Close to the context limit. Generation will stop at 100%.
+                  Increase <span className="font-medium">Context Length</span> in
+                  the chat Settings panel to keep going.
+                </>
+              )}
             </div>
           ) : null}
         </div>

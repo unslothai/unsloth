@@ -27,12 +27,14 @@ import { FolderBrowser } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  ArrowRight01Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
   FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -468,7 +470,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                        <ChevronRightIcon className="size-3" />
                       </a>
                     </div>
                     <InputGroup>

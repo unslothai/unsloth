@@ -30,32 +30,29 @@ import { hashArtifactCode } from "./types";
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
-// Entries are per URL, not per host, so a page pulling a whole CDN directory
-// counts each file. Still far above what a real one trips.
+// Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
+// Still far above what a real one trips.
 const BLOCKED_URIS_TRACKED = 100;
-// A report carries the full URL, so this is generous next to a real one, and it
-// bounds both the stored string and the host derived from it.
+// A report carries the full URL, so this is generous next to a real one, and it bounds both
+// the stored string and the host derived from it.
 const BLOCKED_URI_MAX_CHARS = 2048;
 
 // The only directives the network CSP leaves at 'none'. Kept in step by
-// test_the_grant_widens_everything_but_the_locked_directives, which fails if
-// the two policies stop differing exactly outside this set.
+// test_the_grant_widens_everything_but_the_locked_directives.
 const GRANT_CANNOT_FIX = new Set(["object-src", "base-uri", "form-action"]);
 
-// A hostless blockedURI is a bare scheme, and the permissive policy widens every
-// one of them but this: its worker-src is `http: https: blob:`, with no data:,
-// so a data: Worker stays blocked after the grant. Kept in step by
-// test_the_permissive_policy_widens_every_hostless_scheme_but_one.
+// A hostless blockedURI is a bare scheme, and the permissive policy widens every one but this:
+// its worker-src is `http: https: blob:` with no data:, so a data: Worker stays blocked
+// after the grant. Kept in step by test_the_permissive_policy_widens_every_hostless_scheme_but_one.
 const GRANT_CANNOT_FIX_SCHEME: Record<string, string> = { "worker-src": "data" };
 
 type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
 
-// Reports from before a swap belong to the old canvas, so start over rather
-// than append. The cap is checked BEFORE the duplicate scan, so past it a
-// canvas posting unique URIs cannot make the parent rescan every stored string;
-// returning `current` unchanged lets React bail out of the re-render too.
+// Reports from before a swap belong to the old canvas, so start over rather than append. The
+// cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
+// make the parent rescan every stored string; returning `current` also lets React bail out.
 function appendBlocked(
   current: BlockedState,
   code: string,
@@ -73,9 +70,9 @@ function appendBlocked(
   };
 }
 
-// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the
-// permissive CSP widens too. Dropping those left the canvas blank with no
-// prompt, so label them with the token itself.
+// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP
+// widens too. Dropping those left the canvas blank with no prompt, so label them with the
+// token itself.
 const BLOCKED_KEYWORD = /^[a-z-]+$/;
 
 function blockedHost(uri: string): string | null {
@@ -102,9 +99,8 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated canvases can
-// offer their own UI, but downloads must go through Unsloth's explicit
-// copy/download controls outside the no-same-origin sandbox.
+// Preview iframes intentionally omit allow-downloads: generated canvases can offer their own
+// UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
   title = "HTML canvas preview",
@@ -121,26 +117,25 @@ export function ArtifactHtmlFrame({
   const t = useT();
   const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Every canvas honors this, fence or tool. Off by default; the standing half
-  // of the gate, alongside the per-canvas grant below.
+  // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
+  // alongside the per-canvas grant below.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
-  // Carries the code it was reported for, so a canvas swapped in place cannot
-  // inherit the previous one's banner. Clearing it from the [src] effect ran a
-  // render too late, and that stale render is the one carrying the button.
+  // Carries the code it was reported for, so a canvas swapped in place cannot inherit the
+  // previous one's banner. Clearing it from the [src] effect ran a render too late, and that
+  // stale render is the one carrying the button.
   const [blocked, setBlocked] = useState<BlockedState>({
     code,
     uris: [],
     hosts: [],
   });
   const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
-  // Granted by the banner button alone, and only for the code on screen when it
-  // was clicked; nothing the canvas sends may set it, or a blocked page could
-  // talk its way onto the network. Compared during render rather than reset in
-  // an effect, which runs after the DOM is updated and so would let the first
-  // render carrying new code reuse the previous canvas' allow_network=1.
+  // Granted by the banner button alone, and only for the code on screen when it was clicked;
+  // nothing the canvas sends may set it, or a blocked page could talk its way onto the
+  // network. Compared during render rather than reset in an effect, which runs after the DOM
+  // is updated and would let the first render carrying new code reuse allow_network=1.
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
@@ -165,8 +160,8 @@ export function ArtifactHtmlFrame({
   const postArtifactHtml = useCallback(() => {
     if (!pendingPostRef.current) return;
     pendingPostRef.current = false;
-    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
-    // required; the payload only reaches this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is required; the payload
+    // only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",
@@ -178,23 +173,21 @@ export function ArtifactHtmlFrame({
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
       if (event.data?.type === "unsloth:artifact-blocked") {
-        // event.source survives the swap navigation, so without the frame's
-        // stamp a report from the outgoing canvas would be tagged with the
-        // incoming code and prompt a grant for a canvas that never hit the CSP.
+        // event.source survives the swap navigation, so without the frame's stamp a report from the
+        // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
         if (event.data.v !== codeVersion) return;
         const uri = event.data.blockedURI;
-        // A report carries the full URL, and the canvas can post these directly
-        // rather than going through the CSP. The entry cap bounds how many are
-        // kept but not their size, so a handful could park megabytes otherwise.
+        // A report carries the full URL, and the canvas can post these directly rather than going
+        // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
+        // could park megabytes otherwise.
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }
-        // The grant cannot fix these three, and prompting anyway widens the
-        // policy for nothing, then hides the banner because the grant is on,
-        // leaving a broken canvas and no way back to the prompt.
+        // The grant cannot fix these three, and prompting anyway widens the policy for nothing, then
+        // hides the banner because the grant is on, leaving a broken canvas and no way back.
         if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
-        // Same dead end one scheme down: the grant widens worker-src to blob:
-        // but not data:, so a data: Worker reports under both policies.
+        // Same dead end one scheme down: the grant widens worker-src to blob: but not data:, so a
+        // data: Worker reports under both policies.
         if (GRANT_CANNOT_FIX_SCHEME[event.data.effectiveDirective] === uri) {
           return;
         }
@@ -213,8 +206,8 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // `code`/`codeVersion` are listed so the handler always closes over the
-    // canvas on screen, rather than relying on postArtifactHtml changing.
+    // `code`/`codeVersion` are listed so the handler always closes over the canvas on screen,
+    // rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, codeVersion]);
 
   const showBlockedBanner =

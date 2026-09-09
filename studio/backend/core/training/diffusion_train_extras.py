@@ -40,10 +40,11 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+
+# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1
+# averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates.
 # ── LoRA EMA ──────────────────────────────────────────────────────────────────
 
-# Warmup horizon for the EMA decay ramp: effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)).
-# With the offset at 10, step 1 averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates.
 _EMA_WARMUP_OFFSET = 10.0
 
 
@@ -234,7 +235,7 @@ def _hub_cache_roots() -> list[str]:
     longer changed this key and a warm run silently reused the old embeddings and latents. The
     constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
     module importable."""
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
 
     roots: list[str] = []
     try:
@@ -256,12 +257,9 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# Pipeline subdirectories whose weights decide what the conditioning cache holds, so an in-place
-# edit of any of them must change the fingerprint. text_encoder*/tokenizer* produce the embeddings
-# and vae* the latents, for every family. "connectors" is LTX-2's: the Gemma3 hidden states are
-# per-layer stacked and only the connector output reaches the transformer, so that projection --
-# not the raw encoder state -- is what gets cached. No other supported family runs a module between
-# encode_prompt and the DiT; the rest go straight from the text encoders to the cached tensors.
+# An in-place edit of any of these must change the fingerprint: text_encoder*/tokenizer* produce
+# the embeddings and vae* the latents. "connectors" is LTX-2's, the only family running a module
+# between encode_prompt and the DiT: its connector output, not the raw Gemma3 state, is cached.
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
 
 
@@ -275,7 +273,7 @@ def source_revision(ref: Any) -> str:
     never touches the encoders, since the point of the cache is that a warm run does
     not load them.
     """
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
         if not name:
@@ -313,7 +311,7 @@ def source_revision(ref: Any) -> str:
                     if len(names) == 1:
                         return f"rev-{names[0][:16]}"
         return "unresolved"
-    except Exception:  # noqa: BLE001 — best-effort, never block a run
+    except Exception:  # noqa: BLE001 - best-effort, never block a run
         return "unresolved"
 
 
@@ -332,7 +330,6 @@ class PersistentConditioningCache:
         self.resolution = int(resolution)
         self.root.mkdir(parents = True, exist_ok = True)
 
-    # -- keys --
     def latent_key(
         self,
         image_path: str,
@@ -355,7 +352,6 @@ class PersistentConditioningCache:
     def has(self, key: str) -> bool:
         return self.path_for(key).is_file()
 
-    # -- IO --
     def put(self, key: str, tensors: Iterable[Any]) -> None:
         """Store an ordered tuple of tensors (None entries allowed: their slot
         indices are recorded in the metadata so ``get`` restores them)."""
@@ -397,12 +393,14 @@ class PersistentConditioningCache:
             return None
 
 
+# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching,
+# and regional torch.compile prefers few distinct shapes.
 # ── aspect-ratio bucketing ────────────────────────────────────────────────────
 
-# Pixel-dimension divisor for bucket shapes: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional torch.compile prefers few distinct shapes, so buckets snap to 64 pixels.
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common practice of capping panoramas).
+# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
+# practice of capping panoramas).
 MAX_BUCKET_RATIO = 2.0
 
 

@@ -533,7 +533,6 @@ def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     live_policy = state / "unsloth-studio/fonts-mount-live.conf"
     assert live_policy.is_file()
 
-    # Simulate an unmounted AppImage.
     dead = _apprun_mount(tmp_path, "mount-dead")
     subprocess.run([dead / "AppRun"], check = True, capture_output = True, env = env)
     dead_policy = state / "unsloth-studio/fonts-mount-dead.conf"
@@ -570,8 +569,7 @@ def test_apprun_encodes_a_mount_path_carrying_xml_and_sed_metacharacters(tmp_pat
     policy = materialized.read_text(encoding = "utf-8")
     assert "@APPDIR@" not in policy
 
-    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1
-    # fonts back in front of Skia.
+    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1 fonts back in front of Skia.
     root = ElementTree.fromstring(policy)
     directories = [element.text for element in root.findall("dir")]
     assert directories == [f"{appdir}/usr/share/unsloth/fonts"]
@@ -693,7 +691,6 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in APPRUN.read_text(encoding = "utf-8")
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in process_source
 
-    # Cover std children, Tokio children, and host launchers.
     production_source = process_source.split('#[cfg(all(test, target_os = "linux"))]', 1)[0]
     assert production_source.count("for name in APPIMAGE_GUI_ONLY_VARS") == 3
     for source_path, (call, expected) in child_process_calls.items():

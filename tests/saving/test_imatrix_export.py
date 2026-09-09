@@ -16,8 +16,7 @@ import pytest
 import unsloth.save as S
 import unsloth_zoo.llama_cpp as L
 
-# The --imatrix wiring lives in unsloth_zoo's quantize_gguf (a companion change). Where the
-# installed unsloth_zoo predates it, skip the tests that require it rather than hard-failing CI.
+# The --imatrix wiring lives in unsloth_zoo's quantize_gguf (a companion change).
 _ZOO_HAS_IMATRIX = "imatrix" in inspect.signature(L.quantize_gguf).parameters
 _needs_zoo_imatrix = pytest.mark.skipif(
     not _ZOO_HAS_IMATRIX,
@@ -98,8 +97,8 @@ def test_repo_candidates_appends_gguf():
 
 
 def test_repo_candidates_maps_official_base_to_unsloth_org():
-    # The upstream imatrix only lives in unsloth/<base>-GGUF, so an official base id must map onto
-    # the unsloth org rather than deriving a non-existent meta-llama/...-GGUF repo.
+    # The upstream imatrix only lives in unsloth/<base>-GGUF, so an official base id must map onto the unsloth org
+    # rather than deriving a non-existent meta-llama/...-GGUF repo.
     repos = S._gguf_repo_candidates(_Model("meta-llama/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
     assert not any(r.startswith("meta-llama/") for r in repos)
@@ -126,8 +125,8 @@ class _FakeApi:
 
 
 def _patch_hub(monkeypatch, files, downloaded_dir):
-    # HfApi is the module-level name in unsloth.save; hf_hub_download is imported locally inside
-    # the helper, so patch it on huggingface_hub. Both must be patched to stay fully offline.
+    # HfApi is the module-level name in unsloth.save;
+    # hf_hub_download is imported locally inside the helper, so patch it on huggingface_hub.
     monkeypatch.setattr(S, "HfApi", lambda **kw: _FakeApi(files))
 
     def _fake_download(

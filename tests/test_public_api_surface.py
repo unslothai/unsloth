@@ -56,8 +56,6 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
 
 
 # FastLanguageModel: headline class.
-
-
 def test_fast_language_model_class_present():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastLanguageModel"):
@@ -108,9 +106,6 @@ def test_fast_language_model_for_inference_callable():
         )
 
 
-# FastVisionModel.
-
-
 def test_fast_vision_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastVisionModel"):
@@ -146,8 +141,6 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
 
 
 # FastModel: modern unified entry point.
-
-
 def test_fast_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastModel"):
@@ -176,8 +169,6 @@ def test_fast_model_from_pretrained_kwargs():
 
 
 # Bf16 helper alias (renamed once already; keep both accepted).
-
-
 def test_is_bf16_supported_or_alias_callable():
     """is_bf16_supported or the legacy is_bfloat16_supported alias must remain importable."""
     unsloth = pytest.importorskip("unsloth")

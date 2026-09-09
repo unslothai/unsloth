@@ -75,9 +75,6 @@ def test_a_non_attribute_error_means_do_not_touch_it(monkeypatch):
     assert IF._torch_op_is_missing("aten", "_grouped_mm") is False
 
 
-# ---- the fix, on a torch that does not need it --------------------------
-
-
 @pytest.mark.skipif(
     not hasattr(torch.ops.aten, "_grouped_mm"),
     reason = "this torch is missing the op; see the live test",

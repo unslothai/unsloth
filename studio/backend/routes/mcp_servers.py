@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
+from integrations.blender import service as blender
+from models.mcp_servers import BlenderSettings, BlenderSetup, McpBuiltinResponse
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -21,7 +23,7 @@ from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
-    close_stdio_sessions,
+    close_mcp_sessions,
     invalidate_tool_cache,
     is_stdio,
     join_stdio_command,
@@ -36,6 +38,7 @@ from core.inference.mcp_client import (
 )
 from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
+    BlenderTest,
     McpServerCreate,
     McpServerImportRequest,
     McpServerImportResult,
@@ -152,6 +155,7 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
+        builtin_id = row.get("builtin_id"),
         display_name = row["display_name"],
         url = row["url"],
         headers = (parse_server_headers(row) or {}) if include_headers else {},
@@ -160,6 +164,103 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
+
+def _blender_row():
+    return next(
+        (row for row in mcp_servers_db.list_servers() if row.get("builtin_id") == "blender"), None
+    )
+
+
+def _require_managed_access(
+    via_api_key,
+    no_credential,
+    *,
+    executes = False,
+):
+    require_ui_session_for_local_commands(via_api_key or no_credential)
+    if executes and not stdio_mcp_enabled():
+        raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
+
+
+@router.get("/builtins", response_model = list[McpBuiltinResponse])
+def list_builtins(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    if via_api_key or no_credential:
+        item = blender.catalog_item()
+        item.available = False
+        item.unavailable_reason = "An authenticated Studio UI session is required for Blender MCP."
+        return [item]
+    return [blender.catalog_item(_blender_row())]
+
+
+@router.post("/builtins/blender/test", response_model = McpServerProbeResult)
+@serialize_mcp_server_mutation
+async def test_blender(
+    payload: BlenderTest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    row = _blender_row()
+    config = json.loads(row.get("builtin_config_json") or "{}") if row else {}
+    if not (config.get("consent") or payload.consent):
+        raise HTTPException(
+            status_code = 400, detail = "Explicit consent is required before testing Blender MCP."
+        )
+    settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
+    on_tools = None
+    if row and blender.settings_for(row) == settings:
+        on_tools = lambda tools: cache_tools(row["id"], tools)
+    return await blender.probe(settings, on_tools = on_tools)
+
+
+@router.put("/builtins/blender", response_model = McpBuiltinResponse)
+@serialize_mcp_server_mutation
+async def setup_blender(
+    payload: BlenderSetup,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
+    old = _blender_row()
+    config = json.loads(old.get("builtin_config_json") or "{}") if old else {}
+    if payload.is_enabled and not (config.get("consent") or payload.consent):
+        raise HTTPException(
+            status_code = 400, detail = "Explicit consent is required before enabling Blender MCP."
+        )
+    settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
+    config = {**settings.model_dump(), "consent": bool(config.get("consent") or payload.consent)}
+    server_id = old["id"] if old else uuid.uuid4().hex[:16]
+    if old:
+        mcp_servers_db.update_server(
+            server_id, {"builtin_config_json": json.dumps(config), "is_enabled": False}
+        )
+    else:
+        mcp_servers_db.create_server(
+            server_id,
+            "Blender",
+            "",
+            is_enabled = False,
+            builtin_id = "blender",
+            builtin_config_json = json.dumps(config),
+        )
+    invalidate_tool_cache(server_id)
+    if old:
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+    if payload.is_enabled:
+        result = await blender.probe(
+            settings, check_bridge = False, on_tools = lambda tools: cache_tools(server_id, tools)
+        )
+        if not result.ok:
+            raise HTTPException(status_code = 400, detail = result.error)
+        mcp_servers_db.update_server(server_id, {"is_enabled": True})
+    return blender.catalog_item(mcp_servers_db.get_server(server_id))
 
 
 @router.post("/stdio/decode", response_model = McpStdioCommand)
@@ -282,6 +383,13 @@ async def update_mcp_server(
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     changes = _changes_from_payload(payload)
+    if old.get("builtin_id"):
+        _require_managed_access(via_api_key, no_credential)
+        if payload.model_fields_set != {"is_enabled"} or payload.is_enabled is not False:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Use the managed integration setup to configure or enable this server.",
+            )
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command
@@ -298,25 +406,18 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
-    # fastmcp keys tokens by URL and would otherwise let a re-pointed server
-    # silently inherit the old account's credentials.
+    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
-        # That await hands the loop to other requests, so re-read and re-gate
-        # before writing: a UI conversion to stdio landing in the window would
-        # otherwise let an API key's headers become the command's env.
+        # That await hands the loop to other requests.
         current = mcp_servers_db.get_server(server_id)
         if current is not None and (
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
-    # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
-    # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
-    # resends url/headers/oauth unchanged on a rename, which must not drop the session.
+    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable.
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
@@ -326,7 +427,7 @@ async def update_mcp_server(
     if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
-        await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
     return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
 
@@ -336,11 +437,15 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if old.get("builtin_id"):
+        raise HTTPException(
+            status_code = 400, detail = "Managed integrations cannot be deleted; disable them instead."
+        )
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
-    await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+    await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -352,8 +457,12 @@ async def refresh_mcp_server_tools(
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
-    # Refresh uses the stored address, so re-check the stdio gate here too: a
-    # stdio row from a desktop DB must not spawn on a hosted/network host.
+    if server.get("builtin_id"):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Use the managed integration Test action to check Blender readiness.",
+        )
+    # Refresh uses the stored address.
     if is_stdio(server["url"]):
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
@@ -367,7 +476,7 @@ async def refresh_mcp_server_tools(
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
-    except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
+    except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
         logger.error(
             "mcp_servers.refresh_failed",
             server_id = server_id,
@@ -378,14 +487,12 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send doesn't immediately re-hang
-            # on this server's timeout. If the row changed while the probe was
-            # awaiting, the failure belongs to the old config and must not park
+            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row
+            # changed while the probe was awaiting, the FAILURE belongs to the old config and must not park
             # the newly edited server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
-    # Warm the chat-path cache so the next send skips re-probing.
     current = mcp_servers_db.get_server(server_id)
     if current is not None and not any(
         current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -446,9 +553,8 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update so the
-    # frontend's create-form pre-flight gets the same error semantics as the
-    # save call. Only catch transport/timeout errors below.
+    # URL/header validation must surface as 400 like create/update so the frontend's create-form pre-flight gets the
+    # same error semantics as the save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
     # Caller-supplied and unstored, so the gate has to land before
     # list_tools_async -- after it the process has already started.

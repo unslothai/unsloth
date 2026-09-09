@@ -156,6 +156,7 @@ from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
+    published_url_host as _url_host,
     wildcard_ip_versions,
     wildcard_loopback_host,
 )
@@ -176,16 +177,41 @@ def public_check_disabled() -> bool:
     return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def _resolve_lan_ip(ip_version: int = 4) -> str:
+    """This machine's own LAN-facing address. No third-party network call.
+
+    Discovery is a UDP route lookup plus the active interfaces; the lookup only
+    fixes the local end of the socket and sends no packet.
+    """
+    from lan_access import detect_lan_addresses
+
+    try:
+        addresses = detect_lan_addresses(ip_version)
+    except Exception:
+        addresses = []
+    if addresses:
+        return addresses[0]
+    return "0.0.0.0" if ip_version == 4 else "::"
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
     2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
-    3. LAN IP via UDP socket trick (fallback)
+    3. The default route's own source address (fallback)
+
+    This is the machine's INTERNET-facing address, used for the reachability
+    probe and the Cloudflare messaging -- not for "another device on your
+    network," which _network_share_host_for_bind answers instead. Step 3 stays
+    a raw route lookup rather than _resolve_lan_ip: that one filters out every
+    address a LAN peer cannot open (WSL's NAT side, link-local), which is the
+    right policy for an address we advertise and the wrong one for a last-resort
+    answer to "where am I".
     """
-    import urllib.request
     import socket
+    import urllib.request
 
     # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
@@ -210,7 +236,8 @@ def _resolve_external_ip() -> str:
         except Exception:
             pass
 
-    # 3. Fallback: LAN IP via UDP socket trick
+    # 3. Fallback: the source address the default route picks. A UDP connect only
+    # fixes the local end of the socket; nothing is sent to the target.
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -221,13 +248,20 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
-def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
-    externally-reachable address, use our Mac-aware stop hint, and rename the
-    prefix to "Unsloth Studio running on"."""
+def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap a wildcard bind for the address
+    this machine answers on, use our Mac-aware stop hint, and rename the prefix
+    to "Unsloth Studio running on".
+
+    The line is a claim about where the server is reachable, so the address is
+    _network_share_host_for_bind's, resolved here rather than passed in so no
+    caller can hand it the internet-facing one (#8868). With no LAN address to
+    name, the guard below leaves uvicorn's raw wildcard.
+    """
     import logging
     import re
 
+    display_host = _network_share_host_for_bind(bind_host)
     rewrite_host = is_wildcard_host(bind_host) and bool(display_host) and display_host != bind_host
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
@@ -540,17 +574,45 @@ def _display_host_for_bind(host: str) -> str:
     return ipv4_display_host or "::"
 
 
+def _network_share_host_for_bind(host: str) -> str:
+    """The address to hand another device on this LAN, or to build the API
+    panel's direct base URL from.
+
+    Deliberately not _display_host_for_bind: that answers "what is this
+    machine's internet-facing address" (right for the reachability probe and the
+    Cloudflare line), and for a wildcard bind that can be a public WAN IP a LAN
+    peer cannot route to (#8868). Only a family the wildcard actually binds is
+    resolved, so an IPv6-only launch is never advertised at an IPv4 address.
+    """
+    wildcard_versions = wildcard_ip_versions(host)
+    if not wildcard_versions:
+        return host
+    for ip_version in wildcard_versions:
+        lan_host = _resolve_lan_ip(ip_version)
+        if not is_wildcard_host(lan_host):
+            return lan_host
+    return host
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
 
-def _url_host(host: str) -> str:
-    url_host = host.replace("%", "%25")
-    return (
-        f"[{url_host}]"
-        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
-        else url_host
-    )
+def _direct_server_url(host: str, port: int) -> "Optional[str]":
+    """The API panel's direct (non-tunnel) base, or None when this launch has no
+    address worth publishing.
+
+    The frontend prefers any non-null server_url over the origin the client
+    reached, so publishing ``http://0.0.0.0:<port>`` (a wildcard bind with no LAN
+    address: WSL behind NAT, loopback-only) would put an unroutable address in
+    the API examples, the desktop agent command and a copied preview link.
+    """
+    if not port or port <= 0:
+        return None
+    share_host = _network_share_host_for_bind(host)
+    if is_wildcard_host(share_host):
+        return None
+    return f"http://{_url_host(share_host)}:{port}"
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -623,6 +685,9 @@ def _emit_startup_output(
         port = port,
         bind_host = host,
         display_host = display_host,
+        # The "from another device on your network" line needs the LAN address,
+        # not display_host's possibly-public one (#8868).
+        network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
     )
@@ -812,7 +877,14 @@ def _is_port_free(host: str, port: int) -> bool:
             seen.add(key)
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # On Windows, SO_REUSEADDR lets a second socket bind a listening
+            # port when the incumbent also enabled it. That makes this probe
+            # report the port as free, then uvicorn fails with WinError 10048
+            # instead of letting _resolve_port fall back to the next port.
+            # POSIX keeps the option so a recently closed listener does not
+            # strand the preferred port in TIME_WAIT.
+            if sys.platform != "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
                 probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             probe.bind(sockaddr)
@@ -1527,6 +1599,17 @@ def _graceful_shutdown(server = None):
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
+    # 0a. Latch "quitting" before any subsystem is torn down. Each step below refuses to
+    # respawn its OWN child once it has run, but a load still in flight can reach a
+    # different spawner afterwards: the orchestrator is stopped at step 2 and swept at
+    # step 7, and a helper load owns a backend no step touches at all. One flag, read at
+    # every spawn, covers the gaps between the steps.
+    try:
+        from utils.process_lifetime import mark_process_shutting_down
+        mark_process_shutting_down()
+    except Exception as e:
+        logger.warning("Could not latch the process shutdown flag: %s", e)
+
     # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
     try:
         from lan_access import close_lan_listener_lifecycle
@@ -1564,9 +1647,21 @@ def _graceful_shutdown(server = None):
 
     # 5. Kill llama-server subprocess (if loaded).
     try:
-        from routes.inference import _llama_cpp_backend
+        from routes.inference import _llama_cpp_backend, cancel_pending_loads
+
+        # Before the kill: a load still in the lifecycle gate or in preflight is not yet
+        # holding anything the backend's own flag can see, and would spawn llama-server
+        # after this step had already run.
+        try:
+            cancelled = cancel_pending_loads()
+            if cancelled:
+                logger.info("Cancelled %d in-flight model load(s) for shutdown", cancelled)
+        except Exception as e:
+            logger.warning("Could not cancel in-flight loads: %s", e)
         if _llama_cpp_backend is not None:
-            _llama_cpp_backend._kill_process()
+            # teardown = True: an app-level stop, not the retry ladder reaping a child it
+            # is about to replace. Only the former may end an in-flight health wait.
+            _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
@@ -2068,6 +2163,48 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
+# How long a raw-bind prompt waits for the FIRST keystroke before launching
+# anyway; once someone is typing there is no deadline. 30s because the launches
+# that reach here unwatched allocate a pty and never read it (`docker run -dt`,
+# `tmux new -d`, CI runners) and need to bind promptly: a longer stall can trip a
+# healthcheck into a restart loop, while 30s stays inside a default Docker
+# HEALTHCHECK start period and is ample for anyone actually watching. Mirrored in
+# the CLI.
+_UNATTENDED_PROMPT_SECONDS = 30.0
+
+
+def _prompt_owns_the_terminal() -> bool:
+    """Whether this process may DRIVE the terminal, not merely see one.
+
+    A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
+    terminal so isatty() is True, but the masked prompt calls termios.tcsetattr
+    and POSIX SIGTTOUs a background process group that does; the default action
+    stops the process, freezing the launch before the socket binds. Treat it as
+    no terminal.
+
+    True on any doubt (no job control, no controlling terminal, no fileno):
+    nothing can stop us there, so the isatty answer stands.
+    """
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
+def _exposure_phrase(*, tunnel_will_start: bool, host: str) -> str:
+    """Name where this launch will actually be reachable.
+
+    A tunnel is the public internet; a wildcard bind is every interface. A
+    CONCRETE bind (`-H 192.168.1.50`) is neither, since uvicorn listens on that
+    one address, and the operator acts on the address they typed anyway.
+    """
+    if tunnel_will_start:
+        return "on the public internet"
+    if is_wildcard_host(host):
+        return "on every network interface"
+    return f"at {host}, which other machines on the network can reach"
+
+
 def _terminal_password_gate(
     *,
     tunnel_will_start: bool,
@@ -2099,7 +2236,37 @@ def _terminal_password_gate(
     (api-only, timeout 0) nothing protects it, so refuse. NOT wrapped in a broad
     try/except: an auth storage failure must abort rather than expose the default.
     """
-    if not tunnel_will_start:
+    from auth.bootstrap_timeout import _is_exposed_bind
+
+    # A raw non-loopback bind (-H 0.0.0.0) starts no tunnel, so it used to skip
+    # this gate even though the served HTML injects the bootstrap credential for
+    # every host on the network. Scoped like the bootstrap deadline: web UI only,
+    # never api-only (API key, not the admin password) and never Colab (no inbound).
+    # secure = False deliberately: _is_exposed_bind counts --secure as exposed
+    # (for a tunnel the tunnel IS the exposure) but --secure forces a loopback
+    # bind, and the only question here is whether the socket itself is reachable.
+    bind_is_exposed = (
+        _is_exposed_bind(host, False) and frontend_served and not api_only and not is_colab
+    )
+    if not tunnel_will_start and not bind_is_exposed:
+        return True, False
+
+    # The parent already held this terminal open and got nothing. Repeating the
+    # wait would double the fallback (triple on the `studio run` path, which
+    # re-enters the CLI gate after re-exec) -- the startup stall the deadline was
+    # chosen to stay under. Consumed, not peeked, so it cannot leak into a later
+    # launch from the same environment.
+    if os.environ.pop("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "") and not tunnel_will_start:
+        return True, False
+
+    # A raw-bind-only launch decides promptability BEFORE opening auth storage.
+    # Such a launch used to return above, so a headless container never reached
+    # ensure_default_admin() from here; doing so now would seed earlier, open the
+    # SQLite file sooner and give a read-only or locked home a new place to fail.
+    # Tunnel launches are unaffected: they always came here.
+    if not tunnel_will_start and not (
+        _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr) and _prompt_owns_the_terminal()
+    ):
         return True, False
 
     from auth import hashing as _auth_hashing
@@ -2122,10 +2289,18 @@ def _terminal_password_gate(
 
     if not should_prompt_password_change(
         tunnel_will_start = tunnel_will_start,
+        bind_is_exposed = bind_is_exposed,
         requires_change = requires_change,
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
+        # Headless raw bind: leave it EXACTLY as it behaved before. The
+        # refuse-and-strip handling below is calibrated to publishing a public
+        # URL; here it would break long-running headless containers (the common
+        # use of -H 0.0.0.0) and delete the .bootstrap_password they are read
+        # from. The bootstrap deadline still arms.
+        if not tunnel_will_start:
+            return True, False
         # No terminal: only proceed if the bootstrap deadline will arm; api-only
         # and TIMEOUT=0 never arm it, leaving the default credential public.
         deadline_arms = should_arm_bootstrap_timeout(
@@ -2185,8 +2360,66 @@ def _terminal_password_gate(
         is_current_password = _is_current_password,
         apply_change = _apply_change,
         out = sys.stderr,
+        exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
+        # Ctrl+C aborts a tunnel launch and only a tunnel launch; on a raw bind it
+        # declines the prompt and the launch continues, so the banner must not
+        # promise an abort that will not happen.
+        refusal_aborts = tunnel_will_start,
+        # A raw bind must never block a launch that used to start. A detached pty
+        # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
+        # test yet nobody will ever type, so an undeadlined read waits forever and
+        # the socket never binds; no answer is handled below as a refusal and
+        # proceeds on the bootstrap deadline. The tunnel waits forever instead,
+        # failing closed.
+        first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
-    return (True, True) if changed else (False, False)
+    if changed:
+        return True, True
+    if tunnel_will_start:
+        # Refusing to secure a launch about to publish a public URL aborts it,
+        # exactly as before.
+        return False, False
+    # A raw bind is different: it worked before the prompt existed, and aborting
+    # would turn Ctrl+C into "no Studio". docker/studio_run.sh execs
+    # `unsloth studio -H 0.0.0.0` and only supplies a password when the
+    # initial-password file is non-empty, so `docker run -it` on a fresh volume
+    # meets this prompt and aborting would stop a container that starts today.
+    # Warn and proceed at the protection level this launch already had.
+    #
+    # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
+    # arms the deadline, so say what will actually happen rather than promise a
+    # shutdown -- that is the one sentence an operator acts on. Still proceed: the
+    # operator disabled the deadline and cancelled the prompt deliberately, and
+    # refusing to start would break the case above.
+    deadline_arms = should_arm_bootstrap_timeout(
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        frontend_served = frontend_served,
+        is_colab = is_colab,
+        requires_change = True,
+        timeout_seconds = bootstrap_timeout_seconds(),
+    )
+    if deadline_arms:
+        tail = (
+            "Unsloth shuts down after the bootstrap deadline "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
+            "is changed."
+        )
+    else:
+        tail = (
+            "The bootstrap shutdown deadline is DISABLED for this launch "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
+            "serving that credential."
+        )
+    print(
+        "  WARNING: continuing with the auto-generated admin password on a bind "
+        f"that is reachable from the network. {tail} Change it by logging in, or "
+        "with `unsloth studio reset-password`.",
+        file = sys.stderr,
+        flush = True,
+    )
+    return True, False
 
 
 def _apply_supplied_password(password_value: "Optional[str]") -> None:
@@ -2621,9 +2854,10 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # Resolve once; shared by the log rewrite and banner.
+    # For the banner and the reachability probe; the startup log line resolves
+    # its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
-    _install_uvicorn_startup_log_rewrite(host, display_host)
+    _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs every unhandled request exception with its full
     # traceback as a structured event; without this uvicorn prints the same traceback
     # again on stderr and the desktop shell copies it into tauri.log line by line.
@@ -2680,11 +2914,7 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.server_request_host = None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
-    if port and port > 0:
-        _direct_host = _display_host_for_bind(host)
-        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
-    else:
-        app.state.server_url = None
+    app.state.server_url = _direct_server_url(host, port)
     # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
     app.state.bind_host = host
     app.state.secure = secure
@@ -2798,6 +3028,23 @@ def run_server(
 
             _close_lan_listener()
 
+    # An embedded host (studio/backend/colab.py) can call run_server again in the same
+    # interpreter, and the shutdown flags are process- and module-wide, so a second
+    # session would otherwise refuse every spawn and every load it admitted. Cleared
+    # here, after `from main import app` above (reaching for the route module earlier
+    # would build the backend singleton ahead of the startup steps that must come
+    # first) and before uvicorn serves anything below.
+    try:
+        from routes.inference import _llama_cpp_backend, begin_load_lifecycle
+        from utils.process_lifetime import begin_process_lifecycle
+
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+        begin_process_lifecycle()
+        begin_load_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
+
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread
     thread.start()
@@ -2826,7 +3073,7 @@ def run_server(
     port = _final_bound_port(_server, port)
     app.state.server_port = port
     app.state.server_request_host = _bound_request_host(_server)
-    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.server_url = _direct_server_url(host, port)
     app.state.remote_access_port = port
     app.state.lan_access_port = port
 
@@ -2834,9 +3081,17 @@ def run_server(
     import atexit
 
     atexit.register(_remove_pid_file)
-    from utils.process_lifetime import terminate_all
+    from utils.process_lifetime import mark_process_shutting_down, terminate_all
 
     atexit.register(terminate_all)
+    # LAST, so it runs FIRST: atexit is LIFO. Without it the sweep above takes its
+    # snapshot with the latch never set, because the only thing that sets it on this
+    # path is the backend's own _cleanup hook, registered when the routes singleton was
+    # built and therefore run AFTER this one. An embedded caller that lets the
+    # interpreter exit without _graceful_shutdown would otherwise get the unguarded
+    # behaviour this change exists to remove: a load still in flight passes its latch
+    # check and adopts a child the sweep has already gone past.
+    atexit.register(mark_process_shutting_down)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
     # The headless `run --api-only` path opts out so it does not leak this line.

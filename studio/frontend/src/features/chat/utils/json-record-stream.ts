@@ -15,10 +15,8 @@ export interface ImportSource {
   chunks(): AsyncIterable<TextChunk>;
 }
 
-/**
- * Decode byte ranges into text. `fatal` rejects invalid UTF-8 instead of
- * substituting replacement characters, which the desktop path requires.
- */
+/** Decode byte ranges into text. `fatal` rejects invalid UTF-8 instead of substituting
+ *  replacement characters, which the desktop path requires. */
 export async function* decodeTextChunks(
   byteChunks: AsyncIterable<Uint8Array>,
   fatal = false,
@@ -55,10 +53,8 @@ export function fileImportSource(file: File): ImportSource {
   };
 }
 
-/**
- * Read a whole source. The bound is the bytes read, not the length of the
- * decoded string: multibyte text is longer in bytes than in UTF-16 units.
- */
+/** Read a whole source. The bound is the bytes read, not the length of the decoded string:
+ *  multibyte text is longer in bytes than in UTF-16 units. */
 export async function readAllText(
   source: ImportSource,
   maxBytes: number,
@@ -78,10 +74,7 @@ export async function readAllText(
   return text;
 }
 
-/**
- * Stream top-level records from a JSON array or JSONL/NDJSON, including
- * records formatted across multiple lines.
- */
+/** Stream top-level records from a JSON array or JSONL/NDJSON, including records formatted across multiple lines. */
 export interface StreamJsonOptions {
   onBytes?: (bytes: number) => void;
   /** A framed record that does not parse. The stream continues past it. */
@@ -96,10 +89,8 @@ interface Salvage {
 /** A line-leading `{`/`[` that follows a finished value: the next record. */
 const NEW_RECORD_LINE = /[^\s:,[{]\s*\n[[{]/;
 
-/**
- * Recover records after an unclosed JSONL row. Until line framing is proven,
- * only unindented object or array lines qualify as record boundaries.
- */
+/** Recover records after an unclosed JSONL row. Until line framing is proven, only unindented
+ *  object or array lines qualify as record boundaries. */
 function salvageLines(region: string, proven: boolean): Salvage {
   const records: unknown[] = [];
   const damaged: string[] = [];
@@ -153,9 +144,9 @@ export async function* streamJsonRecords(
     try {
       buffer = consumed > 0 ? buffer.slice(consumed) + chunk.text : buffer + chunk.text;
     } catch (error) {
-      // Records are dropped from the buffer as they are emitted, so the only way
-      // to reach the engine's maximum string length is ONE record that long.
-      // Untranslated, that surfaces as a bare "Invalid string length".
+      // Records are dropped from the buffer as they are emitted, so the only way to reach the
+      // engine's maximum string length is ONE record that long. Untranslated, that surfaces as a
+      // bare "Invalid string length".
       if (error instanceof RangeError) {
         throw new RangeError(
           "One chat in this export is too large to read in a single piece. " +
@@ -184,9 +175,8 @@ export async function* streamJsonRecords(
         }
 
         if (start < 0) {
-          // Past the array's own close, only whitespace belongs to the file. A
-          // record after it means this is not the single export it claims to
-          // be, and importing it would take in data from who knows where.
+          // Past the array's own close, only whitespace belongs to the file. A record after it means this
+          // is not the single export it claims to be.
           if (sawArrayEnd) {
             if (code !== SPACE && code !== TAB && code !== NEWLINE && code !== RETURN) {
               throw new SyntaxError(
@@ -237,21 +227,17 @@ export async function* streamJsonRecords(
         }
       }
 
-      // A pending record is damaged once a later line starts a record of its
-      // own. That is a line-leading `{` or `[` which JSON could not continue
-      // the pending text with: after a finished value another value is a new
-      // record, while after `:` `,` `[` `{` it is this record's own nesting.
-      // Deciding it that way keeps the outcome independent of where the chunk
-      // boundary fell, and recovering here rather than only at end of input
-      // keeps a file whose first row is broken from buffering whole.
+      // A pending record is damaged once a later line starts a record of its own: a line-leading `{`
+      // or `[` which JSON could not continue the pending text with. Deciding it that way keeps the
+      // outcome independent of where the chunk boundary fell, and recovering here rather than only
+      // at end of input keeps a file whose first row is broken from buffering whole.
       if (!sawArrayStart && start >= 0) {
         const lastNewline = buffer.lastIndexOf("\n");
         const boundary =
           lastNewline > start ? NEW_RECORD_LINE.exec(buffer.slice(start, lastNewline)) : null;
         if (boundary) {
-          // Only the text before the boundary is damaged. The scanner resumes
-          // from the boundary itself, so a pretty-printed record after a broken
-          // row is framed by its nesting rather than shredded into lines.
+          // Only the text before the boundary is damaged. The scanner resumes from the boundary itself,
+          // so a pretty-printed record after a broken row is framed by its nesting rather than shredded.
           const at = start + boundary.index + boundary[0].length - 1;
           const damaged = buffer.slice(start, at).trim();
           if (damaged) options.onMalformed?.(damaged);
@@ -270,10 +256,9 @@ export async function* streamJsonRecords(
   const tail = start >= 0 ? buffer.slice(start).trim() : "";
   if (tail) {
     if (sawArrayStart) {
-      // Arrays have no line boundary on which to recover a truncated record.
-      // The failure is the same one the closing-bracket check below reports, so
-      // it says so in the same words rather than surfacing the engine's own
-      // "Unterminated string in JSON at position ..." to the user.
+      // Arrays have no line boundary on which to recover a truncated record. The failure is the same
+      // one the closing-bracket check below reports, so it says so in the same words rather than
+      // surfacing the engine's own "Unterminated string in JSON" to the user.
       let record: unknown;
       try {
         record = JSON.parse(tail);
@@ -296,8 +281,8 @@ export async function* streamJsonRecords(
     }
   }
 
-  // A download cut between two records leaves every record read so far intact,
-  // so the missing bracket is the only sign that the rest never arrived.
+  // A download cut between two records leaves every record read so far intact, so the missing
+  // bracket is the only sign that the rest never arrived.
   if (sawArrayStart && !sawArrayEnd) {
     throw new SyntaxError(
       "The JSON array ends before its closing bracket, so the export is incomplete.",

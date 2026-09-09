@@ -17,6 +17,7 @@ from utils.models.model_config import load_model_defaults
 
 logger = get_logger(__name__)
 
+
 # ── Family-based inference defaults (loaded once, cached) ──────────────
 
 _FAMILY_DEFAULTS: Optional[Dict[str, Any]] = None
@@ -152,16 +153,10 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
     return inference_config
 
 
-# ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
-#
-# Per-model recommended sampling is applied to a request only for the fields the
-# client omitted; an operator can pin a field from the CLI via UNSLOTH_SAMPLING_*
-# (a hard override that wins even over an explicit client value). Precedence per
-# field: operator pin -> client explicit -> per-model recommendation -> the static
-# schema default (mirroring ChatCompletionRequest, so behavior is unchanged when
-# nothing is recommended or pinned).
-
 # field -> (env var, static default, min, max, is_int)
+# Precedence per field: an operator pin via UNSLOTH_SAMPLING_* wins even over an explicit client value, then the client
+# value, then the per-model recommendation, then the static schema default.
+# ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
 _SAMPLING_FIELDS = {
     "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),
     "top_p": ("UNSLOTH_SAMPLING_TOP_P", 0.95, 0.0, 1.0, False),
@@ -174,12 +169,11 @@ _SAMPLING_FIELDS = {
 # Public, ordered tuple of the sampling fields callers resolve.
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 
-# Fields the Unsloth Chat UI adopts as *per-model recommendations* from the backend
-# `.inference` block. Its frontend `mergeBackendRecommendedInference`
-# (presets/preset-policy.ts) seeds exactly these five and never reads repetition_penalty,
-# so the server auto-recommends the same five for request parity. repetition_penalty stays a
-# manual-only knob (client-sent or an UNSLOTH_SAMPLING_REPETITION_PENALTY operator pin),
-# matching the UI where it is never auto-filled per model.
+# The five fields the Chat UI's mergeBackendRecommendedInference seeds, auto-recommended here for
+# request parity. repetition_penalty stays manual-only (client-sent or an operator pin), matching
+# the UI where it is never auto-filled per model.
+# The frontend seeder is mergeBackendRecommendedInference in presets/preset-policy.ts, and the manual pin is
+# UNSLOTH_SAMPLING_REPETITION_PENALTY.
 _UI_RECOMMENDED_FIELDS = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
 
 

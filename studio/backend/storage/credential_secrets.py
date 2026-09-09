@@ -68,21 +68,21 @@ def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = _connect_studio_db(db_path, timeout = 5.0)
-    conn.row_factory = sqlite3.Row
     try:
-        os.chmod(db_path.parent, 0o700)
-        os.chmod(db_path, 0o600)
-    except OSError:
-        pass
-    if not _schema_ready:
-        with _schema_lock:
-            if not _schema_ready:
-                try:
+        conn.row_factory = sqlite3.Row
+        try:
+            os.chmod(db_path.parent, 0o700)
+            os.chmod(db_path, 0o600)
+        except OSError:
+            pass
+        if not _schema_ready:
+            with _schema_lock:
+                if not _schema_ready:
                     _ensure_schema(conn)
                     _schema_ready = True
-                except Exception:
-                    conn.close()
-                    raise
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

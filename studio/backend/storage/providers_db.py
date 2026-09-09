@@ -92,16 +92,16 @@ def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = _connect_studio_db(db_path, timeout = 5.0)
-    conn.row_factory = sqlite3.Row
-    if not _schema_ready:
-        with _schema_lock:
-            if not _schema_ready:
-                try:
+    try:
+        conn.row_factory = sqlite3.Row
+        if not _schema_ready:
+            with _schema_lock:
+                if not _schema_ready:
                     _ensure_schema(conn)
                     _schema_ready = True
-                except Exception:
-                    conn.close()
-                    raise
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -114,8 +114,8 @@ def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
     a new endpoint with the previous key (or the inverse) while a provider edit
     is in progress.
     """
-    # Ensure both tables exist before opening the transaction.  The credential
-    # module commits schema initialization on its own connection.
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

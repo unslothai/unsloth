@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# Resolved ``unsloth_zoo.temporary_patches.utils`` helpers, memoised per process (None = tried and unavailable): resolution can import ``unsloth``, far too heavy to repeat per call.
+# memoised per process (None = unavailable): resolution can import unsloth, far too heavy to repeat
+# Resolved ``unsloth_zoo.temporary_patches.utils`` helpers, memoised per process (None = tried and unavailable):
+# resolution can import ``unsloth``, far too heavy to repeat per call.
 _HELPERS: Optional[dict] = None
 
 
@@ -45,11 +47,11 @@ def _retry_could_help(exc: BaseException) -> bool:
             xpu = getattr(torch, "xpu", None)
             if not (torch.cuda.is_available() or (xpu is not None and xpu.is_available())):
                 return False
-        except Exception:  # noqa: BLE001 — an unprobeable device is not one unsloth can use
+        except Exception:  # noqa: BLE001 - an unprobeable device is not one unsloth can use
             return False
     try:
         return importlib.util.find_spec("unsloth") is not None
-    except Exception:  # noqa: BLE001 — an unimportable package cannot set the sentinel either
+    except Exception:  # noqa: BLE001 - an unimportable package cannot set the sentinel either
         return False
 
 
@@ -89,12 +91,12 @@ def _helpers() -> Optional[dict]:
         try:
             _HELPERS = _load()
             return _HELPERS
-        except Exception as exc:  # noqa: BLE001 — no unsloth_zoo / no-GPU host -> skip the patch
+        except Exception as exc:  # noqa: BLE001 - no unsloth_zoo / no-GPU host -> skip the patch
             if attempt or not _retry_could_help(exc):
                 break
             try:
-                import unsloth  # noqa: F401 — sets UNSLOTH_IS_PRESENT for the retry
-            except Exception:  # noqa: BLE001 — not installed / no accelerator: give up quietly
+                import unsloth  # noqa: F401 - sets UNSLOTH_IS_PRESENT for the retry
+            except Exception:  # noqa: BLE001 - not installed / no accelerator: give up quietly
                 break
     _HELPERS = {}
     return None
@@ -124,7 +126,7 @@ def apply_patch(
         return False
     try:
         return bool(patch_function(target, attr, new_fn, match_level = match_level, force = force))
-    except Exception:  # noqa: BLE001 — best-effort; leave the original in place
+    except Exception:  # noqa: BLE001 - best-effort; leave the original in place
         return False
 
 

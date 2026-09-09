@@ -10,8 +10,8 @@ type ExportThreadView = {
 type ExportMessageView = { threadId?: string };
 type ExportProjectView = { id?: string };
 
-// Full chat-export backup shape, kept structural so the pure filter below
-// stays decoupled from the storage layer that produces it.
+// Full chat-export backup shape, kept structural so the pure filter below stays decoupled from the
+// storage layer that produces it.
 export interface ChatExportData {
   exportedAt?: string;
   version?: number;
@@ -21,9 +21,9 @@ export interface ChatExportData {
   messages: unknown[];
 }
 
-// Restrict a full chat export to archived threads, their messages and the
-// projects those threads belong to. Pure: never mutates the input, and keeps
-// the original thread/message objects so the backup re-imports unchanged.
+// Restrict a full chat export to archived threads, their messages and the projects those threads
+// belong to. Pure: never mutates the input, and keeps the original objects so the backup
+// re-imports unchanged.
 export function filterArchivedChatExport<T extends ChatExportData>(
   full: T,
 ): { data: T; archivedCount: number } {

@@ -153,9 +153,9 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
-    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
-    # row falls back to rendering its whole relative path.
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
+    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
+    # to rendering its whole relative path.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
@@ -221,7 +221,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -269,6 +269,10 @@ class LocalModelListResponse(BaseModel):
     lmstudio_dirs: List[str] = Field(
         default_factory = list,
         description = "LM Studio model directories that were scanned",
+    )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,

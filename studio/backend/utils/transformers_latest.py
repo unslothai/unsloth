@@ -69,10 +69,9 @@ _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
-# urlopen's timeout bounds each individual read, never the whole transfer, so a mirror
-# dribbling a few bytes just inside it keeps resp.read() alive indefinitely (measured:
-# 12 chunks 1s apart read in 12.0s under timeout=5.0). The transfer gets its own
-# wall-clock budget instead: one timeout for the connect, one for the body.
+# urlopen's timeout bounds each individual read, never the whole transfer.
+# Measured: 12 chunks 1s apart read in 12.0s under timeout=5.0. The transfer gets its own wall-clock budget instead, one
+# for the connect and one for the body.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
 # One attempt's true worst case: the budget, plus the single socket read already blocking
 # when it runs out (the deadline is only tested between reads).
@@ -94,13 +93,10 @@ _is_fetching: bool = False
 # fetch's answer instead of reporting "no answer" (see _get_snapshot).
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
-# Backstop for that wait, bounded by the refresh's OWN worst case: the PyPI version plus
-# both auto files at each of the two refs, each allowed its retry at _FETCH_ATTEMPT_SECONDS.
-# Derived rather than a literal, so tuning a timeout, a retry or the transfer budget cannot
-# silently shrink it below what it bounds. Only a backstop: giving up early is not graceful
-# here, since the answer it falls through to reads as "no upgrade needed" all the way to the
-# Start button, launching the run on the architecture this gate exists to stop. So the
-# waiter re-waits while the refresh is genuinely in flight (_get_snapshot).
+# Derived rather than a literal, so tuning a timeout or retry cannot silently shrink the backstop below what it bounds;
+# giving up early reads as "no upgrade needed" at the Start button.
+# Bounded by the refresh's OWN worst case: the PyPI version plus both auto files at each of the two refs, each allowed
+# its retry at _FETCH_ATTEMPT_SECONDS. The waiter re-waits while the refresh is genuinely in flight (_get_snapshot).
 _REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
 _INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
@@ -315,11 +311,8 @@ def _get_snapshot() -> dict | None:
             _is_fetching = True
             _fetch_done = done = threading.Event()
     if in_flight is not None:
-        # Wait for the refresh's actual completion, not for a clock. An expiry here is
-        # not "no upgrade needed", it is "the answer is still being fetched", and the
-        # callers above cannot tell those apart. So re-wait while this same refresh is
-        # running; the winner clears _is_fetching and sets the event in one locked
-        # finally, so either condition means it is done.
+        # Wait for the refresh's actual completion, not a clock: an expiry here means "still being fetched", which the
+        # callers above cannot tell from "no upgrade needed".
         while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
             with _lock:
                 if not _is_fetching or _fetch_done is not in_flight:
@@ -481,8 +474,8 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         ]
         if not missing:
             return None
-        # Latest must load EVERY missing type (wrappers build nested sub-configs
-        # through CONFIG_MAPPING) or the load still fails.
+        # Latest must load EVERY missing type (wrappers build nested sub-configs through CONFIG_MAPPING) or the load
+        # still fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
             s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
@@ -513,11 +506,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         return None
 
 
-# --- Dependency compatibility preflight ------------------------------------------------------
 # Sidecars install transformers --no-deps atop the base env. Before installing, compare
 # requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
-
-# Safe to shadow inside the sidecar dir (pure wheels, no torch coupling).
+# --- Dependency compatibility preflight ------------------------------------------------------
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
 # Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}

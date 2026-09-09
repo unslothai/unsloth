@@ -29,7 +29,9 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
-    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that string against "cuda", so a "cuda:1" there disables them silently.
+    # kept OUT of `device`: the memory, speed and attention policies compare that string against "cuda"
+    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that
+    # string against "cuda", so a "cuda:1" there disables them silently.
     ordinal: Optional[int] = None
 
     @property
@@ -188,9 +190,8 @@ def resolve_selected_cuda_ordinal(
         raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
     allowed = resolve_requested_gpu_ids(wanted)
     visible = get_parent_visible_gpu_ids()
-    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that
-    # id's position in the mask. Unmasked, the layer reports range(physical count) and this is
-    # the identity mapping.
+    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that id's position in the
+    # mask. Unmasked, the layer reports range(physical count) and this is the identity mapping.
     ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
     if not ordinals:
         raise ValueError(
@@ -224,9 +225,8 @@ def diffusion_device_scope(ordinal: Optional[int]):
     if ordinal is None:
         yield
         return
-    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to
-    # travel untouched, or a yield-after-throw replaces the caller's real refusal with
-    # "generator didn't stop after throw()".
+    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to travel untouched, or a
+    # yield-after-throw replaces the caller's real refusal with "generator didn't stop after throw()".
     try:
         import torch
         scope = torch.cuda.device(ordinal)
@@ -332,7 +332,6 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
             return _cpu_target(torch)
         if _studio_device_is(studio_device, DeviceType, "XPU"):
             return _xpu_target(torch)
-        # MLX / CPU / else: diffusers uses MPS, so fall through to the torch probe (MPS over CPU).
 
     if torch.cuda.is_available():
         return _cuda_or_rocm_target(torch, is_rocm = is_rocm, ordinal = ordinal)
@@ -402,8 +401,8 @@ def _cuda_or_rocm_target(
     ordinal: Optional[int] = None,
 ) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
-        # It takes no device argument, so the selected card is asked by scoping the current device.
+        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy. It takes no device
+        # argument, so the selected card is asked by scoping the current device.
         try:
             with diffusion_device_scope(ordinal):
                 bf16_ok = bool(torch.cuda.is_bf16_supported())
@@ -411,8 +410,9 @@ def _cuda_or_rocm_target(
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16 slowly but report it supported).
-        # Asked of the SELECTED card, since the argument-less form reports the current device, a different generation on a mixed box; still argument-less without a selection.
+        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16
+        # slowly but report it supported). Asked of the SELECTED card, since the argument-less form reports the current
+        # device, a different generation on a mixed box; still argument-less without a selection.
         try:
             major = (
                 torch.cuda.get_device_capability()
@@ -475,11 +475,15 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it first or
-        # the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault respects an override.
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
+        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
+        # respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's range (Z-Image
-        # MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent range; older macOS uses fp32.
+        # NEVER silent float16: modern DiTs produce activations far outside fp16's range (Z-Image MLP peaks near 9e5 ->
+        # inf -> NaN -> black image)
+        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's range
+        # (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent range;
+        # older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",

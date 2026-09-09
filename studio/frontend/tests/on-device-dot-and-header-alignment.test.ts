@@ -54,10 +54,23 @@ test("the scoped badge column reserves the wider on-device marker", () => {
 });
 
 test("the unscoped badge column is sized per list, not to the union of both", () => {
-  // One slot sized for both lists left ~44px of empty column on every On Device row. 26px is the
-  // vision badge measured, so rows with and without one keep the same column positions.
-  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
+  // Sized to the widest set each list can draw, not to both lists at once. On Device is the vision
+  // badge (26px), a gap-1 (4px) and the partial mark (14px): a GGUF repo can show vision and be
+  // half-downloaded at once, and at 26px that row alone grew and carried its quant chip 18px left
+  // of every other row -- the exact drift the fixed columns exist to stop.
+  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[44px]"'));
   assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[36px]"'));
+  // Both marks really can land on one On Device row, which is what makes 44 the right number.
+  const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
+  const row = gguf.slice(0, gguf.indexOf("\n  };"));
+  assert.ok(row.includes('alignMeta="device"'));
+  assert.ok(row.includes("showVision={c.has_vision"));
+  assert.ok(row.includes("partial={isPartialRepo}"));
+  // And they sit in that one slot rather than overlapping.
+  assert.match(
+    PICKERS,
+    /\{showVision && <VisionBadge \/>\}\n\s*\{partial \? <PartialBadge resumable=\{partialResumable\} \/> : null\}/,
+  );
   assert.match(
     PICKERS,
     /alignMeta === "device"\n\s*\? META_COLUMN\.badgeDevice\n\s*: META_COLUMN\.badgeWide/,
@@ -91,12 +104,74 @@ test("the parameter and size columns are sized to the ink they hold", () => {
   );
 });
 
-test("the parameter chip hugs its label so the gap to the modality mark is the row's own", () => {
-  // A fixed right-aligned column spends its leftover in front of the chip, and that leftover is
-  // the gap to the modality mark, which no gap setting can undo. Hugging plus -ml-0.5 gives 2px.
-  assert.ok(PICKERS.includes('param: "min-w-min -ml-0.5"'));
-  // Hub keeps a column: its labels run to "2779.5B".
+test("the parameter column is fixed, so the quant column cannot drift row to row", () => {
+  // It is the last variable width to the right of the name group, and the name group is flex-1:
+  // hugging the chip handed a "1B" row -- and more so a row with no param at all -- the leftover,
+  // which carried that row's quant chip further right. 4.4em holds the widest label these lists
+  // draw at text-ui-10 ("235B" is 38.4px, a 5-char "0.35B" 40.9px), so nothing routine trips
+  // min-w-min and shifts the row back out of line.
+  assert.ok(PICKERS.includes('param: "min-w-min min-[560px]:w-[4.4em]"'));
+  // Hub keeps its own column: its labels run to "2779.5B".
   assert.ok(PICKERS.includes('paramWide: "min-w-min min-[560px]:w-[5.2em]"'));
+});
+
+test("the parameter chip leads its column, so the modality gap is the cluster's own", () => {
+  // Trailing the chip spends the column's leftover in FRONT of it, where it reads as part of the
+  // gap to the modality mark and grows with the label: 6.9px after a "217B", 19px after a "1B".
+  // Leading it leaves that gap as gap-1 -- the same 4px the quant chip keeps to the same mark.
+  assert.match(
+    PICKERS,
+    /alignMeta === "hub"\n\s*\? cn\("justify-end", META_COLUMN\.paramWide\)\n\s*: cn\("justify-start", META_COLUMN\.param\)/,
+  );
+});
+
+test("the quant chip is flush right in its slot, so the chips read as one column", () => {
+  // The slot is sized for the longest quant, so left-aligning ended a "Q8_0" and a "UD-Q4_K_XL"
+  // at different x even once the slot itself stopped moving.
+  assert.ok(PICKERS.includes('quant: "min-[560px]:w-[7.2em]"'));
+  assert.match(PICKERS, /"flex shrink-0 items-center justify-end text-ui-9"/);
+});
+
+test("the quant chip rides in the meta cluster, not on the end of the name", () => {
+  // The name group is items-baseline and sized by the name's own line box; a chip centred against
+  // THAT agrees with the rest of the row only while the two boxes happen to share a centre. In the
+  // meta cluster one items-center rule lines the chip up with the vision mark, the parameter chip,
+  // the size and the row's buttons, so the agreement is structural.
+  const meta = PICKERS.slice(
+    PICKERS.indexOf('"ml-auto flex shrink-0 items-center"'),
+  );
+  const quantSlot = meta.indexOf("META_COLUMN.quant");
+  const badgeSlot = meta.indexOf("badgeColumn");
+  assert.ok(quantSlot > 0, "the quant slot sits inside the meta cluster");
+  assert.ok(quantSlot < badgeSlot, "and leads the badge column");
+  // self-center was what compensated for the baseline box; in an items-center row it is noise.
+  assert.ok(
+    !PICKERS.includes("justify-end self-center text-ui-9"),
+    "no leftover baseline compensation",
+  );
+});
+
+test("every chip in the row band pins the same height", () => {
+  // ParamChip sized itself from its line box, the one height here that scales with
+  // --ui-font-scale: at 1.0 it stood 1px prouder than the quant and vision chips beside it and at
+  // 0.8125 it sat 1.8px shorter, so the row was only level at the scale where the two crossed.
+  for (const chip of ["QuantChip", "VisionBadge", "ParamChip"]) {
+    const start = PICKERS.indexOf(`function ${chip}(`);
+    assert.ok(start > 0, `${chip} exists`);
+    const body = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
+    assert.ok(body.includes("h-[18px]"), `${chip} pins the band height`);
+  }
+  // The height is what centres the label now, so the padding that used to set it is gone. Read
+  // the class list, not the body: the comment above it names py-px as the thing it replaced.
+  const paramStart = PICKERS.indexOf("function ParamChip(");
+  const param = PICKERS.slice(paramStart, PICKERS.indexOf("\n}", paramStart));
+  const paramClasses = /className="([^"]*)"/.exec(param)?.[1] ?? "";
+  assert.ok(paramClasses.length > 0, "ParamChip has a class list");
+  assert.ok(!paramClasses.includes("py-px"), "no leftover vertical padding");
+  assert.ok(
+    paramClasses.includes("items-center"),
+    "label centres in the fixed box",
+  );
 });
 
 test("an over budget row dims instead of putting a pill on every line", () => {
@@ -189,12 +264,12 @@ test("chat and the Hub answer the fit question with one formula", () => {
     ),
   );
   assert.ok(
-    PICKERS.includes(
-      "diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu",
-    ),
+    PICKERS.includes("diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu"),
   );
   assert.ok(
-    PICKERS.includes("const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;"),
+    PICKERS.includes(
+      "const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;",
+    ),
   );
   // And every expander reads that one budget, rather than reaching for inferenceGpu itself.
   assert.ok(
@@ -273,15 +348,11 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "both Hub fit gates",
   );
   assert.ok(
-    HUB_PAGE.includes(
-      "mediaRow || !result.isGguf ? gpu : inferenceGpu,",
-    ),
+    HUB_PAGE.includes("mediaRow || !result.isGguf ? gpu : inferenceGpu,"),
   );
   assert.ok(HUB_PAGE.includes("mediaLoad: mediaRow,"));
   assert.ok(
-    HUB_PAGE.includes(
-      "studioPageForTask(result.pipelineTag) !== undefined",
-    ),
+    HUB_PAGE.includes("studioPageForTask(result.pipelineTag) !== undefined"),
   );
   // The count is narrowed WITH the capacity, so it can never describe a different inventory than
   // the gpuGb beside it. A task page puts the load on one device; charging the per-card reserve
@@ -289,7 +360,9 @@ test("chat and the Hub answer the fit question with one formula", () => {
   // offers the selected card's 23.5.
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
   assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
-  assert.ok(RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"));
+  assert.ok(
+    RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"),
+  );
   assert.ok(
     !PICKERS.includes("gpuCount={inferenceGpu.deviceCount}"),
     "never the unscoped host count",
@@ -404,10 +477,11 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
   // An over-budget figure is a TOTAL: `partial` splits across VRAM and RAM, and the number is
   // weights plus activations plus KV, so "Needs ~47GB VRAM" argued with the offload verdict.
+  assert.ok(PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"));
   assert.ok(
-    PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"),
+    !PICKERS.includes("GB VRAM (GPU:"),
+    "no VRAM wording on an overage",
   );
-  assert.ok(!PICKERS.includes("GB VRAM (GPU:"), "no VRAM wording on an overage");
   // A load that stays on the card still says VRAM, which is what it means there.
   assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
   // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
@@ -423,7 +497,9 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   // This branch used to set "exceeds", the one verdict that says a model will not load. A GGUF is
   // offloaded by llama-server rather than refused, so the row said the opposite of what happens,
   // and it is the verdict shown on the Recommended list where most rows are over budget.
-  assert.ok(PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"));
+  assert.ok(
+    PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"),
+  );
   // A boolean here collapsed marginal and partial into "no badge", so a repo whose smallest quant
   // already needed offload rendered as a clean fit beside variant rows saying otherwise.
   assert.ok(!PICKERS.includes("exceedsSize"));

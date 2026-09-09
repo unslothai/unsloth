@@ -259,6 +259,55 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
     assert close_lock.maximum == 1
 
 
+# --- failed factory setup must not defer connection cleanup to garbage collection -----
+
+
+@pytest.mark.parametrize(
+    "module_name", ["studio_db", "providers_db", "mcp_servers_db", "credential_secrets"]
+)
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_factory_closes_connections_when_schema_setup_fails(
+    db, monkeypatch, module_name, error_type
+):
+    import importlib
+
+    module = importlib.import_module(f"storage.{module_name}")
+    connection = studio_db._connect_studio_db(db, timeout = 5.0)
+    monkeypatch.setattr(module, "_connect_studio_db", lambda *args, **kwargs: connection)
+    monkeypatch.setattr(module, "_schema_ready", False)
+
+    def fail_schema(conn):
+        raise error_type("schema setup failed")
+
+    monkeypatch.setattr(module, "_ensure_schema", fail_schema)
+    try:
+        with pytest.raises(error_type, match = "schema setup failed"):
+            module.get_connection()
+        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("pragma", ["PRAGMA foreign_keys=ON", "PRAGMA synchronous=NORMAL"])
+def test_studio_factory_closes_connections_when_pragma_setup_fails(db, monkeypatch, pragma):
+    class FailingPragmaConnection(studio_db._StudioDbConnection):
+        def execute(self, sql, *args):
+            if sql == pragma:
+                raise sqlite3.OperationalError("pragma setup failed")
+            return super().execute(sql, *args)
+
+    connection = sqlite3.connect(str(db), factory = FailingPragmaConnection)
+    monkeypatch.setattr(studio_db, "_connect_studio_db", lambda *args, **kwargs: connection)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match = "pragma setup failed"):
+            studio_db.get_connection()
+        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
 # --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
 
 

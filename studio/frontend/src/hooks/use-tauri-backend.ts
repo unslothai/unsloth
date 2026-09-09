@@ -164,6 +164,9 @@ export function useTauriBackend() {
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  // Whether the repair in flight was asked to skip straight to the installer. Read back by
+  // approveElevation, which restarts the repair after the system packages land.
+  const forcedRepairRef = useRef(false);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
   // Read through rather than mirrored into state: the app-closing listener is registered
   // inside the long event effect below, which cannot reach a setState from this render.
@@ -369,7 +372,14 @@ export function useTauriBackend() {
     startingRef.current = false;
   }
 
-  async function startRepair() {
+  // `forceInstaller` runs the bundled installer without trying `studio update` first. The
+  // automatic callers leave it off, because an out-of-date venv is the common case. Settings'
+  // manual repair turns it on: an update reuses the environment it finds, so a venv whose
+  // PyTorch was replaced by a CPU-only wheel comes back from one still CPU-only.
+  async function startRepair(options?: { forceInstaller?: boolean }) {
+    const forceInstaller = options?.forceInstaller ?? false;
+    // Survives the elevation round trip: approveElevation resumes by calling this again.
+    forcedRepairRef.current = forceInstaller;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -384,7 +394,7 @@ export function useTauriBackend() {
 
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_managed_repair");
+      await invoke("start_managed_repair", { forceInstaller });
 
       setBackendStatus("starting");
       elevationResumeRef.current = null;
@@ -467,6 +477,14 @@ export function useTauriBackend() {
   }
 
   const retry = useCallback(() => {
+    // Retry on a FORCED repair has to re-run that repair, not the preflight. The installer
+    // is transactional, so a failed attempt over an existing install restores the desktop-ready
+    // environment it found: checkInstallAndStart() then sees a ready install and restarts the
+    // same CPU-only backend the user pressed Repair about, and the button does nothing.
+    // Elevation resumes already preserve this; the error path did not.
+    const resumeForcedRepair =
+      statusRef.current === "repair-error" && forcedRepairRef.current;
+    forcedRepairRef.current = false;
     clearAuthFailure();
     clearServerStopIntent();
     setError(null);
@@ -481,6 +499,10 @@ export function useTauriBackend() {
     setIsExternalServer(false);
     stopExternalServerPoll();
     seenStepsRef.current.clear();
+    if (resumeForcedRepair) {
+      void startRepair({ forceInstaller: true });
+      return;
+    }
     checkInstallAndStart();
   }, []);
 
@@ -515,7 +537,7 @@ export function useTauriBackend() {
       setProgressDetail(null);
       elevationResumeRef.current = null;
       if (resume === "repair") {
-        await startRepair();
+        await startRepair({ forceInstaller: forcedRepairRef.current });
       } else {
         await startInstall();
       }
@@ -724,5 +746,8 @@ export function useTauriBackend() {
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
+    // The same function startup uses, so a manual repair renders the same repairing screen
+    // and restarts the backend afterwards rather than leaving it stopped.
+    startRepair,
   };
 }

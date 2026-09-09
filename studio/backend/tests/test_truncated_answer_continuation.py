@@ -26,10 +26,13 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference.context_window import _reply_floor
 from core.inference.llama_cpp import (
     _CONTINUE_TRUNCATED_ANSWER_STATUS,
     _MAX_LENGTH_CONTINUATIONS,
@@ -282,6 +285,414 @@ def test_the_final_answer_is_continued_too(monkeypatch):
     assert len(payloads) == 2, "the final answer was left mid-sentence"
     assert payloads[1].get("continue_final_message") is True
     assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
+    """llama-server rejects a request carrying both flags."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the final answer was left mid-sentence"
+    assert payloads[1]["continue_final_message"] is True
+    assert payloads[1]["add_generation_prompt"] is False
+    # The initial request still needs the default generation prompt.
+    assert "add_generation_prompt" not in payloads[0]
+
+
+def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
+    """The refit must restore the partial absent from `conversation`."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
+    def _respawned() -> bool:
+        # Force a refit against the replacement window.
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Fail while opening the continuation.
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    _run_no_tools(backend, context_overflow = "truncate_oldest")
+
+    assert calls["n"] == 3, "the continuation has to be opened, die, and be retried"
+    replayed = payloads[-1]
+    assert replayed["messages"][0]["role"] == "user"
+    assert replayed["messages"][-1]["role"] == "assistant"
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
+    assert replayed["continue_final_message"] is True
+    assert replayed["add_generation_prompt"] is False
+
+
+def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
+    """The replacement window must include the restored partial."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    def _count(messages, *_a, **_k) -> int:
+        return sum(len(str(message.get("content", ""))) for message in messages) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+
+    def _respawned() -> bool:
+        # The conversation fits, but the restored partial does not.
+        backend._effective_context_length = 1400
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    history = [
+        {"role": "user", "content": "Older question " + "x" * 400},
+        {"role": "assistant", "content": "Older answer " + "y" * 400},
+        {"role": "user", "content": "Show me the HTML inline"},
+    ]
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = history,
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = payloads[-1]
+    assert replayed["messages"][-1]["role"] == "assistant", "the partial still rides across"
+    # The restored partial forces eviction of the older exchange.
+    assert len(replayed["messages"]) == 2, "the older exchange was not evicted for the partial"
+    assert _count(replayed["messages"]) + _reply_floor(1400) <= 1400
+    assert replayed["continue_final_message"] is True
+    assert replayed["add_generation_prompt"] is False
+
+
+def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
+    """A respawn refit must not duplicate a caller prefill."""
+
+    prefill = "Here is the beginning of my answer: "
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
+    def _respawned() -> bool:
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    prefilled = [
+        {"role": "user", "content": "Show me the HTML inline"},
+        {"role": "assistant", "content": prefill},
+    ]
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = prefilled,
+            tools = [],
+            max_tool_iterations = 0,
+            continue_final_message = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = payloads[-1]
+    assert [message["role"] for message in replayed["messages"]] == ["user", "assistant"]
+    assert json.dumps(replayed["messages"]).count(prefill) == 1
+    assert replayed["messages"][-1]["content"].startswith(prefill)
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
+
+
+def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeypatch):
+    """A respawn refit must preserve the reasoning recovery tail."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
+    def _respawned() -> bool:
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the recovery request's own open
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    _run_no_tools(backend, context_overflow = "truncate_oldest")
+
+    replayed = payloads[-1]
+    assert [message["role"] for message in replayed["messages"]] == [
+        "user",
+        "assistant",
+        "user",
+    ], "the refit dropped the recovery turns"
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][1]["content"]
+    assert "continue_final_message" not in replayed
+    assert "add_generation_prompt" not in replayed
+
+
+def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypatch):
+    """Decline a recovery that cannot retain the question it answers."""
+
+    question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Force the recovery through admission eviction.
+            backend._effective_context_length = 320
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": "PREFILL_MARKER here is the start: "},
+            ],
+            tools = [],
+            max_tool_iterations = 0,
+            continue_final_message = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert calls["n"] == 2, "a recovery that cannot carry its question was sent anyway"
+    for payload in payloads:
+        roles = [message["role"] for message in payload["messages"]]
+        assert not any(
+            roles[index] == roles[index + 1] == "user" for index in range(len(roles) - 1)
+        ), f"adjacent user turns in {roles}"
+        assert json.dumps(payload["messages"]).count("QUESTION_MARKER") == 1
+    assert "ctx.arc(6, -5, 5, 0" in "".join(_texts(events, "content"))
+
+
+def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
+    """Older history remains evictable while the recovered turn is protected."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [_sse({"reasoning_content": "Let me reconsider. " * 40}), _finish("length"), _done()],
+            [_sse({"content": "and the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Leave room for the recovered turn, but not the older exchange.
+            backend._effective_context_length = 1800
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "OLD_MARKER what is the weather " + "w" * 3000},
+                {"role": "assistant", "content": "it is sunny " + "s" * 3000},
+                {"role": "user", "content": "QUESTION_MARKER draw the bird"},
+            ],
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert calls["n"] == 3, "the recovery was refused instead of dropping the old exchange"
+    recovery = json.dumps(payloads[-1]["messages"])
+    assert "OLD_MARKER" not in recovery, "the older exchange was held back too"
+    assert "QUESTION_MARKER" in recovery
+
+
+def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch):
+    """Refit eviction must keep the original turn behind a recovery request."""
+
+    question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    def _respawned() -> bool:
+        # The refitted conversation fits without its recovery tail.
+        backend._effective_context_length = 300
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": question}],
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = json.dumps(payloads[-1]["messages"])
+    assert "QUESTION_MARKER" in replayed, "the eviction dropped the question being answered"
+    assert "ctx.arc(6, -5, 5, 0" in replayed, "the eviction dropped the partial being continued"
 
 
 def test_the_final_continuation_is_capped(monkeypatch):
@@ -697,6 +1108,7 @@ def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monk
     # apart from the answer continuation: that one replays the partial and extends it.
     assert payloads[2]["messages"][-1]["role"] == "user"
     assert "continue_final_message" not in payloads[2]
+    assert "add_generation_prompt" not in payloads[2]
 
 
 def test_an_answer_already_on_screen_is_not_replaced_by_the_explanation(monkeypatch):

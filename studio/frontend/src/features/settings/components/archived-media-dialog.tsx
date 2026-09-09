@@ -24,10 +24,11 @@ import {
 } from "@/features/images/api";
 import {
   deleteGalleryVideo,
-  fetchGalleryVideoSignedUrl,
+  fetchGalleryVideoThumbnail,
   getVideoGallery,
   setGalleryVideoFlags,
 } from "@/features/video/api";
+import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import { toast } from "@/lib/toast";
@@ -111,9 +112,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  // Archived PNGs are full-size generated images, so "Show more" a few times would pin hundreds of
-  // MB if every blob were held to unmount. Budget them like the main gallery does. Images only: a
-  // clip uses a signed link, which is not an object URL and must not be revoked.
+  // Archived images and video posters are object URLs, so "Show more" a few times would otherwise
+  // pin their bytes until unmount. Budget them like the main galleries do.
   const blobs = useRef(new BlobUrlCache(ARCHIVED_THUMB_BUDGET_BYTES));
   // Only rows on screen fetch a thumbnail, and only rows off screen are evicted. Together those
   // two rules keep memory bounded without ever blanking a row the user is looking at.
@@ -279,8 +279,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if ((failures.current.get(row.id) ?? 0) > THUMB_RETRY_LIMIT) continue;
         requested.current.add(row.id);
         try {
-          if (isImages) {
-            const { url, bytes } = await fetchGalleryObjectUrl(row.url);
+          if (isImages || kind === "videos") {
+            const { url, bytes } = isImages
+              ? await fetchGalleryObjectUrl(row.url)
+              : await videoThumbnailQueue.run(() => fetchGalleryVideoThumbnail(row.id));
             // Dropped from the list, or the dialog closed: there is no row left to show it on,
             // and caching it after the unmount sweep would leak the blob.
             if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
@@ -308,15 +310,6 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             if (cancelled) return;
             continue;
           }
-          // A clip is a short-lived signed link, not a blob: nothing to budget or revoke.
-          const src = await fetchGalleryVideoSignedUrl(row.id);
-          if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
-            requested.current.delete(row.id);
-            return;
-          }
-          failures.current.delete(row.id);
-          setThumbs((prev) => ({ ...prev, [row.id]: src }));
-          if (cancelled) return;
         } catch {
           // A missing thumbnail still leaves a usable, actionable row, so a failure is not fatal.
           // Schedule the retry rather than only clearing the flag, which nothing would act on.
@@ -334,7 +327,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages, isAudio, visible, retryTick]);
+  }, [rows, isImages, isAudio, kind, visible, retryTick]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
@@ -475,18 +468,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                   className="size-4 text-muted-foreground"
                 />
               ) : thumbs[row.id] ? (
-                isImages ? (
-                  <img src={thumbs[row.id]} alt="" className="size-full object-cover" />
-                ) : (
-                  // Muted metadata-only poster, same treatment as the filmstrip cards.
-                  <video
-                    src={thumbs[row.id]}
-                    muted={true}
-                    playsInline={true}
-                    preload="metadata"
-                    className="size-full object-cover"
-                  />
-                )
+                <img src={thumbs[row.id]} alt="" className="size-full object-cover" />
               ) : null}
             </span>
             <span className="min-w-0 flex-1 truncate" title={row.prompt}>

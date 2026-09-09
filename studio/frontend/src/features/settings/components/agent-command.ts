@@ -128,3 +128,114 @@ export function buildAgentShellCommands(
     dryRun: `${buildAgentCommand(base, null, os, "claude")} --no-launch`,
   };
 }
+
+// Codex (/v1/responses) and Claude Code (/v1/messages) are llama-server only; the rest use
+// /v1/chat/completions, which also serves safetensors and MLX.
+export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
+
+export function agentRunsOnActiveModel(
+  agent: string,
+  isGguf: boolean,
+): boolean {
+  return isGguf || !GGUF_ONLY_AGENTS.includes(agent);
+}
+
+// The non-GGUF reset target: DEFAULT_AGENT is itself GGUF-only.
+export const UNIVERSAL_AGENT = "opencode";
+
+// Stays inside `offered`, or a narrower backend list names an agent with no chip. null =
+// nothing offered runs.
+export function fallbackAgent(
+  isGguf: boolean,
+  offered: readonly string[] = [],
+): string | null {
+  const runs = (agent: string) => agentRunsOnActiveModel(agent, isGguf);
+  if (offered.length === 0) {
+    return runs(DEFAULT_AGENT) ? DEFAULT_AGENT : UNIVERSAL_AGENT;
+  }
+  for (const preference of [DEFAULT_AGENT, UNIVERSAL_AGENT]) {
+    if (offered.includes(preference) && runs(preference)) {
+      return preference;
+    }
+  }
+  return offered.find(runs) ?? null;
+}
+
+export function pickCompatibleAgent(
+  detectedAgents: readonly string[],
+  currentAgent: string,
+  isGguf: boolean,
+  offered: readonly string[] = [],
+): string | null {
+  const preferred = detectedAgents.find((agent) =>
+    agentRunsOnActiveModel(agent, isGguf),
+  );
+  if (preferred) {
+    return preferred;
+  }
+  return agentRunsOnActiveModel(currentAgent, isGguf)
+    ? null
+    : fallbackAgent(isGguf, offered);
+}
+
+// The server wins: only it sees a swap this tab did not make. The store covers the routes
+// that never mount useChatModelRuntime, and the moment after a switch made here. null from
+// both is unknown, which is not false and gates nothing.
+export function resolveGgufCompatibility(
+  fromStore: boolean | null,
+  fromServer: boolean | null,
+): boolean | null {
+  return fromServer ?? fromStore;
+}
+
+// is_gguf carries a False default, so an idle server answers false while naming no model.
+// Only a status that names what it holds is a verdict.
+export function statusGgufVerdict(
+  resident: string | null | undefined,
+  isGguf: boolean | null | undefined,
+): boolean | null {
+  if (resident == null) return null;
+  return isGguf ?? null;
+}
+
+// Same model, ignoring any ":quant" a caller pinned.
+export function sameBaseModelId(a: string, b: string): boolean {
+  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
+  return (
+    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
+  );
+}
+
+// The status and catalog polls run on separate timers, so a swap reaches one first; without
+// this the panel pairs a newly named model with the previous verdict. Neither side naming
+// anything is silence, not a contradiction.
+export function verdictDescribesModel(
+  resident: string | null | undefined,
+  named: string | null | undefined,
+): boolean {
+  if (resident == null || named == null) return true;
+  return sameBaseModelId(resident, named);
+}
+
+/** A status answer already collapsed onto the identity /v1/models publishes. */
+export interface StatusAnswer {
+  resident: string | null;
+  isGguf: boolean | null;
+}
+
+// The panel's single compatibility rule; `status` is null when the last answer is not about
+// the store state on screen. Disagreeing polls leave the question unknown rather than
+// falling back to the store, which is blind to the very swap that caused the disagreement.
+export function compatibilityFromSources(
+  fromStore: boolean | null,
+  status: StatusAnswer | null,
+  namedModel: string | null,
+): boolean | null {
+  if (status === null) {
+    return fromStore;
+  }
+  if (!verdictDescribesModel(status.resident, namedModel)) {
+    return null;
+  }
+  return resolveGgufCompatibility(fromStore, status.isGguf);
+}

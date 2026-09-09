@@ -42,6 +42,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -74,9 +75,6 @@ import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
-  ArrowDown01Icon,
-  ArrowRight02Icon,
-  ArrowUp01Icon,
   BadgeInfoIcon,
   BookOpen01Icon,
   BubbleChatIcon,
@@ -123,7 +121,13 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, Moon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  ChevronDown,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  Moon,
+} from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -588,6 +592,29 @@ const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
+// The backend reclassifies a host without a restart on a 60s TTL: attach an eGPU to a
+// CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
+// Matched to that TTL, since polling faster than the answer can change is pure traffic.
+const INVENTORY_POLL_MS = 60000;
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES
+// the refresh and returns the stale entry, so the new answer lands a moment later. On the
+// TTL alone the read that triggers the refresh is a whole interval from the read that
+// consumes it, leaving an attached eGPU invisible for close to two minutes. One short
+// follow-up read collects it instead.
+const INVENTORY_FOLLOW_UP_MS = 4000;
+// The verdicts the inventory can still move. Everything else describes something a probe
+// cannot change (an Intel Mac stays an Intel Mac).
+const INVENTORY_SENSITIVE_REASONS = new Set([
+  "no_gpu",
+  "torch_cpu_build",
+  "torch_cuda_unavailable",
+  // A torch that will not import is classified from its wheel on disk, so the backend can
+  // replace this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers.
+  // Leaving it out treated that first answer as settled and stopped the only forced health
+  // re-read, so the sidebar and navigation stayed on the failure for the rest of the session
+  // while /api/system already reported the mismatch.
+  "detection_failed",
+]);
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -808,11 +835,21 @@ export function AppSidebar() {
         chatOnlyDetail
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
-      : chatOnlyReason === "intel_mac"
+      : chatOnlyReason === "no_torch"
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
+          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+        : chatOnlyReason === "torch_cpu_build" ||
+            chatOnlyReason === "torch_cuda_unavailable"
+          ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
+            // and unactionable here, so name the installed build and point at the repair.
+            chatOnlyDetail
+            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
@@ -832,13 +869,20 @@ export function AppSidebar() {
     // recovery poll in the app, and the sidebar is mounted on every route that gates on the
     // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
     // backend's video verdict instead and needs nothing from here).
-    if (selfHealSettled && !capabilitiesUnknown) return;
+    const inventorySensitive =
+      chatOnly && INVENTORY_SENSITIVE_REASONS.has(chatOnlyReason ?? "");
+    if (selfHealSettled && !capabilitiesUnknown && !inventorySensitive) return;
     let pollingSince = 0;
     // Which read currently owns the guard. A read that outlived the stall window is replaced,
     // and the replacement takes the guard with it; without an owner the abandoned read's
     // `finally` would clear a guard it no longer holds and let the next tick stack another
     // forced read onto the slow backend, every interval, which is the pile-up this prevents.
     let pollOwner = 0;
+    // Cleared on unmount with the interval: a follow-up outliving the effect would read
+    // against a verdict this effect no longer describes. Through `window`, like the
+    // interval beside it, and 0 for "none" because that is what window.setTimeout never
+    // returns.
+    let followUp = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
       // rather than stacking them against it. Bounded, or a request that never settles would
@@ -849,10 +893,27 @@ export function AppSidebar() {
       void fetchDeviceType({ force: true })
         .catch(() => undefined)
         .finally(() => {
-          if (owned === pollOwner) pollingSince = 0;
+          if (owned !== pollOwner) return;
+          pollingSince = 0;
+          // Only where a background refresh is what we are waiting on. The unknown poll is
+          // already fast enough, and the self-heal poll is not waiting on a TTL at all.
+          if (!selfHealSettled || capabilitiesUnknown) return;
+          if (followUp) window.clearTimeout(followUp);
+          followUp = window.setTimeout(() => {
+            followUp = 0;
+            void fetchDeviceType({ force: true }).catch(() => undefined);
+          }, INVENTORY_FOLLOW_UP_MS);
         });
-    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
-    return () => window.clearInterval(id);
+    }, capabilitiesUnknown
+      ? VERDICT_UNKNOWN_POLL_MS
+      : selfHealSettled
+        ? INVENTORY_POLL_MS
+        : SELF_HEAL_POLL_MS);
+    const stopPolling = () => {
+      window.clearInterval(id);
+      if (followUp) window.clearTimeout(followUp);
+    };
+    return () => stopPolling();
   }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
@@ -1760,14 +1821,14 @@ export function AppSidebar() {
     return (
       <>
         <DropdownMenuItem disabled={at <= 0} onSelect={() => move(-1)}>
-          <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronUpIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveUp")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={at === -1 || at >= orderedIds.length - 1}
           onSelect={() => move(1)}
         >
-          <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronDownIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveDown")}</span>
         </DropdownMenuItem>
       </>
@@ -2862,64 +2923,63 @@ export function AppSidebar() {
     includeOrganize?: boolean;
   }) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+      <NonModalDropdownMenu
+        side="bottom"
+        align="end"
+        sideOffset={2}
+        className="unsloth-plus-menu w-56"
+        trigger={(triggerRef) => (
           <button
+            ref={triggerRef}
             type="button"
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="bottom"
-          align="end"
-          sideOffset={2}
-          className="unsloth-plus-menu w-56"
+        )}
+      >
+        {options.includeOrganize && (
+          <>
+            <DropdownMenuLabel>
+              {t("shell.organize.sidebarHeading")}
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={organizeBy}
+              onValueChange={(value) =>
+                setOrganizeBy(value as SidebarOrganizeBy)
+              }
+            >
+              {ORGANIZE_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem
+                  key={option.value}
+                  value={option.value}
+                  className={menuRadioItemClass}
+                >
+                  {t(option.key)}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
+        <DropdownMenuLabel>{options.sortLabel}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={options.sortValue}
+          onValueChange={(value) =>
+            options.onSortChange(value as SidebarChatSort)
+          }
         >
-          {options.includeOrganize && (
-            <>
-              <DropdownMenuLabel>
-                {t("shell.organize.sidebarHeading")}
-              </DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={organizeBy}
-                onValueChange={(value) =>
-                  setOrganizeBy(value as SidebarOrganizeBy)
-                }
-              >
-                {ORGANIZE_OPTIONS.map((option) => (
-                  <DropdownMenuRadioItem
-                    key={option.value}
-                    value={option.value}
-                    className={menuRadioItemClass}
-                  >
-                    {t(option.key)}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </>
-          )}
-          <DropdownMenuLabel>{options.sortLabel}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup
-            value={options.sortValue}
-            onValueChange={(value) =>
-              options.onSortChange(value as SidebarChatSort)
-            }
-          >
-            {CHAT_SORT_OPTIONS.map((option) => (
-              <DropdownMenuRadioItem
-                key={option.value}
-                value={option.value}
-                className={menuRadioItemClass}
-              >
-                {t(option.key)}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          {CHAT_SORT_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem
+              key={option.value}
+              value={option.value}
+              className={menuRadioItemClass}
+            >
+              {t(option.key)}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </NonModalDropdownMenu>
     );
   }
 
@@ -3015,9 +3075,11 @@ export function AppSidebar() {
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
         : Boolean(runningByThreadId[item.id]);
-    const hasQueuedActivity = threadIds.some((threadId) =>
-      Boolean(queueByThreadId[threadId]),
-    );
+    // A paused queue is not activity: its entry outlives Stop, so the row would spin on.
+    const hasQueuedActivity = threadIds.some((threadId) => {
+      const entry = queueByThreadId[threadId];
+      return Boolean(entry) && !entry.paused;
+    });
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
@@ -3193,9 +3255,14 @@ export function AppSidebar() {
                 </span>
               </button>
             )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            <NonModalDropdownMenu
+              side="bottom"
+              align="start"
+              sideOffset={0}
+              className="unsloth-plus-menu menu-flat-destructive w-56"
+              trigger={(triggerRef) => (
                 <button
+                  ref={triggerRef}
                   type="button"
                   onClick={(e) => e.stopPropagation()}
                   aria-label="Chat options"
@@ -3205,191 +3272,185 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="bottom"
-                align="start"
-                sideOffset={0}
-                className="unsloth-plus-menu menu-flat-destructive w-56"
-              >
-                <DropdownMenuItem onSelect={() => openRenameChat(item)}>
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Rename</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
-                  <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
-                </DropdownMenuItem>
-                {drag &&
-                  renderMoveRowItems(
-                    drag.scope,
-                    drag.orderedIds,
-                    item.id,
-                    drag.index,
-                  )}
-                {sandboxSessionId ? (
-                  isTauri ? (
-                    <DropdownMenuItem
-                      title="Open the folder this chat's tool calls read and write"
-                      onSelect={() => {
-                        void (async () => {
-                          try {
-                            // A chat moved between projects keeps the sandbox it
-                            // wrote to, so its own history names the folder, not
-                            // current membership. A failed read is reported
-                            // below rather than caught per pane, which would
-                            // read as "never ran a tool" and fall back to
-                            // membership, the answer the recorded id overrides.
-                            const ids =
-                              threadIds.length > 0 ? threadIds : [item.id];
-                            const distinct = await sandboxSessionIdsHolding(ids);
-                            if (distinct.length > 1) {
-                              toast.error("This chat wrote to more than one folder.", {
-                                description:
-                                  "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-                              });
-                              return;
-                            }
-                            await revealSandbox(distinct[0] ?? sandboxSessionId);
-                          } catch (error) {
-                            toast.error("Could not open the chat folder.", {
+              )}
+            >
+              <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Rename</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
+                <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
+              </DropdownMenuItem>
+              {drag &&
+                renderMoveRowItems(
+                  drag.scope,
+                  drag.orderedIds,
+                  item.id,
+                  drag.index,
+                )}
+              {sandboxSessionId ? (
+                isTauri ? (
+                  <DropdownMenuItem
+                    title="Open the folder this chat's tool calls read and write"
+                    onSelect={() => {
+                      void (async () => {
+                        try {
+                          // A chat moved between projects keeps the sandbox it
+                          // wrote to, so its own history names the folder, not
+                          // current membership. A failed read is reported
+                          // below rather than caught per pane, which would
+                          // read as "never ran a tool" and fall back to
+                          // membership, the answer the recorded id overrides.
+                          const ids =
+                            threadIds.length > 0 ? threadIds : [item.id];
+                          const distinct = await sandboxSessionIdsHolding(ids);
+                          if (distinct.length > 1) {
+                            toast.error("This chat wrote to more than one folder.", {
                               description:
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
+                                "It ran tools on both sides of a move, so open the folder from a tool card instead.",
                             });
+                            return;
                           }
-                        })();
-                      }}
-                    >
-                      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                      <span>Open chat folder</span>
-                    </DropdownMenuItem>
-                  ) : (
-                    <OpenChatFolderUnavailableItem />
-                  )
-                ) : null}
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>Move to project</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent
-                    sideOffset={0}
-                    alignOffset={-4}
-                    className="unsloth-plus-menu w-52"
+                          await revealSandbox(distinct[0] ?? sandboxSessionId);
+                        } catch (error) {
+                          toast.error("Could not open the chat folder.", {
+                            description:
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                          });
+                        }
+                      })();
+                    }}
                   >
+                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>Open chat folder</span>
+                  </DropdownMenuItem>
+                ) : (
+                  <OpenChatFolderUnavailableItem />
+                )
+              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>Move to project</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  sideOffset={0}
+                  alignOffset={-4}
+                  className="unsloth-plus-menu w-52"
+                >
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setProjectCreateMoveTarget(item);
+                      setCreatingProject(true);
+                    }}
+                  >
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>New project</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!item.projectId}
+                    onSelect={() => void moveChatToProject(item, null)}
+                  >
+                    <span>Recents</span>
+                  </DropdownMenuItem>
+                  {projects.map((project) => (
                     <DropdownMenuItem
-                      onSelect={() => {
-                        setProjectCreateMoveTarget(item);
-                        setCreatingProject(true);
+                      key={project.id}
+                      disabled={item.projectId === project.id}
+                      onSelect={() => void moveChatToProject(item, project.id)}
+                    >
+                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span className="truncate">{project.name}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Export</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                  {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                    <DropdownMenuItem
+                      key={label}
+                      onSelect={async () => {
+                        try {
+                          const ids = item.type === "single"
+                            ? [item.id]
+                            : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+                          for (const id of ids) {
+                            await exportConversationByFormat(id, format);
+                          }
+                        } catch (error) {
+                          if (!isDownloadCancelled(error)) {
+                            toast.error("Export failed.");
+                          }
+                        }
                       }}
                     >
-                      <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-                      <span>New project</span>
+                      {label}
                     </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  {/* Bulk export and import live in Settings -> Data. */}
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      useSettingsDialogStore.getState().openDialog("data")
+                    }
+                  >
+                    Export all chats…
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Save to project sources</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                  {projects.length === 0 && (
+                    <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
+                  )}
+                  {projects.map((project) => (
                     <DropdownMenuItem
-                      disabled={!item.projectId}
-                      onSelect={() => void moveChatToProject(item, null)}
+                      key={project.id}
+                      onSelect={async () => {
+                        try {
+                          await saveChatToProjectSources(item, project.id);
+                        } catch {
+                          toast.error("Failed to save to project sources.");
+                        }
+                      }}
                     >
-                      <span>Recents</span>
+                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span className="truncate">{project.name}</span>
                     </DropdownMenuItem>
-                    {projects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        disabled={item.projectId === project.id}
-                        onSelect={() => void moveChatToProject(item, project.id)}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Export</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                    {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                      <DropdownMenuItem
-                        key={label}
-                        onSelect={async () => {
-                          try {
-                            const ids = item.type === "single"
-                              ? [item.id]
-                              : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                            for (const id of ids) {
-                              await exportConversationByFormat(id, format);
-                            }
-                          } catch (error) {
-                            if (!isDownloadCancelled(error)) {
-                              toast.error("Export failed.");
-                            }
-                          }
-                        }}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {/* Bulk export and import live in Settings -> Data. */}
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        useSettingsDialogStore.getState().openDialog("data")
-                      }
-                    >
-                      Export all chats…
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Save to project sources</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                    {projects.length === 0 && (
-                      <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
-                    )}
-                    {projects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        onSelect={async () => {
-                          try {
-                            await saveChatToProjectSources(item, project.id);
-                          } catch {
-                            toast.error("Failed to save to project sources.");
-                          }
-                        }}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
-                  <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Archive</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() =>
-                    confirmDeleteChats
-                      ? openDeleteDialog({ kind: "chat", item })
-                      : void deleteChatWithCleanup(item, {
-                          deleteFiles: alwaysDeleteChatFiles,
-                        })
-                  }
-                >
-                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Delete</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Archive</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() =>
+                  confirmDeleteChats
+                    ? openDeleteDialog({ kind: "chat", item })
+                    : void deleteChatWithCleanup(item, {
+                        deleteFiles: alwaysDeleteChatFiles,
+                      })
+                }
+              >
+                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                <span>Delete</span>
+              </DropdownMenuItem>
+            </NonModalDropdownMenu>
           </SidebarMenuItem>
         </ContextMenuTrigger>
         {renderChatContextMenu()}
@@ -3965,9 +4026,14 @@ export function AppSidebar() {
                                 </span>
                               </button>
                               {/* Project options */}
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
+                              <NonModalDropdownMenu
+                                side="bottom"
+                                align="start"
+                                sideOffset={0}
+                                className="unsloth-plus-menu menu-flat-destructive w-56"
+                                trigger={(triggerRef) => (
                                   <button
+                                    ref={triggerRef}
                                     type="button"
                                     onClick={(e) => e.stopPropagation()}
                                     aria-label="Project options"
@@ -3977,58 +4043,52 @@ export function AppSidebar() {
                                       <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                                     </span>
                                   </button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent
-                                  side="bottom"
-                                  align="start"
-                                  sideOffset={0}
-                                  className="unsloth-plus-menu menu-flat-destructive w-56"
+                                )}
+                              >
+                                <DropdownMenuItem onSelect={() => openProject(project.id)}>
+                                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Project home</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
+                                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>New chat</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    // Seed the shared draft so the dialog opens with the current name, not stale text.
+                                    setRenameDraft(project.name);
+                                    setRenamingTarget({
+                                      kind: "project",
+                                      project,
+                                      current: project.name,
+                                    });
+                                  }}
                                 >
-                                  <DropdownMenuItem onSelect={() => openProject(project.id)}>
-                                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Project home</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
-                                    <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>New chat</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem
-                                    onSelect={() => {
-                                      // Seed the shared draft so the dialog opens with the current name, not stale text.
-                                      setRenameDraft(project.name);
-                                      setRenamingTarget({
-                                        kind: "project",
-                                        project,
-                                        current: project.name,
-                                      });
-                                    }}
-                                  >
-                                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Rename project</span>
-                                  </DropdownMenuItem>
-                                  {renderMoveRowItems(
-                                    PROJECT_ORDER_SCOPE,
-                                    projectRowIds,
-                                    project.id,
-                                    projectIndex,
-                                  )}
-                                  <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
-                                    <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                                    <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
-                                  </DropdownMenuItem>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    variant="destructive"
-                                    onSelect={() => {
-                                      // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                      openDeleteDialog({ kind: "project", project });
-                                    }}
-                                  >
-                                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Delete project</span>
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
+                                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Rename project</span>
+                                </DropdownMenuItem>
+                                {renderMoveRowItems(
+                                  PROJECT_ORDER_SCOPE,
+                                  projectRowIds,
+                                  project.id,
+                                  projectIndex,
+                                )}
+                                <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
+                                  <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                                  <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() => {
+                                    // Start each delete with the file toggle off: Cancel closes programmatically and skips the
+                                    openDeleteDialog({ kind: "project", project });
+                                  }}
+                                >
+                                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                  <span>Delete project</span>
+                                </DropdownMenuItem>
+                              </NonModalDropdownMenu>
                             </SidebarMenuItem>
                           </ContextMenuTrigger>
                           {renderProjectContextMenu()}
@@ -4216,9 +4276,14 @@ export function AppSidebar() {
                             {run.dataset_name}
                           </span>
                         </SidebarMenuButton>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
+                        <NonModalDropdownMenu
+                          side="bottom"
+                          align="end"
+                          sideOffset={0}
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          trigger={(triggerRef) => (
                             <button
+                              ref={triggerRef}
                               type="button"
                               onClick={(e) => e.stopPropagation()}
                               aria-label={t("shell.aria.runOptions")}
@@ -4228,29 +4293,23 @@ export function AppSidebar() {
                                 <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            side="bottom"
-                            align="end"
-                            sideOffset={0}
-                            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          )}
+                        >
+                          <DropdownMenuItem onSelect={() => openRenameRun(run)}>
+                            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                            <span>{t("common.rename")}</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            variant="destructive"
+                            disabled={run.status === "running"}
+                            onSelect={() =>
+                              openDeleteDialog({ kind: "run", run })
+                            }
                           >
-                            <DropdownMenuItem onSelect={() => openRenameRun(run)}>
-                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>{t("common.rename")}</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              variant="destructive"
-                              disabled={run.status === "running"}
-                              onSelect={() =>
-                                openDeleteDialog({ kind: "run", run })
-                              }
-                            >
-                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>{t("common.delete")}</span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                            <span>{t("common.delete")}</span>
+                          </DropdownMenuItem>
+                        </NonModalDropdownMenu>
                       </SidebarMenuItem>
                     );
                   })}
@@ -4331,8 +4390,7 @@ export function AppSidebar() {
                   aria-hidden="true"
                   className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
                 >
-                  <HugeiconsIcon
-                    icon={ArrowRight02Icon}
+                  <ArrowRightIcon
                     className="size-[17px]"
                     strokeWidth={1.75}
                   />
@@ -4353,9 +4411,14 @@ export function AppSidebar() {
             }}
           />
           <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            <NonModalDropdownMenu
+              side="top"
+              align="center"
+              sideOffset={8}
+              className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
+              trigger={(triggerRef) => (
                 <SidebarMenuButton
+                  ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
                   className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] pl-2 pr-[45px] py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
@@ -4375,129 +4438,123 @@ export function AppSidebar() {
                     <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                 </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                align="center"
-                sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
-              >
-                <DropdownMenuGroup>
-                  <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog()}
-                  >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.settings")}</span>
-                    {settingsShortcutLabel && (
-                      <DropdownMenuShortcut>
-                        {settingsShortcutLabel}
-                      </DropdownMenuShortcut>
-                    )}
-                  </DropdownMenuItem>
-                  {/* Optional items follow the order and visibility set in
-                      Appearance settings; Settings above and the block after
-                      the separator are pinned. */}
-                  {sidebarMenu.map((item) => {
-                    if (!item.visible) return null;
-                    if (item.id === "api") {
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
-                        >
-                          <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                          <span>{t("shell.navigation.api")}</span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    if (item.id === "darkMode") {
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          ref={anchorRef as React.Ref<HTMLDivElement>}
-                          onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                        >
-                          {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                          <span>
-                            {isDark
-                              ? t("shell.navigation.lightMode")
-                              : t("shell.navigation.darkMode")}
-                          </span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    if (item.id === "guidedTour") {
-                      if (!getTourId(pathname)) return null;
-                      return (
-                        <DropdownMenuItem
-                          key={item.id}
-                          onSelect={() => {
-                            const tourId = getTourId(pathname);
-                            if (!tourId) return;
-                            window.dispatchEvent(
-                              new CustomEvent(TOUR_OPEN_EVENT, {
-                                detail: { id: tourId },
-                              }),
-                            );
-                          }}
-                        >
-                          <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>{t("shell.navigation.guidedTour")}</span>
-                        </DropdownMenuItem>
-                      );
-                    }
-                    // Remaining ids are settings tabs shown by their tab name.
-                    const settingsTabId = item.id;
-                    const tab = SETTINGS_TAB_MENU_ITEMS[settingsTabId];
+              )}
+            >
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog()}
+                >
+                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.settings")}</span>
+                  {settingsShortcutLabel && (
+                    <DropdownMenuShortcut>
+                      {settingsShortcutLabel}
+                    </DropdownMenuShortcut>
+                  )}
+                </DropdownMenuItem>
+                {/* Optional items follow the order and visibility set in
+                    Appearance settings; Settings above and the block after
+                    the separator are pinned. */}
+                {sidebarMenu.map((item) => {
+                  if (!item.visible) return null;
+                  if (item.id === "api") {
                     return (
                       <DropdownMenuItem
                         key={item.id}
-                        onSelect={() => useSettingsDialogStore.getState().openDialog(settingsTabId)}
+                        onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
-                        <span>{t(tab.labelKey)}</span>
+                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                        <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
-                  })}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+                  }
+                  if (item.id === "darkMode") {
+                    return (
+                      <DropdownMenuItem
+                        key={item.id}
+                        ref={anchorRef as React.Ref<HTMLDivElement>}
+                        onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
+                      >
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        <span>
+                          {isDark
+                            ? t("shell.navigation.lightMode")
+                            : t("shell.navigation.darkMode")}
+                        </span>
+                      </DropdownMenuItem>
+                    );
+                  }
+                  if (item.id === "guidedTour") {
+                    if (!getTourId(pathname)) return null;
+                    return (
+                      <DropdownMenuItem
+                        key={item.id}
+                        onSelect={() => {
+                          const tourId = getTourId(pathname);
+                          if (!tourId) return;
+                          window.dispatchEvent(
+                            new CustomEvent(TOUR_OPEN_EVENT, {
+                              detail: { id: tourId },
+                            }),
+                          );
+                        }}
+                      >
+                        <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                        <span>{t("shell.navigation.guidedTour")}</span>
+                      </DropdownMenuItem>
+                    );
+                  }
+                  // Remaining ids are settings tabs shown by their tab name.
+                  const settingsTabId = item.id;
+                  const tab = SETTINGS_TAB_MENU_ITEMS[settingsTabId];
+                  return (
+                    <DropdownMenuItem
+                      key={item.id}
+                      onSelect={() => useSettingsDialogStore.getState().openDialog(settingsTabId)}
+                    >
+                      <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
+                      <span>{t(tab.labelKey)}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+              <DropdownMenuItem
+                onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+              >
+                <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                <span>{t("common.help")}</span>
+              </DropdownMenuItem>
+              {!isTauri && (
                 <DropdownMenuItem
-                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                  onSelect={async () => {
+                    // Best-effort server revocation; ignore network errors so the local clear still runs.
+                    try {
+                      await logout();
+                    } catch {
+                      clearAuthTokens();
+                    }
+                    void navigate({ to: "/login" });
+                  }}
                 >
-                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("common.help")}</span>
+                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.logOut")}</span>
                 </DropdownMenuItem>
-                {!isTauri && (
-                  <DropdownMenuItem
-                    onSelect={async () => {
-                      // Best-effort server revocation; ignore network errors so the local clear still runs.
-                      try {
-                        await logout();
-                      } catch {
-                        clearAuthTokens();
-                      }
-                      void navigate({ to: "/login" });
-                    }}
-                  >
-                    <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.logOut")}</span>
-                  </DropdownMenuItem>
-                )}
-                {!isTauri && (
-                  <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                    <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("common.shutdown")}</span>
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              )}
+              {!isTauri && (
+                <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
+                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("common.shutdown")}</span>
+                </DropdownMenuItem>
+              )}
+            </NonModalDropdownMenu>
             {/* settings cog; sibling of the trigger (buttons cannot nest),
                 overlaid on the row's right edge, opens settings directly */}
             <button
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings02Icon}

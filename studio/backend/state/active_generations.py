@@ -23,8 +23,8 @@ import time
 import uuid
 from typing import Any, Optional
 
-# handle id -> entry. Keyed by handle, not thread_id: a tool continuation can register
-# before the previous leg unregisters, and one key would drop the other.
+# Keyed by handle, not thread_id: a tool continuation can register before the previous leg
+# unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
 
@@ -64,9 +64,8 @@ class ActiveGeneration:
 
     def __enter__(self) -> "ActiveGeneration":
         with _LOCK:
-            # A durable supervisor registers before model loading starts. The
-            # route later enters its normal tracker with that exact event/run;
-            # borrow the outer registration so lifecycle counts stay truthful.
+            # A durable supervisor registers before model loading starts and the route later enters its normal
+            # tracker with that same event and run, so borrow the outer registration.
             if self.run_id:
                 for entry in _ACTIVE.values():
                     if entry["run_id"] != self.run_id or entry["event"] is not self.cancel_event:
