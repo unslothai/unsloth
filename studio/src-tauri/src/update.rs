@@ -4,9 +4,8 @@ use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::{AppHandle, Emitter};
-
 
 #[derive(Default)]
 pub struct UpdateProcess {
@@ -326,7 +325,6 @@ fn stream_output(
     threads
 }
 
-
 fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
     for _ in 0..MAX_WAIT_ITERATIONS {
@@ -355,7 +353,6 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     let _ = stop_update(state);
     Err("Update timed out after 2 hours".to_string())
 }
-
 
 pub fn run_backend_update(
     app: AppHandle,
@@ -513,17 +510,87 @@ pub struct PrefetchState {
     /// cannot tell whether the run in progress is preparing the offer it is
     /// showing or an older one.
     running_version: Arc<Mutex<Option<String>>>,
+    /// Whether a `run_prefetch_update` task is still inside its body.
+    ///
+    /// Distinct from "the child is alive": `stop_prefetch` takes the child out of
+    /// the slot and kills it, but the task that spawned it is still joining its
+    /// reader threads and will clear `running_version` on its way out. A
+    /// replacement started in that window would have its own version erased by
+    /// the old task, and the old task's wait loop could pick up the new child
+    /// from the shared slot. So a cancel does not return until the runner has
+    /// settled, and nothing starts while it is active.
+    runner: Arc<(Mutex<bool>, Condvar)>,
 }
 
 pub fn new_prefetch_state() -> PrefetchState {
     PrefetchState {
         process: new_update_state(),
         running_version: Arc::new(Mutex::new(None)),
+        runner: Arc::new((Mutex::new(false), Condvar::new())),
+    }
+}
+
+/// Marks the runner active for as long as it lives, and wakes any canceller when
+/// it is dropped, whichever way `run_prefetch_update` returns.
+struct PrefetchRunnerGuard(Arc<(Mutex<bool>, Condvar)>);
+
+impl PrefetchRunnerGuard {
+    fn acquire(runner: &Arc<(Mutex<bool>, Condvar)>) -> Option<Self> {
+        let (active, _) = &**runner;
+        let mut active = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *active {
+            return None;
+        }
+        *active = true;
+        Some(PrefetchRunnerGuard(runner.clone()))
+    }
+}
+
+impl Drop for PrefetchRunnerGuard {
+    fn drop(&mut self) {
+        let (active, settled) = &*self.0;
+        if let Ok(mut active) = active.lock() {
+            *active = false;
+        }
+        settled.notify_all();
+    }
+}
+
+fn prefetch_runner_active(state: &PrefetchState) -> bool {
+    let (active, _) = &*state.runner;
+    active
+        .lock()
+        .map(|active| *active)
+        .unwrap_or_else(|poisoned| *poisoned.into_inner())
+}
+
+/// How long a cancel waits for a killed runner to finish joining its streams.
+const PREFETCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn wait_for_prefetch_runner(state: &PrefetchState) {
+    let (active, settled) = &*state.runner;
+    let deadline = std::time::Instant::now() + PREFETCH_SETTLE_TIMEOUT;
+    let mut active = match active.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    while *active {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            warn!("[prefetch] The cancelled runner did not settle in time");
+            return;
+        }
+        active = match settled.wait_timeout(active, deadline - now) {
+            Ok((guard, _)) => guard,
+            Err(poisoned) => poisoned.into_inner().0,
+        };
     }
 }
 
 pub fn is_prefetch_running(state: &PrefetchState) -> bool {
-    is_update_running(&state.process)
+    is_update_running(&state.process) || prefetch_runner_active(state)
 }
 
 pub fn running_prefetch_version(state: &PrefetchState) -> Option<String> {
@@ -535,7 +602,11 @@ pub fn running_prefetch_version(state: &PrefetchState) -> Option<String> {
 }
 
 pub fn stop_prefetch(state: &PrefetchState) -> Result<(), String> {
-    stop_update(&state.process)
+    let stopped = stop_update(&state.process);
+    // Whether or not the kill went cleanly, the runner that owns the child is what
+    // a caller about to start a replacement has to wait for.
+    wait_for_prefetch_runner(state);
+    stopped
 }
 
 /// What the child said about why it stopped, gathered while it was still running.
@@ -629,6 +700,11 @@ pub(crate) fn run_prefetch_update(
         None => return Err("Unsloth binary not found. Cannot prepare an update.".to_string()),
     };
 
+    // Held until this function returns, by every path: it is what `stop_prefetch`
+    // waits on, and what keeps a second runner out of the shared slot.
+    let Some(_runner) = PrefetchRunnerGuard::acquire(&state.runner) else {
+        return Err(PREFETCH_BUSY.to_string());
+    };
     info!("[prefetch] Preparing the next update via {:?}", bin);
     let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
     // Recorded BEFORE the spawn, and cleared on every way out, so there is no window
@@ -1086,6 +1162,46 @@ mod tests {
 
         stop_prefetch(&prefetch).unwrap();
         assert!(!is_prefetch_running(&prefetch));
+    }
+
+    /// A cancel used to return as soon as the child was dead, while the task that
+    /// spawned it was still joining its streams and about to clear
+    /// `running_version`. A replacement started in that window lost its own
+    /// version to the old task, and a later status read cancelled it again.
+    #[test]
+    fn a_cancel_does_not_return_until_the_runner_has_settled() {
+        let prefetch = new_prefetch_state();
+        let guard = PrefetchRunnerGuard::acquire(&prefetch.runner).unwrap();
+        // No child at all: what is running is the runner's tail, not the process.
+        assert!(is_prefetch_running(&prefetch));
+        assert!(PrefetchRunnerGuard::acquire(&prefetch.runner).is_none());
+
+        let released = Arc::new(Mutex::new(false));
+        let released_by_runner = released.clone();
+        let runner = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            *released_by_runner.lock().unwrap() = true;
+            drop(guard);
+        });
+
+        let started = std::time::Instant::now();
+        stop_prefetch(&prefetch).unwrap();
+        assert!(
+            *released.lock().unwrap(),
+            "cancel returned before the runner settled"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(250));
+        assert!(!is_prefetch_running(&prefetch));
+        assert!(PrefetchRunnerGuard::acquire(&prefetch.runner).is_some());
+        runner.join().unwrap();
+    }
+
+    #[test]
+    fn a_cancel_with_nothing_running_returns_at_once() {
+        let prefetch = new_prefetch_state();
+        let started = std::time::Instant::now();
+        stop_prefetch(&prefetch).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]

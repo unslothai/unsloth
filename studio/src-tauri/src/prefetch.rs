@@ -81,6 +81,61 @@ fn read_marker(home: &Path) -> Option<PrefetchMarker> {
     }
 }
 
+/// The uv cache directories that hold package bytes, and the files inside them
+/// that are bookkeeping rather than payload. Mirrors `_uv_cache_has_packages` in
+/// `unsloth_cli/commands/studio.py`, which mirrors `install.sh:_configure_uv_cache`:
+/// `wheels-*` is metadata only on uv 0.10, so counting any file at all would read
+/// a merely-resolved cache as warm.
+const UV_CACHE_BUCKETS: [&str; 5] = ["archive-", "builds-", "built-wheels-", "wheels-", "sdists-"];
+const UV_CACHE_BOOKKEEPING: [&str; 3] = ["CACHEDIR.TAG", ".git", ".gitignore"];
+const UV_CACHE_METADATA_SUFFIXES: [&str; 4] = [".lock", ".msgpack", ".http", ".rev"];
+
+fn dir_has_payload(dir: &Path, depth: usize) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if depth > 0 && dir_has_payload(&path, depth - 1) {
+                return true;
+            }
+            continue;
+        }
+        if UV_CACHE_BOOKKEEPING.contains(&name.as_str())
+            || UV_CACHE_METADATA_SUFFIXES
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Whether the cache a prefetch recorded still holds any package bytes.
+///
+/// `uv cache clean`, a moved `UV_CACHE_DIR` or a deleted Studio home leave the
+/// marker behind with nothing under it; reporting that marker ready would promise
+/// a fast restart the swap cannot keep.
+pub(crate) fn cache_has_packages(cache_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            entry.path().is_dir()
+                && UV_CACHE_BUCKETS
+                    .iter()
+                    .any(|bucket| name.starts_with(bucket))
+        })
+        .any(|entry| dir_has_payload(&entry.path(), 6))
+}
+
 pub fn status(home: &Path) -> PrefetchStatus {
     let Some(marker) = read_marker(home) else {
         return PrefetchStatus {
@@ -93,7 +148,15 @@ pub fn status(home: &Path) -> PrefetchStatus {
     let expired = marker
         .created_at
         .is_some_and(|created| now_ms().saturating_sub(created) > MAX_AGE_MS);
-    let state = if marker.schema != MARKER_SCHEMA || !known || expired {
+    // `noop` prepared nothing and needs no cache. A marker that recorded no cache
+    // directory at all is one this build did not write, and the schema check above
+    // has already decided about that.
+    let cache_cold = marker.state != "noop"
+        && marker
+            .cache_dir
+            .as_deref()
+            .is_some_and(|dir| !cache_has_packages(Path::new(dir)));
+    let state = if marker.schema != MARKER_SCHEMA || !known || expired || cache_cold {
         "stale"
     } else {
         marker.state.as_str()
@@ -178,9 +241,24 @@ mod tests {
         fs::remove_dir_all(home.parent().unwrap()).unwrap();
     }
 
+    /// A uv cache with one unpacked wheel in it, as a prefetch leaves it.
+    fn warm_cache(home: &Path) -> PathBuf {
+        let cache = home.join("cache").join("uv");
+        let unpacked = cache.join("archive-v0").join("abc123").join("unsloth");
+        fs::create_dir_all(&unpacked).unwrap();
+        fs::write(unpacked.join("__init__.py"), b"").unwrap();
+        fs::write(
+            cache.join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )
+        .unwrap();
+        cache
+    }
+
     #[test]
     fn a_ready_marker_is_reported_with_the_versions_it_recorded() {
         let home = temp_home("ready");
+        let cache = warm_cache(&home);
         write_prefetch(
             &home,
             serde_json::json!({
@@ -188,7 +266,7 @@ mod tests {
                 "state": "ready",
                 "backend_version": "2026.9.2",
                 "shell_version": "0.1.900-beta",
-                "cache_dir": "/home/u/.unsloth/studio/cache/uv",
+                "cache_dir": cache.to_string_lossy(),
                 "created_at": now_ms(),
             }),
             true,
@@ -200,17 +278,82 @@ mod tests {
         assert_eq!(status.shell_version.as_deref(), Some("0.1.900-beta"));
         assert_eq!(
             status.cache_dir.as_deref(),
-            Some("/home/u/.unsloth/studio/cache/uv")
+            Some(cache.to_string_lossy().as_ref())
         );
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    /// `uv cache clean`, a moved UV_CACHE_DIR or a deleted Studio home leave the
+    /// marker behind with nothing under it. Reporting it ready would present
+    /// Restart and then do at restart every download this feature moved off it.
+    #[test]
+    fn a_marker_whose_cache_no_longer_holds_packages_is_stale() {
+        for (name, prepare) in [
+            ("cache-gone", None),
+            ("cache-cleaned", Some("empty")),
+            ("cache-metadata-only", Some("metadata")),
+        ] {
+            let home = temp_home(name);
+            let cache = home.join("cache").join("uv");
+            match prepare {
+                None => {}
+                Some("empty") => fs::create_dir_all(&cache).unwrap(),
+                Some(_) => {
+                    // wheels-* holds only resolution metadata on uv 0.10, and the lock
+                    // and msgpack files under archive-v0 are bookkeeping, not bytes.
+                    let bucket = cache.join("archive-v0").join("abc123");
+                    fs::create_dir_all(&bucket).unwrap();
+                    fs::write(bucket.join(".lock"), b"").unwrap();
+                    fs::write(cache.join("archive-v0").join("index.msgpack"), b"").unwrap();
+                    fs::create_dir_all(cache.join("wheels-v5")).unwrap();
+                    fs::write(cache.join("CACHEDIR.TAG"), b"").unwrap();
+                }
+            }
+            write_prefetch(
+                &home,
+                serde_json::json!({
+                    "schema": 1,
+                    "state": "ready",
+                    "shell_version": "0.1.900-beta",
+                    "cache_dir": cache.to_string_lossy(),
+                    "created_at": now_ms(),
+                }),
+                true,
+            );
+            assert_eq!(status(&home).state, "stale", "{name}");
+            fs::remove_dir_all(home.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_noop_marker_needs_no_cache() {
+        let home = temp_home("noop");
+        write_prefetch(
+            &home,
+            serde_json::json!({
+                "schema": 1,
+                "state": "noop",
+                "cache_dir": home.join("nowhere").to_string_lossy(),
+                "created_at": now_ms(),
+            }),
+            true,
+        );
+        assert_eq!(status(&home).state, "noop");
         fs::remove_dir_all(home.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn a_partial_prefetch_is_still_usable_and_says_so() {
         let home = temp_home("partial");
+        let cache = warm_cache(&home);
         write_prefetch(
             &home,
-            serde_json::json!({"schema": 1, "state": "partial", "created_at": now_ms()}),
+            serde_json::json!({
+                "schema": 1,
+                "state": "partial",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+            }),
             true,
         );
         assert_eq!(status(&home).state, "partial");
