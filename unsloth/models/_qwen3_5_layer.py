@@ -12,7 +12,7 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Two compiled regions per Qwen3.5 decoder layer for training.
+"""Three compiled regions per Qwen3.5 decoder layer for training.
 
 Per layer the stock path runs ~6 separately compiled regions (input norm, mixer pieces,
 post-attention norm, an MLP that breaks into three graphs around the LoRA linears) plus
@@ -22,8 +22,8 @@ recompute and backward per micro-step. Here a layer is:
 
     pre  = compiled( input_layernorm -> mixer input projections [-> q/k norms, RoPE] )
     mixer core, eager and unchanged: fla chunk_gated_delta_rule + gated RMSNorm, or SDPA
-    post = compiled( out_proj [gate] -> residual add -> post_attention_layernorm
-                     -> LoRA MLP -> residual add )
+    mid  = compiled( out_proj [attention gate] -> residual add -> post_attention_layernorm )
+    mlp  = compiled( LoRA MLP -> residual add )
 
 Weights are inputs, so one graph per region kind serves every layer. Every op keeps its
 original dtype boundaries, so the numbers match the stock path. Training path only
@@ -40,16 +40,19 @@ from ._gated_delta_net import _fast_path_applicable as _gdn_applicable
 
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
-_COMPILE_OPTIONS = {
-    # Round every bf16 intermediate exactly where eager does (inductor otherwise keeps fused
-    # intermediates in fp32), so the fused regions reproduce the stock path's numbers.
-    "emulate_precision_casts": True,
+_BASE_OPTIONS = {
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
     "trace.enabled": False,
     "triton.cudagraphs": False,
 }
+# The stock path rounds to bf16 wherever an eager op or a graph boundary materialises a
+# tensor, and keeps fp32 inside its one compiled MLP graph. To reproduce its numbers, the
+# regions that replace eager ops (projections, norms, RoPE, residual adds) round like eager
+# (`emulate_precision_casts`), and the MLP region is compiled like the stock MLP graph.
+_EAGER_LIKE_OPTIONS = dict(_BASE_OPTIONS, emulate_precision_casts = True)
+_MLP_OPTIONS = dict(_BASE_OPTIONS)
 
 
 # ----------------------------------------------------------------------------- pieces
@@ -105,22 +108,17 @@ def _apply_rotary_pos_emb(q, k, cos, sin):
     return q_embed, k_embed
 
 
-def _mlp_tail(mixer_out, residual, norm_w, eps: float, Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float,
-              Wd, Ad, Bd, sd: float):
-    hidden = residual + mixer_out
-    x = _rmsnorm(hidden, norm_w, eps)
-    mlp = _linear(F.silu(_linear(x, Wg, Ag, Bg, sg)) * _linear(x, Wu, Au, Bu, su), Wd, Ad, Bd, sd)
-    return hidden + mlp
-
-
 # ----------------------------------------------------------------------------- regions
-@torch.compile(fullgraph = True, dynamic = True, options = _COMPILE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
 def _gdn_pre(hidden_states, norm_w, eps: float, attention_mask, w_qkv, w_z, w_b, w_a, conv_weight,
              A_log, dt_bias, key_dim: int, value_dim: int, head_k_dim: int, head_v_dim: int,
              conv_dim: int, conv_padding: int, n_rep: int):
-    hidden_states = _rmsnorm(hidden_states, norm_w, eps)
     if attention_mask is not None:
+        # apply_mask_to_padding_states, moved in front of the norm: RMSNorm(0) == 0 and the mask
+        # is 0/1, so the result is the stock `norm(x) * mask` bit for bit, without leaving the
+        # norm output's rounding to the fuser.
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
+    hidden_states = _rmsnorm(hidden_states, norm_w, eps)
     batch_size, seq_len, _ = hidden_states.shape
 
     mixed_qkv = F.linear(hidden_states, w_qkv).transpose(1, 2)
@@ -144,17 +142,23 @@ def _gdn_pre(hidden_states, norm_w, eps: float, attention_mask, w_qkv, w_z, w_b,
     return query, key, value, g, beta, z
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _COMPILE_OPTIONS)
-def _gdn_post(core_attn_out, residual, w_out, norm_w, eps: float, Wg, Ag, Bg, sg: float,
-              Wu, Au, Bu, su: float, Wd, Ad, Bd, sd: float):
+@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+def _gdn_mid(core_attn_out, residual, w_out, norm_w, eps: float):
     batch_size, seq_len, _ = residual.shape
     out = F.linear(core_attn_out.reshape(batch_size, seq_len, -1), w_out)
-    return _mlp_tail(out, residual, norm_w, eps, Wg, Ag, Bg, sg, Wu, Au, Bu, su, Wd, Ad, Bd, sd)
+    hidden = residual + out
+    return hidden, _rmsnorm(hidden, norm_w, eps)
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _COMPILE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = True, options = _MLP_OPTIONS)
+def _mlp_block(x, hidden, Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float, Wd, Ad, Bd, sd: float):
+    mlp = _linear(F.silu(_linear(x, Wg, Ag, Bg, sg)) * _linear(x, Wu, Au, Bu, su), Wd, Ad, Bd, sd)
+    return hidden + mlp
+
+
+@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
 def _attn_pre(hidden_states, norm_w, eps: float, Wq, Aq, Bq, sq: float, Wk, Ak, Bk, sk: float,
-              Wv, Av, Bv, sv: float, qn_w, kn_w, cos, sin, head_dim: int):
+              Wv, Av, Bv, sv: float, qn_w, kn_w, head_dim: int):
     x = _rmsnorm(hidden_states, norm_w, eps)
     input_shape = x.shape[:-1]
     hidden_shape = (*input_shape, -1, head_dim)
@@ -166,21 +170,27 @@ def _attn_pre(hidden_states, norm_w, eps: float, Wq, Aq, Bq, sq: float, Wk, Ak, 
     query_states = _rmsnorm(query_states.view(hidden_shape), qn_w, eps).transpose(1, 2)
     key_states = _rmsnorm(_linear(x, Wk, Ak, Bk, sk).view(hidden_shape), kn_w, eps).transpose(1, 2)
     value_states = _linear(x, Wv, Av, Bv, sv).view(hidden_shape).transpose(1, 2)
-
-    query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
-    if value_states.dtype != query_states.dtype:
-        value_states = value_states.to(query_states.dtype)
     return query_states, key_states, value_states, gate
 
 
-@torch.compile(fullgraph = True, dynamic = True, options = _COMPILE_OPTIONS)
-def _attn_post(attn_output, gate, residual, Wo, Ao, Bo, so: float, norm_w, eps: float,
-               Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float, Wd, Ad, Bd, sd: float):
+# The stock RoPE is its own compiled graph with inductor defaults (products kept in fp32 until
+# the final cast), so it is reproduced by the same: a separate region without emulated casts.
+@torch.compile(fullgraph = True, dynamic = True, options = _MLP_OPTIONS)
+def _attn_rope(query_states, key_states, value_states, cos, sin):
+    query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
+    if value_states.dtype != query_states.dtype:
+        value_states = value_states.to(query_states.dtype)
+    return query_states, key_states, value_states
+
+
+@torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
+def _attn_mid(attn_output, gate, residual, Wo, Ao, Bo, so: float, norm_w, eps: float):
     input_shape = residual.shape[:-1]
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
     attn_output = attn_output * torch.sigmoid(gate)
     out = _linear(attn_output, Wo, Ao, Bo, so)
-    return _mlp_tail(out, residual, norm_w, eps, Wg, Ag, Bg, sg, Wu, Au, Bu, su, Wd, Ad, Bd, sd)
+    hidden = residual + out
+    return hidden, _rmsnorm(hidden, norm_w, eps)
 
 
 # ----------------------------------------------------------------------------- module glue
@@ -302,10 +312,8 @@ def _fused_decoder_layer_forward(
             output_final_state = False, use_qk_l2norm_in_kernel = True,
         )
         core_attn_out = gdn.norm(core_attn_out.reshape(-1, gdn.head_v_dim), z.reshape(-1, gdn.head_v_dim))
-        return _gdn_post(
-            core_attn_out, residual, gdn.out_proj.weight, norm2.weight, norm2.eps,
-            pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3],
-        )
+        hidden, x = _gdn_mid(core_attn_out, residual, gdn.out_proj.weight, norm2.weight, norm2.eps)
+        return _mlp_block(x, hidden, pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3])
 
     attn = self.self_attn
     pq, pk, pv, po = _lora_params(attn.q_proj), _lora_params(attn.k_proj), _lora_params(attn.v_proj), _lora_params(attn.o_proj)
@@ -318,8 +326,9 @@ def _fused_decoder_layer_forward(
     query_states, key_states, value_states, gate = _attn_pre(
         hidden_states, norm1.weight, norm1.eps,
         pq[0], pq[1], pq[2], pq[3], pk[0], pk[1], pk[2], pk[3], pv[0], pv[1], pv[2], pv[3],
-        attn.q_norm.weight, attn.k_norm.weight, cos, sin, attn.head_dim,
+        attn.q_norm.weight, attn.k_norm.weight, attn.head_dim,
     )
+    query_states, key_states, value_states = _attn_rope(query_states, key_states, value_states, cos, sin)
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
     attention_interface = ALL_ATTENTION_FUNCTIONS[attn.config._attn_implementation]
     attn_output, _ = attention_interface(
@@ -329,10 +338,8 @@ def _fused_decoder_layer_forward(
         position_ids = position_ids,
         **kwargs,
     )
-    return _attn_post(
-        attn_output, gate, residual, po[0], po[1], po[2], po[3], norm2.weight, norm2.eps,
-        pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3],
-    )
+    hidden, x = _attn_mid(attn_output, gate, residual, po[0], po[1], po[2], po[3], norm2.weight, norm2.eps)
+    return _mlp_block(x, hidden, pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3])
 
 
 def patch_qwen3_5_decoder_layers(model):
