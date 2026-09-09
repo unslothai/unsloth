@@ -1593,6 +1593,43 @@ def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(mon
     assert inf._loaded_satisfies("org/repo:latest") is True
 
 
+def test_an_uncached_root_build_of_the_resident_repo_is_not_satisfied_by_the_resident(monkeypatch):
+    """``org/repo:model-Q4_K_M-fp16`` with ``model-Q4_K_M-mtp`` resident and the fp16 build not
+    yet on disk: the local index had nothing to say, so the spelling read as a foreign tag and
+    the repo match alone declared it satisfied -- the switch exited before the listing that
+    would have fetched it, and the wrong weights answered. The resident is a GGUF build of this
+    repo, which is all the evidence a key-shaped spelling needs."""
+    import types
+
+    import routes.inference as inf
+    from core.inference import local_model_resolver
+
+    backend = types.SimpleNamespace(
+        is_loaded = True, model_identifier = "org/repo", _openai_advertised_id = "org/repo",
+        hf_variant = "model-Q4_K_M-mtp",
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf, "_llama_public_model_id", lambda b: "org/repo")
+
+    def never(*a, **kw):
+        raise AssertionError("the index is not what decides an uncached build")
+
+    monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", never)
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys",
+                        lambda base, **kw: ("model-Q4_K_M-mtp",))
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
+    assert inf._loaded_satisfies("org/repo:model-Q8_0-mtp") is False
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
+    assert inf._loaded_satisfies("org/repo:Q4_K_M") is True
+    # No inventory yet: the spellings are compared exactly, and a foreign tag still means the repo.
+    monkeypatch.setattr(local_model_resolver, "local_variant_keys", lambda base, **kw: ())
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-fp16") is False
+    assert inf._loaded_satisfies("org/repo:model-Q4_K_M-mtp") is True
+    assert inf._loaded_satisfies("org/repo:latest") is True
+    assert inf._loaded_satisfies("org/repo:8b") is True
+    assert inf._loaded_satisfies("org/repo") is True
+
+
 def test_a_non_gguf_resident_does_not_satisfy_a_request_for_a_tagged_gguf_build(monkeypatch):
     """With the transformers backend serving ``org/repo``, ``org/repo:model-Q4_K_M-mtp`` read as
     a foreign tag on the non-llama branch and the repo match alone declared it satisfied. The
