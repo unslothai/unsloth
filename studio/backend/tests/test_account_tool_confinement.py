@@ -622,3 +622,44 @@ def test_macos_profile_keeps_the_user_cache_dir_readable(tmp_path, monkeypatch):
     deny = profile.index('(deny file-read* file-write* (subpath "/private/var/folders")')
     assert deny < profile.index(f'(allow file-read* (subpath "{cache}"))')
     assert deny < profile.index(f'(allow file-read* (subpath "/private{cache}"))')
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_another_accounts_command_text_is_not_on_the_process_list(tmp_path):
+    """Landlock cannot deny /proc/<pid>/cmdline, so a confined command runs from a file."""
+    import threading
+
+    _seed(tmp_path)
+    marker = "ALICE_PROMPT_9f3a"
+    alice = {}
+
+    def run_alice():
+        alice["out"] = run_as(
+            ALICE, tools._bash_exec, f"echo begin; sleep 4; echo {marker}", session_id = "chat"
+        )
+
+    thread = threading.Thread(target = run_alice)
+    thread.start()
+    try:
+        snoop = (
+            "import os, time\n"
+            "hits = []\n"
+            "for _ in range(20):\n"
+            "    for pid in os.listdir('/proc'):\n"
+            "        if not pid.isdigit():\n"
+            "            continue\n"
+            "        try:\n"
+            "            text = open(os.path.join('/proc', pid, 'cmdline'), 'rb').read()\n"
+            "        except OSError:\n"
+            "            continue\n"
+            f"        if b'{marker}' in text and b'python' not in text:\n"
+            "            hits.append(text)\n"
+            "    time.sleep(0.1)\n"
+            "print('HITS', len(hits))\n"
+        )
+        out = run_as(BOB, tools._python_exec, snoop, session_id = "chat")
+    finally:
+        thread.join()
+    assert "HITS 0" in out, out
+    assert marker in alice["out"]
+    assert not list(Path(run_as(ALICE, tools._get_workdir, "chat")).glob(".studio_cmd_*"))

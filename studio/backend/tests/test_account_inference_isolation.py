@@ -684,3 +684,39 @@ def test_legacy_generate_stream_refuses_another_accounts_resident_model(monkeypa
         )
     assert response.status_code == 404, response.text
     assert "model_path" not in response.text
+
+
+@pytest.mark.parametrize("override,expected", [(None, 403), ("1", None)])
+def test_managed_load_cannot_enable_remote_code_unless_the_owner_opted_in(
+    monkeypatch, override, expected
+):
+    from utils.security import consent
+
+    monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising = False)
+    if override is not None:
+        monkeypatch.setenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, override)
+    assert run_as(BOB, consent.managed_remote_code_refused) is (expected is not None)
+    assert consent.managed_remote_code_refused() is False
+    monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: True)
+    monkeypatch.setattr(consent, "_config_has_auto_map", lambda *a, **k: True)
+    monkeypatch.setattr(
+        consent, "repo_remote_code_files", lambda *a, **k: {"modeling.py": "import torch\n"}
+    )
+    decision = run_as(
+        BOB,
+        consent.evaluate_remote_code_consent_for_targets,
+        ["org/public"],
+        trust_remote_code = True,
+    )
+    assert decision.blocked is (expected is not None)
+    assert decision.approvable is (expected is None)
+
+
+def test_the_chat_load_refuses_managed_remote_code_before_the_worker_starts():
+    """The inference worker is spawned unbound, so the route must apply the policy."""
+    import inspect
+
+    src = inspect.getsource(inference._load_model_impl)
+    check = src.index("managed_remote_code_refused()")
+    assert check < src.index("backend.load_model,")
+    assert "MANAGED_REMOTE_CODE_REFUSAL" in src[check : check + 200]

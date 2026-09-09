@@ -7348,6 +7348,19 @@ def _get_shell_cmd(command: str) -> list[str]:
     return ["bash", "-c", command]
 
 
+def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
+    """A confined account's command text never rides on argv: another account's
+    tool can read /proc/<pid>/cmdline and Landlock cannot deny per-pid reads."""
+    argv = _get_shell_cmd(command)
+    if confinement is None or sys.platform == "win32" or argv[1] != "-c":
+        return argv, None
+    fd, path = tempfile.mkstemp(suffix = ".sh", prefix = ".studio_cmd_", dir = workdir)
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write(command)
+    name = os.path.basename(path)
+    return [argv[0], name], name
+
+
 # Per-session working directories so each chat thread gets its own sandbox.
 # Falls back to ~/studio_sandbox/_default for callers without a session_id.
 _workdirs: dict[tuple[str, str], str] = {}
@@ -16313,6 +16326,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    _scratch_name = None
     try:
         workdir = _get_workdir(session_id)
         try:
@@ -16344,7 +16358,11 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        argv = _apply_confinement(confinement, popen_kwargs, _get_shell_cmd(command))
+        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.add(_scratch_name)
+        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
         proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
@@ -16371,12 +16389,16 @@ def _bash_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             return ended + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         result = output or ""
@@ -16392,7 +16414,7 @@ def _bash_exec(
         )
         # Only for a chat that has an id (see _python_exec).
         if session_id:
-            result += _created_file_sentinels(workdir, _before, None, call_token)
+            result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
         return result
 
     except Exception as e:
@@ -16402,3 +16424,10 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.discard(_scratch_name)
+            try:
+                os.unlink(os.path.join(workdir, _scratch_name))
+            except OSError:
+                pass

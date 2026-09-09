@@ -310,3 +310,16 @@ def test_a_failed_load_leaves_the_previous_resident_with_its_account(monkeypatch
     assert run_as(BOB, access.resident_hidden, "video", "a/model") is True
     assert run_as(BOB, access.resident_hidden, "video", "b/model") is False
     assert run_as(ALICE, access.resident_hidden, "video", "b/model") is True
+
+
+def test_every_generation_access_check_names_its_modality():
+    """Baked adapters are recorded per modality, so a check without one skips them."""
+    import re
+    from pathlib import Path
+
+    routes = Path(__file__).resolve().parents[1] / "routes"
+    pattern = re.compile(r"require_media_generation_access,\s*[^,\n]+,\s*\"(video|diffusion)\"")
+    for path in routes.glob("*.py"):
+        text = path.read_text(encoding = "utf-8")
+        calls = text.count("require_media_generation_access,")
+        assert len(pattern.findall(text)) == calls, path.name

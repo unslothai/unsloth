@@ -51,6 +51,7 @@ from utils.account_context import (
     current_account_id,
     run_as,
 )
+from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
 from loggers import get_logger
 from loggers.media_progress import (
     log_media_generation_progress,
@@ -15072,6 +15073,9 @@ async def _load_model_impl(
         speech_codec_kw = (
             {"audio_codec_path": speech_codec_path} if speech_codec_path is not None else {}
         )
+        # The inference worker is not bound to the account, so refuse here.
+        if request.trust_remote_code and managed_remote_code_refused():
+            raise HTTPException(status_code = 403, detail = MANAGED_REMOTE_CODE_REFUSAL)
         try:
             success = await asyncio.to_thread(
                 backend.load_model,

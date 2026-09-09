@@ -1536,7 +1536,7 @@ async def _create_openai_video(
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_media_generation_access, status)
+        await asyncio.to_thread(account_access.require_media_generation_access, status, "video")
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
