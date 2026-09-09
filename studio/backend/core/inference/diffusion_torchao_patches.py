@@ -92,9 +92,7 @@ def _make_safe_int_mm(mod, original):
         if (not input.is_contiguous()) and (
             input.shape[0] % 8 != 0
         ):  # gives cryptic error without this
-            input = (
-                input.contiguous()
-            )
+            input = input.contiguous()
         try:
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
         except Exception:
