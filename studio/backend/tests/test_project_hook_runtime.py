@@ -47,6 +47,7 @@ def reviewed_hooks(tmp_path, monkeypatch):
     }
     state = {"config": hooks.validate_project_hooks(json.dumps(document)), "workspace": workspace}
     monkeypatch.setattr(runtime.common, "project_workspace", lambda _id: state["workspace"])
+    monkeypatch.setattr(verification.common, "project_workspace", lambda _id: state["workspace"])
     monkeypatch.setattr(hooks, "discover_project_hooks", lambda *_args, **_kwargs: state["config"])
     trust_db.trust_project_hooks(
         project_id,
