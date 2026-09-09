@@ -15963,9 +15963,6 @@ def _drain_process_output(
     # after the leader is reaped (getpgid then fails). Callers pass it in from
     # right after Popen; fall back to capturing here for direct callers.
     if pgid is None:
-        _note_tool_execution(prepared.execution_record)
-        if execution_callback is not None:
-            execution_callback(prepared.execution_record.as_dict())
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
