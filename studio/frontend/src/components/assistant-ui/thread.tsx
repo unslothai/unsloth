@@ -41,7 +41,6 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
-import { EditFileToolUI } from "@/components/assistant-ui/tool-ui-edit-file";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
@@ -7238,7 +7237,6 @@ const KnowledgeBaseToolUIConfirmable =
   withToolConfirmation(KnowledgeBaseToolUI);
 const PythonToolUIConfirmable = withToolConfirmation(PythonToolUI);
 const TerminalToolUIConfirmable = withToolConfirmation(TerminalToolUI);
-const EditFileToolUIConfirmable = withToolConfirmation(EditFileToolUI);
 const CodeExecutionToolUIConfirmable =
   withToolConfirmation(CodeExecutionToolUI);
 const ImageGenerationToolUIConfirmable = withToolConfirmation(
@@ -7268,7 +7266,6 @@ const ASSISTANT_PART_COMPONENTS = {
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
-      edit_file: EditFileToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
