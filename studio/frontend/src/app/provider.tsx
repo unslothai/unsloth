@@ -550,6 +550,31 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+  const [appShellReady, setAppShellReady] = useState(false);
+  const canMountApp = status === "running" && desktopAuthReady;
+
+  // Subscribe while the backend splash is still up, before children can emit
+  // their layout-effect readiness signal. CredentialBootstrapGate remains in
+  // charge of releasing credential-dependent routes underneath this splash.
+  useEffect(() => {
+    if (!isTauri) return;
+    const onReady = () => setAppShellReady(true);
+    window.addEventListener("unsloth:app-shell-ready", onReady);
+    return () => window.removeEventListener("unsloth:app-shell-ready", onReady);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    if (!canMountApp) {
+      setAppShellReady(false);
+      return;
+    }
+    if (appShellReady) return;
+    // A failed route/chunk must not strand the user behind the splash. Reveal
+    // its error/recovery UI after a bounded wait; never bypass credential auth.
+    const timeout = window.setTimeout(() => setAppShellReady(true), 15_000);
+    return () => window.clearTimeout(timeout);
+  }, [canMountApp, appShellReady]);
 
   const [windowRevealRevision, setWindowRevealRevision] = useState(0);
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
@@ -717,40 +742,54 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showApp = status === "running" && desktopAuthReady;
+  const showApp = canMountApp && appShellReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
 
-  const shell = showApp ? (
-    <TauriUpdateLayer
-      isExternalServer={isExternalServer}
-      appContent={
-        <>
-          <NativeIntentDrain />
-          {children}
-        </>
-      }
-    >
-      <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
-      <DownloadManagerPanel positioned={false} />
-      <LoadedModelsIndicator positioned={false} />
-    </TauriUpdateLayer>
-  ) : (
-    <StartupScreen
-      status={startupStatus}
-      logs={logs}
-      error={error}
-      currentStepIndex={currentStepIndex}
-      progressDetail={startupProgressDetail}
-      startupMessage={startupMessage}
-      elevationPackages={elevationPackages}
-      onInstall={startInstall}
-      onRetry={retry}
-      onRetryInstall={retryInstall}
-      onApproveElevation={approveElevation}
-      onStartServer={retry}
-      onCopyDiagnostics={copyDiagnostics}
-    />
+  const shell = (
+    <>
+      {canMountApp && (
+        <div
+          className="h-full min-h-0"
+          style={{ visibility: showApp ? "visible" : "hidden" }}
+          inert={!showApp}
+          aria-hidden={!showApp}
+        >
+          <TauriUpdateLayer
+            isExternalServer={isExternalServer}
+            appContent={
+              <>
+                {showApp && <NativeIntentDrain />}
+                {children}
+              </>
+            }
+          >
+            <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+            <DownloadManagerPanel positioned={false} />
+            <LoadedModelsIndicator positioned={false} />
+          </TauriUpdateLayer>
+        </div>
+      )}
+      {!showApp && (
+        <div className="fixed inset-0 z-40 bg-background">
+          <StartupScreen
+            status={startupStatus}
+            logs={logs}
+            error={error}
+            currentStepIndex={currentStepIndex}
+            progressDetail={startupProgressDetail}
+            startupMessage={startupMessage}
+            elevationPackages={elevationPackages}
+            onInstall={startInstall}
+            onRetry={retry}
+            onRetryInstall={retryInstall}
+            onApproveElevation={approveElevation}
+            onStartServer={retry}
+            onCopyDiagnostics={copyDiagnostics}
+          />
+        </div>
+      )}
+    </>
   );
 
   // Over the shell, not instead of it: a declined quit must not remount the tree.
