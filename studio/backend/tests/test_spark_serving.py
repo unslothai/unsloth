@@ -2035,8 +2035,12 @@ def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
         tail: list = []
         started_at = 1.0
         alive = True
-        async def stop(self, timeout = None): pass
-        async def start(self): pass
+
+        async def stop(self, timeout = None):
+            pass
+
+        async def start(self):
+            pass
 
     real_sleep = asyncio.sleep
     monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
@@ -2081,10 +2085,13 @@ def test_ssh_run_kills_and_reaps_a_timed_out_child(monkeypatch):
 
     class _Proc:
         returncode = None
+
         async def communicate(self):
             await asyncio.sleep(10)
+
         def kill(self):
             killed.append(True)
+
         async def wait(self):
             waited.append(True)
 
@@ -2132,7 +2139,7 @@ def test_after_load_prices_the_aggregate_context_not_one_slot():
     # that puts a model on a node that cannot hold it.
     class _Backend:
         _kv_cache_context_total = 32768
-        _effective_context_length = 4096   # 8 slots x 4096
+        _effective_context_length = 4096  # 8 slots x 4096
         requested_n_ctx = 4096
 
     b = _Backend()
@@ -2479,9 +2486,7 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     assert probed == []
 
 
-def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(
-    cluster, monkeypatch, tmp_path
-):
+def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, monkeypatch, tmp_path):
     # Cancellation does not reach after_load's except Exception, so without cleanup here the
     # peer llama-server keeps its memory and its port with nothing left that knows about it.
     cluster.topology = "replicas"
@@ -2609,7 +2614,6 @@ def test_a_peer_gpu_holding_someone_elses_work_is_left_alone(cluster, monkeypatc
     assert not started, "nothing was launched on the busy peer"
     assert ss.state().topology == "single"
     assert "already in use" in ss.state().reason and "4242" in ss.state().reason
-
 
 
 def test_a_split_does_not_start_an_rpc_server_on_a_busy_peer_gpu(cluster, monkeypatch, tmp_path):
@@ -2806,9 +2810,7 @@ def test_a_sidecar_that_cannot_be_sized_does_not_cost_the_topology(cluster, monk
     assert "--rpc" in (out.llama_extra_args or [])
 
 
-def test_a_forced_split_does_not_apply_to_a_load_that_is_not_a_gguf(
-    cluster, monkeypatch, tmp_path
-):
+def test_a_forced_split_does_not_apply_to_a_load_that_is_not_a_gguf(cluster, monkeypatch, tmp_path):
     # before_load runs ahead of model classification. Forcing the topology anyway started an
     # rpc-server for a Transformers load, which then succeeded, after_load returned early
     # because no llama backend was loaded, and nothing ever detached the peer: the RPC port
@@ -2862,12 +2864,10 @@ def test_every_tool_loop_round_names_the_same_conversation():
     # Once rolling compaction rewrites the first user turn, successive rounds of one agent run
     # derive different fallback hashes and jump between replicas, discarding the prefix KV
     # that sticky routing exists to preserve.
-    source = (
-        Path(ss.__file__).resolve().parent / "llama_cpp.py"
-    ).read_text()
+    source = (Path(ss.__file__).resolve().parent / "llama_cpp.py").read_text()
     start = source.index("def generate_chat_completion_with_tools(")
     body = source[start:]
-    for marker in ('payload = {', 'stream_payload = {'):
+    for marker in ("payload = {", "stream_payload = {"):
         assert marker in body, marker
     # Each payload the tool loop sends is tagged.
     assert body.count("tag_conversation(payload, thread_id)") >= 1
@@ -2888,7 +2888,11 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     monkeypatch.setattr(ss, "local_llama_server_version", lambda binary = None: "6109 (aaaaaaa)")
     real_ssh_calls: list = []
 
-    def _remote(peer, remote, timeout = 20.0):
+    def _remote(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         real_ssh_calls.append(remote)
 
     _calls, started = _patch_remote(
@@ -2896,7 +2900,11 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     )
     outer = ss.ssh_run
 
-    async def versioned_ssh(peer, remote, timeout = 20.0):
+    async def versioned_ssh(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         if "--version" in remote:
             return 0, "version: 5000 (bbbbbbb)\nbuilt with gcc\n", ""
         return await outer(peer, remote, timeout = timeout)
@@ -2909,7 +2917,11 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     assert "6109 (aaaaaaa)" in ss.state().reason and "5000 (bbbbbbb)" in ss.state().reason
 
     # The same build is admitted.
-    async def matching_ssh(peer, remote, timeout = 20.0):
+    async def matching_ssh(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         if "--version" in remote:
             return 0, "version: 6109 (aaaaaaa)\n", ""
         return await outer(peer, remote, timeout = timeout)

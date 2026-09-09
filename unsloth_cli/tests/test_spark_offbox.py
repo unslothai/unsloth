@@ -1918,12 +1918,13 @@ def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[2] / "studio" / "spark_pipeline.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"))
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_main_data_parallel"
     )
-    body = ast.get_source_segment(src.read_text(encoding="utf-8"), fn) or ""
+    body = ast.get_source_segment(src.read_text(encoding = "utf-8"), fn) or ""
 
     guard = body.index("--microbatches must be at least 1")
     modulo = body.index("args.batch % args.microbatches")

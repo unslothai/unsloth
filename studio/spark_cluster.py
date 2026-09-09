@@ -3030,10 +3030,7 @@ def recommend_topology(
                 f"({single_need / gib:.1f} GiB) exceeds one node's {free / gib:.1f} GiB, and a "
                 f"replica is no smaller because each one holds a full copy and KV for every "
                 f"user. Only a layer split, which spreads the KV with the layers, has the "
-                f"room. Capacity, not speed: "
-                + pipeline_groups_note()
-                + " "
-                + split_mtp_note()
+                f"room. Capacity, not speed: " + pipeline_groups_note() + " " + split_mtp_note()
             ),
             split_mtp = split_mtp_wins(users),
             split_mtp_note = split_mtp_note(),

@@ -82,6 +82,7 @@ _HEAD_LIMIT = 64 * 1024
 _BODY_LIMIT = 256 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
 
+
 def _is_event_stream(headers: Any) -> bool:
     """Whether the upstream headers promised an SSE body.
 
@@ -866,9 +867,7 @@ class SparkRouter:
             dispatching = asyncio.ensure_future(self.dispatch(method, path, headers, body))
             gone = asyncio.ensure_future(disconnected.wait())
             try:
-                await asyncio.wait(
-                    {dispatching, gone}, return_when = asyncio.FIRST_COMPLETED
-                )
+                await asyncio.wait({dispatching, gone}, return_when = asyncio.FIRST_COMPLETED)
             finally:
                 gone.cancel()
                 try:

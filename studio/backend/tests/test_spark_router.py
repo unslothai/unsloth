@@ -441,9 +441,7 @@ def test_a_json_response_that_dies_mid_body_fails_the_transfer_instead_of_lookin
     # frame appended to one of those is not a message the client can read, and ending the
     # chunked body cleanly after it presents truncated JSON as a complete 200.
     async def scenario():
-        b = await FakeLlama(
-            "b", chunks = 6, die_after = 2, content_type = "application/json"
-        ).start()
+        b = await FakeLlama("b", chunks = 6, die_after = 2, content_type = "application/json").start()
         router = await _router(b)
         try:
             async with httpx.AsyncClient(timeout = 10) as client:
@@ -496,9 +494,7 @@ def test_an_oversized_chunked_body_gets_the_same_413_as_content_length(monkeypat
                     f"{router.base_url}/v1/chat/completions", content = _chunks()
                 )
                 assert chunked.status_code == 413
-                sized = await client.post(
-                    f"{router.base_url}/v1/chat/completions", content = payload
-                )
+                sized = await client.post(f"{router.base_url}/v1/chat/completions", content = payload)
                 assert sized.status_code == 413
                 assert a.generation_count == 0
         finally:
@@ -518,16 +514,12 @@ def test_a_client_that_leaves_while_queued_gives_its_slot_back():
         router = await _router(a, slots = 1)
         try:
             async with httpx.AsyncClient(timeout = 10) as holder:
-                first = asyncio.ensure_future(
-                    _chat(holder, router.base_url, {"prompt": "x"})
-                )
+                first = asyncio.ensure_future(_chat(holder, router.base_url, {"prompt": "x"}))
                 await _until(lambda: router.get_backend("a").in_flight == 1)
 
                 # Second caller queues behind it, then goes away before it is admitted.
                 leaver = httpx.AsyncClient(timeout = 10)
-                queued = asyncio.ensure_future(
-                    _chat(leaver, router.base_url, {"prompt": "y"})
-                )
+                queued = asyncio.ensure_future(_chat(leaver, router.base_url, {"prompt": "y"}))
                 await _until(lambda: router.get_backend("a").queued == 1)
                 queued.cancel()
                 try:

@@ -1530,11 +1530,7 @@ def reconcile_split_speculation(
     request = mtp.setdefault("request", {})
     if request.get("speculative_type") != "off":
         request["speculative_type"] = "off"
-        no_head = (
-            "which this GGUF has no head for and "
-            if verdict == "no head"
-            else ""
-        )
+        no_head = "which this GGUF has no head for and " if verdict == "no head" else ""
         mtp["reason"] = (
             f"{mtp.get('reason')}; speculation off for {PIPELINE_GROUPS_FLAG} "
             f"{groups['pipeline_groups']}, {no_head}which a "
@@ -1770,7 +1766,6 @@ def layer_split_extra_args(
 # any platform without glibc, which is also where there is no PDEATHSIG to set.
 try:
     import ctypes as _ctypes
-
     _LIBC = _ctypes.CDLL("libc.so.6", use_errno = True)
 except Exception:
     _LIBC = None
@@ -1965,9 +1960,7 @@ async def wait_for_port(host: str, port: int, timeout: float) -> bool:
 PEER_OWNERSHIP_SETTLE_S = 1.5
 
 
-async def wait_for_own_port(
-    process: "PeerProcess", host: str, port: int, timeout: float
-) -> bool:
+async def wait_for_own_port(process: "PeerProcess", host: str, port: int, timeout: float) -> bool:
     """Wait until ``process`` is answering on ``port``, not merely until something is.
 
     An occupied port answers on the first probe while the child that could not bind it exits,
@@ -2114,9 +2107,7 @@ class SparkServing:
                 # lets a model larger than one Spark be split on its FIRST load rather than
                 # after a single-node launch that cannot fit. Asked once: its answer also
                 # settles whether this request is a GGUF load at all.
-                remote_size = await asyncio.to_thread(
-                    remote_gguf_size_bytes, model_path, variant
-                )
+                remote_size = await asyncio.to_thread(remote_gguf_size_bytes, model_path, variant)
                 size = remote_size
             # max_seq_length 0 means "let the backend size it", so after_load re-plans with
             # the context actually allocated.
