@@ -11015,7 +11015,6 @@ def _gguf_resident_file_gb(
     _term_batch, _term_ubatch = (None, None)
     if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
         from core.inference.llama_cpp import _mmproj_batch_floor
-
         _term_batch, _term_ubatch = _mmproj_batch_floor(None, None)
     if local_arm:
         # Same identifier the required-GB arm classifies with, or the two halves of the

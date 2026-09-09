@@ -3256,8 +3256,7 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         weight, config = vision
         files_gb = ri._gguf_resident_file_gb(config)
         on_disk = (
-            Path(weight).stat().st_size
-            + Path(config.gguf_mmproj_file).stat().st_size
+            Path(weight).stat().st_size + Path(config.gguf_mmproj_file).stat().st_size
         ) / 1024**3
         # Whatever the projector's runtime allowance adds, it is nothing like the
         # ~1.8 GB an unpaired subtraction leaked here.

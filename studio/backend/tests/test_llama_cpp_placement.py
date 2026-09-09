@@ -267,10 +267,14 @@ def test_the_text_only_retry_gives_back_the_projector_batch_floor(requested, exp
     precisely the recovery meant to rescue a load that ran out of memory."""
     vision_cmd = [
         "/fake/llama-server",
-        "-m", "model.gguf",
-        "--batch-size", "2048",
-        "--mmproj", "mmproj-F16.gguf",
-        "--ubatch-size", "2048",
+        "-m",
+        "model.gguf",
+        "--batch-size",
+        "2048",
+        "--mmproj",
+        "mmproj-F16.gguf",
+        "--ubatch-size",
+        "2048",
         "--jinja",
     ]
 
