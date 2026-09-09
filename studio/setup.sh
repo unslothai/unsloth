@@ -2159,10 +2159,24 @@ _sidecar_current() {
         _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
         return $?
     fi
+    # Bounded where a timeout exists: the shim's own scan budget starts after it has
+    # globbed and read every RECORD and cannot interrupt a stalled read, so a Studio
+    # home on a wedged mount would otherwise hold setup here forever. A timeout reads
+    # as stale, and the rebuild that follows is the installer's own fallback.
     # shellcheck disable=SC2086 - the pins are a deliberate word-split list
-    _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
-        "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
-    unset _sc_python
+    if command -v timeout >/dev/null 2>&1; then
+        _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    else
+        _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    fi
+    if [ "$_sc_rc" -eq 124 ]; then
+        _sc_out="sidecar: audit did not answer within 60 seconds"
+    fi
+    unset _sc_python _sc_rc
     # The marker, not the exit code alone. An install_manifest.py predating the shim has
     # no __main__ block at all, so running it exits 0 with no output -- and reading that
     # silence as "current" would retire the sidecar rebuild entirely.

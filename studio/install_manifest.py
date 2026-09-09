@@ -1390,12 +1390,9 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
-        # An optional package's leftovers are not damage: an interrupted tiktoken install
-        # leaves a dist-info whose RECORD names files that never landed, and setup's
-        # top-up is what repairs it. Mirrors _sidecar_package_is_optional in
-        # studio/backend/utils/transformers_version.py.
-        if name.strip().lower().replace("_", "-") in OPTIONAL_SIDECAR_PACKAGES:
-            continue
+        # An optional package (tiktoken) may be absent; present, its RECORD is held to
+        # the same standard as every other, as the runtime scan does. Mirrors
+        # _sidecar_scan_impl in studio/backend/utils/transformers_version.py.
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except OSError:
