@@ -1813,6 +1813,10 @@ def test_the_probe_body_carries_no_double_quote(script: str):
 # Every case here is a way a real child can answer badly: it printed the marker and then died,
 # it ran in a language mode its parent did not, it printed something that merely CONTAINS the
 # marker, or it never returned at all.
+# A #!/bin/sh host, so POSIX only: Windows CreateProcess rejects a file with no
+# executable format, every case would come back false through the catch, and the
+# accept case would fail while the deadline case passed without waiting.
+@pytest.mark.skipif(os.name == "nt", reason = "the fake host is a shell script")
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
 @pytest.mark.parametrize(
@@ -1890,6 +1894,13 @@ def test_only_a_probe_that_never_answered_is_retried(script: str, outcome: str, 
                 "$script:StudioCanDefineNativeTypes = $null",
                 "$script:StudioEmitProbeOutcome = $null",
                 "$script:ProbeCalls = 0",
+                # An active policy, so the gate reaches the probe on any host. Without
+                # this the real query answers 0 on a Windows runner and the gate returns
+                # before the stub below is ever called.
+                "function Get-CimInstance {",
+                "    param([string]$Namespace, [string]$ClassName, [string]$ErrorAction)",
+                "    [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 1 }",
+                "}",
                 # A stub, because the gate calls the real probe through $PSHOME, which is
                 # read-only and cannot be pointed at a fake host. What is under test here is
                 # the gate's retry rule, not the child.
@@ -2034,6 +2045,10 @@ def test_the_console_helper_keeps_a_type_it_already_has(script: str):
     ], "a published console type was discarded because a child probe said no"
 
 
+# A #!/bin/sh host, so POSIX only: Windows CreateProcess rejects a file with no
+# executable format, every case would come back false through the catch, and the
+# accept case would fail while the deadline case passed without waiting.
+@pytest.mark.skipif(os.name == "nt", reason = "the fake host is a shell script")
 @requires_pwsh
 def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
     """The deadline. A probe that exists to keep the installer alive must not be the thing
