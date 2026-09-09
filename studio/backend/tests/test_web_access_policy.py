@@ -254,7 +254,7 @@ def test_direct_fetch_rejects_blocked_host_before_dns(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_validate_and_resolve_host",
-        lambda hostname, port: resolved.append((hostname, port)) or (True, "", "1.1.1.1"),
+        lambda hostname, port: resolved.append((hostname, port)) or (True, "", ["1.1.1.1"]),
     )
     result = tools._fetch_page_text(
         "https://example.com/article",
@@ -269,7 +269,7 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_validate_and_resolve_host",
-        lambda hostname, port: resolved.append((hostname, port)) or (True, "", "1.1.1.1"),
+        lambda hostname, port: resolved.append((hostname, port)) or (True, "", ["1.1.1.1"]),
     )
     headers = Message()
     headers["Location"] = "https://example.com/escaped"
