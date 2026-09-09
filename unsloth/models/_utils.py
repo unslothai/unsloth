@@ -3272,6 +3272,60 @@ def patch_fla_autotuner_fast_path():
     CachedAutotuner.run = run
 
 
+def _model_uses_no_rng_in_forward(model):
+    """True when nothing in the training forward consumes the RNG: no dropout with p > 0 and
+    no attention dropout in the config."""
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout) and m.p > 0:
+            return False
+        p = getattr(m, "p", None)
+        if type(m).__name__.endswith("Dropout") and isinstance(p, float) and p > 0:
+            return False
+    config = getattr(model, "config", None)
+    for attr in ("attention_dropout", "hidden_dropout", "dropout", "attn_pdrop", "resid_pdrop"):
+        v = getattr(config, attr, 0.0) or 0.0
+        if isinstance(v, (int, float)) and v > 0:
+            return False
+        text = getattr(config, "text_config", None)
+        v = getattr(text, attr, 0.0) or 0.0
+        if isinstance(v, (int, float)) and v > 0:
+            return False
+    return True
+
+
+def patch_checkpoint_rng_state(model):
+    """Gradient checkpointing saves and restores the CPU and CUDA RNG state around every
+    checkpointed layer (forward and recompute) so dropout replays identically. With no dropout
+    anywhere in the model that is ~170 us of Python per layer per micro-step for nothing.
+    Default `preserve_rng_state=False` for the checkpoint call when the forward consumes no RNG;
+    an explicit `preserve_rng_state` from the caller still wins. UNSLOTH_KEEP_CHECKPOINT_RNG=1
+    keeps the stock behaviour.
+    """
+    if os.environ.get("UNSLOTH_KEEP_CHECKPOINT_RNG", "0") == "1":
+        return False
+    try:
+        if not _model_uses_no_rng_in_forward(model):
+            return False
+    except Exception:
+        return False
+    import torch.utils.checkpoint as torch_checkpoint
+    import transformers.modeling_utils as hf_modeling_utils
+
+    for holder in (torch_checkpoint, hf_modeling_utils):
+        fn = getattr(holder, "checkpoint", None)
+        if fn is None or getattr(fn, "_unsloth_no_rng_default", False):
+            continue
+
+        @functools.wraps(fn)
+        def checkpoint(function, *args, _fn = fn, **kwargs):
+            kwargs.setdefault("preserve_rng_state", False)
+            return _fn(function, *args, **kwargs)
+
+        checkpoint._unsloth_no_rng_default = True
+        holder.checkpoint = checkpoint
+    return True
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
