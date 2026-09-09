@@ -432,6 +432,15 @@ class TestWhoStops:
         _register(controller, "alone", 15000)
         assert controller.plan_preemptions(needed = 4000) == []
 
+    def test_there_is_no_winner_in_the_snapshot(self):
+        controller = _controller(budget = 16384)
+        _register(controller, "a", 9000)
+        _register(controller, "b", 6000)
+        controller.plan_preemptions()
+        # The field and the state behind it are gone, not merely empty.
+        assert not hasattr(controller.snapshot(), "winner")
+        assert not hasattr(controller, "_epoch_winner")
+
     def test_an_unpreemptable_holder_counts_as_the_one_left_standing(self):
         c = _controller(budget = 8192, key = "raw-standing", slots = 4, batch_tokens = 2048)
         raw = c.register("raw", tokens = 4000, state = ParticipantState.STREAMING_RAW)

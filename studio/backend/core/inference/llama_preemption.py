@@ -591,7 +591,6 @@ class PreemptionSnapshot:
     decoding: int
     paused: int
     parked: int
-    winner: Optional[str]
     slots: int = 1
     tools_running: int = 0
     # The buffer carries a batch term exactly while this is non-zero, so a log line that reports
@@ -614,7 +613,6 @@ class PreemptionController:
         "_lock",
         "_participants",
         "_seq",
-        "_epoch_winner",
         "_budget",
         "_kv_unified",
         "_draft_tokens",
@@ -634,7 +632,6 @@ class PreemptionController:
         self._lock = threading.Lock()
         self._participants: Dict[str, Participant] = {}
         self._seq = 0
-        self._epoch_winner: Optional[str] = None
         self._drift_logged_at = 0.0
         self._budget = 0
         # Preemption reclaims only where an idle slot's cells can be purged, which upstream gates on
@@ -734,10 +731,9 @@ class PreemptionController:
             return participant
 
     def unregister(self, gen_id: str) -> None:
+        """Drop a finished generation."""
         with self._lock:
             self._participants.pop(gen_id, None)
-            if self._epoch_winner == gen_id:
-                self._epoch_winner = None
 
     def _solo_ceiling_locked(self) -> int:
         """The cache less what a lone chat still needs clear. Being alone removes the reaction
@@ -983,9 +979,6 @@ class PreemptionController:
                     # And the WHOLE prompt: a reclaim erased every cell, so no prefix is left to hit.
                     participant.announce_prefill(participant.tokens)
                 participant.cells_reclaimed = False
-            if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
-                # A winner that stopped decoding is not winning anything.
-                self._epoch_winner = None
             return True
 
     def parked_holders(self) -> Dict[str, int]:
@@ -1079,8 +1072,7 @@ class PreemptionController:
                 participant.tokens = max(participant.tokens, participant.base_tokens)
 
     def set_state(self, gen_id: str, state: str) -> None:
-        """Report a safe point. Ends the epoch when the winner stops decoding, so two chats
-        cannot trade places forever."""
+        """Report a safe point."""
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is None:
@@ -1096,8 +1088,6 @@ class PreemptionController:
             if state not in _HOLDS_KV:
                 # Nothing is submitted until it asks again, and asking is where it re-announces.
                 participant.prefill_done()
-            if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
-                self._epoch_winner = None
 
     def note_measured(self, gen_id: str) -> None:
         """A holder that never reports tokens has prefilled: its charge stops being a
@@ -1207,8 +1197,6 @@ class PreemptionController:
         ]
         for gen_id in dead:
             del self._participants[gen_id]
-            if self._epoch_winner == gen_id:
-                self._epoch_winner = None
 
     def _committed_locked(self) -> int:
         self._prune_locked()
@@ -1223,26 +1211,6 @@ class PreemptionController:
         measured = sum(p.tokens for p in holders if p.measured)
         pending = sum(p.tokens for p in holders if not p.measured)
         return max(self._resident, measured) + pending
-
-    def _winner_locked(self) -> Optional[Participant]:
-        """The one generation that keeps decoding, stable for an epoch. Promoted (starved) first,
-        then longest-wins, then arrival order so the choice is deterministic."""
-        held = self._participants.get(self._epoch_winner) if self._epoch_winner else None
-        if held is not None and held.state == ParticipantState.DECODING:
-            return held
-        # A parked or tools-running holder is no candidate: crowning it would pause everyone for nobody.
-        candidates = [
-            p for p in self._participants.values() if p.state == ParticipantState.DECODING
-        ]
-        if not candidates:
-            self._epoch_winner = None
-            return None
-        winner = min(candidates, key = lambda p: (not p.promoted, -p.tokens, p.seq))
-        self._epoch_winner = winner.gen_id
-        # Its starvation is cured the moment it is crowned. Resetting on resume defeats the
-        # rule, a resumed victim being preemptable again at once.
-        winner.consecutive_preemptions = 0
-        return winner
 
     def _contended_locked(self) -> bool:
         """Whether anybody else could want the room this backend is holding."""
@@ -1371,7 +1339,6 @@ class PreemptionController:
                 decoding = states.count(ParticipantState.DECODING),
                 paused = states.count(ParticipantState.PAUSED),
                 parked = states.count(ParticipantState.PARKED_ON_TOOL),
-                winner = self._epoch_winner,
                 slots = max(1, self._slots or 1),
                 tools_running = states.count(ParticipantState.TOOLS_RUNNING),
                 prefilling = self._pending_prefill_locked(),

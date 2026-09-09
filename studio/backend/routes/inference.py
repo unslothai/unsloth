@@ -2785,7 +2785,6 @@ def _openai_llama_preemption_arm(
         prefilling = snapshot.prefilling,
         decoding = snapshot.decoding,
         paused = snapshot.paused,
-        winner = snapshot.winner,
         preempted = ",".join(v.gen_id for v in victims) if victims else "none",
     )
     return ControllerPreemptionPolicy(controller, gen_id, signal, loop = loop)
