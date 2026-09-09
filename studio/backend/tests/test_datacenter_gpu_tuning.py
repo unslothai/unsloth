@@ -874,9 +874,7 @@ def test_masked_visible_devices_ignores_hidden_gpus_in_the_matrix(monkeypatch):
     """nvidia-smi ignores CUDA_VISIBLE_DEVICES, so the matrix covers cards the
     child never touches. With no explicit selection, a mask exposing a clean
     NVLinked pair must not be vetoed by a PCIe edge to a hidden device."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA A100-SXM4-80GB"] * 2))
     _use_topo(monkeypatch, TOPO_BRIDGED_4X)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     assert LlamaCppBackend._p2p_veto_reason(None) is None

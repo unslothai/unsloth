@@ -9335,9 +9335,7 @@ class LlamaCppBackend:
             # device, losing the speedup for no reason.
             visible = cls._resolve_visible_physical_ids()
             selected = (
-                [i for i in gpu_ids if i in set(visible)]
-                if visible is not None
-                else list(gpu_ids)
+                [i for i in gpu_ids if i in set(visible)] if visible is not None else list(gpu_ids)
             )
 
         if len(selected) < 2:
