@@ -36,7 +36,12 @@ class _FakeStorage:
         self.keys[raw] = row
         return raw, row
 
-    def validate_api_key_with_credential(self, raw_key, *, touch = True):
+    def validate_api_key_with_credential(
+        self,
+        raw_key,
+        *,
+        touch = True,
+    ):
         row = self.keys.get(raw_key)
         if row and row["is_active"]:
             return (self.DEFAULT_ADMIN_USERNAME, "secret")
