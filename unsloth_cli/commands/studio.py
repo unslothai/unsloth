@@ -939,15 +939,8 @@ def _cli_api_key_secret_path(name: str) -> Path:
 def _read_cli_api_key_secret(name: str) -> str:
     try:
         return _cli_api_key_secret_path(name).read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, ValueError):
         return ""
-
-
-def _revoke_api_keys_named(storage, name: str) -> None:
-    username = storage.DEFAULT_ADMIN_USERNAME
-    for row in storage.list_api_keys(username):
-        if row.get("name") == name and row.get("is_active"):
-            storage.revoke_api_key(username, row["id"])
 
 
 def _create_api_key_inprocess(name: str) -> str:
@@ -962,7 +955,6 @@ def _create_api_key_inprocess(name: str) -> str:
     if cached and storage.validate_api_key_with_credential(cached, touch = False):
         return cached
 
-    _revoke_api_keys_named(storage, name)
     raw_key, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,

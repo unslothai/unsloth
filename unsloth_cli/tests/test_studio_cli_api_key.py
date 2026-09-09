@@ -36,21 +36,11 @@ class _FakeStorage:
         self.keys[raw] = row
         return raw, row
 
-    def validate_api_key_with_credential(self, raw_key, touch = True):
+    def validate_api_key_with_credential(self, raw_key, *, touch = True):
         row = self.keys.get(raw_key)
         if row and row["is_active"]:
             return (self.DEFAULT_ADMIN_USERNAME, "secret")
         return None
-
-    def list_api_keys(self, username, include_internal = False):
-        return [dict(row) for row in self.keys.values()]
-
-    def revoke_api_key(self, username, key_id):
-        for row in self.keys.values():
-            if row["id"] == key_id:
-                row["is_active"] = 0
-                return True
-        return False
 
 
 @pytest.fixture
@@ -89,17 +79,18 @@ def test_revoked_cached_key_mints_once_and_drops_the_old_row(studio_home, monkey
     assert storage.keys[second]["is_active"] == 1
 
 
-def test_mint_revokes_leftover_same_name_keys(studio_home, monkeypatch):
-    studio_mod, _tmp_path = studio_home
+def test_corrupt_secret_file_mints_instead_of_aborting(studio_home, monkeypatch):
+    studio_mod, tmp_path = studio_home
     storage = _FakeStorage()
-    leftover, _row = storage.create_api_key("unsloth", "cli")
     monkeypatch.setattr(studio_mod, "_load_backend_auth_storage", lambda: storage)
+    path = tmp_path / "auth" / ".cli_api_key_cli"
+    path.parent.mkdir(parents = True)
+    path.write_bytes(b"\xff\xfe not utf-8")
 
     minted = studio_mod._create_api_key_inprocess("cli")
 
-    assert minted != leftover
-    assert storage.keys[leftover]["is_active"] == 0
-    assert storage.keys[minted]["is_active"] == 1
+    assert minted.startswith("sk-unsloth-")
+    assert storage.created == ["cli"]
 
 
 def test_different_names_keep_separate_keys(studio_home, monkeypatch):
