@@ -98,6 +98,8 @@ except ImportError:
 
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import os
+import subprocess
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +393,6 @@ _NO_PROCFS = "/unsloth-test-no-such-proc-root"
 def test_kill_orphaned_servers_returns_count():
     """The reaper reports how many owned orphans it killed, so __init__ can
     arm the settle wait. Only Unsloth-owned llama-server procs count."""
-    import os
-
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -441,8 +441,6 @@ def test_kill_orphaned_servers_spares_live_parent():
     """An Unsloth-owned llama-server whose parent is still running is not an
     orphan (a live Unsloth or the user's shell owns it) and must never be
     killed; only the true orphan (parent gone) is reaped."""
-    import os
-
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -541,8 +539,6 @@ def test_kill_process_clears_pidfile(tmp_path):
 def test_reap_recorded_pid_kills_recorded_server(tmp_path):
     """An orphaned recorded PID (parent gone) is killed and the pidfile cleared
     when it is still a llama-server."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -570,8 +566,6 @@ def test_reap_recorded_pid_kills_recorded_server(tmp_path):
 def test_record_then_reap_round_trip_identity_matches(tmp_path):
     """Full round trip: _record_server_pid writes pid:starttime, and an orphaned
     reap whose recorded identity still matches DOES kill it."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     try:
@@ -599,8 +593,6 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
     reaped, and its pidfile is kept. This is the finding-3 guard: a helper backend
     constructed in-process must not kill the active chat server. Uses the REAL
     _pid_parent_is_alive (the child's parent is this live test process)."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -622,8 +614,6 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
 def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
     """A recorded PID recycled to a non-llama-server must NOT be killed (only the
     stale pidfile is cleaned), so the user's vllm/games are never touched."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -645,8 +635,6 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
 def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
     """An orphaned PID whose recorded start-time identity no longer matches has been
     recycled; it must NOT be killed even if it now looks like a llama-server."""
-    import subprocess
-
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(f"{proc.pid}:0.0")  # stale identity that cannot match
@@ -728,8 +716,6 @@ def _write_fake_procfs(tmp_path, entries):
 def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
     """The Linux /proc sweep must select exactly what the psutil sweep selects:
     the Unsloth-owned orphan, never a foreign llama-server or another program."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -769,8 +755,6 @@ def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_kill_orphaned_servers_procfs_spares_live_parent(tmp_path):
     """Same live-parent rule as the psutil sweep: only the true orphan is reaped."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -809,8 +793,6 @@ def test_kill_orphaned_servers_procfs_handles_a_deleted_binary(tmp_path):
     """An orphan left behind by an upgrade has " (deleted)" appended to its exe
     link. psutil strips that marker, so the procfs sweep must too, or the
     orphan stops being recognised as ours."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -840,8 +822,6 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
     """psutil.Process.kill() refuses to signal a PID that has been reused. The
     procfs sweep must do the same, or an orphan that exits between the scan and
     the signal takes an unrelated replacement process with it."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -880,8 +860,6 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
 def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
     """Control for the test above: an unchanged starttime is still reaped, so
     the identity check is not simply refusing everything."""
-    import os
-
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()

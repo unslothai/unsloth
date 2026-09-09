@@ -325,17 +325,68 @@ def ollama_model_dirs() -> list[Path]:
     return _existing_dirs(candidates, resolve = False)
 
 
+def _hermes_native_home() -> Path:
+    """Hermes' platform-native home, ignoring HERMES_HOME."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _hermes_root() -> Path:
+    """The Hermes root a download hangs off, mirroring its own resolution.
+
+    HERMES_HOME under the native home (the normal and profile layouts) still
+    means the native home; a ``<root>/profiles/<name>`` path elsewhere means
+    ``<root>``; anything else IS the root (Docker / custom deployments).
+    """
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    native = _hermes_native_home()
+    if not env_home:
+        return native
+    env_path = Path(env_home)
+    try:
+        env_path.resolve().relative_to(native.resolve())
+        return native
+    except (OSError, ValueError):
+        pass
+    if env_path.parent.name == "profiles":
+        return env_path.parent.parent
+    return env_path
+
+
+def hermes_model_dirs() -> list[Path]:
+    """Return Hermes model directories that exist on disk.
+
+    Hermes Desktop's one-click GGUF downloads land in ``<root>/models``. That is
+    machine-scoped upstream, never profile-scoped -- a 20 GB GGUF is a machine
+    asset and every profile shares the one server that runs it -- so it hangs off
+    the root, not off HERMES_HOME when that names a profile.
+
+    The native root is scanned as well, because ``unsloth start hermes`` points
+    HERMES_HOME at a throwaway session dir while the user's real downloads stay
+    under the native home; scanning only the resolved root would lose them for the
+    duration of a session Studio launched itself.
+    """
+    return _existing_dirs(
+        [_hermes_root() / "models", _hermes_native_home() / "models"],
+        resolve = False,
+    )
+
+
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 
     Backs the folder browser's quick-pick chips. Returns only paths that
     exist on disk, so the UI never shows dead chips. Order reflects rough
-    likelihood of models being there -- LM Studio and Ollama first, then
-    generic fallbacks.
+    likelihood of models being there -- LM Studio, Ollama and Hermes first,
+    then generic fallbacks.
     """
     candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
     candidates.extend(ollama_model_dirs())
+    candidates.extend(hermes_model_dirs())
 
     # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")

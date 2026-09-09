@@ -84,15 +84,23 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // scans until it can decide, so bound B costs O(n*B) and no bound costs O(n^2).
 // 999 is CommonMark's limit, so the whole valid range is covered and only a
 // label outside the spec stays mis-lexed. Admitting `\n` is what makes
-// `hasGlobalLinkReference` expensive, since it reads the whole reply rather than
+// `documentProse` expensive, since it reads the whole reply rather than
 // a tail capped at STALLED_TAIL_CHARACTERS; unslothai/unsloth#10529.
 const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
+// Inside a block marked did not lex as code, the container markers and their indentation
+// have already been accounted for, so the label may sit behind any mix of them.
+// A block quote marker may be followed by nothing, but a list marker needs whitespace after
+// it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
+const LINK_DEFINITION_LINE_RE = new RegExp(
+  `^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*${LINK_DEFINITION_RE.source}`,
+  `m${LINK_DEFINITION_RE.flags}`,
+);
 // The same probe plus everything Marked stores after the label, since that is
 // what has to move the remount key: the destination after an optional line
-// break, then an optional title that may sit on the line below it. Derived from
-// LINK_DEFINITION_RE so the key can never see fewer definitions than the parity
-// does -- matching per line missed a label spanning lines and the key collapsed
-// to a constant. Breaks are plain `\n` because the callers normalise first.
+// break, then an optional title that may sit on the line below it. Deriving it from
+// LINK_DEFINITION_LINE_RE keeps the scope and key on the same definition grammar.
+// Matching per line missed multiline labels. Breaks are plain `\n` because
+// documentProse normalises first.
 //
 // A wrapped title is the documented residual: this stops at the title's opening
 // line, so the link keeps its old title until the message settles. Following it
@@ -100,41 +108,93 @@ const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // capturing to the end of the definition's paragraph, remounts the tree once a
 // frame on any prose that follows a definition.
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
-  `g${LINK_DEFINITION_RE.flags}`,
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
+  `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
+// The two block shapes whose body is literal code: an opening fence, and an indent that
+// reaches column four -- four spaces, or a tab, which advances to the same column.
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
+// A backtick opener may not carry a backtick in its info string, or it is not a fence at all
+// and the line is ordinary prose -- which is where a reference can still be waiting. Tilde
+// openers have no such rule, so their info string is left alone.
+const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
+
+function isCodeBlock(block: string): boolean {
+  if (!CODE_BLOCK_RE.test(block)) {
+    return false;
+  }
+  const backtick = BACKTICK_OPENER_RE.exec(block);
+  return backtick === null || !backtick[1].includes("`");
+}
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
+// Still the first line of a single block, for `updateLinkDefinitionParity` below.
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
-function hasGlobalLinkReference(markdown: string): boolean {
-  return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
+// One split per reply, shared by all three exported entry points. markdown-text.tsx asks for
+// the key and then hands `parseMarkdownIntoRenderableBlocks` to Streamdown, which calls it with
+// the same string, so a single slot is all the reuse this needs -- and it keeps the blocks path
+// paying for exactly the one split it already paid for before any of this existed.
+let splitMarkdown: string | null = null;
+let splitBlocks: readonly string[] = [];
+
+function blocksOf(markdown: string): readonly string[] {
+  if (splitMarkdown !== markdown) {
+    splitMarkdown = markdown;
+    splitBlocks = parseMarkdownIntoBlocks(markdown);
+  }
+  return splitBlocks;
 }
 
-// Normalising here rather than at each caller keeps the three of them agreeing:
-// one already normalises, two pass `processedText`, and a `\r` counts against
-// `{1,999}` where an `\n` does not, so a label of 999 characters was 1000 raw
-// and missed. `normalizeLineEndings` short-circuits when there is no `\r`.
+// Which replies have to be lexed in one piece.
+//
+// marked keeps link reference definitions in one document-wide map and emits no token for a
+// label it has already seen, so a `[label][ref]` and its `[ref]: url` must reach the lexer
+// together or the reference survives as literal text. The question is therefore whether a real
+// definition exists outside code -- and the earlier answer, a hand-rolled scan for fences,
+// containers and raw HTML, kept disagreeing with marked at the seams: nested fences, the seven
+// HTML block shapes, list continuation indentation, lone-CR line endings.
+//
+// marked has already resolved every one of those by the time it hands back blocks, so the split
+// is the answer rather than something to re-derive. A fenced or indented block is code; anything
+// else is prose, and a definition line anywhere in the prose counts.
+//
+// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
+// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
+// `document` when blocks would have done only costs that reply its per-code-block Copy and
+// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
+// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+function documentProse(markdown: string): string | null {
+  markdown = normalizeLineEndings(markdown);
+  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+    return null;
+  }
+  const prose = blocksOf(markdown)
+    .filter((block) => !isCodeBlock(block))
+    .join("\n");
+  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+    ? prose
+    : null;
+}
+
 export function markdownRenderScope(markdown: string): "blocks" | "document" {
-  return hasGlobalLinkReference(normalizeLineEndings(markdown))
-    ? "document"
-    : "blocks";
+  return documentProse(markdown) === null ? "blocks" : "document";
 }
 
 export function markdownRenderKey(markdown: string): string {
-  const normalized = normalizeLineEndings(markdown);
-  if (markdownRenderScope(normalized) === "blocks") {
+  const prose = documentProse(markdown);
+  if (prose === null) {
     return "blocks";
   }
-  return `document:${(normalized.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
+  return `document:${(prose.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
   return markdownRenderScope(markdown) === "document"
     ? [markdown]
-    : parseMarkdownIntoBlocks(markdown);
+    : [...blocksOf(markdown)];
 }
 
 // Where remend believes the emphasis scan sits with respect to math.
@@ -1367,7 +1427,6 @@ export class IncrementalMarkdownCache {
     // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
     // re-lexes on every frame. Normalise first so both sides speak LF.
     const markdown = normalizeLineEndings(rawMarkdown);
-    const globalLinkReference = markdownRenderScope(markdown) === "document";
 
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
@@ -1391,10 +1450,15 @@ export class IncrementalMarkdownCache {
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
+    // Computed here rather than at the top of the method on purpose: both early returns above
+    // -- the coalescer handing the same text to several renders, and a reply already in
+    // full-document mode -- answer without it, and the precise scope costs a lex of everything
+    // received so far. Reaching this point means the reply is still a retention candidate,
+    // which is the only case where the answer is used.
     if (
-      globalLinkReference ||
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
-      FOOTNOTE_DEFINITION_RE.test(repaired)
+      FOOTNOTE_DEFINITION_RE.test(repaired) ||
+      markdownRenderScope(markdown) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }

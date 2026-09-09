@@ -244,7 +244,7 @@ export function RetrievalSettingsSection() {
             </InfoHint>
           </span>
           <span className="text-ui-12 leading-[1.3] text-muted-foreground">
-            Read charts and diagrams when attaching.
+            Optional vision pass; can take several minutes.
           </span>
         </div>
         <Switch

@@ -583,8 +583,8 @@ class _FdStream(_Stream):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
@@ -611,8 +611,8 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     """A tunnel publishes a public URL: it must not quietly proceed unprompted."""
@@ -632,8 +632,8 @@ def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
     """The ordinary interactive case is untouched."""
@@ -681,8 +681,8 @@ class _PtyStdin:
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
     """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still bind its socket.
@@ -718,8 +718,8 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_pty_someone_types_into_is_not_treated_as_unattended(monkeypatch):
     """The deadline is on the FIRST keystroke only, and a real one clears it."""
