@@ -5899,10 +5899,25 @@ function Test-SidecarCurrent {
     }
     $pins = @("transformers==$Version") + $SidecarCommonPins
     $out = ""
+    # The shim answers "stale" with exit 1. Under PowerShell 7 with
+    # $PSNativeCommandUseErrorActionPreference set and ErrorActionPreference "Stop", that
+    # exit is a terminating error, the catch below discarded the answer, and the
+    # fallback grep then accepted a sidecar the shim had just rejected.
+    $previousNativeErrorPreference = $null
+    $restoreNativeErrorPreference = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreference = $true
+    }
     try {
         $out = (& python $shim sidecar $TargetDir @pins 2>$null | Out-String).Trim()
     } catch {
         $out = ""
+    } finally {
+        if ($restoreNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
     }
     # The marker, not the exit code alone. An install_manifest.py predating the shim has
     # no __main__ block at all, so running it exits 0 with no output -- and reading that
