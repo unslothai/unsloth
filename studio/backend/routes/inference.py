@@ -8039,7 +8039,6 @@ def _resident_variant_matches(base: str, requested_variant: str, loaded_variant:
         return True
     try:
         from core.inference.local_model_resolver import resolve_local_gguf
-
         hit = resolve_local_gguf(f"{base}:{requested_variant}", allow_scan = False)
     except Exception:
         return False

@@ -171,7 +171,6 @@ def _resolved_local_variant(target: str, variant: str) -> Optional[str]:
     """
     try:
         from core.inference.local_model_resolver import resolve_local_gguf
-
         hit = resolve_local_gguf(f"{target}:{variant}", allow_scan = False)
     except Exception:
         return None
@@ -196,9 +195,11 @@ def _ensure_selected_local_model_loaded(
     # actually publishes rather than comparing the two strings loosely: where a plain row owns
     # the bare quant BESIDE a tagged one, the two name different checkpoints and a loose match
     # would run the recipe against the wrong weights.
-    variant_matches = not gguf_variant or (active_variant or "").strip().lower() == (
-        _resolved_local_variant(target, gguf_variant) or gguf_variant
-    ).strip().lower()
+    variant_matches = (
+        not gguf_variant
+        or (active_variant or "").strip().lower()
+        == (_resolved_local_variant(target, gguf_variant) or gguf_variant).strip().lower()
+    )
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
