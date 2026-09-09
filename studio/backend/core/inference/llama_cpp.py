@@ -6228,6 +6228,15 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
+    # Held across "is a teardown running?" and publishing the child, never across a
+    # health wait. On the class: doubles built with __new__ never run __init__.
+    _spawn_lock = threading.Lock()
+
+    # Held across a whole teardown, so a lifecycle cannot reopen mid-kill. Separate
+    # from _spawn_lock so that long hold does not also block a spawn, which only
+    # needs to read the flag. Order is always _teardown_lock then _spawn_lock.
+    _teardown_lock = threading.Lock()
+
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
@@ -14493,29 +14502,49 @@ class LlamaCppBackend:
 
         # The shim (and its visual server) die with this backend process, so a
         # Unsloth crash/restart never orphans a GPU process.
-        self._process = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(env),
-            # Deliberately NOT start_new_session, as with the component
-            # installer: the desktop stops this backend by signalling its
-            # process group and force-kills it after five seconds, so a session
-            # of its own would leave the shim and the visual server holding the
-            # GPU until the next launch sweeps them.
-            **_windows_hidden_subprocess_kwargs(),
-            **_child_popen_kwargs(),
-        )
-        # macOS has no parent-death signal, so the kwargs above are empty there and
-        # only this record lets the next startup reap a runner holding the GPU.
-        try:
-            from utils.process_lifetime import adopt_pid
-            adopt_pid(self._process.pid)
-        except Exception as e:
-            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
+        # Own Popen, and no parent-death backstop on every platform, so a runner
+        # started after the shutdown sweep outlives it.
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("app is shutting down; not starting the diffusion runner")
+                self._close_attempt_log()
+                self._health_wait_cancelled = True
+                return False
+            _spawned = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = utf8_child_env(env),
+                # Deliberately NOT start_new_session, as with the component
+                # installer: the desktop stops this backend by signalling its
+                # process group and force-kills it after five seconds, so a session
+                # of its own would leave the shim and the visual server holding the
+                # GPU until the next launch sweeps them.
+                **_windows_hidden_subprocess_kwargs(),
+                **_child_popen_kwargs(),
+            )
+            self._process = _spawned
+            # macOS has no parent-death signal, so only this record reaps a runner
+            # holding the GPU. Under the lock: adopting after the sweep re-adds a
+            # pid it just forgot.
+            try:
+                from utils.process_lifetime import adopt_pid
+                adopt_pid(_spawned.pid)
+            except Exception as e:
+                logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
+        # Same post-adoption recheck as the llama-server spawns: this backend can be
+        # helper-owned, which run.py's singleton teardown never marks, so a latch set
+        # after the in-lock check would otherwise leave the shim and the visual server
+        # alive for the whole health wait below.
+        if self._spawn_is_stale():
+            logger.info("shutdown began during the spawn; killing the new diffusion runner")
+            self._kill_process()
+            self._close_attempt_log()
+            self._health_wait_cancelled = True
+            return False
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -14606,7 +14635,11 @@ class LlamaCppBackend:
 
         healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
-            self._healthy = True
+            if not self._publish_healthy():
+                # A teardown between the probe and this commit is already killing
+                # the runner; publishing would advertise a server that is gone.
+                self._kill_process()
+                return False
             self._gpu_offload_active = not holds_no_gpu
             if extra_args is not None:
                 self._extra_args = list(extra_args)
@@ -18637,12 +18670,16 @@ class LlamaCppBackend:
 
     def _start_llama_process(
         self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
-    ) -> None:
+    ) -> bool:
         """Spawn llama-server from cmd and start draining its output.
 
         Caller holds self._lock. Resets the stdout buffer, opens a fresh
         per-attempt tee log, launches the process, and starts the drain
         thread. Used for the initial start and the text-only mmproj retry.
+
+        Returns False without spawning once app teardown has begun. Reported rather
+        than silent so the caller can stop instead of health-waiting on the previous
+        child and then reading a reference the teardown is clearing.
         """
         # Defensive kill: if a concurrent load slipped past Phase 1
         # (because its `self._process` was None at the time) and already
@@ -18678,26 +18715,48 @@ class LlamaCppBackend:
         # with --mmproj stripped), redacting the API key.
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
-        self._process = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = env,
-            **_windows_hidden_subprocess_kwargs(),
-            **_child_popen_kwargs(),
-        )
-        # Cross-session backstop: record the PID so a later startup can reap this
-        # server if parent-death cleanup did not run (macOS / best-effort failure).
-        self._record_server_pid(self._process.pid)
+        # Check with publication under one lock: the mmproj text-only retry reaches
+        # a spawn without passing _spawn_and_wait's boundary.
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("app is shutting down; not starting llama-server")
+                self._close_attempt_log()
+                self._health_wait_cancelled = True
+                return False
+            _spawned = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+                **_child_popen_kwargs(),
+            )
+            self._process = _spawned
+            # Cross-session backstop for when parent-death cleanup did not run.
+            # Under the lock: see _spawn_and_wait.
+            self._record_server_pid(_spawned.pid)
+
+        # The stale check above and the process-wide latch are only atomic for the
+        # instance run.py tears down, which sets its own flag under this same lock. A
+        # helper load owns a backend nothing marks, so its check can pass microseconds
+        # before the latch is set and the child then outlives the sweep. Recheck once
+        # the pid is recorded and reap it, as the inference worker spawn does.
+        if self._spawn_is_stale():
+            logger.info("shutdown began during the spawn; killing the new llama-server")
+            self._kill_process()
+            self._close_attempt_log()
+            self._health_wait_cancelled = True
+            return False
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "llama-stdout"
         )
         self._stdout_thread.start()
+        return True
 
     @contextlib.contextmanager
     def _serial_load_scope(self):
@@ -18770,9 +18829,22 @@ class LlamaCppBackend:
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
+        # Before the serial scope: a queued load still belongs to the lifecycle it
+        # was requested in.
+        # The process-wide equivalent, for the same reason. Only _begin_server_lifecycle
+        # advances the per-instance one, and a helper load owns a backend that never
+        # gets it, so an embedded second session would otherwise release this load.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
+            # Here, not at the spawn: a lock gives a waiter no priority, and the
+            # duplicate-adoption phase below kills whatever is loaded -- after a
+            # restart, the new lifecycle's model.
+            with self._spawn_lock:
+                _stale_load = self._spawn_is_stale()
+            if _stale_load:
+                logger.info("dropping a load left over from the previous server lifecycle")
+                return False
             # In-app update swapping binaries: refuse fast (set under this lock,
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
@@ -24142,19 +24214,44 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
-                        self._process = subprocess.Popen(
-                            run_cmd,
-                            stdout = subprocess.PIPE,
-                            stderr = subprocess.STDOUT,
-                            text = True,
-                            encoding = "utf-8",
-                            errors = "replace",
-                            env = env,
-                            cwd = _spawn_cwd,
-                            **_windows_hidden_subprocess_kwargs(),
-                            **_child_popen_kwargs(),
-                        )
-                        self._record_server_pid(self._process.pid)
+                        # Check with publication under one lock: a spawn either
+                        # publishes first and the sweep kills it, or sees the flag
+                        # and never starts. Across Popen only, never the wait.
+                        with self._spawn_lock:
+                            if self._spawn_is_stale():
+                                logger.info("app is shutting down; not starting llama-server")
+                                self._close_attempt_log()
+                                self._health_wait_cancelled = True
+                                return False
+                            _spawned = subprocess.Popen(
+                                run_cmd,
+                                stdout = subprocess.PIPE,
+                                stderr = subprocess.STDOUT,
+                                text = True,
+                                encoding = "utf-8",
+                                errors = "replace",
+                                env = env,
+                                cwd = _spawn_cwd,
+                                **_windows_hidden_subprocess_kwargs(),
+                                **_child_popen_kwargs(),
+                            )
+                            self._process = _spawned
+                            # Inside the lock: written after a sweep reaped the child,
+                            # _pid_start_identity yields no start time, and the bare pid
+                            # left behind is one a later launch kills blind.
+                            self._record_server_pid(_spawned.pid)
+                        # mark_process_shutting_down does not take _spawn_lock, so the
+                        # check above is not atomic against it for a helper-owned
+                        # backend. Without this recheck a child spawned in that gap sits
+                        # outside the completed sweep for the whole 600s health wait.
+                        if self._spawn_is_stale():
+                            logger.info(
+                                "shutdown began during the spawn; killing the new llama-server"
+                            )
+                            self._kill_process()
+                            self._close_attempt_log()
+                            self._health_wait_cancelled = True
+                            return False
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
 
@@ -24466,7 +24563,8 @@ class LlamaCppBackend:
                             # and keep the staged runtime for the caller's next argv.
                             self._kill_process()
                             return False
-                        cpu_rc = self._process.poll() if self._process is not None else None
+                        _proc_snap1 = self._process  # snapshot: re-reading races the teardown
+                        cpu_rc = _proc_snap1.poll() if _proc_snap1 is not None else None
                         detail = self._classify_llama_start_failure(
                             "\n".join(self._stdout_lines[-50:]),
                             gguf_path,
@@ -24683,7 +24781,8 @@ class LlamaCppBackend:
                 # skipping the futile flash-attn/MTP retries.
                 if not healthy and self._tensor_parallel and not _load_cancelled():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
-                    _ts_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap2 = self._process  # snapshot: re-reading races the teardown
+                    _ts_rc = _proc_snap2.poll() if _proc_snap2 is not None else None
                     if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
                         LlamaCppBackend._record_tensor_split_abort(
                             binary, model_identifier, _planned_cache_pair
@@ -25071,7 +25170,8 @@ class LlamaCppBackend:
                 # both vision and MTP, so retry that way before dropping either.
                 # Only on a hard fault with FA on; a cancel/unload stops respawn.
                 if not healthy and not _load_cancelled():
-                    _fa_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap3 = self._process  # snapshot: re-reading races the teardown
+                    _fa_rc = _proc_snap3.poll() if _proc_snap3 is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
@@ -25144,7 +25244,8 @@ class LlamaCppBackend:
                 ):
                     # A first-decode hard fault is usually the FA kernel: retry
                     # FA-off (keeps MTP) before dropping speculative decoding below.
-                    _probe_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap4 = self._process  # snapshot: re-reading races the teardown
+                    _probe_rc = _proc_snap4.poll() if _proc_snap4 is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
@@ -25314,7 +25415,8 @@ class LlamaCppBackend:
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
-                    _crash_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap5 = self._process  # snapshot: re-reading races the teardown
+                    _crash_rc = _proc_snap5.poll() if _proc_snap5 is not None else None
                     self._kill_process()
                     # Only when the WAIT itself was cancelled. A cancel that lands later,
                     # while a crashed launch is staging its CPU fallback, must still run
@@ -25386,8 +25488,10 @@ class LlamaCppBackend:
                                 )
                             else:
                                 _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
+                                # Snapshot: re-reading races the teardown.
+                                _proc_snap6 = self._process
                                 _cpu_projector_rc = (
-                                    self._process.poll() if self._process is not None else None
+                                    _proc_snap6.poll() if _proc_snap6 is not None else None
                                 )
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
@@ -25457,11 +25561,15 @@ class LlamaCppBackend:
                             _last_spawn_cmd = list(cmd)
                             self._is_vision = False
                             self._mmproj_has_audio = False
-                            self._start_llama_process(
+                            if not self._start_llama_process(
                                 cmd,
                                 env,
                                 child_gpu_physical_ids = _child_gpu_physical_ids,
-                            )
+                            ):
+                                # Shutdown refused the retry; self._process still names
+                                # the old child the teardown is clearing.
+                                _cleanup_cancelled_load("App shut down during the text-only retry")
+                                return False
                             if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
@@ -25482,9 +25590,9 @@ class LlamaCppBackend:
                             else:
                                 # Read the exit code before _kill_process() clears it, so
                                 # an OS-killed text-only retry still gets the OOM message.
-                                _retry_rc = (
-                                    self._process.poll() if self._process is not None else None
-                                )
+                                # Snapshot: re-reading races the teardown.
+                                _retry_proc = self._process
+                                _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
                                     "Load cancelled during the text-only retry health wait"
@@ -25588,7 +25696,11 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
-                self._healthy = True
+                if not self._publish_healthy():
+                    # Teardown began between the 200 and this commit; publishing
+                    # would report a model that is gone.
+                    _cleanup_cancelled_load("App shut down as the load was completing")
+                    return False
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
@@ -26723,8 +26835,99 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
 
-    def _kill_process(self):
-        """Terminate the subprocess if running."""
+    def _publish_healthy(self) -> bool:
+        """Commit _healthy under the spawn lock, or refuse if this load is stale.
+
+        Under the lock the teardown mark is set with, so only two orders exist:
+        publish then teardown (which clears _healthy), or teardown then a refused
+        publish.
+        """
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("load no longer belongs to this lifecycle; not publishing it healthy")
+                return False
+            self._healthy = True
+            return True
+
+    def _close_attempt_log(self) -> None:
+        """Close the per-attempt tee log opened just before a spawn.
+
+        A refusal publishes no process and _kill_process returns early when there is
+        none, so nothing else closes it: the next attempt leaks the descriptor and,
+        on Windows, holds the file lock an update needs.
+        """
+        fh = getattr(self, "_llama_log_fh", None)
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            self._llama_log_fh = None
+
+    def _begin_server_lifecycle(self) -> None:
+        """Clear shutdown state so a restarted server can launch again.
+
+        The backend is a module singleton and an embedded host may call
+        run_server() more than once in one process, so "shutting down" is scoped
+        to a lifecycle rather than to the interpreter. Called from run_server
+        before anything can spawn.
+
+        """
+        # _teardown_lock first, so this waits for an in-progress kill rather than
+        # clearing the flag underneath it. Same order as _kill_process.
+        with self._teardown_lock:
+            with self._spawn_lock:
+                self._shutting_down = False
+                self._torn_down_process = None
+
+    def _spawn_is_stale(self) -> bool:
+        """Whether this load may no longer spawn. Caller holds _spawn_lock."""
+        if getattr(self, "_shutting_down", False):
+            return True
+        # Per-instance state only covers the singleton run.py tears down. A helper or
+        # advisor load builds its own backend (hub/utils/llm_assist.py,
+        # utils/datasets/llm_assist.py), which nothing marks, so without this it would
+        # still spawn a server after the sweep. Read second: the attribute is cheaper
+        # and answers for the instance that actually gets torn down.
+        from utils.process_lifetime import is_process_shutting_down
+
+        return is_process_shutting_down()
+
+    def _kill_process(self, *, teardown: bool = False):
+        """Terminate the subprocess if running.
+
+        ``teardown`` marks an app-level stop (shutdown, atexit) rather than the
+        retry ladder reaping a child it is about to replace: only the former may
+        end an in-flight health wait.
+
+        A teardown holds _teardown_lock for the WHOLE kill, because the terminate and
+        wait below keep reading self._process and finally clear it: a lifecycle
+        reopened mid-kill would have its new child dropped or terminated here, so
+        _begin_server_lifecycle takes the same lock and waits.
+
+        _spawn_lock is taken only long enough to set the flag, NOT across the kill.
+        A spawn arriving mid-teardown then reads the flag and refuses in microseconds
+        instead of queuing behind a SIGTERM/SIGKILL escalation that can run for
+        seconds; the load thread it belongs to is one shutdown is already waiting on.
+        Marked above the early return, since a quit during a download still has to be
+        recorded.
+        """
+        if teardown:
+            # Process-wide as well as per-instance: the atexit teardown reaches here
+            # without going through run.py, and the backends a helper load builds for
+            # itself are only ever covered by the shared latch.
+            from utils.process_lifetime import mark_process_shutting_down
+
+            mark_process_shutting_down()
+            with self._teardown_lock:
+                with self._spawn_lock:
+                    self._shutting_down = True
+                self._kill_process_body(teardown = True)
+            return
+        self._kill_process_body(teardown = False)
+
+    def _kill_process_body(self, *, teardown: bool):
+        """The kill itself. Caller holds _teardown_lock when ``teardown``."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
@@ -26750,6 +26953,11 @@ class LlamaCppBackend:
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
+        if teardown:
+            # Before the signal, and as the process itself: the reference stays set
+            # across the waits below, and only identity says which child a teardown
+            # landing between a spawn and its wait referred to.
+            self._torn_down_process = self._process
         try:
             if terminable:
                 self._process.terminate()
@@ -27278,7 +27486,7 @@ class LlamaCppBackend:
         return killed
 
     def _cleanup(self):
-        """atexit handler to ensure llama-server is terminated.
+        """atexit handler to ensure llama-server is terminated (a teardown).
 
         Nothing here may report a failure through the logging machinery. By the
         time atexit runs, the streams the handlers write to can already be closed,
@@ -27296,7 +27504,7 @@ class LlamaCppBackend:
         raise_exceptions = logging.raiseExceptions
         logging.raiseExceptions = False
         try:
-            self._kill_process()
+            self._kill_process(teardown = True)
             # TemporaryDirectory's exit hook runs first and cannot delete a staged
             # runtime whose server is alive (Windows locks the exe). Retry post-kill.
             self._cleanup_cpu_fallback_runtime()
@@ -28297,8 +28505,17 @@ class LlamaCppBackend:
         # Why this wait ended, for callers that must tell a cancel apart from a crash:
         # a cancel landing during CPU-fallback staging is not a cancelled wait.
         self._health_wait_cancelled = False
+        # No teardown reset here: it would erase one that landed between this load's
+        # spawn and this line. _torn_down_process is matched by identity instead.
+        process = None  # the child this wait last looked at, read again after the loop
 
         while time.monotonic() < deadline:
+            # Durable, unlike the per-process marker below: once teardown begins,
+            # every later iteration sees it.
+            if getattr(self, "_shutting_down", False):
+                logger.info("llama-server was torn down while waiting for it to become healthy")
+                self._health_wait_cancelled = True
+                return False
             # unload_model() blocks on self._lock, which the load holds across this wait.
             if cancelled is not None and cancelled():
                 logger.info("llama-server startup cancelled before it became healthy")
@@ -28317,6 +28534,12 @@ class LlamaCppBackend:
                 return False
             # Process crashed?
             if process.poll() is not None:
+                # A teardown holds the reference across its waits, so THIS child
+                # exiting under it is deliberate.
+                if getattr(self, "_torn_down_process", None) is process:
+                    logger.info("llama-server was torn down while waiting for it to become healthy")
+                    self._health_wait_cancelled = True
+                    return False
                 # Let the drain thread collect final output.
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
@@ -28346,6 +28569,11 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy after the load was cancelled")
                         self._health_wait_cancelled = True
                         return False
+                    # A 200 arriving as shutdown began must not publish _healthy.
+                    if getattr(self, "_shutting_down", False):
+                        logger.info("llama-server became healthy while the app was shutting down")
+                        self._health_wait_cancelled = True
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -28362,6 +28590,16 @@ class LlamaCppBackend:
 
         if cancelled is not None and cancelled():
             logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
+
+        # The deadline is the other way out of the loop, so it asks too -- and about
+        # both signals, since _kill_process sets _shutting_down on entry but
+        # _torn_down_process only after collecting descendants.
+        if getattr(self, "_shutting_down", False) or (
+            process is not None and getattr(self, "_torn_down_process", None) is process
+        ):
+            logger.info("llama-server was torn down while waiting for it to become healthy")
             self._health_wait_cancelled = True
             return False
 
