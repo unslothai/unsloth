@@ -2322,9 +2322,16 @@ class TestFitOffRetryClearsPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
+        # The managed half is no longer bare bool(_mem_managed): a DirectIO pair a
+        # later mmap shadows changes nothing the child can observe, so it does not
+        # count as activity either. The non-managed half is what the retry reuses,
+        # and that is what this pins.
         assert (
-            "self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras" in src
+            "self._memory_policy_active = (\n"
+            "                    _mem_managed_is_effective or _mem_policy_touched_extras\n"
+            "                )" in src
         )
+        assert "self._memory_policy_extras_touched = _mem_policy_touched_extras" in src
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1
         end = src.find("return False", branch)
@@ -2809,8 +2816,10 @@ class TestAnExplicitLoaderChoiceIsNotAStandingReload:
         arm = arm[: arm.index("self._fit_load_mode_flags = (")]
         compact = "".join(arm.split())
         assert "managed_dio_applies(" in compact
-        assert "resolve_effective_direct_io(" in compact
-        assert "[*MANAGED_DIO_FLAGS,*_load_mode_managed,*_mem_extras]" in compact
+        assert "and_mem_dio_survives_chain" in compact
+        survives = src[src.index("_mem_dio_survives_chain = resolve_effective_direct_io(") :]
+        survives = survives[: survives.index("self._memory_dio_applicable")]
+        assert "[*MANAGED_DIO_FLAGS,*_load_mode_managed,*_mem_extras]" in "".join(survives.split())
 
 
 class TestTheDioRecordSurvivesACopyStrip:
@@ -2936,3 +2945,82 @@ class TestWithdrawingTheDioClearsPolicyActivity:
         assert "if self._fit_load_mode_flags or _cpu_pageable_note:" not in src
         assert "if self._fit_load_mode_flags or _replay_pageable_note:" not in src
         assert "self._record_memory_state(_last_spawn_cmd, env)" in src
+
+
+def _llama_cpp_mod():
+    """The real module, for helpers the launch reads directly."""
+    import core.inference.llama_cpp as m
+
+    return m
+
+
+class TestTheProjectorCountsAsHostResidency:
+    """`_mem_host_resident` answers for the MAIN-MODEL weights only. A vision
+    launch can offload every layer and still append --no-mmproj-offload, and
+    under dio the projector is then an allocated buffer rather than a mapping.
+    The CPU-projector crash retry already withdraws the pair for that placement,
+    so the initial placement has to reach the same verdict."""
+
+    def test_the_confirmation_excludes_a_cpu_pinned_projector(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("_mem_projector_in_host_memory = bool(") :]
+        arm = arm[: arm.index("_mem_managed, _mem_extras = apply_model_memory_policy(")]
+        compact = "".join(arm.split())
+        assert "launch_mmproj_path" in compact
+        assert "_mmproj_cpu_pinned" in compact
+        assert "_resolved_mmproj_offload(_mem_extra_args,_mem_env)isFalse" in compact
+        assert "andnot_mem_projector_in_host_memory" in compact
+
+    def test_a_resolved_false_is_what_places_it_on_the_cpu(self):
+        """Same helper the launch reads, so the two cannot drift: argv over env,
+        and silence in both is not a CPU placement."""
+        assert _llama_cpp_mod()._resolved_mmproj_offload(["--no-mmproj-offload"], {}) is False
+        assert _llama_cpp_mod()._resolved_mmproj_offload(["--mmproj-offload"], {}) is True
+        assert _llama_cpp_mod()._resolved_mmproj_offload([], {}) is None
+
+
+class TestAShadowedPairIsNotPolicyActivity:
+    """A DirectIO pair a later mmap shadows leaves the child running the very
+    command it would run with the toggle off, so counting it as activity makes
+    turning no-reserve OFF demand a reload that only removes an inert flag."""
+
+    def test_the_launch_asks_whether_the_pair_survives(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_mem_managed_is_effective = bool(_mem_managed) and (" in src
+        assert "tuple(_mem_managed) != MANAGED_DIO_FLAGS or _mem_dio_survives_chain" in src
+
+    def test_the_survival_answer_is_computed_once_for_both_readers(self):
+        """The reload comparator and the activity record must not answer the same
+        question two different ways."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.count("_mem_dio_survives_chain = ") == 1
+        assert src.count("_mem_dio_survives_chain") == 3
+
+    def test_a_shadowed_pair_leaves_the_toggle_off_child_alone(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        shadowed = _lsa.resolve_effective_direct_io(
+            [*_lsa.MANAGED_DIO_FLAGS, "--load-mode", "mmap"], {}
+        )
+        assert shadowed is False
+        # policy_active False, because the pair never reached the loader.
+        assert memory_state_satisfies_settings((False, False), False, False)
+
+    def test_a_surviving_pair_still_counts(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        assert _lsa.resolve_effective_direct_io(list(_lsa.MANAGED_DIO_FLAGS), {}) is True
+        assert not memory_state_satisfies_settings((False, False), True, False)

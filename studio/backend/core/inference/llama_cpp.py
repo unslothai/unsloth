@@ -23388,8 +23388,22 @@ class LlamaCppBackend:
                 # a page-lock, so it errs True for an unprobed device and stays False for
                 # an -ngl a cpu-only prebuilt accepts and ignores, where dio would buffer
                 # the whole file instead of mapping it.
+                # The projector counts as well. _mem_host_resident answers for the
+                # MAIN-MODEL weights only, so a launch that fully offloads them can still
+                # append --no-mmproj-offload and put the projector in host RAM, where dio
+                # allocates it instead of mapping it. The CPU-projector crash retry
+                # already withdraws the pair for exactly this placement; deciding it up
+                # front is the same judgement one step earlier.
+                _mem_projector_in_host_memory = bool(
+                    launch_mmproj_path
+                    and (
+                        _mmproj_cpu_pinned
+                        or _resolved_mmproj_offload(_mem_extra_args, _mem_env) is False
+                    )
+                )
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
+                    and not _mem_projector_in_host_memory
                     and self._build_offers_gpu_backend(binary)
                     and (_detected_gpus or gpu_indices)
                 )
@@ -23461,14 +23475,18 @@ class LlamaCppBackend:
                 # the duplicate-load fast path tore down a healthy server every time.
                 # Read from the toggle-independent chain, so a LATER save is compared
                 # against this launch rather than reading as already satisfied.
+                # Does the managed pair actually reach the loader, or does something the
+                # rest of the chain appends win by last-arg. Both the reload comparator
+                # and the policy-activity record need this same answer.
+                _mem_dio_survives_chain = resolve_effective_direct_io(
+                    [*MANAGED_DIO_FLAGS, *_load_mode_managed, *_mem_extras],
+                    _fit_load_mode_env_view,
+                )
                 self._memory_dio_applicable = managed_dio_applies(
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                     env = _fit_load_mode_env_view,
-                ) and resolve_effective_direct_io(
-                    [*MANAGED_DIO_FLAGS, *_load_mode_managed, *_mem_extras],
-                    _fit_load_mode_env_view,
-                )
+                ) and _mem_dio_survives_chain
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -23618,7 +23636,19 @@ class LlamaCppBackend:
                 _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
                     extra_args or []
                 )
-                self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
+                # bool(_mem_managed) is not enough for the DirectIO pair: a per-model or
+                # extra-argument mmap follows it and wins by last-arg, so the child runs
+                # the very command it would run with the toggle off. Counting that as
+                # activity makes turning no-reserve OFF demand a reload whose only effect
+                # is removing an inert pair. The keep-resident block cannot be shadowed:
+                # it strips every load-mode flag from the extras, which marks the launch
+                # through _mem_policy_touched_extras anyway.
+                _mem_managed_is_effective = bool(_mem_managed) and (
+                    tuple(_mem_managed) != MANAGED_DIO_FLAGS or _mem_dio_survives_chain
+                )
+                self._memory_policy_active = (
+                    _mem_managed_is_effective or _mem_policy_touched_extras
+                )
                 self._memory_policy_extras_touched = _mem_policy_touched_extras
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
