@@ -86,6 +86,8 @@ def nvfp4_linear_class():
     import torch
     from torch import nn
 
+    from .diffusion_nvfp4_bias import fused_bias_add_
+
     class NVFP4FlashInferLinear(nn.Module):
         """A Linear whose weight is already NVFP4 and whose activation is quantized per call.
 
@@ -140,7 +142,10 @@ def nvfp4_linear_class():
             if self.bias is not None:
                 # mm_fp4 has no bias epilogue (no bias argument, no beta accumulate), so the add is
                 # a separate pass over the M x N output. In place, on the op's own fresh output.
-                out.add_(self.bias)
+                # On the eager path that pass is a Triton kernel, bit-identical to add_ and up to
+                # 3.8x faster; under torch.compile it falls straight back to add_ so inductor can
+                # keep fusing it into the next op. See diffusion_nvfp4_bias.py.
+                fused_bias_add_(out, self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 
         def extra_repr(self) -> str:  # pragma: no cover - debug aid

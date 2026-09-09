@@ -567,3 +567,165 @@ def test_the_barrier_pointer_is_stable_across_a_capture_and_replay():
         assert ops._BARRIERS[0].data_ptr() == before
     del graph
     ops.reset_barriers()
+
+
+# ── T-BIAS-1: the eager bias fast path and every way it declines ──────────────────────────────
+
+# The seven shapes the Triton pass was verified bit-identical on, spanning the crossover: a tall
+# activation batch, a modulation projection at M = 1, and two odd token counts that do not divide
+# the block.
+BIAS_SHAPES = (
+    (16384, 12288),
+    (4096, 3072),
+    (1024, 12288),
+    (333, 4096),
+    (1, 512),
+    (9304, 3072),
+    (7, 1024),
+)
+
+
+def _bias_pair(
+    torch,
+    m,
+    n,
+    dtype = None,
+    device = "cuda",
+):
+    dtype = torch.bfloat16 if dtype is None else dtype
+    torch.manual_seed(m * 31 + n)
+    out = torch.randn(m, n, device = device, dtype = dtype)
+    bias = torch.randn(n, device = device, dtype = dtype)
+    return out, bias
+
+
+def test_the_fast_bias_falls_back_without_triton(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    monkeypatch.setattr(fb, "_HAVE_TRITON", False)
+    out = torch.zeros(4, 8)
+    bias = torch.arange(8, dtype = torch.float32)
+    assert fb.fused_bias_add_(out, bias) is out
+    assert torch.equal(out[0], bias)
+
+
+@pytest.mark.parametrize("value", ["0", "off", "FALSE", " no "])
+def test_the_env_switch_takes_the_kernel_out_of_the_path(monkeypatch, value):
+    pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    monkeypatch.setenv(fb.NVFP4_FAST_BIAS_ENV, value)
+    assert fb.fast_bias_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["", "auto", "1", "AUTO"])
+def test_auto_and_one_both_leave_it_on(monkeypatch, value):
+    pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    monkeypatch.setenv(fb.NVFP4_FAST_BIAS_ENV, value)
+    assert fb.fast_bias_enabled() is True
+
+
+def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover():
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    if not fb._HAVE_TRITON:
+        pytest.skip("needs triton")
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+
+    out, bias = _bias_pair(torch, 8, 16)
+    assert fb._eligible(out, bias)
+    # fp32 is outside the fp32-accumulate-then-round contract.
+    assert not fb._eligible(*_bias_pair(torch, 8, 16, dtype = torch.float32))
+    # A transposed output is not the contiguous buffer the flat indexing assumes.
+    assert not fb._eligible(out.T.contiguous().T, bias)
+    # A CPU pair has no kernel at all.
+    assert not fb._eligible(out.cpu(), bias.cpu())
+    # A bias that is not one row per output column.
+    assert not fb._eligible(out, bias[:8])
+    assert not fb._eligible(out, bias.reshape(1, 16))
+
+
+def test_the_kernel_declines_while_tracing(monkeypatch):
+    """Inductor fuses the bias into the next op (0.0156 ms against eager 0.1138 at M=4096); an
+    opaque launch here would prevent exactly that."""
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    calls = []
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(fb, "_eligible", lambda *a: calls.append("eligible") or True)
+    out = torch.zeros(4, 8)
+    fb.fused_bias_add_(out, torch.ones(8))
+    assert calls == []  # short-circuited before eligibility was even asked
+    assert float(out[0, 0]) == 1.0
+
+
+@pytest.mark.parametrize("m,n", BIAS_SHAPES)
+def test_the_fused_bias_is_bit_identical_to_add_(m, n):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    if not fb._HAVE_TRITON:
+        pytest.skip("needs triton")
+
+    out, bias = _bias_pair(torch, m, n)
+    want = out.clone().add_(bias)
+    got = fb.fused_bias_add_(out, bias)
+    assert got is out
+    # Bit-identical, not close: the accuracy gates compare renders against stored references.
+    assert torch.equal(got, want), float((got.float() - want.float()).abs().max())
+
+
+def test_an_empty_output_is_left_alone():
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    out = torch.zeros(0, 32, device = "cuda", dtype = torch.bfloat16)
+    assert fb.fused_bias_add_(out, torch.ones(32, device = "cuda", dtype = torch.bfloat16)) is out
+
+
+def test_m3_the_fused_bias_against_add_at_the_bench_shapes(capsys):
+    """M3, reported rather than asserted: a timing threshold in a test file is a flake."""
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    if not fb._HAVE_TRITON:
+        pytest.skip("needs triton")
+    import time
+
+    lines = []
+    for m, n in ((4096, 12288), (4096, 3072), (4096, 4096), (16384, 12288)):
+        out, bias = _bias_pair(torch, m, n)
+        row = {}
+        for name, fn in (
+            ("add_", lambda: out.add_(bias)),
+            ("fused", lambda: fb.fused_bias_add_(out, bias)),
+        ):
+            for _ in range(5):
+                fn()
+            torch.cuda.synchronize()
+            best = float("inf")
+            for _ in range(5):
+                start = time.perf_counter()
+                for _ in range(20):
+                    fn()
+                torch.cuda.synchronize()
+                best = min(best, (time.perf_counter() - start) / 20 * 1e3)
+            row[name] = best
+        lines.append(
+            f"  bias {m}x{n}: add_ {row['add_']:.4f} ms, fused {row['fused']:.4f} ms, "
+            f"{row['add_'] / row['fused']:.2f}x"
+        )
+    with capsys.disabled():
+        print("\n" + "\n".join(lines))

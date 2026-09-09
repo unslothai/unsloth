@@ -166,6 +166,12 @@ def _is_guard(node: ast.AST) -> bool:
 
 
 def _is_launch(node: ast.Call) -> str:
+    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``) rather than on a name, and
+    # it needs the guard just as much: Triton takes its device and stream from the CURRENT context,
+    # not from the tensors it is handed.
+    if isinstance(node.func, ast.Subscript):
+        name = _dotted(node.func.value)
+        return name if name.endswith("_kernel") else ""
     name = _dotted(node.func)
     if name.startswith("flashinfer.") or name.startswith("_fi."):
         return name
@@ -214,12 +220,16 @@ def test_the_guard_visitor_catches_an_unguarded_launch():
         "        flashinfer.mm_fp4(x)\n"
         "    flashinfer.nvfp4_quantize(x)\n"
         "    torch.ops.unsloth_nvfp4.mm(x)\n"
+        "    _bias_add_kernel[grid](x)\n"
+        "    with torch.cuda.device(x.device):\n"
+        "        _bias_add_kernel[grid](x)\n"
     )
     visitor = _LaunchVisitor()
     visitor.visit(tree)
     assert [name for _, name in visitor.unguarded] == [
         "flashinfer.nvfp4_quantize",
         "torch.ops.unsloth_nvfp4.mm",
+        "_bias_add_kernel",
     ]
 
 
