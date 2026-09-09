@@ -358,3 +358,14 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     assert '[ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0' in top_up[:600]
     repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
     assert "if ($script:OfflineFastPath) { return }" in repair[:600]
+
+
+def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
+    """Only the offline keep assigns the flag, and the sidecar block reads it on every
+    update. Under a caller's Set-StrictMode an unassigned script variable is a
+    terminating error, and a dot-sourced rerun would otherwise inherit an earlier
+    offline run's $true."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    init = text.index("$script:OfflineFastPath = $false")
+    assert init < text.index("$script:OfflineFastPath = $true")
+    assert init < text.index("if ($script:OfflineFastPath)")

@@ -159,6 +159,11 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
+# Set by the offline keep in the version check; read unconditionally by the sidecar and
+# legacy-migration blocks. Initialised here so a caller's Set-StrictMode does not end
+# the script at that read on an ordinary update, and so a dot-sourced rerun in the same
+# session does not inherit an earlier offline run's answer.
+$script:OfflineFastPath = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
