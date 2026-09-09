@@ -8440,10 +8440,7 @@ class LlamaCppBackend:
         confirmed = bool(
             self._build_offers_gpu_backend(binary)
             and (detected_gpus or gpu_indices)
-            and (
-                not is_vulkan_backend
-                or self._vulkan_offload_is_discrete(binary, gpu_indices)
-            )
+            and (not is_vulkan_backend or self._vulkan_offload_is_discrete(binary, gpu_indices))
         )
         emitted, effective = resolve_launch_load_mode(
             extra_args,
@@ -8499,9 +8496,7 @@ class LlamaCppBackend:
         # actually keeps on the CPU and turns its pageable mapping into an
         # allocated buffer, which is the reservation this setting exists to avoid;
         # guessing "no GPU" only declines an optimisation on an unusual install.
-        return bool(
-            LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}
-        )
+        return bool(LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"})
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -23556,6 +23551,7 @@ class LlamaCppBackend:
                     requested_load_mode = _resolved_load_mode,
                     settings = _mem_settings,
                 )
+
                 # Whether a relaunch under no-reserve would really end up streaming: the
                 # placement alone is not enough, because a per-model mmap, an extra
                 # argument or an inherited choice is appended after the managed pair and
@@ -24752,6 +24748,7 @@ class LlamaCppBackend:
                                         "Model Memory: dropping the page-lock for "
                                         "the --fit off retry; it offloads every layer."
                                     )
+
                                 # And the other direction, which the page-lock arm cannot
                                 # reach: under no-reserve nothing was emitted BECAUSE the
                                 # fitted attempt read as host-resident, and that is the
@@ -24779,9 +24776,7 @@ class LlamaCppBackend:
                                         (_mem_keep_resident, True), _mem_env_view_no_reserve
                                     )
                                 )
-                                _retry_dio = _retry_dio_for(
-                                    _mem_settings, _fit_load_mode_env_view
-                                )
+                                _retry_dio = _retry_dio_for(_mem_settings, _fit_load_mode_env_view)
                                 if _retry_dio and not self._memory_dio_flags:
                                     run_cmd = [*run_cmd, *_retry_dio]
                                     self._memory_dio_flags = list(_retry_dio)

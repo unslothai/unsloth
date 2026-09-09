@@ -2522,10 +2522,17 @@ class TestWindowsNoReserveStreaming:
         assert managed + selected == ["--load-mode", "dio", "--load-mode", "mmap"]
 
 
-
-
-def _dio(extras = None, *, supports = True, host = False, confirmed = True,
-         requested = None, env = None, no_reserve = True, keep = False):
+def _dio(
+    extras = None,
+    *,
+    supports = True,
+    host = False,
+    confirmed = True,
+    requested = None,
+    env = None,
+    no_reserve = True,
+    keep = False,
+):
     """``(policy_emitted, effective)`` through the real policy chain."""
     return _lsa.resolve_launch_load_mode(
         extras or [],
@@ -2554,9 +2561,9 @@ class TestTheDioPolicy:
     @pytest.mark.parametrize(
         "kwargs",
         [
-            {"no_reserve": False},   # the setting is off
-            {"supports": False},     # a build with no --load-mode
-            {"confirmed": False},    # placement not established, incl. host-resident
+            {"no_reserve": False},  # the setting is off
+            {"supports": False},  # a build with no --load-mode
+            {"confirmed": False},  # placement not established, incl. host-resident
         ],
         ids = ["toggle-off", "legacy-build", "unconfirmed"],
     )
@@ -2695,8 +2702,11 @@ class TestTheLaunchAsksTheSameQuestionTwice:
         # the hypothetical env view is scrubbed for the hypothetical toggle
         assert "scrub_memory_env(_mem_env_view_no_reserve,(_mem_keep_resident,True))" in flat
         # and the machinery it replaced is gone
-        for retired in ("managed_dio_applies", "_mem_dio_survives_chain",
-                        "_mem_dio_placement_unlooked"):
+        for retired in (
+            "managed_dio_applies",
+            "_mem_dio_survives_chain",
+            "_mem_dio_placement_unlooked",
+        ):
             assert retired not in flat, retired
 
 
@@ -2716,8 +2726,9 @@ class TestTheLaunchWithdrawsTheDio:
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
-        launch, replay = self._src(), inspect.getsource(
-            LlamaCppBackend._prepare_cpu_fallback_launch
+        launch, replay = (
+            self._src(),
+            inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
         # --fit on retry and arch-crash retry here, CPU replay in the builder.
         assert launch.count("self._drop_managed_dio(") == 2
@@ -2756,9 +2767,7 @@ class TestTheLaunchWithdrawsTheDio:
         b._memory_policy_active = True
         b._memory_policy_extras_touched = False
         cmd = ["--model", "m.gguf", *_lsa.MANAGED_DIO_FLAGS]
-        assert b._drop_managed_dio(list(cmd), "copy", clear_record = False) == [
-            "--model", "m.gguf"
-        ]
+        assert b._drop_managed_dio(list(cmd), "copy", clear_record = False) == ["--model", "m.gguf"]
         assert b._memory_dio_flags == list(_lsa.MANAGED_DIO_FLAGS)
         # ...and the pair was this policy's only mark, so the child is unmanaged now.
         assert b._memory_policy_active is False
@@ -2849,8 +2858,8 @@ class TestThePlacementProbes:
     @pytest.mark.parametrize(
         "backends,offers",
         [
-            (frozenset(), False),                      # cannot enumerate: fail closed
-            (frozenset({"base", "cpu"}), False),       # a managed CPU-only bundle
+            (frozenset(), False),  # cannot enumerate: fail closed
+            (frozenset({"base", "cpu"}), False),  # a managed CPU-only bundle
             (frozenset({"base", "cpu", "vulkan"}), True),
         ],
     )
