@@ -35,7 +35,12 @@ import pytest
 from utils.hardware import amd
 
 
-_GPU_MASK_VARS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+_GPU_MASK_VARS = (
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+)
 
 
 @pytest.fixture(autouse = True)
@@ -43,9 +48,11 @@ def _no_inherited_gpu_mask(monkeypatch):
     """No per-GPU selector unless a test sets one.
 
     An open render node stops being evidence of a usable path under a mask, so any of these
-    three inherited from the runner would decide a case the test never mentioned. This box
+    inherited from the runner would decide a case the test never mentioned. This box
     exports CUDA_VISIBLE_DEVICES, and it silently answered for a control that was supposed
-    to be testing an empty HIP mask.
+    to be testing an empty HIP mask. GPU_DEVICE_ORDINAL is here for the same reason and not
+    because any test sets it: a ROCm or OpenCL environment exports it, the production rule
+    reads it, and a test naming no mask would then be answered by the runner's own.
     """
     for _var in _GPU_MASK_VARS:
         monkeypatch.delenv(_var, raising = False)
@@ -4746,3 +4753,151 @@ def test_the_installer_gid_match_is_not_a_substring_match(tmp_path):
     out = _install_sh_hint(str(node), self_gids = f"{_gid}7 {_gid}9")
     assert "already in the" not in out
     assert "sudo usermod -a -G" in out
+
+
+def _bare_soname_manifest(
+    tmp_path,
+    name,
+    soname = "libvulkan_radeon.so",
+):
+    """An ICD manifest naming its library by soname alone, and the path to it.
+
+    The form NVIDIA registers under, and the one _icd_manifest cannot produce: that helper
+    writes an absolute path so it can put the library on disk, which is exactly the case
+    this is not.
+    """
+    import json
+
+    path = tmp_path / name
+    path.write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.0.0",
+                "ICD": {"library_path": soname, "api_version": "1.3.0"},
+            }
+        ),
+        encoding = "utf-8",
+    )
+    return str(path)
+
+
+def test_a_bare_soname_nothing_can_resolve_is_not_a_driver(monkeypatch, linux, tmp_path):
+    """A manifest may name its library by soname and leave the loader to find it, so the
+    package can be removed and leave the registration behind. Trusting the name counted a
+    driver that is not there, and withheld the reinstall half of the repair.
+
+    Fails before the fix, which returned True for every bare name."""
+    manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset({"libc.so.6"}))
+    assert amd._icd_manifest_is_usable(manifest) is False
+
+
+def test_a_bare_soname_on_the_search_path_is_a_driver(monkeypatch, linux, tmp_path):
+    """The control: the same manifest with the library where ld.so would find it. Without
+    it the fix could be "a bare name is never a driver", which is the ordinary case for
+    every vendor that registers one."""
+    _lib = tmp_path / "lib"
+    _lib.mkdir()
+    (_lib / "libvulkan_radeon.so").write_bytes(b"")
+    manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(_lib)])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset())
+    assert amd._icd_manifest_is_usable(manifest) is True
+
+
+def test_a_bare_soname_only_the_loader_cache_knows_is_a_driver(monkeypatch, linux, tmp_path):
+    """The second control, and the reason the cache is consulted at all: a versioned
+    soname such as libGLX_nvidia.so.0 lives wherever ld.so.conf put it, which need not be
+    a directory this enumerates. Present in the cache is present."""
+    manifest = _bare_soname_manifest(tmp_path, "nvidia_icd.json", "libGLX_nvidia.so.0")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset({"libGLX_nvidia.so.0"}))
+    assert amd._icd_manifest_is_usable(manifest) is True
+
+
+def test_a_loader_cache_that_cannot_be_read_leaves_the_registration_alone(
+    monkeypatch, linux, tmp_path
+):
+    """The fail-closed control, and the direction that matters. musl ships no ldconfig -p
+    and a minimal container may ship no ldconfig at all, so "not found" there is ignorance
+    rather than absence. Calling a live driver stale would promote the AMD node as the sole
+    cause on a host whose other vendor really does have a path."""
+    manifest = _bare_soname_manifest(tmp_path, "nvidia_icd.json", "libGLX_nvidia.so.0")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: None)
+    assert amd._icd_manifest_is_usable(manifest) is True
+
+
+def test_the_loader_cache_reader_says_none_rather_than_empty_when_ldconfig_is_gone(
+    monkeypatch, linux
+):
+    """The distinction the arm above rests on, at its source: no ldconfig has to answer
+    None, because an empty set would read as "no library is installed" and call every bare
+    registration on the host stale."""
+    monkeypatch.setattr(amd, "_ld_cache_read", False)
+    monkeypatch.setattr(amd, "_ld_cache_sonames_cached", None)
+    monkeypatch.setattr(amd.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(amd.os.path, "exists", lambda _p: False)
+    assert amd._ld_cache_sonames() is None
+
+
+def test_a_stale_bare_registration_reaches_the_driver_sentence(monkeypatch, linux, tmp_path):
+    """What the classification is for: with the only registration unresolvable the loader
+    has no driver at all, so the node repair alone would leave the probe empty."""
+    manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json")
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset({"libc.so.6"}))
+    reason = _vulkan_node_hint_under_icd_list(monkeypatch, manifest)
+    assert "usermod" in reason
+    assert "no driver it can load" in reason
+
+
+def test_the_mask_fixture_isolates_every_selector_the_rule_reads():
+    """The fixture decides what "no mask" means for this whole suite, so a selector the
+    production rule reads and the fixture does not clear is answered by the runner's own
+    environment: a ROCm or OpenCL host exports GPU_DEVICE_ORDINAL, and the no-mask controls
+    would then quietly take the narrowing branch they exist to rule out.
+
+    Read out of the rule's own source rather than restated, so adding a fifth selector
+    fails here instead of drifting."""
+    import inspect
+
+    _source = inspect.getsource(amd._a_per_gpu_mask_narrows_the_runtime)
+    _read = set(re.findall(r'"([A-Z_]+(?:VISIBLE_DEVICES|DEVICE_ORDINAL))"', _source))
+    assert _read, "the rule named no selector, so this test proves nothing"
+    assert _read <= set(_GPU_MASK_VARS), _read - set(_GPU_MASK_VARS)
+
+
+def test_the_installer_chains_the_groupadd_pair(tmp_path):
+    """groupadd and usermod are a pair, and the name is generated from the GID, which says
+    nothing about whether that NAME is free. Printed as two separate lines, a host that
+    already has an amdgpu993 group at another GID fails the groupadd and then SUCCEEDS the
+    usermod against the wrong group, leaving the node shut having reported success.
+
+    Fails before the fix, which printed them unchained."""
+    out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
+    _lines = out.splitlines()
+    _at = next(i for i, l in enumerate(_lines) if "groupadd" in l)
+    # && plus a continuation, so the pair pastes as one command across the two lines.
+    assert _lines[_at].rstrip().endswith("&& \\"), _lines[_at]
+    assert "993 amdgpu993" in _lines[_at]
+    assert "usermod -a -G amdgpu993" in _lines[_at + 1]
+
+
+def test_the_python_half_chains_the_groupadd_pair_too(monkeypatch, linux):
+    """Its twin, which already chained: asserted so that the two halves cannot drift apart
+    the way they just did."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "groupadd -g 993 amdgpu993 && sudo usermod -a -G amdgpu993" in hint
+
+
+def test_the_named_group_repair_is_still_one_command(tmp_path):
+    """The control: a node whose owning group HAS a name needs no groupadd, so the repair
+    is a single usermod and must not have grown a chain."""
+    out = _install_sh_hint("/dev/dri/renderD128", repairs = "join:render")
+    assert "groupadd" not in out
+    _line = next(l for l in out.splitlines() if "usermod" in l)
+    assert "&&" not in _line

@@ -799,11 +799,139 @@ def _vulkan_loader_allows(path: str) -> bool:
     return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
 
 
+# ld.so's own defaults, plus the multiarch directories Debian and Ubuntu install into.
+_DEFAULT_LIBRARY_DIRS = (
+    "/lib",
+    "/lib64",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/local/lib",
+    "/usr/local/lib64",
+)
+
+_LD_SO_CONF = "/etc/ld.so.conf"
+
+_ld_cache_sonames_cached: "frozenset[str] | None" = None
+_ld_cache_read = False
+
+
+def _ld_so_conf_dirs(path: str = _LD_SO_CONF, _seen: "set[str] | None" = None) -> "list[str]":
+    """The extra library directories /etc/ld.so.conf names, include lines followed.
+
+    Read because a driver installed outside the defaults is the ordinary shape for a
+    vendor package -- amdgpu-pro puts its libraries under /opt -- and missing that
+    directory would make a live driver look like a stale registration.
+    """
+    _seen = set() if _seen is None else _seen
+    if path in _seen:
+        return []
+    _seen.add(path)
+    dirs: "list[str]" = []
+    try:
+        with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return dirs
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("include"):
+            for entry in sorted(glob.glob(line[len("include") :].strip())):
+                dirs.extend(_ld_so_conf_dirs(entry, _seen))
+            continue
+        dirs.append(line)
+    return dirs
+
+
+def _dynamic_loader_search_dirs() -> "list[str]":
+    """Where ld.so would look for a bare soname here, in its own order."""
+    dirs = [
+        entry
+        for entry in (os.environ.get("LD_LIBRARY_PATH") or "").split(os.pathsep)
+        if entry.strip()
+    ]
+    dirs.extend(_ld_so_conf_dirs())
+    dirs.extend(_DEFAULT_LIBRARY_DIRS)
+    for pattern in ("/usr/lib/*-linux-gnu*", "/lib/*-linux-gnu*"):
+        dirs.extend(sorted(glob.glob(pattern)))
+    return list(dict.fromkeys(dirs))
+
+
+def _ld_cache_sonames() -> "frozenset[str] | None":
+    """Every soname in the loader's cache, or None when the cache cannot be read.
+
+    None is not an empty set: musl ships no `ldconfig -p` and a minimal container may ship
+    no ldconfig at all, and answering "nothing is installed" there would call every bare
+    registration stale. Read once, since the diagnosis asks it per manifest.
+    """
+    global _ld_cache_sonames_cached, _ld_cache_read
+
+    if _ld_cache_read:
+        return _ld_cache_sonames_cached
+    _ld_cache_read = True
+    _ld_cache_sonames_cached = None
+    for _candidate in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        _exe = shutil.which(_candidate) if "/" not in _candidate else _candidate
+        if not _exe or not os.path.exists(_exe):
+            continue
+        try:
+            _out = subprocess.run(
+                [_exe, "-p"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                **windows_hidden_subprocess_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if _out.returncode != 0:
+            continue
+        # "\tlibfoo.so.1 (libc6,x86-64) => /usr/lib/libfoo.so.1"
+        _names = {
+            line.strip().split(" ", 1)[0]
+            for line in (_out.stdout or "").splitlines()
+            if "=>" in line and line.strip()
+        }
+        if _names:
+            _ld_cache_sonames_cached = frozenset(_names)
+        return _ld_cache_sonames_cached
+    return _ld_cache_sonames_cached
+
+
+def _a_bare_soname_resolves(soname: str) -> bool:
+    """Whether a manifest's bare library name still resolves to something on this host.
+
+    A manifest may name its library by soname alone and leave the loader to find it, which
+    is what NVIDIA's registration does, so a bare name cannot simply be trusted: the
+    package can be removed and leave the manifest behind, and the loader then has one fewer
+    driver than the registration count suggests.
+
+    Positive evidence in the negative direction as well, since both answers are load
+    bearing. Found on disk or in the loader's cache is a driver. NOT found decides the
+    question only when the cache could actually be read; a host whose loader configuration
+    this cannot enumerate answers True, because calling a live driver stale would demote
+    the node hint on a host whose other vendor really does have a path.
+    """
+    for _directory in _dynamic_loader_search_dirs():
+        try:
+            if os.path.isfile(os.path.join(_directory, soname)):
+                return True
+        except OSError:
+            continue
+    _cache = _ld_cache_sonames()
+    if _cache is None:
+        return True
+    return soname in _cache
+
+
 def _icd_manifest_is_usable(path: str) -> bool:
     """Whether a manifest still points at a driver library that is there.
 
-    A leftover or malformed JSON is a registration with no device behind it. A bare name is
-    accepted, since the loader resolves it through a search path this cannot see.
+    A leftover or malformed JSON is a registration with no device behind it. A bare soname
+    is resolved rather than assumed: it is the form NVIDIA registers under, and a removed
+    package leaves the manifest behind, so trusting the name counted a driver that is not
+    there and withheld the reinstall half of the repair.
     """
     try:
         with open(path, "r", encoding = "utf-8") as handle:
@@ -814,7 +942,7 @@ def _icd_manifest_is_usable(path: str) -> bool:
         return False
     library = library.strip()
     if not (os.path.isabs(library) or "/" in library or "\\" in library):
-        return True
+        return _a_bare_soname_resolves(library)
     if not os.path.isabs(library):
         # Relative to the manifest's directory, per the loader's interface document.
         library = os.path.join(os.path.dirname(path), library)
@@ -1417,7 +1545,10 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # The name is GENERATED rather than a <name> placeholder, because these are
             # commands to paste: angle brackets are redirection operators, so `groupadd -g
             # 993 <name>` is a shell syntax error before groupadd runs. Derived from the GID,
-            # which has no group entry by definition here, so the name is free.
+            # which has no group entry by definition here -- which says nothing about the
+            # NAME, so the && is load bearing: on a host that already has an amdgpu<GID>
+            # group at a different GID, an unchained usermod would SUCCEED against the wrong
+            # group and leave the node shut, having reported success.
             _pairs = "; ".join(
                 f"sudo groupadd -g {_g} amdgpu{_g} && sudo usermod -a -G amdgpu{_g} {user}"
                 for _g in unnamed

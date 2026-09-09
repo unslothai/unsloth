@@ -5857,10 +5857,15 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
                 # Generated, not a <name> placeholder: this is a command to paste, and angle
                 # brackets are redirection operators, so `groupadd -g 993 <name>` is a syntax
                 # error before groupadd runs. Keyed on the GID, which has no entry by
-                # definition here, so the name is free.
+                # definition here -- which says nothing about the NAME, and some host may
+                # already have taken it at a different GID.
                 _amd_gid_name="amdgpu$_amd_gid"
-                substep "  sudo groupadd -g $_amd_gid $_amd_gid_name"
-                substep "  sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
+                # Chained, so that collision cannot become a silent wrong repair: printed as
+                # two separate lines, a failed groupadd is followed by a usermod that
+                # SUCCEEDS against the wrong group and leaves the node exactly as shut,
+                # having reported success. && stops there, and the error names the cause.
+                substep "  sudo groupadd -g $_amd_gid $_amd_gid_name && \\"
+                substep "    sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
             done
             substep "  or recreate the container passing $_closed_amd_gid_adds."
         else
