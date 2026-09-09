@@ -627,8 +627,8 @@ _resolve_studio_destinations() {
 # dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
 # marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
 # moves, and which may itself be relative to where the installer was run.
-# Prints the absolute form of $1, default UV_CACHE_DIR: _configure_uv_cache must resolve `uv
-# cache dir`'s answer on the same base before scanning it, and two bases miss a warm cache.
+# Takes $1 (default UV_CACHE_DIR) and prints it; the scan resolves uv's answer on this same
+# base, and two bases miss a warm cache.
 _absolutize_uv_cache_dir() {
     _uv_cache_path="${1-$UV_CACHE_DIR}"
     case "$_uv_cache_path" in
@@ -685,16 +685,9 @@ _restore_uv_cache_marker() {
 
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
-    # A CALLER's UV_CACHE_DIR outranks everything below. The installer's own default does not,
-    # and testing the variable alone could not tell them apart: the block near the top of this
-    # script exports $STUDIO_HOME/cache/uv whenever the caller left it unset -- it has to, since
-    # uv aborts on a cache it cannot create and several steps run before this one -- so on every
-    # writable install this case matched, took `custom`, and returned. That made the whole
-    # adaptive selection below unreachable: the `uv cache dir` probe never ran, `shared` was
-    # never chosen, users re-downloaded multi-gigabyte Torch and CUDA wheels into a second
-    # cache, and _prepare_studio_uv_cache_for_launch -- which begins by requiring `shared` --
-    # was dead code. The flag distinguishes the two, so a caller keeps priority and our own
-    # default falls through to the choice it was always meant to reach.
+    # A CALLER's UV_CACHE_DIR outranks everything below; our own default must not, and the
+    # variable cannot tell them apart because the block near the top already exported it.
+    # Without the flag this matched on every writable install, so nothing below ever ran.
     if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
         case "${UV_CACHE_DIR-}" in
             *[![:space:]]*)
@@ -729,36 +722,28 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
-    # A relative cache-dir from uv.toml / UV_CONFIG_FILE comes back verbatim, and uv resolves
-    # it against ITS working directory, which UV_WORKING_DIR moves. Scanning it as written
-    # inspects a same-named directory beside the installer instead.
+    # A relative cache-dir comes back verbatim and uv resolves it against ITS working
+    # directory, so scanning it as written inspects a same-named directory beside us.
     if [ -n "$_uv_default_cache" ]; then
         _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
     fi
 
-    # Readable is not usable. uv writes CACHEDIR.TAG into the cache root and renames each
-    # extracted distribution into a bucket, and it aborts on either ("Failed to initialize
-    # cache" / "failed to rename file ... Permission denied"), so a cache owned by another
-    # account -- or writable at the root and root-owned one level down, which is what a
-    # `sudo -E` run leaves -- would fail an install that used to work. -w reads the mode
-    # rather than the filesystem, so probe with a real create as the early block does; mktemp
-    # because a predictable name in another account's directory can be a planted symlink.
-    # Nested entries are deliberately not probed: that is a full walk of a cache holding
-    # hundreds of thousands of files, and a denied leaf already keeps a warm cache warm
+    # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
+    # into the buckets, aborting on either. Nested entries are deliberately NOT probed -- that
+    # walks hundreds of thousands of files, and a denied leaf keeps a warm cache warm
     # (tests/sh/test_install_uv_cache_root.sh).
     _uv_default_populated=false
     _uv_default_writable=true
     _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        # The globs below are the whole scan, so a caller's set -f would read every cache as
-        # empty. Saved and restored the way _dir_has_entries does.
+        # The globs below ARE the scan, so a caller's set -f reads every cache as empty.
         _uv_glob=on
         case $- in *f*) _uv_glob=off ;; esac
         set +f
 
-        # The root and EVERY existing bucket, not just the artifact families: uv mutates
-        # interpreter-v4 and simple-v21 too, and a curated list would miss the next one it
-        # adds. An unenterable bucket fails this the same way an unwritable one does.
+        # EVERY existing bucket, not the artifact families below: uv mutates interpreter-v4
+        # too, and a curated list would miss the next one it adds. A real create, since -w
+        # reads the mode not the filesystem; mktemp, since a fixed name can be a planted link.
         for _uv_probe_dir in "$_uv_default_cache" "$_uv_default_cache"/*; do
             [ -d "$_uv_probe_dir" ] || continue
             _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
@@ -781,10 +766,8 @@ _configure_uv_cache() {
                 _uv_scan_blocked=true
                 continue
             fi
-            # `|| true`, not `|| _uv_artifact=""`: head closes the pipe after the first line,
-            # so find dies on SIGPIPE on any large bucket, and under pipefail that becomes the
-            # pipeline's status. It says nothing about the path already captured, and clearing
-            # it read a warm cache as empty.
+            # `|| true`, not `|| _uv_artifact=""`: head closes the pipe, so find dies on
+            # SIGPIPE on a large bucket, and under pipefail that cleared the path it printed.
             _uv_artifact=$(find -L "$_uv_bucket" -type f \
                 ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                 ! -name '.unsloth-write-probe.*' \
@@ -816,8 +799,7 @@ _configure_uv_cache() {
         studio)
             if [ "$_uv_scan_blocked" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
-            # Warm and still in studio mode means the write probe refused it; nothing else
-            # reaches here with a populated cache.
+            # Warm and still here means the write probe refused it.
             elif [ "$_uv_default_populated" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
@@ -847,10 +829,7 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # The fallback is required, since uv aborts on a cache it cannot create. mkdir -p exits 0 for
 # an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
 # with a real create.
-# Whether the value in UV_CACHE_DIR is this installer's own default rather than something the
-# caller asked for. _configure_uv_cache cannot tell the two apart by looking at the variable --
-# it sees a non-blank string either way -- and it has to, because a caller's choice outranks the
-# adaptive selection while our own default must not.
+# True only where the installer assigns its OWN default; the variable reads the same either way.
 _UV_CACHE_DIR_INSTALLER_DEFAULT=false
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"

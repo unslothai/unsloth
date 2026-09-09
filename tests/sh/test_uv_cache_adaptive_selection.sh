@@ -2,25 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Guards that _configure_uv_cache's adaptive selection is actually REACHABLE.
-#
-# The defect this pins, found by review and confirmed by execution order rather than by any
-# diff:
-#
-#   * The block near the top of install.sh exports UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
-#     whenever the caller left it unset. It has to run there and not later, because uv aborts
-#     on a cache it cannot create and several install steps run before _configure_uv_cache.
-#   * _configure_uv_cache is called much further down. Its first `case` matched any non-blank
-#     ${UV_CACHE_DIR-}, set _UV_CACHE_MODE=custom and returned.
-#   * So on EVERY writable install the two together took the `custom` branch. The `uv cache
-#     dir` probe never ran, `shared` was never selected, and users re-downloaded multi-gigabyte
-#     Torch and CUDA wheels into a second cache while a populated one sat beside it.
-#   * _prepare_studio_uv_cache_for_launch begins `[ "${_UV_CACHE_MODE:-}" = shared ] || return
-#     0`, so it was dead code for the same reason.
-#
-# Nothing in the file is wrong to READ. The two halves are each correct and were written apart;
-# the defect only exists in the order they run, which is why it needs a test that runs them in
-# that order rather than one that inspects either half.
+# Guards that _configure_uv_cache's adaptive selection is REACHABLE. Both halves of install.sh
+# read correctly on their own and the defect lived in the ORDER they run, so this runs the early
+# UV_CACHE_DIR block and _configure_uv_cache in that order rather than inspecting either half.
 #
 # The contract:
 #   * caller-set UV_CACHE_DIR            -> custom, left exactly as the caller wrote it
@@ -43,16 +27,12 @@ _EARLY=$(mktemp)
 _FN=$(mktemp)
 trap 'rm -rf "$_TMP" "$_EARLY" "$_FN"' EXIT
 
-# Both halves lifted from install.sh, so the real code is what runs here.
-# Anchored on text that predates the fix, so this suite runs the OLD code too and fails
-# against it. Anchoring on a line the fix introduces would make it fail to extract instead,
-# which proves nothing about the behaviour.
+# The real code, anchored on text that PREDATES the fix so this suite also runs against the
+# old code and fails on an assertion, not on an empty extraction.
 awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
     "$INSTALL_SH" > "$_EARLY"
 awk '/^_configure_uv_cache\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN"
 awk '/^_prepare_studio_uv_cache_for_launch\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
-# Predates the fix too, so the relative-cache-dir case below runs against the old code and
-# fails on its assertion rather than on a missing function.
 awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then
@@ -107,65 +87,55 @@ _run() {
     rm -rf "$_stub_bin"
 }
 
-# Warm means package BYTES, not buckets: the probe skips .msgpack/.http metadata, so a real
-# artifact file is what makes this cache read as populated.
+# Warm means package BYTES, not buckets: the probe skips .msgpack/.http metadata.
 _populated="$_TMP/uvdefault"
 mkdir -p "$_populated/archive-v0/torch"
 : > "$_populated/archive-v0/torch/libtorch.so"
-# Metadata only, which must NOT read as warm -- that regression is the reason the probe looks
-# at file names at all.
+# Metadata only, which must NOT read as warm; that is why the probe looks at file names.
 _metadata_only="$_TMP/uvmeta"
 mkdir -p "$_metadata_only/wheels-v1"
 : > "$_metadata_only/wheels-v1/index.msgpack"
 _empty="$_TMP/uvempty"
 mkdir -p "$_empty"
-# Populated and readable, but uv cannot rewrite CACHEDIR.TAG in it. Only the root is closed,
-# so the scan still walks the buckets and reads it as warm -- which is the whole point.
+# Only the ROOT is closed, so this still reads as warm; uv cannot rewrite CACHEDIR.TAG in it.
 _readonly="$_TMP/uvro"
 mkdir -p "$_readonly/archive-v0/torch"
 : > "$_readonly/archive-v0/torch/libtorch.so"
 chmod a-w "$_readonly"
-# The other half: the root is ours but a bucket is not, which is what a `sudo -E` run leaves
-# behind. uv renames each extracted distribution INTO archive-*, so this fails just as hard.
+# The root is ours but a bucket is not, which is what a `sudo -E` run leaves behind.
 _readonly_bucket="$_TMP/uvrobucket"
 mkdir -p "$_readonly_bucket/archive-v0/torch" "$_readonly_bucket/wheels-v6"
 : > "$_readonly_bucket/wheels-v6/index.msgpack"
 : > "$_readonly_bucket/archive-v0/torch/libtorch.so"
 chmod a-w "$_readonly_bucket/archive-v0"
-# And the case that must NOT read as blocked: the artifact is found in the first bucket, and a
-# LATER writable bucket must not be skipped by an early exit that never probed it.
+# A bucket AFTER the one holding the artifact still has to be probed.
 _readonly_late="$_TMP/uvrolate"
 mkdir -p "$_readonly_late/archive-v0/torch" "$_readonly_late/sdists-v9"
 : > "$_readonly_late/archive-v0/torch/libtorch.so"
 chmod a-w "$_readonly_late/sdists-v9"
-# A bucket we cannot even enter is not writable either, so a warm bucket beside it must not
-# carry the cache: uv would still have to rename into the one it cannot open.
+# Unenterable is unwritable: uv would still have to rename into the bucket it cannot open.
 _denied_bucket="$_TMP/uvdenied"
 mkdir -p "$_denied_bucket/archive-v0" "$_denied_bucket/builds-v0/pkg"
 : > "$_denied_bucket/builds-v0/pkg/wheel.whl"
 chmod 000 "$_denied_bucket/archive-v0"
-# uv mutates interpreter-v4 and simple-v21 as well, so the writability verdict cannot be
-# limited to the five buckets the warmth scan looks at.
+# uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
 : > "$_denied_meta/archive-v0/torch/libtorch.so"
 chmod a-w "$_denied_meta/interpreter-v4"
-# uv prints a relative cache-dir from uv.toml verbatim and resolves it against UV_WORKING_DIR,
-# so a same-named decoy beside the installer must not be what gets scanned.
+# A same-named decoy beside the installer must not be what gets scanned.
 mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
 : > "$_TMP/cwd/relcache/archive-v0/decoy/other.so"
 mkdir -p "$_TMP/work/relcache/archive-v0/torch"
 : > "$_TMP/work/relcache/archive-v0/torch/libtorch.so"
-# Big enough that `head -n 1` closes the pipe before find is done, which is every real cache
-# holding Torch and CUDA wheels. Under pipefail the pipeline then reports SIGPIPE.
+# Big enough that `head -n 1` closes the pipe before find is done, as every real cache is.
 _big="$_TMP/uvbig"
 mkdir -p "$_big/archive-v0/pkg"
 _i=0
 while [ "$_i" -lt 3000 ]; do : > "$_big/archive-v0/pkg/file-$_i.bin"; _i=$((_i + 1)); done
 
 echo "=== the installer's own default does NOT count as a caller override ==="
-# This is the regression. Before the fix the mode here was `custom` and the two lines below
-# could not be reached on any writable machine.
+# The regression: before the fix this was `custom` on every writable machine.
 _out=$(_run "$_TMP/a" '' "$_populated")
 assert_eq "populated default is reused"  "shared" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "and it is uv's own cache"     "$_populated" "$(echo "$_out" | cut -d' ' -f2)"
@@ -181,8 +151,6 @@ _out=$(_run "$_TMP/e" '' "$_metadata_only")
 assert_eq "metadata-only is not warm"    "studio" "$(echo "$_out" | cut -d' ' -f1)"
 
 echo "=== a populated cache we cannot WRITE is not a cache we can use ==="
-# Readable was the only thing the scan tested, so this cache got exported and uv then died on
-# `Failed to initialize cache ... Permission denied` -- an install that used to work.
 if [ "$(id -u)" = "0" ]; then
     echo "  SKIP: unwritable-cache case (root writes through the mode bits)"
 else
@@ -211,14 +179,12 @@ assert_eq "relative default is still warm" "shared" "$(echo "$_out" | cut -d' ' 
 assert_eq "resolved against UV_WORKING_DIR" "$_TMP/work/relcache" "$(echo "$_out" | cut -d' ' -f2)"
 
 echo "=== a big warm bucket stays warm under pipefail ==="
-# The scan's exit status is head's SIGPIPE, not a verdict on the path it already captured.
 assert_eq "big bucket without pipefail" "shared" \
     "$(_run "$_TMP/k" '' "$_big" | cut -d' ' -f1)"
 assert_eq "big bucket under pipefail"   "shared" \
     "$(_run "$_TMP/l" '' "$_big" false '' true | cut -d' ' -f1)"
 
 echo "=== the scan still expands its globs under set -f ==="
-# The globs ARE the scan, so a caller's noglob read every cache as empty.
 assert_eq "populated default under set -f" "shared" \
     "$(_run "$_TMP/o" '' "$_populated" false '' false true | cut -d' ' -f1)"
 
@@ -234,8 +200,7 @@ assert_eq "isolation is honoured"        "isolated" "$(echo "$_out" | cut -d' ' 
 assert_eq "and it uses the Studio cache" "$_TMP/d/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
 
 echo "=== an unwritable STUDIO_HOME still reaches the selection ==="
-# The early block unsets UV_CACHE_DIR there, so nothing was ever going to say `custom`; this
-# pins that the fix did not make that path depend on the flag being cleared.
+# The early block unsets UV_CACHE_DIR there, so the choice must not depend on the flag.
 : > "$_TMP/blocked"
 _out=$(_run "$_TMP/blocked" '' "$_populated")
 assert_eq "unwritable home -> shared"    "shared" "$(echo "$_out" | cut -d' ' -f1)"
