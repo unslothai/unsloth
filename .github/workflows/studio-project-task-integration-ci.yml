@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Studio project task integration
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/inference/studio_tool_loop.py'
+      - 'studio/backend/core/project_retirement.py'
+      - 'studio/backend/routes/project_tasks.py'
+      - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/tests/test_project_task*.py'
+      - 'studio/backend/main.py'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/tests/project-tasks-api.test.ts'
+      - 'studio/frontend/scripts/check-bundle-budget.ts'
+      - '.github/workflows/studio-project-task-integration-ci.yml'
+  merge_group:
+  push:
+    branches: [main, 'codex/project-task-integration-*']
+    paths:
+      - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/inference/studio_tool_loop.py'
+      - 'studio/backend/core/project_retirement.py'
+      - 'studio/backend/routes/project_tasks.py'
+      - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/tests/test_project_task*.py'
+      - 'studio/backend/main.py'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/tests/project-tasks-api.test.ts'
+      - 'studio/frontend/scripts/check-bundle-budget.ts'
+      - '.github/workflows/studio-project-task-integration-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  backend:
+    name: tasks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-latest]
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+      UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependencies
+        shell: bash
+        run: >-
+          python -m pip install
+          fastapi httpx typer packaging structlog huggingface-hub rich
+          pyjwt cryptography python-multipart aiofiles sqlalchemy psutil pyyaml requests
+          'fastmcp>=3.0.2' pytest pytest-timeout
+      - name: Verify the source split refuses unavailable prerequisites
+        working-directory: studio/backend
+        run: python -m pytest tests/test_project_task_integration.py -q --tb=short --timeout=120
+      - name: Compose exact task, lifecycle, edit and Git prerequisites
+        shell: bash
+        env:
+          TASK_REVISION: 191ac8ba86943eb0bd54a9f1532c5d2ed384c6c5
+          LIFECYCLE_REVISION: 41e6153ddfce1ed41a6b4e32e9e1ded8c8042e2b
+          EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
+          GIT_REVISION: 0e174c1ac4b808b14c37389a987f7c3a23bdfd1d
+        run: |
+          for revision in "$TASK_REVISION" "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION"; do
+            git fetch --no-tags https://github.com/PhilipJohnBasile/unsloth.git "$revision"
+            git -c user.name='Verification CI' -c user.email='verification-ci@users.noreply.github.com' merge --no-edit --no-ff "$revision"
+          done
+      - name: Qualify the composed task workflow and adjacent boundaries
+        working-directory: studio/backend
+        run: >-
+          python -m pytest
+          tests/test_project_task_integration.py tests/test_project_task_runtime.py
+          tests/test_project_task_state.py tests/test_studio_tool_loop.py
+          tests/test_project_retirement.py tests/test_agent_workspace_worktrees_focused.py
+          tests/test_secure_cross_platform_tools.py
+          -q --tb=short --timeout=120 --maxfail=5
+
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+      - name: Audit lockfile before dependency installation
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/lockfile_supply_chain_audit.py
+      - run: npm ci --ignore-scripts --no-fund --no-audit
+      - run: node --experimental-strip-types --test tests/project-tasks-api.test.ts
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run bundle:check

@@ -41,7 +41,10 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  // Lazy project-task entry: identical local toolchain measured main at
+  // 1,620,018 transfer bytes and this branch at 1,620,213 (+195 bytes).
+  // The task panel remains a separate lazy chunk; allow 1 KiB for its entry.
+  transferBytes: 1_621_024,
   rawBytes: 5_500_000,
 };
 

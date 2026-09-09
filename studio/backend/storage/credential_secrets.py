@@ -11,6 +11,7 @@ credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import sqlite3
 import threading
@@ -236,6 +237,56 @@ def delete_hf_token() -> bool:
 
 def get_provider_api_key(provider_id: str) -> Optional[str]:
     return get_secret(PROVIDER_API_KEY_KIND, provider_id)
+
+
+def _provider_key_row(provider_id: str):
+    conn = get_connection()
+    try:
+        return conn.execute(
+            "SELECT format_version, nonce, ciphertext FROM credential_secrets "
+            "WHERE credential_kind=? AND scope_id=?",
+            (PROVIDER_API_KEY_KIND, provider_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _provider_key_binding(provider_id: str, row) -> str:
+    # Hash randomized ciphertext, never a potentially guessable plaintext key.
+    digest = hashlib.sha256(_associated_data(PROVIDER_API_KEY_KIND, provider_id))
+    if row is not None:
+        digest.update(str(row["format_version"]).encode("ascii"))
+        digest.update(bytes(row["nonce"]))
+        digest.update(bytes(row["ciphertext"]))
+    return digest.hexdigest()
+
+
+def get_provider_api_key_binding(provider_id: str) -> str:
+    """Opaque version identity for durable work; contains no credential material."""
+    return _provider_key_binding(provider_id, _provider_key_row(provider_id))
+
+
+def get_provider_api_key_with_binding(provider_id: str) -> tuple[Optional[str], str]:
+    """Read the key and its binding from the same row, including during rotation."""
+    row = _provider_key_row(provider_id)
+    binding = _provider_key_binding(provider_id, row)
+    if row is None or row["format_version"] != _FORMAT_VERSION:
+        return None, binding
+    try:
+        key = get_or_create_credential_encryption_key()
+        plaintext = (
+            AESGCM(key)
+            .decrypt(
+                bytes(row["nonce"]),
+                bytes(row["ciphertext"]),
+                _associated_data(PROVIDER_API_KEY_KIND, provider_id),
+            )
+            .decode("utf-8")
+        )
+        return plaintext, binding
+    except Exception:
+        logger.warning("Stored provider credential could not be decrypted")
+        return None, binding
 
 
 def save_provider_api_key(

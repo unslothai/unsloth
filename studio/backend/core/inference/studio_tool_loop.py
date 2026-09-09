@@ -380,6 +380,8 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
+    # Internal capability supplied by a server task; never deserialized from HTTP.
+    tool_executor: Callable[..., str] | None = None
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1754,6 +1756,7 @@ async def stream_with_studio_tools(
                 continue
 
             def _invoke(output_callback: Any, call = decision) -> str:
+                executor = policy.tool_executor or execute_tool
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1765,16 +1768,16 @@ async def stream_with_studio_tools(
                 # Provider loops share the local catalogue selector, so search_conversation is advertised here too once
                 # a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry leaves
                 # the replaced response in them.
-                if accepts_kwarg(execute_tool, "conversation_branch"):
+                if accepts_kwarg(executor, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly
                 # unknowable, not absent: this request is served by an external provider, so the resident GGUF's window
                 # says nothing about what it can hold. 0 keeps the default page cap instead of inheriting it.
-                if accepts_kwarg(execute_tool, "context_tokens"):
+                if accepts_kwarg(executor, "context_tokens"):
                     kwargs["context_tokens"] = 0
-                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                if accepts_kwarg(executor, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config
                         kwargs["conversation_budget_tokens"] = max(
@@ -1782,10 +1785,10 @@ async def stream_with_studio_tools(
                         ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
                     except Exception:
                         pass
-                if accepts_output_callback(execute_tool):
+                if accepts_output_callback(executor):
                     kwargs["output_callback"] = output_callback
-                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
-                return execute_tool(call.tool_name, call.arguments, **kwargs)
+                kwargs.update(search_images_kwargs(executor, call.tool_name))
+                return executor(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
             # call cannot idle the stream out.

@@ -254,6 +254,10 @@ const ProjectSourcesPanel = lazy(() =>
   })),
 );
 
+const ProjectTasksPanel = lazy(() =>
+  import("./components/project-tasks-panel").then((module) => ({ default: module.ProjectTasksPanel })),
+);
+
 type LoraCandidate = {
   id: string;
   baseModel: string;
@@ -1345,6 +1349,9 @@ function ProjectLanding({
   const [initialActiveThreadId] = useState(
     () => useChatRuntimeStore.getState().activeThreadId,
   );
+  const [showProjectTasks, setShowProjectTasks] = useState(false);
+  const taskCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const taskExternal = parseExternalModelId(taskCheckpoint);
   // Land on Sources when the project was just created with dropped files.
   const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
@@ -1787,6 +1794,16 @@ function ProjectLanding({
               placeholder={`New chat in ${projectName}`}
             />
 
+            <details className="mt-6" onToggle={(event) => setShowProjectTasks(event.currentTarget.open)}>
+              <summary className="cursor-pointer text-sm font-semibold">Project tasks</summary>
+              {showProjectTasks ? (
+                <Suspense fallback={<div className="mt-8 text-sm text-muted-foreground">Loading tasks…</div>}>
+                  <ProjectTasksPanel key={projectId} projectId={projectId} selection={taskExternal
+                    ? { kind: "provider", model: taskExternal.modelId, providerId: taskExternal.providerId }
+                    : { kind: "local", model: taskCheckpoint }} />
+                </Suspense>
+              ) : null}
+            </details>
             <div className="mt-9 flex items-center gap-2">
               <button
                 type="button"
