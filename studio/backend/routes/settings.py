@@ -2583,7 +2583,10 @@ def _resolve_embedding_model_plan(
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
-    if _cached_embedding_gguf_files(repo, files):
+    # A gated repo can publish its filenames, so a plan coming back is not authorization to
+    # report the operator's copy of it. The repo the plan names need not be the one the
+    # caller asked about, so it is authorized in its own right like every other candidate.
+    if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,

@@ -391,6 +391,21 @@ def read_default_chat_template(
 
         _api = HfApi(token = hf_token)
 
+        def _this_file_is_cached(rel: str) -> bool:
+            """THIS file at this revision, not merely a directory for the repo.
+
+            What the download could serve from disk is the one candidate template, so a
+            snapshot holding only weights can answer nothing and refusing it costs an
+            authorized caller a template the Hub would have given it. Fails closed.
+            """
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                return isinstance(
+                    try_to_load_from_cache(repo_id = resolved, filename = rel), str
+                )
+            except Exception:
+                return True
+
         def _remote_worth_downloading(rel: str) -> bool:
             # hf_hub_download returns the cached pointer for ANY failed head call, a 403 as
             # much as an unreachable Hub, before it re-raises. So a successful metadata
@@ -399,7 +414,7 @@ def read_default_chat_template(
             if cached_read_refused(
                 hf_token,
                 repo_id = resolved,
-                is_cached = lambda: get_cache_path(resolved) is not None,
+                is_cached = lambda: _this_file_is_cached(rel),
             ):
                 return False
             # Reuse the size lookup to skip absent or oversized files.

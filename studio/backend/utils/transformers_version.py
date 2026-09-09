@@ -51,6 +51,7 @@ from hub.utils.hf_tokens import (
     apply_token_to_child_env,
     cache_reads_authorized,
     is_anonymous,
+    qualify_cache_identity,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.native_tls import inline_gate_source, vendor_dir
@@ -676,14 +677,19 @@ def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | 
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
     unauthenticated miss on a gated/private repo never poisons a later authed lookup.
 
-    Forced-anonymous is its own credential, so it takes its own slot too.
+    Forced-anonymous is its own credential, so it takes its own slot too, and so is a UI
+    session: the marker hashes to the same bytes as a plain token of the same value, and the
+    tokenizer and config-tier caches keyed here return before any authorization check, so
+    without the qualifier an API caller reads back the classification a UI session cached.
     """
     import hashlib
 
     if is_anonymous(hf_token):
         return (model_name, ANONYMOUS_CACHE_IDENTITY)
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    return (model_name, tok)
+    if not hf_token:
+        return (model_name, None)
+    digest = hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+    return (model_name, qualify_cache_identity(hf_token, digest))
 
 
 def _is_canonical_repo_id(model_name: str) -> bool:

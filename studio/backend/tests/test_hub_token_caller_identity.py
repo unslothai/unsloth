@@ -567,6 +567,13 @@ def test_the_chat_template_fallback_follows_the_caller(
     monkeypatch.setattr(
         picker_service, "get_cache_path", lambda _n: Path("/cached/repo") if cached else None
     )
+    # The gate asks about THIS template file, not the repo directory: a snapshot holding
+    # only weights can serve no template, so refusing it would cost an authorized caller
+    # one the Hub would have given it.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda **_k: "/cached/repo/chat_template.jinja" if cached else None,
+    )
     downloads: list = []
 
     class _Api:
@@ -2319,3 +2326,85 @@ def test_the_gguf_partial_state_is_withheld_with_the_rest(monkeypatch, tmp_path)
 
     assert variant.partial is False
     assert reads == [], "the operator's download state was read for a refused caller"
+
+
+def test_a_repo_directory_is_not_a_cached_template(monkeypatch):
+    """The predicate asks what the read could actually be served, which is one file. A repo
+    cached for its weights alone holds no template, so refusing there protects nothing and
+    costs an authorized caller the copy the Hub still has, whenever the probe is merely
+    unavailable: a mirror without /auth-check, one transient failure."""
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(picker_service, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(picker_service, "resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr(
+        picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: iter(())
+    )
+    # The repo directory is here, the template file is not.
+    monkeypatch.setattr(picker_service, "get_cache_path", lambda _n: Path("/cached/repo"))
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: None)
+    downloads: list = []
+
+    class _Api:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def get_paths_info(self, _repo, paths, *_a, **_k):
+            return [SimpleNamespace(path = paths[0], size = 1024)]
+
+    def _download(*a, **k):
+        downloads.append(a)
+        raise FileNotFoundError("reaching the download is what this asserts")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert picker_service.read_default_chat_template("org/repo", "hf_dummy") is None
+    assert downloads, "a template the repo does not hold cached was refused anyway"
+
+
+def test_the_transformers_cache_key_separates_the_caller_classes():
+    """The qualifier reached three fingerprints and missed this one. The tokenizer and
+    config-tier caches keyed here return before any authorization check, so a UI session
+    populating one handed its verdict to an API caller with the same token text."""
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+    api = hf_token_arg("hf_saved", allow_ambient_token = False)
+
+    assert _token_cache_key("acme/m", ui) != _token_cache_key("acme/m", api)
+    assert "hf_saved" not in str(_token_cache_key("acme/m", ui))
+    # The values that already had their own slots keep them.
+    assert _token_cache_key("acme/m", False) == ("acme/m", ANONYMOUS_CACHE_IDENTITY)
+    assert _token_cache_key("acme/m", None) == ("acme/m", None)
+
+
+def test_a_resolved_gguf_plan_does_not_report_an_unauthorized_cache(monkeypatch):
+    """A gated repo can publish its filenames, so a plan coming back is not permission to
+    report the operator's copy of it, and the repo the plan names need not be the one the
+    caller asked about."""
+    from routes import settings as settings_routes
+
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: True)
+    monkeypatch.setattr(settings_routes, "_llama_runtime_available", lambda: True)
+    monkeypatch.setattr(settings_routes, "_resolves_as_local_gguf", lambda _m: False)
+    monkeypatch.setattr(settings_routes, "_local_gguf_backend_error", lambda _m: None)
+    monkeypatch.setattr(settings_routes, "_embedding_gguf_candidates", lambda m: [m])
+    monkeypatch.setattr(settings_routes, "_cached_embedding_gguf", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        settings_routes,
+        "_remote_embedding_gguf_plan",
+        lambda *_a, **_k: ("acme/private-GGUF", ["model-Q4_K_M.gguf"]),
+    )
+    reported: list = []
+    monkeypatch.setattr(
+        settings_routes,
+        "_cached_embedding_gguf_files",
+        lambda repo, files: reported.append(repo) or True,
+    )
+    monkeypatch.setattr(settings_routes, "_hf_files_size", lambda *_a, **_k: 1)
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/private", "hf_dummy")
+
+    assert plan.cached is not True, "the operator's cached GGUF was reported to a denied caller"
+    assert reported == [], "the cache was consulted for a repo nothing had authorized"
