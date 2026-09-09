@@ -391,9 +391,7 @@ class ChatBackend:
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
-            max_new_tokens = (
-                _LOCAL_MAX_NEW_TOKENS if max_new_tokens is None else max_new_tokens
-            ),
+            max_new_tokens = (_LOCAL_MAX_NEW_TOKENS if max_new_tokens is None else max_new_tokens),
             repetition_penalty = repetition_penalty,
             enable_thinking = enable_thinking,
         )

@@ -979,7 +979,12 @@ def _http_stream_body(monkeypatch, max_new_tokens):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
 
-    def fake_request(method, path, payload = None, timeout = None):
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
         bodies.append(payload)
         return _FakeSSEResponse([b"data: [DONE]\n"])
 
