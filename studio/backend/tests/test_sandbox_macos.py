@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip("the Seatbelt profile generator is POSIX only", allow_module_level = True)
+
 from core.inference import sandbox_macos as backend
 from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan
 

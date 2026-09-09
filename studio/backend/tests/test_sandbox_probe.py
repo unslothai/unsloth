@@ -14,10 +14,15 @@ import inspect
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip("the live probe is POSIX only", allow_module_level = True)
 
 from core.inference import os_sandbox, sandbox_landlock, sandbox_probe
 from core.inference.os_sandbox import PreparedSandboxLaunch, ToolLaunchPlan
@@ -438,14 +443,19 @@ def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
     assert "abstract" not in without
 
 
-def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(tmp_path, monkeypatch):
+def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(monkeypatch):
     """macOS puts the probe base under /tmp, which is a symlink to /private/tmp,
     and this test's double compares the path as written. Resolving only one side
     made it refuse its own workdir, so the probe failed before reaching the leg
     above and reported a confinement error for a path-spelling reason."""
-    real = tmp_path / "real"
+    # Short names, under the same short root the probe itself prefers: a base over
+    # _MAX_PROBE_BASE_LEN makes the fd-passing control's AF_UNIX address too long
+    # and the HOST half fails, which says nothing about the symlink.
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    holder = tempfile.mkdtemp(prefix = "us-sym-", dir = root)
+    real = pathlib.Path(holder) / "r"
     real.mkdir()
-    alias = tmp_path / "alias"
+    alias = pathlib.Path(holder) / "a"
     alias.symlink_to(real)
     real_mkdtemp = sandbox_probe.tempfile.mkdtemp
 
@@ -454,12 +464,15 @@ def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(tmp_pat
         return made.replace(str(real), str(alias))
 
     monkeypatch.setattr(sandbox_probe.tempfile, "mkdtemp", through_the_symlink)
-    assert str(alias.resolve()) != str(alias)  # the premise, not an assumption
-    available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
-    assert available is False
-    assert "symlink" in reason, reason
-    available, reason = sandbox_probe.probe(_Backend("confining", _confining))
-    assert available is True, reason
+    try:
+        assert str(alias.resolve()) != str(alias)  # the premise, not an assumption
+        available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
+        assert available is False
+        assert "symlink" in reason, reason
+        available, reason = sandbox_probe.probe(_Backend("confining", _confining))
+        assert available is True, reason
+    finally:
+        shutil.rmtree(holder, ignore_errors = True)
 
 
 def test_the_landlock_helper_imports_where_it_will_never_be_used():
