@@ -1044,7 +1044,12 @@ _recorded_uv_cache() {
     # path and one trailing newline. Tolerates a UTF-8 BOM (Windows PowerShell 5.1
     # `-Encoding utf8` writes one) and a CR, and is otherwise byte-for-byte -- a POSIX
     # path may hold anything but NUL, including spaces at either end.
-    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || return 1
+    # The sentinel keeps the bytes: command substitution strips EVERY trailing newline,
+    # and the CLI reader removes exactly one delimiter so a pathname that itself ends in
+    # a newline round-trips. One LF, then one CR, so a CRLF record reads the same way.
+    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null && printf x) || return 1
+    _ruc_raw=${_ruc_raw%x}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_LF"}
     _ruc_raw=${_ruc_raw#"$_UV_MARKER_BOM"}
     _ruc_raw=${_ruc_raw%"$_UV_MARKER_CR"}
     case "$_ruc_raw" in
@@ -1062,6 +1067,8 @@ _recorded_uv_cache() {
 }
 _UV_MARKER_BOM=$(printf '\357\273\277')
 _UV_MARKER_CR=$(printf '\r')
+_UV_MARKER_LF=$(printf '\n.')
+_UV_MARKER_LF=${_UV_MARKER_LF%.}
 
 # Three tiers only: a caller value, --no-cache, then the recorded marker or the Studio
 # cache. There is deliberately NO "use uv's default if it is warm" tier, which is the one
@@ -1075,9 +1082,14 @@ if [ -n "${UV_CACHE_DIR:-}" ]; then
     # A caller value wins outright, here as in install.sh and in the CLI.
     :
 elif _uv_no_cache_requested; then
-    :
+    # Unset, not left alone: an exported EMPTY value is the one thing that reaches this
+    # branch, and uv still parses it as `--cache-dir ''`, which fails every command.
+    unset UV_CACHE_DIR
 else
-    _uv_recorded=$(_recorded_uv_cache) || _uv_recorded=""
+    # Same sentinel as the reader: the substitution here would strip the newline the
+    # reader just preserved.
+    _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
+    _uv_recorded=${_uv_recorded%x}
     if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded"; then
         # Only while it still holds packages: a marker for an emptied cache would point
         # this run at nothing and refetch everything the Studio cache already has.

@@ -749,6 +749,18 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
+    # A relative cache-dir in uv.toml is reported relative, and uv resolves it against
+    # UV_WORKING_DIR (its own cwd otherwise); scanned against this script's cwd it would
+    # read as cold and a warm cache would be duplicated.
+    case "$_uv_default_cache" in
+        "" | /*) ;;
+        *)
+            _uv_base=${UV_WORKING_DIR:-$PWD}
+            case "$_uv_base" in /*) ;; *) _uv_base="$PWD/$_uv_base" ;; esac
+            _uv_default_cache="$_uv_base/$_uv_default_cache"
+            unset _uv_base
+            ;;
+    esac
 
     _uv_default_populated=false
     _uv_scan_blocked=false
@@ -787,6 +799,15 @@ _configure_uv_cache() {
         done
     fi
 
+    # Warm is not enough: uv writes to its cache in normal operation and aborts on one
+    # it cannot, so a read-only shared cache (a preseeded image, an NFS mount) is not one
+    # this install can use however many wheels it holds.
+    _uv_default_readonly=false
+    if [ "$_uv_default_populated" = true ] && ! _probe_uv_cache_writable "$_uv_default_cache"; then
+        _uv_default_populated=false
+        _uv_default_readonly=true
+    fi
+
     if [ "$_uv_default_populated" = true ]; then
         UV_CACHE_DIR="$_uv_default_cache"
         _UV_CACHE_MODE=shared
@@ -814,7 +835,9 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            if [ "$_uv_scan_blocked" = true ]; then
+            if [ "$_uv_default_readonly" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache holds packages but is not writable, so cached packages may download again" "$C_WARN"
+            elif [ "$_uv_scan_blocked" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"

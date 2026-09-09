@@ -33,6 +33,7 @@ HELPERS=$(awk '
     /^_recorded_uv_cache\(\) \{/ { grab = 1 }
     /^_UV_MARKER_BOM=/ { print; next }
     /^_UV_MARKER_CR=/ { print; next }
+    /^_UV_MARKER_LF=/ { print; next }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
@@ -179,6 +180,17 @@ for shell in sh bash; do
     assert_eq "$shell: an empty record is declined" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
+    # A pathname that itself ends in a newline. The CLI writes it plus one delimiter and
+    # reads it back by removing exactly one; a reader that let command substitution strip
+    # every trailing newline checked a different directory and called the cache cold.
+    NLCACHE="$CASE/trailing newline"
+    NLCACHE="$NLCACHE$(printf '\nx')"
+    NLCACHE=${NLCACHE%x}
+    warm "$NLCACHE"
+    record "$HOME_DIR" "$NLCACHE\\n"
+    assert_eq "$shell: a pathname ending in a newline round-trips" \
+        "${NLCACHE}x" "$(run "$shell" unset "" unset "" "$HOME_DIR"; printf x)"
+
     # A caller value outranks every inference, and is never written anywhere.
     record "$HOME_DIR" "$SHARED\\n"
     OVERRIDE="$CASE/caller cache"
@@ -189,6 +201,10 @@ for shell in sh bash; do
         assert_eq "$shell: UV_NO_CACHE=[$truthy] leaves the cache unset" \
             "<unset>" "$(run "$shell" unset "" value "$truthy" "$HOME_DIR")"
     done
+    # An exported EMPTY UV_CACHE_DIR is not a caller value, and uv parses it as an empty
+    # --cache-dir and fails; no-cache mode has to unset it rather than leave it.
+    assert_eq "$shell: an empty UV_CACHE_DIR under UV_NO_CACHE is unset, not kept" \
+        "<unset>" "$(run "$shell" value "" value 1 "$HOME_DIR")"
     for falsy in 0 false "" maybe; do
         assert_eq "$shell: UV_NO_CACHE=[$falsy] changes nothing" \
             "$SHARED" "$(run "$shell" unset "" value "$falsy" "$HOME_DIR")"

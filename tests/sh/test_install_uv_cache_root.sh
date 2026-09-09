@@ -481,6 +481,55 @@ EXPORTED
         bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
 
+    # A warm default cache that cannot be written (a preseeded image, an NFS mount) is
+    # not one uv can run against: it writes to its cache in normal operation and aborts
+    # on one it cannot. Warm alone used to select it, where the Studio cache had worked.
+    RO_CACHE="$CASE/read-only cache/uv"
+    mkdir -p "$RO_CACHE/archive-v0/pkg"
+    : > "$RO_CACHE/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 555 "$RO_CACHE" 2>/dev/null; then
+        run_case "$shell" "a warm but read-only default falls back to Studio" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$RO_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $RO_CACHE holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 755 "$RO_CACHE" 2>/dev/null || true
+    fi
+
+    # uv reports a relative cache-dir from uv.toml relative, and resolves it against
+    # UV_WORKING_DIR rather than the installer's cwd; scanned in the wrong place the warm
+    # cache read as cold and was duplicated.
+    mkdir -p "$CASE/work/relcache/archive-v0/pkg"
+    : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
+    REL_PROBE="$WORK/$shell relative default.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<RELATIVE
+step() { :; }
+substep() { :; }
+C_WARN=""
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+_ISOLATE_UV_CACHE=false
+cd '$CASE'
+unset UV_CACHE_DIR
+UV_WORKING_DIR=work
+export UV_WORKING_DIR
+TEST_UV_EFFECTIVE_CACHE=relcache
+export TEST_UV_EFFECTIVE_CACHE
+PATH="\$UV_STUB_DIR:\$PATH"
+export PATH
+_configure_uv_cache
+printf '%s\n%s\n' "\$_UV_CACHE_MODE" "\$UV_CACHE_DIR"
+RELATIVE
+    } > "$REL_PROBE"
+    rm -f "$MARKER"
+    _rel_actual=$($shell "$REL_PROBE" 2>/dev/null | tr '\n' '|')
+    if [ "$_rel_actual" = "shared|$CASE/work/relcache|" ]; then
+        ok "$shell: a relative default cache is resolved against UV_WORKING_DIR"
+    else
+        bad "$shell: relative default resolved as [$_rel_actual], wanted [shared|$CASE/work/relcache|]"
+    fi
+
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
