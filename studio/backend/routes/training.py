@@ -610,6 +610,8 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
                 ),
             )
         if cached_path is not None:
+            # No Hub probe ran and no cached claim was made, so grants must authorize it.
+            _authorize_cache_fallback(dataset_id, "dataset")
             return
         raise _hf_preflight_error(
             409,
@@ -716,11 +718,12 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
     return None
 
 
-def _authorize_cache_fallback(model_name: str) -> None:
+def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None:
     """A snapshot taken from the shared cache was never authorized by the caller's token, so its grants have to."""
     if managed_account():
         from hub.services.models import account_access
-        account_access.require_model_access(canonical_model_repo_id(model_name))
+        reference = canonical_model_repo_id(model_name) if repo_type == "model" else model_name
+        account_access.require_model_access(reference, repo_type)
 
 
 def _reject_untrainable_model_request(

@@ -723,6 +723,12 @@ def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOp
     if not is_valid_repo_id(repo_id):
         return LocalDatasetOptionsResponse(cache_available = False, splits = [])
 
+    if not request.local_path:
+        # The lookup spans the shared cache; a hit there is not authorization.
+        from hub.services.models import account_access
+        if not account_access.model_visible(repo_id, repo_type = "dataset"):
+            return LocalDatasetOptionsResponse(cache_available = False, splits = [])
+
     selected = (
         dataset_cache_path_from_cache_path(request.local_path, repo_id)
         if request.local_path

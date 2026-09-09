@@ -679,7 +679,10 @@ def private_directory(path: str, folder: str) -> str:
 
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
-    if not target.resolve().is_relative_to(workspace_root().resolve()):
+    # The project workspace is the account's own too, as within_account() agrees.
+    own_roots = (workspace_root(), project_workspaces_root())
+    resolved = target.resolve()
+    if not any(resolved.is_relative_to(root.resolve()) for root in own_roots):
         raise HTTPException(status_code = 404, detail = "Directory not found")
     return str(target)
 
