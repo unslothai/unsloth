@@ -8039,7 +8039,7 @@ def install_python_stack() -> int:
         _progress("torchcodec (skipped, unsupported torch version)")
         _note(
             f"torch {_codec_torch_ver} is below the oldest supported torchcodec pairing "
-            f"(torch 2.{_TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving audio decoding disabled"
+            f"(torch 2.{_TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving torchcodec alone"
         )
     elif not _torchcodec_spec_is_installable(_select_torchcodec_spec(_codec_torch_ver)):
         # This platform published no wheel in the window this torch selects. Skipping is what

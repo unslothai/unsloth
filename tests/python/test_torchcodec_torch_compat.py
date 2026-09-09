@@ -305,7 +305,7 @@ def test_torchcodec_step_skips_older_torch(version):
     )
     namespace["_note"].assert_called_once_with(
         f"torch {version} is below the oldest supported torchcodec pairing "
-        f"(torch 2.{ips._TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving audio decoding disabled"
+        f"(torch 2.{ips._TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving torchcodec alone"
     )
 
 
