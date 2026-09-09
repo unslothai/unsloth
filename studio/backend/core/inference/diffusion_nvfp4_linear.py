@@ -112,11 +112,23 @@ def nvfp4_linear_class():
         def forward(self, x):
             shape = x.shape
             flat = x.reshape(-1, self.in_features)
+            # FlashInfer's fp4 quantiser takes fp16, bf16 or e4m3 and raises on anything else,
+            # while torchao's NVFP4 path happily takes fp32 -- so a whole-model artifact has layers
+            # this one cannot run as they stand. Wan2.2 is the live case: its time embedder ships
+            # FP32 weights, so ``time_embedder.linear_1`` stays a dense fp32 Linear (256 in, below
+            # the quantise floor) and hands ``linear_2``, which IS quantized, an fp32 activation on
+            # every step of every render. The activation is about to be rounded to 4 bits with an
+            # e4m3 block scale, so the bf16 hop costs nothing measurable; returning the caller's own
+            # dtype keeps nn.Linear's contract, which the fp16 case needs too (the GEMM always
+            # writes bf16). Both casts are no-ops for a bf16 model, i.e. for the hot path.
+            out_dtype = flat.dtype
+            if out_dtype not in (torch.bfloat16, torch.float16):
+                flat = flat.to(torch.bfloat16)
             if flat.shape[0] == 0:
                 # An attention trim can hand a quantized Linear an empty batch. The GEMM has
                 # nothing to compute and FlashInfer has no shape for it; a shape check is a host
                 # value, not a device one, so this costs no synchronize.
-                return flat.new_zeros((0, self.out_features)).reshape(
+                return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
                     *shape[:-1], self.out_features
                 )
             with _device_guard(flat):
@@ -124,6 +136,9 @@ def nvfp4_linear_class():
                 out = torch.ops.unsloth_nvfp4.mm(
                     xq, self.wq, x_sf, self.w_sf, self.alpha, self.out_features, self.backend
                 )
+            # Back to the caller's dtype BEFORE the bias, so an fp32 layer adds its fp32 bias at
+            # fp32. A no-op returning the op's own output when the model is bf16.
+            out = out.to(out_dtype)
             if self.bias is not None:
                 # mm_fp4 has no bias epilogue (no bias argument, no beta accumulate), so the add is
                 # a separate pass over the M x N output. In place, on the op's own fresh output.

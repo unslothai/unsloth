@@ -535,3 +535,36 @@ def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
     metadata = {"scheme": "nvfp4", "activation_scales_baked": True, "act_global_scales": {}}
     assert nl.convert_nvfp4_backend(_quantized_tree(), metadata, "flashinfer", logger = logger) == 0
     assert "flag set, scales missing" in logger.text
+
+
+def test_an_fp32_layer_runs_and_answers_in_fp32():
+    """A whole-model video artifact has layers torchao quantises from FP32 weights, and they are
+    fed FP32 activations at run time: Wan2.2's time embedder ships fp32, so its 256-wide linear_1
+    stays dense below the quantise floor and hands the quantized linear_2 an fp32 tensor on every
+    step of every render. FlashInfer's fp4 quantiser raises on fp32, which torchao's does not, so
+    without the cast the fast backend cannot run a video artifact at all -- and it fails on the
+    first forward, after the model is loaded and the request is in flight."""
+    torch = _cuda_or_skip()
+    import torch.nn as nn
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+    from torchao.quantization import quantize_
+
+    torch.manual_seed(3)
+    layer = nn.Linear(3072, 3072).to("cuda", torch.float32).eval()
+    reference = nn.Linear(3072, 3072).to("cuda", torch.float32).eval()
+    reference.load_state_dict(layer.state_dict())
+    quantize_(layer, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    quantize_(reference, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
+    x = torch.randn(512, 3072, device = "cuda", dtype = torch.float32) * 0.05
+    with torch.inference_mode():
+        before = reference(x)
+    converted = nl.nvfp4_linear_from_torchao(layer, float(ops.global_scale(x)))
+    with torch.inference_mode():
+        after = converted(x)
+    assert after.dtype == torch.float32  # nn.Linear's contract: the caller's dtype back
+    assert bool(torch.isfinite(after).all())
+    assert _rel(after.float(), before.float()) < FORWARD_REL_BOUND
+    # And the empty-input guard answers in the caller's dtype too.
+    with torch.inference_mode():
+        empty = converted(x[:0])
+    assert empty.shape == (0, 3072) and empty.dtype == torch.float32
