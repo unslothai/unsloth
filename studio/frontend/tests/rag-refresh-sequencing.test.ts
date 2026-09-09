@@ -8,8 +8,16 @@
 // latest-request rule useRagDocuments.refresh applies.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const RAG_API = readSrc("features/rag/api/rag-api.ts");
+const THREAD_DOCUMENTS_BAR = readSrc("features/rag/components/thread-documents-bar.tsx");
+const USE_LINKED_FOLDERS = readSrc("features/rag/components/use-linked-folders.ts");
+const USE_RAG_DOCUMENTS = readSrc("features/rag/components/use-rag-documents.ts");
 
 type Row = { id: string; status: string };
 
@@ -106,15 +114,8 @@ test("a response for a scope that has been cleared does not publish", async () =
 });
 
 test("the scope-change effect takes a ticket on the way out", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    source,
+    USE_RAG_DOCUMENTS,
     /prev !== null && prev !== scopeKey\)[\s\S]{0,400}?refreshSeq\.current \+= 1;/,
     "clearing the scope must outrank a refresh already in flight",
   );
@@ -123,15 +124,8 @@ test("the scope-change effect takes a ticket on the way out", () => {
 // A superseded failure describes a scope no longer shown, and a host without the
 // vector extension 503s every one of these: no toast per composer opened.
 test("a failure is only reported for the request still being awaited", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    source,
+    USE_RAG_DOCUMENTS,
     /if \(refreshSeq\.current !== requestId\) return true;\s*if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
   );
 });
@@ -140,18 +134,11 @@ test("a failure is only reported for the request still being awaited", () => {
 // would fail one request per chat opened. Checked on projectId itself, so the
 // attach controls and target menu go with it rather than offering a certain 503.
 test("no project scope is opened where RAG cannot run", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /const projectId =\s*\(ragEnabled && ragSource\.type === "kb"\) \|\| ragUnavailable\s*\? null\s*: \(threadProjectId \?\? null\);/,
   );
-  assert.match(source, /projectId \? \{ type: "project", projectId \} : null/);
+  assert.match(THREAD_DOCUMENTS_BAR, /projectId \? \{ type: "project", projectId \} : null/);
 });
 
 // A project's sources also change from the Sources panel: an upload invalidated
@@ -189,43 +176,18 @@ test("work in the other instance counts as indexing", () => {
 });
 
 test("the composer reads indexing from the hooks, not the listed rows", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /noteProjectWork\(uploadingProjectId, 1\)/);
-  assert.match(hook, /noteProjectWork\(uploadingProjectId, -1\)/);
-  assert.match(hook, /workElsewhere > 0 \|\|/);
+  assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(uploadingProjectId, 1\)/);
+  assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(uploadingProjectId, -1\)/);
+  assert.match(USE_RAG_DOCUMENTS, /workElsewhere > 0 \|\|/);
   // A folder sync reports at start and completion only, so the rows it
   // creates land with nothing gating the composer in between.
-  const folders = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-linked-folders.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // Tied to the job, not to the component that started it: leaving the Sources
   // tab aborts its event stream, the sync carries on.
-  assert.match(folders, /watchProjectFolderJob\(scopeId, initial\.id\)/);
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(api, /noteProjectWork\(projectId, 1\)/);
-  assert.match(api, /noteProjectWork\(projectId, -1\)/);
-  const bar = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  assert.match(USE_LINKED_FOLDERS, /watchProjectFolderJob\(scopeId, initial\.id\)/);
+  assert.match(RAG_API, /noteProjectWork\(projectId, 1\)/);
+  assert.match(RAG_API, /noteProjectWork\(projectId, -1\)/);
   assert.match(
-    bar,
+    THREAD_DOCUMENTS_BAR,
     /const hasIndexing =\s*threadIndexing \|\| threadListLoading \|\| projectIndexing \|\| projectListLoading;/,
   );
 });
@@ -253,28 +215,14 @@ test("a poll tick is skipped while one is still out", () => {
 });
 
 test("the poll and the initial list are wired that way", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /if \(!refreshInFlight\.current\) \{\s*void refresh\(\{ quiet: true \}\);/,
   );
   // Reopening a project whose job is already running: nothing is listed yet and
   // no upload of ours is counted, so the gate has to hold for the first list.
-  const bar = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    bar,
+    THREAD_DOCUMENTS_BAR,
     /threadIndexing \|\| threadListLoading \|\| projectIndexing \|\| projectListLoading/,
   );
 });
@@ -282,46 +230,31 @@ test("the poll and the initial list are wired that way", () => {
 // Two tabs on the same project share its sources, and a CustomEvent reaches
 // only the tab that fired it.
 test("an invalidation crosses tabs", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /getProjectChannel\(\)\?\.postMessage\(\{ kind: "sources", projectId \}\)/,
   );
   // Work in flight crosses too, or the other tab stays sendable through it.
   assert.match(
-    api,
+    RAG_API,
     /getProjectChannel\(\)\?\.postMessage\(\{\s*kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/,
   );
-  assert.match(api, /new BroadcastChannel\(PROJECT_SOURCES_CHANGED_EVENT\)/);
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /subscribeProjectSourcesBroadcast\(\);/);
+  assert.match(RAG_API, /new BroadcastChannel\(PROJECT_SOURCES_CHANGED_EVENT\)/);
+  assert.match(USE_RAG_DOCUMENTS, /subscribeProjectSourcesBroadcast\(\);/);
 });
 
 // Only the tab that started the work can report it finished, and it may be
 // closed first, so what it reports lapses rather than gating for the session.
 test("work reported by another tab lapses", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(api, /const REMOTE_WORK_TTL_MS = 120_000;/);
-  assert.match(api, /until: Date\.now\(\) \+ REMOTE_WORK_TTL_MS/);
+  assert.match(RAG_API, /const REMOTE_WORK_TTL_MS = 120_000;/);
+  assert.match(RAG_API, /until: Date\.now\(\) \+ REMOTE_WORK_TTL_MS/);
   // Local and remote add up; a remote count past its deadline is dropped.
   assert.match(
-    api,
+    RAG_API,
     /if \(entry\.until > now\) remoteCount \+= entry\.count;\s*\}\s*return \(projectWorkInFlight\.get\(projectId\) \?\? 0\) \+ remoteCount;/,
   );
   // One pending wake-up per project, however chatty the other tab is.
-  assert.match(api, /clearTimeout\(timer\)/);
+  assert.match(RAG_API, /clearTimeout\(timer\)/);
 
   const TTL = 120_000;
   const remote = new Map<string, { count: number; until: number }>();
@@ -356,12 +289,8 @@ test("work reported by another tab lapses", () => {
 // Two uploads overlapping in the other tab: the first to finish must not
 // release the gate the second is still holding.
 test("overlapping remote work is counted, not flagged", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /setRemoteProjectWork\(projectId, from, Math\.max\(0, current \+ delta\)\);/,
   );
 
@@ -387,29 +316,15 @@ test("overlapping remote work is counted, not flagged", () => {
 // The composer says the source is gone on click, but it is there until the
 // DELETE returns, and the probe is invalidated only after that.
 test("a project delete is work on the project", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /noteProjectWork\(removingProjectId, 1\)/);
-  assert.match(hook, /noteProjectWork\(removingProjectId, -1\)/);
+  assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(removingProjectId, 1\)/);
+  assert.match(USE_RAG_DOCUMENTS, /noteProjectWork\(removingProjectId, -1\)/);
 });
 
 // A superseded request clearing the flag would report the list as known while
 // the request that will publish is still out.
 test("the newest request owns the loading flag", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /if \(refreshSeq\.current === requestId\) \{\s*refreshInFlight\.current = false;\s*setLoading\(false\);/,
   );
 });
@@ -418,21 +333,14 @@ test("the newest request owns the loading flag", () => {
 // fires afterwards triggers a quiet refresh, which takes no loading gate: between
 // the two the composer would report nothing indexing.
 test("the refresh an invalidation triggers is counted as work", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // The listener hands off to the shared loader, which takes the lease for as
   // long as the list (and its retries) run.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /void loadProjectSources\(projectScopeId, \{ quiet: true \}\);/,
   );
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /noteProjectWork\(projectId, 1\);\s*try \{[\s\S]{0,900}?\} finally \{\s*noteProjectWork\(projectId, -1\);/,
   );
 });
@@ -440,17 +348,13 @@ test("the refresh an invalidation triggers is counted as work", () => {
 // One failed read is not a finished job: a backend restart misses a tick or two
 // while the durable sync runs on.
 test("a folder job watcher rides out a failed read", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   // The catch is inside the loop, so a failure does not reach the finally.
   assert.match(
-    api,
+    RAG_API,
     /if \(isRagClientError\(error\)\) break;\s*consecutiveFailures \+= 1;\s*if \(consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES\) \{\s*break;/,
   );
   // A read that comes back clears the streak, so only a run of them gives up.
-  assert.match(api, /consecutiveFailures = 0;/);
+  assert.match(RAG_API, /consecutiveFailures = 0;/);
 
   // The same loop, run against reads that fail and then recover.
   const reads = ["fail", "fail", "fail", "running", "fail", "completed"];
@@ -481,17 +385,13 @@ test("a folder job watcher rides out a failed read", () => {
 // An upload larger than the deadline sends no delta in between, so without a
 // renewal the other tab stops counting it and becomes sendable mid-upload.
 test("work in flight renews the deadline other tabs put on it", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(api, /const WORK_HEARTBEAT_MS = 45_000;/);
+  assert.match(RAG_API, /const WORK_HEARTBEAT_MS = 45_000;/);
   // The absolute count, not a zero delta: a delta cannot revive an entry the
   // receiver has already let lapse, which a suspended timer produces.
-  assert.match(api, /setInterval\(answerWorkQuery, WORK_HEARTBEAT_MS\)/);
+  assert.match(RAG_API, /setInterval\(answerWorkQuery, WORK_HEARTBEAT_MS\)/);
   // Started and stopped by the count itself, so an idle tab posts nothing.
   assert.match(
-    api,
+    RAG_API,
     /if \(projectWorkInFlight\.size === 0\) \{\s*if \(workHeartbeat !== null\) \{\s*clearInterval\(workHeartbeat\)/,
   );
 
@@ -528,15 +428,8 @@ test("work in flight renews the deadline other tabs put on it", () => {
 // replacement, so nothing reaches the sequence guard that would clear the
 // flags. The composer reads the list as still unknown and holds every send.
 test("dropping the scope clears the flags no request will", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /if \(scope\) \{[\s\S]{0,300}?: refresh\(\)\);\s*\} else \{[\s\S]{0,300}?refreshInFlight\.current = false;[\s\S]{0,200}?setLoading\(false\);/,
   );
 
@@ -564,12 +457,8 @@ test("dropping the scope clears the flags no request will", () => {
 // answer for 30s. The watcher is the only observer once the panel unmounts, so
 // a send released by it would still read the cached "no sources".
 test("a folder job drops the cached answer before the gate", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /announceProjectSourcesUpdated\(projectId\);\s*noteProjectWork\(projectId, -1\);/,
   );
 });
@@ -577,15 +466,11 @@ test("a folder job drops the cached answer before the gate", () => {
 // BroadcastChannel does not replay, so a tab opened mid-upload hears nothing
 // until the next delta, which for an upload is its completion.
 test("a tab that opens mid-upload asks what is already running", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   // Asked once, on the way in.
-  assert.match(api, /askForWorkInFlight\(\);\s*return projectChannel;/);
-  assert.match(api, /postMessage\(\{ kind: "work-query" \}\)/);
+  assert.match(RAG_API, /askForWorkInFlight\(\);\s*return projectChannel;/);
+  assert.match(RAG_API, /postMessage\(\{ kind: "work-query" \}\)/);
   assert.match(
-    api,
+    RAG_API,
     /channel\.postMessage\(\{ kind: "work-state", projectId, count, from: TAB_ID \}\)/,
   );
 
@@ -616,21 +501,17 @@ test("a tab that opens mid-upload asks what is already running", () => {
 // project-wide count, the first to finish clears the gate the second is still
 // holding, and a send goes out mid-upload.
 test("work is counted per reporting tab, not per project", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /const remoteProjectWork = new Map<\s*string,\s*Map<string, \{ count: number; until: number \}>\s*>\(\);/,
   );
   // Every message says who sent it, or the counts cannot be kept apart.
-  assert.match(api, /kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/);
+  assert.match(RAG_API, /kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/);
   assert.match(
-    api,
+    RAG_API,
     /postMessage\(\{ kind: "work-state", projectId, count, from: TAB_ID \}\)/,
   );
-  assert.match(api, /if \(entry\.until > now\) remoteCount \+= entry\.count;/);
+  assert.match(RAG_API, /if \(entry\.until > now\) remoteCount \+= entry\.count;/);
 
   // The reported sequence, per sender.
   const TTL = 120_000;
@@ -668,64 +549,50 @@ test("work is counted per reporting tab, not per project", () => {
 // The gate is released by the mutation's reconciling refresh, so a refresh that
 // fails releases it with the composer holding no rows at all.
 test("a failed reconciling refresh is retried before the gate drops", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /const REFRESH_RETRIES = 3;/);
+  assert.match(USE_RAG_DOCUMENTS, /const REFRESH_RETRIES = 3;/);
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /if \(await refresh\(\{ quiet: opts\?\.quiet, silentErrors: !last \}\)\) return;/,
   );
   // The release is still guaranteed, retries or not.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /\} finally \{\s*noteProjectWork\(projectId, -1\);/,
   );
   // And the first list of a project takes the same path, so a transient failure
   // there does not leave an empty list reporting nothing to wait for.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /scope\.type === "project"\s*\? loadProjectSources\(scope\.projectId\)\s*: refresh\(\)/,
   );
   // A superseded request reports the list as known: the newer one owns it.
-  assert.match(hook, /if \(refreshSeq\.current !== requestId\) return true;/);
+  assert.match(USE_RAG_DOCUMENTS, /if \(refreshSeq\.current !== requestId\) return true;/);
 });
 
 // The backend creates and starts the job before it answers, so the request
 // itself is time the project is changing with nothing gating on it.
 test("a folder mutation takes the gate before its request", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-linked-folders.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    hook,
+    USE_LINKED_FOLDERS,
     /noteProjectWork\(projectWorkScopeId, 1\);\s*try \{\s*return await run\(\);\s*\} finally \{\s*noteProjectWork\(projectWorkScopeId, -1\);/,
   );
   // Linking, syncing, rebuilding and unlinking all go through it.
   assert.match(
-    hook,
+    USE_LINKED_FOLDERS,
     /withProjectWork\(async \(\) => \{\s*const created = await createLinkedFolder\(/,
   );
   assert.match(
-    hook,
+    USE_LINKED_FOLDERS,
     /withProjectWork\(async \(\) => \{\s*const started =\s*mode === "rebuild"/,
   );
   assert.match(
-    hook,
+    USE_LINKED_FOLDERS,
     /withProjectWork\(\(\) => deleteLinkedFolder\(folderId, removeIndex\)\)/,
   );
   // The job's own lease is taken inside the request's, so a scope change
   // between the response and trackJob cannot leave the project uncounted.
-  assert.match(hook, /watchStartedJob\(created\.job\.id\);\s*return created;/);
-  assert.match(hook, /watchStartedJob\(started\.job\.id\);\s*return started;/);
+  assert.match(USE_LINKED_FOLDERS, /watchStartedJob\(created\.job\.id\);\s*return created;/);
+  assert.match(USE_LINKED_FOLDERS, /watchStartedJob\(started\.job\.id\);\s*return started;/);
 });
 
 // A folder sync outlives the tab that started it. After a reload the watcher is
@@ -733,59 +600,44 @@ test("a folder mutation takes the gate before its request", () => {
 // composer's own list is legitimately empty. Only the Sources panel lists
 // linked folders, and a project opens on Chats, so the composer has to ask.
 test("a project composer picks up a folder sync already running", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /export async function reconcileProjectFolderJobs\(\s*projectId: string,\s*\): Promise<void>/,
   );
   assert.match(
-    api,
+    RAG_API,
     /if \(folder\.activeJobId\) \{\s*watchProjectFolderJob\(projectId, folder\.activeJobId\);/,
   );
   // Two bars on one project share a look, and a failed look does not count as
   // an answer, but the project is never closed to a later one.
   assert.match(
-    api,
+    RAG_API,
     /if \(\(folderReconcileNotBefore\.get\(projectId\) \?\? 0\) > now\) return;[\s\S]{0,400}?folderReconcileNotBefore\.set\(projectId, now \+ FOLDER_RECONCILE_MIN_GAP_MS\);/,
   );
-  assert.match(api, /folderReconcileNotBefore\.delete\(projectId\);/);
+  assert.match(RAG_API, /folderReconcileNotBefore\.delete\(projectId\);/);
 
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /void reconcileProjectFolderJobs\(workScopeId\);/);
+  assert.match(USE_RAG_DOCUMENTS, /void reconcileProjectFolderJobs\(workScopeId\);/);
   // The backend enqueues a job per auto-syncing folder on its own timer, so one
   // look at mount time misses every scan that starts after it.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /const reconcile = setInterval\(\(\) => \{\s*void reconcileProjectFolderJobs\(workScopeId\);\s*\}, FOLDER_RECONCILE_INTERVAL_MS\);/,
   );
   // The lookup takes a lease before its first await, so the listener that reads
   // the count has to be registered ahead of it.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /window\.addEventListener\(PROJECT_WORK_CHANGED_EVENT, read\);[\s\S]{0,400}?void reconcileProjectFolderJobs\(workScopeId\);/,
   );
-  assert.match(hook, /clearInterval\(reconcile\);/);
+  assert.match(USE_RAG_DOCUMENTS, /clearInterval\(reconcile\);/);
 });
 
 // Unlinking a folder deletes its job rows, and so does the history prune, so a
 // detached watcher can poll a job id that will never answer again.
 test("a folder job watcher stops on an answered 4xx", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   // Read the two constants the loop is bounded by rather than restating them.
   const retryBudget = Number(
-    /const MAX_FOLDER_JOB_READ_FAILURES = (\d+);/.exec(api)?.[1],
+    /const MAX_FOLDER_JOB_READ_FAILURES = (\d+);/.exec(RAG_API)?.[1],
   );
   assert.ok(retryBudget > 0);
 
@@ -806,24 +658,20 @@ test("a folder job watcher stops on an answered 4xx", () => {
 // A queued prompt outlives the bar that watched it, and isIndexing() answers only
 // while that bar is mounted, so the queue has to ask for the project itself.
 test("a background prompt queue checks the project it will send to", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
   // The thread-scope check no longer returns early past the project one.
   assert.doesNotMatch(
-    thread,
+    THREAD,
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
   );
-  assert.match(thread, /\? await resolveProjectId\(threadId, undefined, \{/);
-  assert.match(thread, /composerProjectId: queueProjectId,/);
+  assert.match(THREAD, /\? await resolveProjectId\(threadId, undefined, \{/);
+  assert.match(THREAD, /composerProjectId: queueProjectId,/);
   // Work in flight counts as well as rows: an upload has no row until it lands.
   assert.match(
-    thread,
+    THREAD,
     /if \(projectWorkCount\(projectId\) > 0\) \{\s*return true;/,
   );
   assert.match(
-    thread,
+    THREAD,
     /const projectDocuments = await listProjectDocuments\(projectId\);\s*return projectDocuments\.some\(indexingDocument\);/,
   );
 });
@@ -831,41 +679,30 @@ test("a background prompt queue checks the project it will send to", () => {
 // A queue in a chat with no row yet cannot look its project up: the row is not
 // there, and the store holds whichever project is on screen when the poll lands.
 test("a queue in a chat with no row still waits on its project", () => {
-  const src = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
   // Captured at queue start, beside the other snapshots, and never for incognito
   // (which has no project and no row to reconcile against).
   assert.match(
-    src,
+    THREAD,
     /const projectIdAtQueueStart = incognitoAtQueueStart\s*\?\s*null\s*:\s*\(chatStateAtQueueStart\.activeProjectId \?\? null\);/,
   );
-  assert.match(src, /getQueueProjectId: \(\) => projectIdAtQueueStart,/);
+  assert.match(THREAD, /getQueueProjectId: \(\) => projectIdAtQueueStart,/);
   // The thread lookup stays the source of truth wherever there is a thread.
   assert.match(
-    src,
+    THREAD,
     /const queueProjectId = item\.target\.getQueueProjectId\(\);\s*const projectId = threadId\s*\?\s*await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,\s*composerProjectId: queueProjectId,\s*\}\)\s*:\s*queueProjectId;/,
   );
   // And the thread-document read is still only made when there is a thread.
-  assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
+  assert.match(THREAD, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
 });
 
 // Unlinking deletes the rows whatever this hook shows by the time the DELETE
 // returns, so an announcement gated on the current scope leaves every other
 // composer, and every other tab, listing files that are gone.
 test("unlinking a folder announces for the project it was for", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-linked-folders.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /const unlinkedProjectId = projectWorkScopeId;/);
+  assert.match(USE_LINKED_FOLDERS, /const unlinkedProjectId = projectWorkScopeId;/);
   // Announced before the scope guard, so navigating mid-DELETE cannot skip it.
   assert.match(
-    hook,
+    USE_LINKED_FOLDERS,
     /if \(unlinkedProjectId\) announceProjectSourcesUpdated\(unlinkedProjectId\);\s*if \(currentScopeKey\.current !== operationScopeKey\) return;/,
   );
 });
@@ -874,52 +711,37 @@ test("unlinking a folder announces for the project it was for", () => {
 // one files the next attachment into the chat, and nothing re-runs the lookup
 // until the chat or the open project changes.
 test("a failed project lookup leaves the scope unresolved", () => {
-  const bar = readFileSync(
-    new URL(
-      "../src/features/rag/components/thread-documents-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(bar, /const PROJECT_LOOKUP_RETRIES = 3;/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const PROJECT_LOOKUP_RETRIES = 3;/);
   assert.match(
-    bar,
+    THREAD_DOCUMENTS_BAR,
     /for \(let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt \+= 1\)/,
   );
   // Nothing records a null project on the failure path any more.
   assert.doesNotMatch(
-    bar,
+    THREAD_DOCUMENTS_BAR,
     /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
   );
   // And unresolved still disables the attach controls.
-  assert.match(bar, /const projectUnresolved = threadProjectId === undefined;/);
-  assert.match(bar, /uploading \|\| projectUploading \|\| projectUnresolved/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
+  assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
 });
 
 // A row the probe could not read is not a chat with no project: answering null
 // dispatches the queued prompt and bypasses the retry the catch exists for.
 test("a failed row read holds a queued prompt instead of releasing it", () => {
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(adapter, /opts\?: \{ rethrowReadFailure\?: boolean;/);
+  assert.match(CHAT_ADAPTER, /opts\?: \{ rethrowReadFailure\?: boolean;/);
   assert.match(
-    adapter,
+    CHAT_ADAPTER,
     /\} catch \(error\) \{[\s\S]{0,200}?if \(opts\?\.rethrowReadFailure\) throw error;\s*return null;/,
   );
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    thread,
+    THREAD,
     /await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,/,
   );
   // Every other caller keeps failing soft: they run on the send path, where a
   // read failure must not adopt whichever project is on screen.
   assert.equal(
-    (thread.match(/rethrowReadFailure/g) ?? []).length,
+    (THREAD.match(/rethrowReadFailure/g) ?? []).length,
     1,
     "only the queue probe rethrows",
   );
@@ -928,28 +750,20 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
 // A knowledge base replaces every other scope in rag_scope, so a queue scoped to
 // one cannot be affected by a project upload or a folder sync.
 test("a knowledge-base queue does not wait on project sources", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    thread,
+    THREAD,
     /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
   );
-  assert.match(thread, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
+  assert.match(THREAD, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
   // Ahead of the project lookup, and after the thread one, which a KB queue
   // never takes anyway.
   assert.match(
-    thread,
+    THREAD,
     /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
   );
   // The exclusivity this relies on, in the adapter that builds the scope.
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    adapter,
+    CHAT_ADAPTER,
     /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
   );
 });
@@ -958,22 +772,15 @@ test("a knowledge-base queue does not wait on project sources", () => {
 // lister of the project it started for, so after the user moves on it publishes
 // that project's documents into the composer showing another one.
 test("a retry stops when the scope it started for is gone", () => {
-  const hook = readFileSync(
-    new URL(
-      "../src/features/rag/components/use-rag-documents.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(hook, /const startedFor = `project:\$\{projectId\}`;/);
+  assert.match(USE_RAG_DOCUMENTS, /const startedFor = `project:\$\{projectId\}`;/);
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /liveScopeKeyRef\.current = scopeKey;\s*\}, \[scopeKey\]\);/,
   );
   // Checked after the delay, not before the first attempt: the scope effect that
   // starts this load runs before the one that records the live scope.
   assert.match(
-    hook,
+    USE_RAG_DOCUMENTS,
     /await new Promise\(\(resolve\) =>\s*setTimeout\(resolve, 1000 \* \(attempt \+ 1\)\),\s*\);[\s\S]{0,400}?if \(liveScopeKeyRef\.current !== startedFor\) return;/,
   );
 });
@@ -982,22 +789,18 @@ test("a retry stops when the scope it started for is gone", () => {
 // store names whichever project is on screen when the queue polls. Falling back
 // to it there probes the project the user moved to, not the one being waited on.
 test("a queue with no row yet falls back to its own project, not the store", () => {
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    adapter,
+    CHAT_ADAPTER,
     /opts\?: \{ rethrowReadFailure\?: boolean; composerProjectId\?: string \| null \}/,
   );
   // The caller's fallback wins over the store, and null from a caller is an
   // answer rather than a reason to read the store.
   assert.match(
-    adapter,
+    CHAT_ADAPTER,
     /const composerProjectId =\s*opts\?\.composerProjectId !== undefined\s*\?\s*opts\.composerProjectId\s*:\s*useChatRuntimeStore\.getState\(\)\.activeProjectId;/,
   );
   // The row and the pending map still outrank it.
-  assert.match(adapter, /if \(thread\) \{\s*composerProjectByPendingThread\.delete\(threadId\);/);
+  assert.match(CHAT_ADAPTER, /if \(thread\) \{\s*composerProjectByPendingThread\.delete\(threadId\);/);
 });
 
 // One timer covers the project, so arming it for a full TTL on every update
@@ -1005,20 +808,16 @@ test("a queue with no row yet falls back to its own project, not the store", () 
 // mid-upload, and its stale count then gates a mounted composer until some later
 // event happens to publish.
 test("the work timer is armed for the earliest sender deadline", () => {
-  const api = readFileSync(
-    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    api,
+    RAG_API,
     /let earliest = Number\.POSITIVE_INFINITY;\s*for \(const entry of bySender\.values\(\)\) \{\s*earliest = Math\.min\(earliest, entry\.until\);/,
   );
-  assert.match(api, /Math\.max\(0, earliest - Date\.now\(\)\)/);
+  assert.match(RAG_API, /Math\.max\(0, earliest - Date\.now\(\)\)/);
   // Fired, it drops what lapsed and arms for the next deadline rather than
   // leaving the remaining senders with no wake-up at all.
-  assert.match(api, /if \(entry\.until <= now\) live\.delete\(sender\);/);
+  assert.match(RAG_API, /if \(entry\.until <= now\) live\.delete\(sender\);/);
   assert.match(
-    api,
+    RAG_API,
     /publishProjectWorkChanged\(projectId\);\s*armRemoteWorkExpiry\(projectId\);/,
   );
 

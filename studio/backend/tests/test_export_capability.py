@@ -88,6 +88,17 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
         assert "MLX" in cap["export_unsupported_message"]
 
 
+def test_apple_no_torch_install_reports_no_torch(monkeypatch):
+    # GGUF-only by request: the message must not send the user to `unsloth studio update`.
+    _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = True)
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
+    cap = hw.export_capability()
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "no_torch"
+    assert "--no-torch" in cap["export_unsupported_message"]
+    assert "unsloth studio update" not in cap["export_unsupported_message"]
+
+
 # -- import safety without PyTorch --------------------------------------------------------------
 
 

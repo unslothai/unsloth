@@ -117,6 +117,7 @@ export const CONTEXT_LENGTH_MIN = 128;
 // Reasons a Mac still cannot serve with MLX.
 const NO_MLX_REASONS = new Set([
   "mlx_unavailable",
+  "no_torch",
   "intel_mac",
   "detection_failed",
 ]);

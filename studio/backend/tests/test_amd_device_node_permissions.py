@@ -841,6 +841,11 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
 
     monkeypatch.setattr(amd.os, "stat", _stat)
     monkeypatch.setattr(grp, "getgrgid", _getgrgid)
+    # Synthetic nodes have no ACL and the account starts outside their groups.
+    # Membership tests override these defaults explicitly after building the nodes.
+    monkeypatch.setattr(amd, "_has_an_access_acl", lambda _path: False)
+    monkeypatch.setattr(amd.os, "getgid", lambda: 1)
+    monkeypatch.setattr(amd.os, "getgroups", lambda: [])
 
 
 def test_the_group_derivation_reads_the_node(monkeypatch):

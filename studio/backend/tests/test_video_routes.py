@@ -28,6 +28,7 @@ from core.inference.video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
 )
+import routes.video as video_routes
 from routes.video import router as video_router
 
 
@@ -459,7 +460,9 @@ def test_load_rejects_bad_text_encoder_quant_422(client):
     assert resp.status_code == 422
 
 
-def test_load_progress_route(client):
+def test_load_progress_route(client, monkeypatch):
+    resets = []
+    monkeypatch.setattr(video_routes, "reset_media_load_progress", resets.append)
     idle = client.get("/api/inference/video/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
     client.post(
@@ -468,6 +471,28 @@ def test_load_progress_route(client):
     )
     ready = client.get("/api/inference/video/load-progress")
     assert ready.json()["phase"] == "ready"
+    assert resets == ["video"]
+
+
+def test_load_progress_route_logs_backend_snapshot(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        video_routes,
+        "log_media_load_progress",
+        lambda media, phase, fraction: seen.append((media, phase, fraction)),
+    )
+    backend = video_module.get_video_backend()
+    backend.load_progress = lambda: {
+        "phase": "downloading",
+        "downloaded_bytes": 30,
+        "expected_bytes": 100,
+        "error": None,
+    }
+
+    response = client.get("/api/inference/video/load-progress")
+
+    assert response.status_code == 200
+    assert seen == [("video", "downloading", 0.3)]
 
 
 def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path):
@@ -501,13 +526,16 @@ def test_load_local_pipeline_dir_stays_pipeline(client, tmp_path):
     assert not kwargs.get("gguf_filename")
 
 
-def test_generate_happy_path_persists_and_reports_record(client):
+def test_generate_happy_path_persists_and_reports_record(client, monkeypatch):
+    resets = []
+    monkeypatch.setattr(video_routes, "reset_media_generation_progress", resets.append)
     client.post(
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
     # The POST returns at once ("started"); the saved record arrives through the generate-progress terminal state.
     video = _generate_and_wait(client, {"prompt": "a sloth surfing", "seed": 7})
+    assert resets == ["video"]
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]
     assert video["has_audio"] is True
     assert video["model"] == "unsloth/LTX-2.3-GGUF"
@@ -636,12 +664,19 @@ def test_generate_concurrent_second_returns_409(client, monkeypatch):
     assert _generate_and_wait(client, {"prompt": "c", "seed": 2})["seed"] == 2
 
 
-def test_generate_progress_route(client):
+def test_generate_progress_route(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        video_routes,
+        "log_media_generation_progress",
+        lambda media, progress: seen.append((media, dict(progress))),
+    )
     resp = client.get("/api/inference/video/generate-progress")
     assert resp.status_code == 200
     body = resp.json()
     assert body["active"] is False
     assert body["phase"] is None and body["video"] is None and body["error"] is None
+    assert seen == [("video", {"active": False, "total_steps": 0, "fraction": 0.0})]
 
 
 def test_cancel_generation_route(client):

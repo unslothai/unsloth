@@ -2622,7 +2622,10 @@ def test_the_mlx_worker_reads_its_epoch_before_start():
 
     with mock.patch.object(repair.threading, "Thread", _Recorder):
         with mock.patch.object(repair, "is_apple_silicon", lambda: True):
-            with mock.patch.object(repair, "mlx_stack_available", lambda: False):
+            with (
+                mock.patch.object(repair, "mlx_stack_available", lambda: False),
+                mock.patch.object(repair, "_installed_without_torch", lambda: False),
+            ):
                 with mock.patch.dict(os.environ, {}, clear = False):
                     os.environ.pop(repair.DISABLE_ENV_VAR, None)
                     repair._attempted = False

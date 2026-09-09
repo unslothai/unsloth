@@ -14,18 +14,13 @@
 // seed test next door: the applier is one large object literal with no seam to call.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (relative: string) =>
-  readFileSync(path.join(HERE, "..", relative), "utf8");
+import { readSrc } from "./helpers/kit.ts";
 
-const APPLIER = read("src/features/chat/lib/apply-inference-status-to-store.ts");
-const RUNTIME = read("src/features/chat/hooks/use-chat-model-runtime.ts");
-const API_TYPES = read("src/features/chat/types/api.ts");
+const APPLIER = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+const API_TYPES = readSrc("features/chat/types/api.ts");
 
 test("the status type carries the running arguments", () => {
   assert.match(API_TYPES, /requested_llama_extra_args\?: string\[\] \| null;/);

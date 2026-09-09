@@ -12,6 +12,7 @@ import ast
 import argparse
 import io
 import os
+import stat
 import sys
 import tempfile
 import tokenize
@@ -23,12 +24,24 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
     """Write ``data`` to ``path`` atomically via same-dir tmp + fsync + os.replace,
     so a crash mid-write leaves either the old or full new content, never a truncation."""
     dirpath = str(path.parent) or "."
+    # mkstemp creates the file 0600, and os.replace carries that mode over the
+    # original's, so an executable script rewritten by this pass came back
+    # without its bit. scripts/run_ruff_format.py is the hook's own entry
+    # point and is itself processed here: once it carried kwarg spacing every
+    # run stripped its executable bit, pre-commit.ci committed the flip, and the
+    # next run failed with "not executable". Carry the mode across.
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        mode = None
     fd, tmp_path = tempfile.mkstemp(prefix=".kwargs_fix.", dir=dirpath)
     try:
         with os.fdopen(fd, "w", encoding=encoding) as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)
     except Exception:
         try:

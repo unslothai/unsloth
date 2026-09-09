@@ -32,6 +32,87 @@ from core.inference.llama_cpp import (
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
+from core.inference import llama_cpp
+from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+import httpx
+
+
+def _web_search_tool():
+    """The web_search tool schema the tool-loop tests advertise."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def _render_html_tools():
+    """The one-entry render_html tool list the tool-loop tests advertise."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+
+def fake_execute_tool(name, arguments, **_kwargs):
+    raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+
+def _tool_call_sse(
+    tool_name: str,
+    arguments: dict,
+    call_id: str,
+    index: int = 0,
+) -> str:
+    """One tool-call delta frame: the twelve-line literal the streams below repeat."""
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                }
+            ]
+        }
+    )
+
+
+def _run_tool_loop(
+    backend,
+    messages,
+    tools,
+    *,
+    max_tool_iterations = 1,
+    **kwargs,
+):
+    """Drain the tool loop into a list, the seven-line call nearly every test below repeats."""
+    return list(
+        backend.generate_chat_completion_with_tools(
+            messages = messages,
+            tools = tools,
+            max_tool_iterations = max_tool_iterations,
+            **kwargs,
+        )
+    )
 
 
 def _sse(delta: dict) -> str:
@@ -123,6 +204,27 @@ def _make_backend(
     monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
     monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
     return backend
+
+
+def _backend_and_payloads(monkeypatch, streams):
+    """_make_backend plus the payload list every caller threads through it."""
+    payloads: list[dict] = []
+    return _make_backend(monkeypatch, streams, payloads), payloads
+
+
+def _record_tool_calls(monkeypatch, result):
+    """Pin execute_tool to record each (name, arguments) pair and answer `result`.
+
+    A callable result is handed the tool name, for the cases that echo it back.
+    """
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return result(name) if callable(result) else result
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    return calls
 
 
 def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(monkeypatch):
@@ -245,13 +347,11 @@ def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatc
     samples: list[dict] = []
     backend = _make_backend(monkeypatch, [stream], payloads)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "benchmark"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-            perf_callback = samples.append,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "benchmark"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        perf_callback = samples.append,
     )
 
     assert payloads[0]["return_progress"] is True
@@ -304,21 +404,7 @@ def _patch_monotonic(monkeypatch, values: list[float]) -> None:
 
 def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list[str]:
     return [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(arguments),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse(tool_name, arguments, call_id),
         _done(),
     ]
 
@@ -332,8 +418,7 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
         "web_search", {"query": "current Linux kernel version"}, "call_search"
     )
     second_stream = [_sse({"content": "The current version of the Linux kernel is 6.10."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, second_stream])
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda name, arguments, **_kwargs: "Linux kernel 6.10",
@@ -382,8 +467,7 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
 
 
 def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [])
 
     with pytest.raises(ValueError, match = "Forced tool 'python' is not enabled"):
         list(
@@ -405,15 +489,8 @@ def test_forced_tool_choice_retries_after_other_structured_calls(monkeypatch):
         _structured_tool_call("web_search", {"query": "kernel version"}, "call_search"),
         [_sse({"content": "The search completed."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Linux kernel result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "Linux kernel result")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -444,8 +521,7 @@ def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
         _sse({"content": "I will answer without tools."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     def fail_execute_tool(name, arguments, **_kwargs):
         raise AssertionError(f"unexpected tool execution: {name} {arguments}")
@@ -490,25 +566,10 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     tool_call_id = "call_render_late"
     first_stream = [
         _sse({"content": "Here is the canvas.\n\n"}),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body><div>red</div></body></html>",
-                                    "title": "Simple Red Square",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body><div>red</div></body></html>", "title": "Simple Red Square"},
+            tool_call_id,
         ),
         _done(),
     ]
@@ -516,39 +577,13 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
         _sse({"content": "Done."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, second_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: Simple Red Square.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Rendered HTML canvas: Simple Red Square."
+    tools = _render_html_tools()
 
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "Make a red square."}], tools)
 
     content_events = [e for e in events if e.get("type") == "content"]
     assert content_events[0]["text"] == "Here is the canvas.\n\n"
@@ -590,16 +625,13 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
         _sse({"content": "Final answer."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     _patch_monotonic(monkeypatch, [100.0, 110.0, 172.0, 172.0])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "answer"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "answer"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
@@ -629,16 +661,13 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
         _sse({"content": "Done."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "think then answer"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "think then answer"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     reasoning_stage = [
@@ -667,16 +696,13 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
         _sse({"reasoning_content": "The capital of France is Paris."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     _patch_monotonic(monkeypatch, [1.0, 5.0, 5.0])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "just think"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "just think"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
@@ -695,13 +721,11 @@ def _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatc
     backend = _make_backend(monkeypatch, [stream], [])
 
     if with_tools:
-        items = list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "capital of France?"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                max_tool_iterations = 1,
-                promote_reasoning_only = False,
-            )
+        items = _run_tool_loop(
+            backend,
+            [{"role": "user", "content": "capital of France?"}],
+            [{"type": "function", "function": {"name": "web_search"}}],
+            promote_reasoning_only = False,
         )
         cumulatives = [item["text"] for item in items if item.get("type") == "content"]
     else:
@@ -740,20 +764,17 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
         _sse({"content": "It is sunny."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
     _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
@@ -876,20 +897,17 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
         _sse({"content": "It is sunny."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
     _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
@@ -912,8 +930,7 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
         _sse({"content": "It is sunny."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -957,15 +974,8 @@ def test_mixed_execute_and_noop_batch_keeps_structured_reasoning(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "sunny"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
+    calls = _record_tool_calls(monkeypatch, "sunny")
 
     list(
         backend.generate_chat_completion_with_tools(
@@ -1014,8 +1024,7 @@ def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(mon
         _sse({"content": "It is sunny."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -1044,8 +1053,7 @@ def test_tool_call_turn_without_reasoning_adds_no_reasoning_content(monkeypatch)
         _sse({"content": "It is sunny."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -1072,8 +1080,7 @@ def test_tool_call_turn_with_blank_reasoning_adds_no_reasoning_content(monkeypat
         "web_search", {"query": "weather"}, "call_blank"
     )
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -1099,29 +1106,11 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     """A blank trace on a suppressed call must not open an empty model turn."""
     tool_stream = [
         _sse({"reasoning_content": "\n\n"}),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_blank_noop",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print(1)"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("python", {"code": "print(1)"}, "call_blank_noop"),
         _done(),
     ]
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1149,9 +1138,6 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
 def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
     """A suppressed call must not weld inlined reasoning onto a resumed partial."""
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
-
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     for partial in ("PARTIAL_TEXT", "PARTIAL_TEXT\n"):
@@ -1159,8 +1145,7 @@ def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkey
             "python", {"code": "print(1)"}, "call_continued_noop"
         )
         final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
-        payloads: list[dict] = []
-        backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+        backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
         list(
             backend.generate_chat_completion_with_tools(
@@ -1186,11 +1171,7 @@ def test_noop_reasoning_without_continuation_adds_clean_assistant_turn(monkeypat
         "python", {"code": "print(1)"}, "call_separate_noop"
     )
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1247,8 +1228,7 @@ def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
@@ -1302,8 +1282,7 @@ def test_noop_feedback_for_multiple_tools_is_not_folded_by_partial_name_match(mo
         _done(),
     ]
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
@@ -1354,8 +1333,7 @@ def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -1420,8 +1398,7 @@ def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "It is sunny."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
@@ -1453,8 +1430,7 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
         _sse({"content": "Final from tool."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [tool_stream, final_stream])
     _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 410.0])
 
     def fake_execute_tool(name, arguments, **_kwargs):
@@ -1462,12 +1438,10 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "render then answer"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "render then answer"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
     )
 
     summaries = [event for event in events if event["type"] == "reasoning_summary"]
@@ -1485,62 +1459,27 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     """A repeated render_html call is an internal no-op, not a visible card."""
 
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>first</body></html>",
-                                    "title": "First",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>first</body></html>", "title": "First"},
+            "call_first",
         ),
         _done(),
     ]
     repeat_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_repeat",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>repeat</body></html>",
-                                    "title": "Repeat",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>repeat</body></html>", "title": "Repeat"},
+            "call_repeat",
         ),
         _done(),
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, repeat_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(
+        monkeypatch, [first_stream, repeat_stream, final_stream]
+    )
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Rendered HTML canvas: First."
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: First.")
 
     tools = [
         {
@@ -1558,12 +1497,8 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
         {"type": "function", "function": {"name": "web_search"}},
     ]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "Make a red square."}], tools, max_tool_iterations = 2
     )
 
     assert calls == [
@@ -1605,38 +1540,22 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
 
 def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps({"code": "<html>ok</html>"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("render_html", {"code": "<html>ok</html>"}, "call_first"),
         _done(),
     ]
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     def fake_execute_tool(name, arguments, **_kwargs):
         return "Rendered HTML canvas: Done."
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Render this."}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 3,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Render this."}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        max_tool_iterations = 3,
     )
 
     assert len(payloads) == 2
@@ -1650,57 +1569,15 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
 def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
         _done(),
     ]
     python_call = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print('ok')"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("python", {"code": "print('ok')"}, "call_python"),
         _done(),
     ]
     duplicate_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_2"),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
@@ -1711,25 +1588,18 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
         payloads,
     )
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return f"ok:{name}"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, lambda name: f"ok:{name}")
 
     tools = [
         {"type": "function", "function": {"name": "web_search"}},
         {"type": "function", "function": {"name": "python"}},
     ]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
-            tools = tools,
-            max_tool_iterations = 3,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+        tools,
+        max_tool_iterations = 3,
     )
 
     assert calls == [
@@ -1765,57 +1635,15 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
 def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
         _done(),
     ]
     duplicate_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_2"),
         _done(),
     ]
     python_call = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print('ok')"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("python", {"code": "print('ok')"}, "call_python"),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
@@ -1826,25 +1654,18 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
         payloads,
     )
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return f"ok:{name}"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, lambda name: f"ok:{name}")
 
     tools = [
         {"type": "function", "function": {"name": "web_search"}},
         {"type": "function", "function": {"name": "python"}},
     ]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
-            tools = tools,
-            max_tool_iterations = 4,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+        tools,
+        max_tool_iterations = 4,
     )
 
     assert calls == [
@@ -1880,57 +1701,15 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
         _done(),
     ]
     duplicate_one = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_2"),
         _done(),
     ]
     duplicate_two = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_3",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_3"),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from first search."}), _done()]
@@ -1940,20 +1719,13 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
         [first_search, duplicate_one, duplicate_two, final_stream],
         payloads,
     )
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 10,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
@@ -1997,23 +1769,15 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [same_turn_duplicates, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [same_turn_duplicates, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "search-result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "search-result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
@@ -2060,8 +1824,7 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [batch, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [batch, final_stream])
 
     calls: list[dict] = []
 
@@ -2071,12 +1834,11 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 3,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 3,
     )
 
     # Both distinct calls ran; the duplicate did not (old `break` dropped search(b)).
@@ -2130,23 +1892,15 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [same_turn_render_calls, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [same_turn_render_calls, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: One.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Rendered HTML canvas: One."
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "render html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "render html"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [("render_html", {"code": "<html>one</html>"})]
@@ -2182,38 +1936,18 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
                 )
             }
         ),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python_disabled",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print(1)"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse("python", {"code": "print(1)"}, "call_python_disabled"),
         _done(),
     ]
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [disabled_python, final_stream], payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, [disabled_python, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run python"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run python"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
@@ -2254,25 +1988,10 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     """
 
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>first</body></html>",
-                                    "title": "First",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
+        _tool_call_sse(
+            "render_html",
+            {"code": "<html><body>first</body></html>", "title": "First"},
+            "call_first",
         ),
         _done(),
     ]
@@ -2280,39 +1999,13 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
         _sse({"content": "I will now use render_html again."}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, post_tool_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, post_tool_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: First.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Rendered HTML canvas: First."
+    tools = _render_html_tools()
 
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "Make a red square."}], tools)
 
     assert len(payloads) == 2
     assert len(calls) == 1
@@ -2331,36 +2024,14 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
         [_sse({"content": "Understood. I will use render_html now."}), _done()]
         for _ in range(_MAX_REPROMPTS)
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "Make a red square."}], tools, nudge_tool_calls = True
     )
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
@@ -2375,59 +2046,24 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
     streams = [
         [_sse({"content": "I will search the web now."}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse("web_search", {"query": "red square"}, "call_first"),
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
         [_sse({"content": "Final answer: the square is red."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Search results: red is #f00.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Search results: red is #f00."
+    tools = [_web_search_tool()]
 
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 4
@@ -2447,48 +2083,20 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
 
     streams = [
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse("web_search", {"query": "red square"}, "call_first"),
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
         [_sse({"content": "Now I will check the sources."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
+    tools = [_web_search_tool()]
 
     list(
         backend.generate_chat_completion_with_tools(
@@ -2513,56 +2121,27 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
     streams = [
         [_sse({"content": stall}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse("web_search", {"query": "red square"}, "call_first"),
             _done(),
         ],
         [_sse({"content": stall}), _done()],
         [_sse({"content": "Final answer: the square is red."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
+    tools = [_web_search_tool()]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 4
@@ -2574,7 +2153,6 @@ def test_restatement_keeps_deletions_that_change_the_answer():
     """A dropped word can invert the meaning, so a subset is not a restatement."""
 
     from core.inference.tool_call_parser import is_reprompt_restatement
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
 
     previous = "Now I think the feature is not supported in version 1."
     corrected = "Now I think the feature is supported in version 1."
@@ -2588,7 +2166,6 @@ def test_restatement_keeps_deletions_that_change_the_answer():
 
 
 def test_forced_turn_suppression_covers_obligation_phrasing():
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
     for stall in (
         "I need to use render_html now",
         "Need to call web_search",
@@ -2648,8 +2225,6 @@ def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
     ``INTENT_SIGNAL`` fires on lead-ins that introduce a real answer ("Now I
     have the results. ..."), so matching it alone would discard the answer.
     """
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
-
     stall = "I will summarize the results now"
     answer = "Now I have the search results. The capital of Japan is Tokyo."
 
@@ -2676,56 +2251,27 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
     answer = "Now I have the results. The capital of Japan is Tokyo."
     streams = [
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "capital of Japan"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse("web_search", {"query": "capital of Japan"}, "call_first"),
             _done(),
         ],
         [_sse({"content": "Let me summarize what I found."}), _done()],
         [_sse({"content": answer}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: "Search results: Tokyo.",
     )
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
+    tools = [_web_search_tool()]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What is the capital of Japan?"}],
-            tools = tools,
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What is the capital of Japan?"}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     assert len(payloads) == 3
@@ -2746,36 +2292,18 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
             answer,
         )
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
+    tools = [_web_search_tool()]
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What is the capital of Japan?"}],
-            tools = tools,
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What is the capital of Japan?"}],
+        tools,
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     # Initial turn plus the three pre-tool nudges.
@@ -2795,31 +2323,14 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
             _done(),
         ],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "Make a red square."}],
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "render_html",
-                        "description": "Render HTML.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"code": {"type": "string"}},
-                            "required": ["code"],
-                        },
-                    },
-                }
-            ],
+            tools = _render_html_tools(),
             max_tool_iterations = 1,
             nudge_tool_calls = True,
         )
@@ -2846,36 +2357,17 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
 
 def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            auto_heal_tool_calls = False,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        auto_heal_tool_calls = False,
     )
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
@@ -2887,37 +2379,18 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
     # Explicit nudge_tool_calls=False disables the plan-without-action
     # re-prompt even with Auto-Heal on (None keeps the default-on behavior).
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            auto_heal_tool_calls = True,
-            nudge_tool_calls = False,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        tools,
+        auto_heal_tool_calls = True,
+        nudge_tool_calls = False,
     )
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
@@ -2937,23 +2410,14 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
         ],
         [_sse({"content": "done"}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-    calls: list[tuple[str, dict]] = []
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            auto_heal_tool_calls = False,
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        auto_heal_tool_calls = False,
     )
 
     assert calls == [("web_search", {"query": "x"})]
@@ -2970,22 +2434,13 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
         [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-    calls: list[tuple[str, dict]] = []
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})]
@@ -3010,22 +2465,13 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
         [_sse({"content": c}) for c in chunks] + [_done()],
         [_sse({"content": "done"}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-    calls: list[tuple[str, dict]] = []
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": big_query})]
@@ -3053,22 +2499,13 @@ def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
         [_sse({"content": '<|python_tag|>web_search.call(query="cats")'}), _done()],
         [_sse({"content": "done"}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
-    calls: list[tuple[str, dict]] = []
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})]
@@ -3096,39 +2533,14 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
         ],
         [_sse({"content": "Final note after tool."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Rendered HTML canvas: Forced.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Rendered HTML canvas: Forced."
+    tools = _render_html_tools()
 
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "Make a red square."}], tools, nudge_tool_calls = True
     )
 
     assert len(calls) == 1
@@ -3142,18 +2554,7 @@ def _status_texts(events: list[dict]) -> list[str]:
     return [event["text"] for event in events if event.get("type") == "status"]
 
 
-_WEB_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the web.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-    },
-}
+_WEB_SEARCH_TOOL = _web_search_tool()
 
 
 def _nudge_then_search_streams() -> list[list[str]]:
@@ -3162,21 +2563,7 @@ def _nudge_then_search_streams() -> list[list[str]]:
     return [
         [_sse({"content": "I will search the web now."}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_search",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse("web_search", {"query": "red square"}, "call_search"),
             _done(),
         ],
         [_sse({"content": "Final answer: the square is red."}), _done()],
@@ -3186,20 +2573,18 @@ def _nudge_then_search_streams() -> list[list[str]]:
 def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatch):
     """The re-prompted turn is hidden, so without a badge the UI looks frozen."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, _nudge_then_search_streams())
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What colour is the square?"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     statuses = _status_texts(events)
@@ -3217,16 +2602,14 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
         [_sse({"content": "I will search the web now."}), _done()],
         [_sse({"content": "No search needed. Final answer: the square is red."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What colour is the square?"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
     )
 
     statuses = _status_texts(events)
@@ -3242,12 +2625,11 @@ def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
         payloads,
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What colour is the square?"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -3273,12 +2655,8 @@ def test_clarification_request_is_not_nudged(monkeypatch):
         payloads,
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Balls"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "Balls"}], [_WEB_SEARCH_TOOL], max_tool_iterations = 2
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -3289,20 +2667,18 @@ def test_clarification_request_is_not_nudged(monkeypatch):
 
 
 def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, _nudge_then_search_streams())
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: "Search results: red is #f00.",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What colour is the square?"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-            nudge_tool_calls = False,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
+        nudge_tool_calls = False,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -3310,15 +2686,13 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
 
 
 def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, _nudge_then_search_streams())
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "What colour is the square?"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "What colour is the square?"}],
+        [_WEB_SEARCH_TOOL],
+        max_tool_iterations = 2,
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
@@ -3330,16 +2704,9 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
         _structured_tool_call("python", {"code": "print(1)"}, "call_py"),
         [_sse({"content": "Done."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, "OK")
     monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
     monkeypatch.setattr(
         "core.inference.llama_cpp.begin_tool_decision",
@@ -3370,8 +2737,7 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
 def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
     approval_id = "approval-close"
     streams = [_structured_tool_call("python", {"code": "print(1)"}, "call_py")]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
@@ -3408,8 +2774,7 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
 
 def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     streams = [[_sse({"content": "Done."}), _done()]]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     def fail_autoinject(*_args, **_kwargs):
         raise AssertionError("RAG autoinject must not run before approval")
@@ -3446,8 +2811,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
         [_sse({"content": "Still working on the summary."}), _done()],
         [_sse({"content": "Final answer: the passages describe Tokyo."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     monkeypatch.setattr(
         "core.inference.tools.build_rag_autoinject",
@@ -3457,14 +2821,13 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
         },
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "summarize the docs"}],
-            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
-            max_tool_iterations = 2,
-            nudge_tool_calls = True,
-            rag_scope = {"thread_id": "t1"},
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "summarize the docs"}],
+        [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+        max_tool_iterations = 2,
+        nudge_tool_calls = True,
+        rag_scope = {"thread_id": "t1"},
     )
 
     # Initial turn plus one retry; read as pre-tool it would spend the full budget.
@@ -3528,8 +2891,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
         _structured_tool_call("python", {"code": "print(1)"}, "call_py_retry"),
         [_sse({"content": "Done."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     calls: list[tuple[str, dict]] = []
 
@@ -3615,23 +2977,14 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
 
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_big")
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "OK")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -3666,20 +3019,17 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
 
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_gated")
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
     monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            confirm_tool_calls = True,
-            permission_mode = "ask",
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -3705,19 +3055,16 @@ def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeyp
     args = {"code": "<html>" + "x" * 80 + "</html>"}
     first_stream = _streamed_structured_tool_call("render_html", args, "call_rh")
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "make a card"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            confirm_tool_calls = True,
-            permission_mode = "auto",
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "make a card"}],
+        [{"type": "function", "function": {"name": "render_html"}}],
+        confirm_tool_calls = True,
+        permission_mode = "auto",
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -3736,17 +3083,14 @@ def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
 
     first_stream = _structured_tool_call("python", {"code": "print(1)"}, "call_py_small")
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -3801,16 +3145,9 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
         ]
     )
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, "OK")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -3845,16 +3182,9 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
         ]
     )
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, "OK")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -3883,8 +3213,6 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     """If llama-server drops mid tool-call after a provisional card is shown, the
     loop must close that card before surfacing the error so the UI never leaves a
     tool spinning forever."""
-    import httpx
-
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
     # Drop the trailing [DONE]; raise a connection error after the fragments
@@ -3896,8 +3224,7 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
             yield chunk
         raise httpx.ConnectError("connection lost mid stream")
 
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [raising_stream()], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [raising_stream()])
     respawn_calls: list[bool] = []
 
     monkeypatch.setattr(
@@ -3940,8 +3267,6 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
 
 def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     """A dead server before the first tool-loop response is opened is safe to retry."""
-    import httpx
-
     payloads: list[dict] = []
     urls: list[str] = []
     backend = _make_backend(
@@ -3955,12 +3280,10 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     )
     respawn_calls = _patch_successful_respawn(monkeypatch, backend, port = 49999)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hello"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hello"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     assert respawn_calls == [True]
@@ -3975,7 +3298,6 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
 
 def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(monkeypatch):
     """Both an ordinary iteration and final synthesis refit without repeating old drops."""
-    import httpx
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
         backend = _make_backend(
@@ -4030,8 +3352,7 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
 
 def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     """Unpriced media must not disable compaction that the text alone requires."""
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
     backend._effective_context_length = 100
     counted: list[list[dict]] = []
 
@@ -4135,10 +3456,7 @@ def test_tool_loop_secondary_counts_strip_media_but_payloads_keep_it(monkeypatch
 
 @pytest.mark.parametrize("with_tools", [False, True])
 def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
-    from core.inference import llama_cpp
-
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
     backend._effective_context_length = 100
     counted: list[list[dict]] = []
     recall_recounts: list[list[dict]] = []
@@ -4214,10 +3532,6 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
 
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
-    import httpx
-
-    from core.inference import llama_cpp
-
     # Captured once: the second pass would otherwise wrap the first pass's spy.
     real_archive = llama_cpp._archive_and_recall
 
@@ -4287,8 +3601,6 @@ def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monke
 
 
 def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4328,10 +3640,10 @@ def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(mon
 
 
 def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
-    import httpx
     for max_tool_iterations in (1, 0):
-        payloads: list[dict] = []
-        backend = _make_backend(monkeypatch, [httpx.ConnectError("server is down")], payloads)
+        backend, payloads = _backend_and_payloads(
+            monkeypatch, [httpx.ConnectError("server is down")]
+        )
         backend._effective_context_length = 100
         count_calls = 0
 
@@ -4373,8 +3685,6 @@ def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkey
 
 def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(monkeypatch):
     """A respawn retries the fitted request without reporting its dropped turns twice."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4420,8 +3730,7 @@ def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(m
 
 
 def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [[_done()]], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_done()]])
     backend._effective_context_length = 100
     counted: list[list[dict]] = []
 
@@ -4455,9 +3764,6 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
     They evict more of the conversation, and without archiving there those turns are
     gone for good: unlike the ordinary preflight, nothing else sees them.
     """
-    import httpx
-    from core.inference import llama_cpp
-
     archived: list = []
 
     def fake_archive(conversation, before, **kwargs):
@@ -4513,9 +3819,6 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
     Without the thread those extra turns are archived nowhere and no reserve or boundary
     applies, on the one path that deliberately compacts a second time.
     """
-    import httpx
-    from core.inference import llama_cpp
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4564,8 +3867,6 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
 
 def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
     """A smaller replacement window can evict more without repeating the first eviction."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4618,7 +3919,6 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
 
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
     """Recover either post-tool generation path without rerunning the tool."""
-    import httpx
     for max_tool_iterations, final_text in (
         (2, "The result is 1."),
         (1, "Final answer."),
@@ -4642,12 +3942,11 @@ def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypa
 
         monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-        events = list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "print one"}],
-                tools = [{"type": "function", "function": {"name": "python"}}],
-                max_tool_iterations = max_tool_iterations,
-            )
+        events = _run_tool_loop(
+            backend,
+            [{"role": "user", "content": "print one"}],
+            [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = max_tool_iterations,
         )
 
         assert respawn_calls == [True]
@@ -4659,8 +3958,6 @@ def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypa
 
 def test_connect_error_retry_is_bounded(monkeypatch):
     """A failed retry surfaces the error without another respawn attempt."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4693,7 +3990,6 @@ def test_connect_error_retry_is_bounded(monkeypatch):
 def test_pre_header_transport_errors_also_respawn(monkeypatch):
     """A child that dies during prefill already accepted the socket, so it does
     not surface as ConnectError. Nothing has streamed yet, so replay is safe."""
-    import httpx
     for exc in (
         httpx.RemoteProtocolError("server disconnected without sending a response"),
         httpx.ReadError("connection reset by peer"),
@@ -4705,12 +4001,10 @@ def test_pre_header_transport_errors_also_respawn(monkeypatch):
         )
         respawn_calls = _patch_successful_respawn(monkeypatch, backend)
 
-        events = list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "hello"}],
-                tools = [{"type": "function", "function": {"name": "python"}}],
-                max_tool_iterations = 1,
-            )
+        events = _run_tool_loop(
+            backend,
+            [{"role": "user", "content": "hello"}],
+            [{"type": "function", "function": {"name": "python"}}],
         )
 
         assert respawn_calls == [True], type(exc).__name__
@@ -4722,7 +4016,6 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     """A closing server can beat its own exit status, so poll() briefly reports it
     alive. Without a grace wait _respawn_if_dead hands back the stale _healthy and the
     single retry is spent on the corpse rather than on a replacement."""
-    import httpx
 
     class _Dying:
         # reapable only from the 4th poll, mimicking teardown lagging the socket close
@@ -4737,8 +4030,7 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
                 return -9
             return None
 
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [])
     backend._process = _Dying()
     backend._healthy = True
     backend._respawn_lock = threading.RLock()
@@ -4784,12 +4076,10 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     monkeypatch.setattr(backend, "_stream_with_retry", dead_until_respawned)
     monkeypatch.setattr(backend, "load_model", fake_load)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hello"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hello"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     assert len(loads) == 1
@@ -4798,10 +4088,8 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
 
 def test_prefill_timeout_is_not_retried(monkeypatch):
     """A slow-but-alive server must not have its first-token budget spent twice."""
-    import httpx
     for exc in (httpx.ReadTimeout("no first token"), httpx.PoolTimeout("pool")):
-        payloads: list[dict] = []
-        backend = _make_backend(monkeypatch, [exc], payloads)
+        backend, payloads = _backend_and_payloads(monkeypatch, [exc])
         respawn_calls = _patch_successful_respawn(monkeypatch, backend)
 
         raised = False
@@ -4823,10 +4111,8 @@ def test_prefill_timeout_is_not_retried(monkeypatch):
 
 def test_mtp_crash_recovery_wins_over_respawn(monkeypatch):
     """An MTP crash reloads without MTP, so never respawn the same config on top."""
-    import httpx
     for max_tool_iterations in (2, 1):
-        payloads: list[dict] = []
-        backend = _make_backend(monkeypatch, [httpx.ConnectError("mtp crash")], payloads)
+        backend, payloads = _backend_and_payloads(monkeypatch, [httpx.ConnectError("mtp crash")])
         monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: True)
         respawn_calls = _patch_successful_respawn(monkeypatch, backend)
 
@@ -4860,23 +4146,14 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     # Same large streamed call as the provisional test, but with an empty id.
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "")
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "OK")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     # No provisional card (empty-args tool_start) was surfaced for the empty id.
@@ -4899,23 +4176,14 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
     bare_call = '{"name": "web_search", "parameters": {"query": "weather in Sydney"}}'
     first_stream = _streamed_content(bare_call)
     final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Weather: sunny, 22C.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Weather: sunny, 22C."
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather in Sydney?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather in Sydney?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     # The tool ran with the parsed arguments.
@@ -4938,8 +4206,7 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
 
     answer = '{"name": "Alice", "parameters": {"age": 30}}'
     first_stream = _streamed_content(answer)
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -4947,12 +4214,10 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
         lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "give me a person record"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "give me a person record"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -4966,20 +4231,17 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
 
     truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
     stream = _streamed_content(truncated)
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -4995,8 +4257,7 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
 
     truncated = '{"name": "Alice", "age": 30, "bio": "loves '
     stream = _streamed_content(truncated)
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5004,12 +4265,10 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
         lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "start a person record"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "start a person record"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -5022,8 +4281,7 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
 
     truncated = '{"name": "Alice", "parameters": {"age": 30'
     stream = _streamed_content(truncated)
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5031,12 +4289,10 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
         lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "give json"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "give json"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -5050,20 +4306,17 @@ def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
 
     truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
     stream = _streamed_content(truncated)
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -5079,8 +4332,7 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
     first_stream = [_sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)]
     first_stream.append(_done())
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5088,12 +4340,10 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
         lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "long json"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "long json"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -5110,23 +4360,14 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
     gemma_call = 'call:web_search{query:"weather in Sydney"}'
     first_stream = _streamed_content(gemma_call)
     final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "Weather: sunny, 22C.")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "Weather: sunny, 22C."
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather in Sydney?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather in Sydney?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "weather in Sydney"})]
@@ -5169,16 +4410,9 @@ def test_metadata_event_preserves_prompt_tokens_details(monkeypatch):
         ),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [])
 
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
@@ -5196,16 +4430,9 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
         _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [])
 
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
@@ -5224,23 +4451,14 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Found cats."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
+    calls = _record_tool_calls(monkeypatch, "result")
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "result"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -5262,8 +4480,7 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Found cats."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5271,12 +4488,10 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -5299,8 +4514,7 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
         _done(),
     ]
     final_stream = [_sse({"content": "Found cats."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5308,12 +4522,10 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [("web_search", {"query": "cats"})], calls
@@ -5332,8 +4544,7 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
         _sse({"content": "web_search"}),
         _done(),
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5341,12 +4552,10 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "advise"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "advise"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -5367,8 +4576,7 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
         _done(),
     ]
     final_stream = [_sse({"content": "done"}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5376,12 +4584,10 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
         lambda n, a, **_k: calls.append((n, a)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "go"}],
-            tools = [{"type": "function", "function": {"name": name}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "go"}],
+        [{"type": "function", "function": {"name": name}}],
     )
 
     assert calls == [(name, {"x": 1})], calls
@@ -5410,12 +4616,10 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     assert calls == [], calls
@@ -5442,12 +4646,11 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "x"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     # No tool executed for the inactive name; a spurious no-op re-prompt would exhaust the
@@ -5476,12 +4679,10 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
         lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     # The real call runs; ``foo`` is not executed as a phantom disabled call.
@@ -5527,8 +4728,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5536,12 +4736,10 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
         lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
@@ -5560,8 +4758,7 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Found."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "RESULT")
 
@@ -5591,8 +4788,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5618,8 +4814,7 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 5
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5651,13 +4846,11 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
             "core.inference.tools.execute_tool",
             lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
         )
-        events = list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "x"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                max_tool_iterations = 1,
-                auto_heal_tool_calls = auto_heal,
-            )
+        events = _run_tool_loop(
+            backend,
+            [{"role": "user", "content": "x"}],
+            [{"type": "function", "function": {"name": "web_search"}}],
+            auto_heal_tool_calls = auto_heal,
         )
         contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
         return calls, contents
@@ -5678,8 +4871,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     streams = [
         _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -5757,8 +4949,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
         _done(),
     ]
     second_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, second_stream])
 
     executed: list[tuple[str, dict]] = []
 
@@ -5768,13 +4959,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run it"}],
-            tools = _python_tool_schema(),
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "run it"}], _python_tool_schema())
 
     starts = [e for e in events if e.get("type") == "tool_start"]
     assert starts and starts[0]["tool_call_id"] == call_id
@@ -5806,8 +4991,7 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
     chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
     first_stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
     second_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, second_stream])
 
     executed: list[tuple[str, dict]] = []
 
@@ -5817,13 +5001,7 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run it"}],
-            tools = _python_tool_schema(),
-            max_tool_iterations = 1,
-        )
-    )
+    events = _run_tool_loop(backend, [{"role": "user", "content": "run it"}], _python_tool_schema())
 
     starts = [e for e in events if e.get("type") == "tool_start"]
     assert starts, "no tool_start emitted"
@@ -5851,15 +5029,10 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
     answer = json.dumps({"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"})
     chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
     stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "give me json"}],
-            tools = _python_tool_schema(),
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend, [{"role": "user", "content": "give me json"}], _python_tool_schema()
     )
 
     assert not [e for e in events if e.get("type") == "tool_args"]
@@ -5880,8 +5053,7 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     )
     chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
     stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
 
     executed: list[tuple[str, dict]] = []
 
@@ -5891,13 +5063,11 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run it"}],
-            tools = _python_tool_schema(),
-            max_tool_iterations = 1,
-            auto_heal_tool_calls = False,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        _python_tool_schema(),
+        auto_heal_tool_calls = False,
     )
 
     starts = [e for e in events if e.get("type") == "tool_start"]
@@ -5927,12 +5097,10 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
     backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "file a bug"}],
-            tools = [{"type": "function", "function": {"name": tool_name}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "file a bug"}],
+        [{"type": "function", "function": {"name": tool_name}}],
     )
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
@@ -5955,12 +5123,10 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "write code"}],
+        [{"type": "function", "function": {"name": "python"}}],
     )
     provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1, events
@@ -6013,8 +5179,7 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
 
     calls: list[dict] = []
 
@@ -6024,12 +5189,11 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search twice"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search twice"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [
@@ -6068,8 +5232,7 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
 
     calls: list[dict] = []
 
@@ -6079,12 +5242,11 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search twice"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search twice"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [
@@ -6123,8 +5285,7 @@ def test_structured_call_id_arriving_after_the_opening_delta_updates_that_call(m
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
 
     calls: list[dict] = []
 
@@ -6134,12 +5295,11 @@ def test_structured_call_id_arriving_after_the_opening_delta_updates_that_call(m
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [{"name": "web_search", "arguments": {"query": "late"}}]
@@ -6162,8 +5322,7 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
 
     calls: list[dict] = []
 
@@ -6173,12 +5332,11 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search three times"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search three times"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 2,
     )
 
     assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
@@ -6212,16 +5370,9 @@ def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
         _done(),
     ]
     final_stream = [_sse({"content": "Done."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
 
-    calls: list[tuple[str, dict]] = []
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        calls.append((name, arguments))
-        return "OK"
-
-    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    calls = _record_tool_calls(monkeypatch, "OK")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -6354,8 +5505,7 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
         )
     streams.append([_sse({"content": "done."}), _finish("stop"), _done()])
 
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
     backend._effective_context_length = 4000
     monkeypatch.setattr(
         backend,
@@ -6379,14 +5529,13 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
         {"role": "assistant", "content": "a2" * 600},
         {"role": "user", "content": "keep going"},
     ]
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = branch,
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tokens = 400,
-            max_tool_iterations = calls + 1,
-            context_overflow = "truncate_oldest",
-        )
+    events = _run_tool_loop(
+        backend,
+        branch,
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = calls + 1,
+        max_tokens = 400,
+        context_overflow = "truncate_oldest",
     )
 
     notices = [
@@ -6619,13 +5768,12 @@ def test_an_unservable_tool_call_is_refused_before_it_runs(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": immovable}],
-            tools = [{"type": "function", "function": {"name": "edit_file"}}],
-            max_tokens = 512,
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": immovable}],
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == [], "the side effect was spent on an unservable turn"
@@ -6676,8 +5824,7 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
         ),
         [_sse({"content": "Fixed."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
     monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
 
     executed: list[str] = []
@@ -6690,13 +5837,12 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = history,
-            tools = [{"type": "function", "function": {"name": "edit_file"}}],
-            max_tokens = 512,
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        history,
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == ["edit_file"], [e.get("type") for e in events]
@@ -6736,8 +5882,7 @@ def test_refusing_a_call_also_stops_it_costing_the_window(monkeypatch):
         ),
         [_sse({"content": "I could not write that file."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
     monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
 
     executed: list[str] = []
@@ -6838,8 +5983,7 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
         ),
         [_sse({"content": "Wrote the game."}), _done()],
     ]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, streams, payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
     monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
 
     executed: list[str] = []
@@ -6852,13 +5996,12 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
-            tools = [{"type": "function", "function": {"name": "edit_file"}}],
-            max_tokens = 512,
-            max_tool_iterations = 2,
-        )
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+        [{"type": "function", "function": {"name": "edit_file"}}],
+        max_tool_iterations = 2,
+        max_tokens = 512,
     )
 
     assert executed == ["edit_file"], "the call was refused instead of run"
@@ -6981,8 +6124,7 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     """
     first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
     final_stream = [_sse({"content": "6.10."}), _done()]
-    payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
         # Long enough that skipping it is a real under-count, not a rounding error.

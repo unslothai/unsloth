@@ -566,12 +566,21 @@ class TestE2ETokenizersFix:
         assert result.returncode != 0, "torch should NOT be importable"
 
     def test_negative_control_no_tokenizers(self, tmp_path):
-        """Without the tokenizers line, AutoConfig must fail (negative control)."""
+        """Without the tokenizers line, AutoConfig must fail (negative control).
+
+        Dropped by package name, not by exact text. This filter used to compare the whole
+        line against "tokenizers", which matched the bare entry #4748 added and matched
+        nothing once #5359 gave it a version bound: the control then installed tokenizers
+        and asserted a failure that could not happen, so it failed on every tree from that
+        commit onward. A name-based match survives the next bound too.
+        """
         venv = self._create_venv(tmp_path, "neg-ctrl", "3.12")
         req_no_tokenizers = tmp_path / "no-tokenizers.txt"
         req_no_tokenizers.write_text(
             "\n".join(
-                line for line in _read(_NO_TORCH_RT).splitlines() if line.strip() != "tokenizers"
+                line
+                for line in _read(_NO_TORCH_RT).splitlines()
+                if not re.match(r"tokenizers([^A-Za-z0-9._-]|$)", line.strip())
             ),
             encoding = "utf-8",
         )
