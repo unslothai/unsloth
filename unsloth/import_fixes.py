@@ -2468,19 +2468,6 @@ _TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
 # Mirrors notebook_validator.TORCHCODEC_ABI_STABLE_{TORCH,CODEC}.
 _TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
 _TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
-# download.pytorch.org indexes that publish no torchcodec 0.12+. The ABI exemption is
-# loadability, not resolvability: cu128 (Colab) tops out at 0.11.1, so a 0.12 pin there
-# cannot install. Mirrors notebook_validator.TORCHCODEC_ABI_STABLE_MISSING_INDEXES.
-_TORCHCODEC_ABI_STABLE_MISSING_INDEXES = frozenset({"cu128"})
-
-
-def _torchcodec_index_publishes_abi_stable(torch_version: str) -> bool:
-    """Can this torch's wheel index serve torchcodec 0.12+?
-
-    Untagged torch is PyPI, which does. cu128 does not: that is the live Colab stack.
-    """
-    tag = str(torch_version or "").partition("+")[2].strip().lower()
-    return tag not in _TORCHCODEC_ABI_STABLE_MISSING_INDEXES
 
 
 def _torchcodec_exclusive_upper(pin: str) -> str:
@@ -2553,9 +2540,9 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
     if torch_at_abi and codec_at_abi:
-        if _torchcodec_index_publishes_abi_stable(torch.__version__):
-            return None  # ABI-stable pairing, not locked to one torch minor
-        # Index cannot serve 0.12+: fall through to the lockstep table.
+        # Already installed: index publication cannot unsay a wheel that loaded.
+        # The notebook validator owns the cu128 "pip cannot download 0.12+" gap.
+        return None  # ABI-stable pairing, not locked to one torch minor
     torch_minor = ".".join(str(p) for p in torch_release)
     codec_minor = ".".join(str(p) for p in codec_release)
 
@@ -2577,15 +2564,9 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
     if allowed is None:
         # No lockstep row: below the table stays silent; at or past the ABI floor this is a
-        # pre-0.12 codec unless the index itself has no 0.12+ (which skipped the return above).
+        # pre-0.12 codec (the ABI-stable pair already returned above).
         if not torch_at_abi:
             return None
-        if codec_at_abi:
-            abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
-            return (
-                f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
-                f"this index publishes no torchcodec>={abi_pin}.0."
-            )
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
         install_hint = (
             f"`pip install {_index_flag(_TORCHCODEC_ABI_STABLE_CODEC)}'torchcodec>={abi_pin}.0'`"
