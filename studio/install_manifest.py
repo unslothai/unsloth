@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
+# Where remove_manifest parks the completion manifest. Only the dependency pass reads
+# it, and only as evidence of what the LAST completed pass did; verify_install, the
+# setup fast path and the desktop preflight never look at it, so a venv whose live
+# manifest is gone still reads as half-built everywhere it matters.
+PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
 MANIFEST_SCHEMA = 1
 
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
@@ -83,6 +88,10 @@ def venv_root() -> Path:
 
 def manifest_path(root: Optional[Path] = None) -> Path:
     return (root or venv_root()) / MANIFEST_NAME
+
+
+def previous_manifest_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / PREVIOUS_MANIFEST_NAME
 
 
 def requirements_root(script_dir: Optional[Path] = None) -> Path:
@@ -301,14 +310,45 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     True when no manifest remains. A surviving marker (Windows raises on a
     read-only or locked file) still names this version and these digests, so a
     pass killed afterwards would verify as complete.
+
+    The file is parked under PREVIOUS_MANIFEST_NAME rather than deleted: setup.ps1
+    calls this before pip, torch and triton are replaced, which is before
+    install_python_stack.py gets to read what the last pass recorded, and without the
+    parked copy every Windows update ran the whole dependency pass again. The parked
+    copy is evidence only (see read_previous_manifest) and is dropped by the next
+    write_manifest. Deleting it is still the fallback when the rename is refused.
     """
+    path = manifest_path(root)
     try:
-        manifest_path(root).unlink()
+        os.replace(path, previous_manifest_path(root))
     except FileNotFoundError:
         return True
     except OSError:
-        return False
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
     return True
+
+
+def read_previous_manifest(root: Optional[Path] = None) -> Optional[dict]:
+    """The manifest remove_manifest parked, or None.
+
+    Evidence of the last COMPLETED pass, for the dependency pass alone: every skip it
+    permits is still re-verified on disk, and verify_install never reads it, so this
+    can make an update faster but never make a half-built venv look finished.
+    """
+    try:
+        raw = previous_manifest_path(root).read_text(encoding = "utf-8")
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # The keys write_manifest owns, and the only ones verify_install, the setup fast path
@@ -390,9 +430,14 @@ def write_manifest(
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
         os.replace(tmp, path)
-        return path
     except OSError:
         return None
+    # The parked copy described the pass before this one; the live file now does.
+    try:
+        previous_manifest_path(root).unlink()
+    except OSError:
+        pass
+    return path
 
 
 def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
@@ -1050,8 +1095,13 @@ def verify_install(
     installed_conflicts: Optional[Sequence[str]] = None,
     deep: bool = False,
     scan_paths: Optional[Sequence[str]] = None,
+    manifest: Optional[dict] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
+
+    `manifest` verifies the tree against a manifest the caller already holds -- the
+    dependency pass checking a parked one -- instead of the live file; everything
+    else about the verdict is unchanged.
 
     Reason strings are surfaced verbatim by the desktop preflight as its
     staleness reason, so keep them stable.
@@ -1071,7 +1121,8 @@ def verify_install(
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
     deps_ok = not missing
 
-    manifest = read_manifest(root)
+    if manifest is None:
+        manifest = read_manifest(root)
     manifest_ok = False
     reason: Optional[str] = None
     vanished = False

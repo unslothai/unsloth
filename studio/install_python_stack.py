@@ -7974,6 +7974,12 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         return _refuse_evidence("development install shape")
     try:
         manifest = install_manifest.read_manifest()
+        # setup.ps1 drops the live manifest before pip, torch and triton are replaced,
+        # which is before this runs; the parked copy is what the last completed pass
+        # recorded. Evidence only: every skip is still re-verified on disk below and
+        # in _requirements_satisfied, and the deep verify is run against this same copy.
+        if not manifest:
+            manifest = install_manifest.read_previous_manifest()
     except Exception:  # noqa: BLE001 - an unreadable manifest is a full pass, never a crash
         return _refuse_evidence("manifest unreadable")
     if not manifest or manifest.get("schema") != install_manifest.MANIFEST_SCHEMA:
@@ -8011,7 +8017,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     # Last, because it is the only check that walks the filesystem: the install this
     # evidence describes has to still be there and still be complete.
     try:
-        verified = install_manifest.verify_install(deep = True)
+        verified = install_manifest.verify_install(deep = True, manifest = manifest)
     except Exception as exc:  # noqa: BLE001
         return _refuse_evidence(f"deep verify raised {exc!r}")
     if not verified.get("ok"):

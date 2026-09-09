@@ -5157,6 +5157,8 @@ if (-not $SkipPythonDeps) {
 # install_python_stack.py drops the manifest before its own dependency pass, but
 # pip, torch and triton are replaced first here. Drop it now so a run killed in
 # those leaves the venv marked half-built, not behind a marker that verifies.
+# remove_manifest parks the file rather than deleting it, so the dependency pass
+# can still read what the last completed pass recorded and skip what is current.
 $_ManifestDropped = $true
 try {
     & python -c "

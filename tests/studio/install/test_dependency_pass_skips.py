@@ -144,7 +144,29 @@ def test_a_moved_input_forces_a_full_pass(monkeypatch, manifest, mutation) -> No
 
 def test_no_manifest_at_all_forces_a_full_pass(monkeypatch, manifest) -> None:
     monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(stack.install_manifest, "read_previous_manifest", lambda *a, **k: None)
     assert _plan() is None
+
+
+def test_a_parked_manifest_is_evidence_when_the_live_one_is_gone(monkeypatch, manifest) -> None:
+    """setup.ps1 parks the manifest before the installer starts; the pass still has to
+    find last run's evidence there, and verify the tree against that same copy."""
+    payload, _ = manifest
+    seen = {}
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(
+        stack.install_manifest, "read_previous_manifest", lambda *a, **k: dict(payload)
+    )
+
+    def _verify(*a, **k):
+        seen["manifest"] = k.get("manifest")
+        return {"ok": True, "reason": None}
+
+    monkeypatch.setattr(stack.install_manifest, "verify_install", _verify)
+    plan = _plan()
+    assert plan is not None
+    assert plan["pass_inputs"] == payload["pass_inputs"]
+    assert seen["manifest"] == payload
 
 
 def test_a_damaged_install_forces_a_full_pass(monkeypatch, manifest) -> None:
