@@ -577,9 +577,7 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
     active = _active_helper()
     studio_home = tmp_path / "custom-studio"
     managed = studio_home / "llama.cpp"
-    server = (
-        managed / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
-    )
+    server = managed / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
     server.parent.mkdir(parents = True)
     server.write_text("", encoding = "utf-8")
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)

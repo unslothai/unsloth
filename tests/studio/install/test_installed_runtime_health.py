@@ -310,16 +310,14 @@ def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(t
         tmp_path,
         _PUBLISHED_WINDOWS_PAYLOAD
         + ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll", "ggml-hip.dll"),
-        marker = json.dumps(
-            {"source": "published", "tag": "b10798", "install_kind": "windows-rocm"}
-        ),
+        marker = json.dumps({"source": "published", "tag": "b10798", "install_kind": "windows-rocm"}),
     )
     runtime_dir = ILP.install_runtime_dir(root, host)
     assert ILP._runtime_payload_has(root, host, groups) is True
     (runtime_dir / "ggml-hip.dll").unlink()
-    assert ILP._runtime_payload_has(root, host, groups) is False, (
-        "the three remaining hip-named libraries must not stand in for the ggml backend"
-    )
+    assert (
+        ILP._runtime_payload_has(root, host, groups) is False
+    ), "the three remaining hip-named libraries must not stand in for the ggml backend"
 
 
 def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
