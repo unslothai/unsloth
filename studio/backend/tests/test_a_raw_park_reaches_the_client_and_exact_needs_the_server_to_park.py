@@ -1286,7 +1286,7 @@ class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
 
     def test_the_stand_down_and_the_launch_read_one_predicate(self):
         stand_down = inspect.getsource(llama_mod._stand_down_child_parking)
-        assert "_child_parking_stands_down()" in stand_down
+        assert "_child_parking_stands_down(server_supports)" in stand_down
         source = inspect.getsource(LlamaCppBackend.load_model)
         guard = source.index('server_caps.get("supports_preempt_ram")')
         window = source[guard : source.index("self._exact_pool_unknown = _exact_kv_bytes <= 0")]

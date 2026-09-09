@@ -790,8 +790,44 @@ class TestOneSwitchStandsTheChildsParkingDown:
         from core.inference.llama_cpp import LlamaCppBackend
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        site = source.index("_parking_overridden = _stand_down_child_parking(env, cmd)")
-        window = source[site : site + 1200]
-        assert "_stand_down_why = _child_parking_stand_down_reason()" in window
+        site = source.index("_parking_overridden = _stand_down_child_parking(")
+        window = source[site : site + 1400]
+        assert "_stand_down_why = _child_parking_stand_down_reason(" in window
         assert "self._record_load_warning(" in window
         assert '", ".join(_parking_overridden)' in window
+
+
+class TestAnInconclusiveProbeStandsTheChildDown:
+    """The capability probe not confirming --preempt-ram makes Studio the owner, so a child
+    that parks after all is told not to, and a named budget is overridden like any other."""
+
+    def test_the_child_is_told_not_to_park(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_LLAMA_PREEMPT_MODE", raising = False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", raising = False)
+        from core.inference import llama_cpp as llama_mod
+
+        env: dict = {}
+        assert llama_mod._stand_down_child_parking(env, [], server_supports = True) is None
+        assert "LLAMA_ARG_PREEMPT_RAM" not in env
+        assert llama_mod._stand_down_child_parking(env, [], server_supports = False) == []
+        assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
+        args = ["--preempt-ram", "8192"]
+        assert llama_mod._stand_down_child_parking({}, args, server_supports = False) == [
+            "--preempt-ram 8192"
+        ]
+        assert args == ["--preempt-ram", "0"]
+        assert "did not confirm --preempt-ram" in llama_mod._child_parking_stand_down_reason(False)
+        assert llama_mod._child_parking_stand_down_reason(True) is None
+        assert llama_mod._child_parking_stand_down_reason() is None
+
+    def test_the_launch_passes_the_probes_answer(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            '_stand_down_child_parking( env, cmd, server_supports = bool(server_caps.get("supports_preempt_ram")) )'
+            in source
+        )
+

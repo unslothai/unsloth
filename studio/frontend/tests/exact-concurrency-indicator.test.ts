@@ -112,6 +112,11 @@ test("a rollback resends the exact setting the previous load asked for", () => {
     RUNTIME,
     /loadedRequestedExactConcurrency:\s*loadResponse\.requested_exact_concurrency \?\? null,/,
   );
+  // The committed load publishes the state too: the status refresh after it can fail quietly.
+  assert.match(
+    RUNTIME,
+    /loadedExactConcurrency: normalizeExactConcurrency\(\s*loadResponse\.exact_concurrency,?\s*\)/,
+  );
   assert.match(
     RUNTIME,
     /exact_concurrency: stateBeforeUnload\.loadedRequestedExactConcurrency/,

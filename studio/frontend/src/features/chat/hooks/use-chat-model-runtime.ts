@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeExactConcurrency } from "../lib/exact-concurrency";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -1998,6 +1999,11 @@ export function useChatModelRuntime() {
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedRequestedExactConcurrency:
                 loadResponse.requested_exact_concurrency ?? null,
+              // From the load response itself: the status refresh that follows can fail quietly
+              // and leave the previous model's state on the header.
+              loadedExactConcurrency: normalizeExactConcurrency(
+                loadResponse.exact_concurrency,
+              ),
               // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
               // "server default" control.
               nParallel: committedSlots,
