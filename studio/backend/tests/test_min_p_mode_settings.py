@@ -15,11 +15,11 @@ def test_min_p_mode_round_trip_and_numeric_patch(mode, value):
         "inferenceParamsByModel": {"model": params},
         "customPresets": [{"name": "Saved", "params": params}],
     }
-    chat_history.put_settings(payload, current_subject="test")
-    assert chat_history.get_settings(current_subject="test").settings == payload
-    assert chat_history.ChatThreadSettings(**params).model_dump(exclude_unset=True) == params
-    chat_history.put_settings({"inferenceParams": {"minP": 0.2}}, current_subject="test")
-    assert chat_history.get_settings(current_subject="test").settings["inferenceParams"] == {
+    chat_history.put_settings(payload, current_subject = "test")
+    assert chat_history.get_settings(current_subject = "test").settings == payload
+    assert chat_history.ChatThreadSettings(**params).model_dump(exclude_unset = True) == params
+    chat_history.put_settings({"inferenceParams": {"minP": 0.2}}, current_subject = "test")
+    assert chat_history.get_settings(current_subject = "test").settings["inferenceParams"] == {
         **params,
         "minP": 0.2,
     }
