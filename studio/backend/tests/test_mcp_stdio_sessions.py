@@ -1030,3 +1030,82 @@ def test_one_shot_changed_or_unreadable_configuration_never_dispatches(
         assert _settled(fake_clients[0]) == 1
     else:
         assert fake_clients == []
+
+
+@pytest.mark.parametrize("options", [{}, {"scope": "chat", "use_oauth": True}])
+@pytest.mark.parametrize("after_connect", [False, True])
+@pytest.mark.parametrize("stop", [False, True])
+def test_one_shot_blocked_config_read_does_not_delay_timeout_or_stop(
+    fake_clients, options, after_connect, stop
+):
+    entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+    workers, results = [], []
+
+    def check():
+        if after_connect and not fake_clients:
+            return True
+        workers.append(threading.current_thread())
+        entered.set()
+        release.wait(10)
+        return True
+
+    caller = threading.Thread(
+        target = lambda: results.append(
+            call_tool_sync(
+                HTTP_URL,
+                None,
+                "t",
+                {},
+                config_check = check,
+                timeout = 10 if stop else 0.3,
+                cancel_event = cancelled if stop else None,
+                **options,
+            )
+        ),
+        daemon = True,
+    )
+    caller.start()
+    try:
+        assert entered.wait(2)
+        if stop:
+            cancelled.set()
+        caller.join(2)
+        assert not caller.is_alive(), "Stop/timeout waited for the blocked checker"
+        assert ("cancelled" if stop else "timed out") in results[0]
+        assert all(worker.daemon for worker in workers)
+        assert all(not client.calls for client in fake_clients)
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(2)
+        caller.join(2)
+    # A late successful read must not reconnect or dispatch after the caller exits.
+    assert len(fake_clients) == int(after_connect)
+    assert all(not client.calls and _settled(client) == 1 for client in fake_clients)
+
+
+def test_one_shot_stuck_readers_keep_capacity_until_they_exit(monkeypatch, fake_clients):
+    slots = threading.BoundedSemaphore(2)
+    monkeypatch.setattr(mcp_client, "_one_shot_config_slots", slots)
+    release, workers = threading.Event(), []
+
+    def check():
+        workers.append(threading.current_thread())
+        release.wait(10)
+        return True
+
+    try:
+        for _ in range(2):
+            result = call_tool_sync(HTTP_URL, None, "t", {}, config_check = check, timeout = 0.1)
+            assert "timed out" in result
+        # Both timed-out callbacks still own their slots. Further reads fail
+        # closed, rather than spawning more blocked threads or dispatching.
+        result = call_tool_sync(HTTP_URL, None, "t", {}, config_check = check)
+        assert result.startswith("Error:")
+        assert len(workers) == 2
+        assert not fake_clients
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(2)
+    assert call_tool_sync(HTTP_URL, None, "t", {}, config_check = lambda: True) == "call-1"

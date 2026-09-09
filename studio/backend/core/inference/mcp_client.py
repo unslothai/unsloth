@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import copy_context
 from functools import wraps
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -30,6 +31,9 @@ logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
 MCP_ONE_SHOT_CONFIG_CHECK_VERSION = 1
+# Stuck synchronous authority callbacks must neither hold Stop/timeout open nor
+# accumulate an unbounded number of workers across repeated requests.
+_one_shot_config_slots = threading.BoundedSemaphore(16)
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
@@ -1794,6 +1798,44 @@ def _call_session_tool(
     raise RuntimeError("unreachable")
 
 
+async def _one_shot_config_current(config_check) -> bool:
+    if config_check is None:
+        return True
+    slots = _one_shot_config_slots
+    if not slots.acquire(blocking = False):
+        return False
+    loop = asyncio.get_running_loop()
+    result = loop.create_future()
+    context = copy_context()
+
+    def complete(current):
+        if not result.done():
+            result.set_result(current)
+
+    def check():
+        try:
+            try:
+                current = bool(context.run(config_check))
+            except BaseException:  # a failed authority check denies dispatch
+                current = False
+            try:
+                loop.call_soon_threadsafe(complete, current)
+            except RuntimeError:
+                pass  # The cancelled/timed-out caller has already closed its loop.
+        finally:
+            slots.release()
+
+    try:
+        # asyncio.run joins default-executor threads on shutdown. A daemon owns
+        # only this read, never a client or dispatch, and retains its slot until
+        # the callback exits. Late results cannot revive a cancelled coroutine.
+        threading.Thread(target = check, name = "mcp-config-check", daemon = True).start()
+    except Exception:
+        slots.release()
+        return False
+    return await result
+
+
 def call_tool_sync(
     url: str,
     headers: Optional[dict],
@@ -1825,19 +1867,11 @@ def call_tool_sync(
     aborts an in-flight call. ``config_check`` re-reads the server row so a call
     that raced an edit or delete cannot dispatch on the stale configuration."""
 
-    async def _config_current() -> bool:
-        if config_check is None:
-            return True
-        try:
-            return bool(await asyncio.to_thread(config_check))
-        except Exception:  # noqa: BLE001 - a failed authority check denies dispatch
-            return False
-
     async def _one_shot() -> Any:
-        if not await _config_current():
+        if not await _one_shot_config_current(config_check):
             raise RuntimeError("MCP server was updated or removed before the call")
         async with _client(url, headers, use_oauth) as client:
-            if not await _config_current():
+            if not await _one_shot_config_current(config_check):
                 raise RuntimeError("MCP server was updated or removed before the call")
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError
