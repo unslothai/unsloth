@@ -886,6 +886,8 @@ _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 # of stopping: giving up for good would leave a server that recovers later untracked.
 _COMPANION_LOOKUP_RETRY_S = 60.0
 _COMPANION_LOOKUP_MAX_RETRY_S = 300.0
+# Client statuses that mean "later", not "no".
+_TRANSIENT_HTTP_STATUS = frozenset((408, 425, 429))
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -935,8 +937,10 @@ class _DownloadProgressDisplay:
             # download that starts near zero after an adapter finished near the top.
             self._source = source
             self._samples.clear()
+            # Not `_shown`: `_last_bucket = -1` already lets the next line through, while
+            # clearing it would strand a finished bar below 100% and drop the closing
+            # newline, since `complete()` and `close()` both gate on it.
             self._last_bucket = -1
-            self._shown = False
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
         expected = max(0, int(progress.get("expected_bytes") or 0))
@@ -1064,6 +1068,32 @@ def _unsloth_package_dirs() -> list[Path]:
         venv = Path(STUDIO_HOME) / "unsloth_studio"
         dirs.extend(venv.glob("lib/python*/site-packages/unsloth"))
         dirs.append(venv / "Lib" / "site-packages" / "unsloth")
+    except Exception:
+        pass
+    # And ask that venv itself. `unsloth studio update --local` installs Unsloth with
+    # `-e`, which leaves a PEP 660 finder rather than a package directory, so the globs
+    # above see nothing. `find_spec` locates it without importing it, so this costs a
+    # short-lived interpreter and never loads torch.
+    try:
+        from unsloth_cli.commands.studio import _studio_venv_python
+        python = _studio_venv_python()
+        if python is not None:
+            found = subprocess.run(
+                [
+                    str(python),
+                    "-c",
+                    "import importlib.util as u;s=u.find_spec('unsloth');"
+                    "print(next(iter(s.submodule_search_locations)) if s else '')",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 20,
+                # Away from the caller's directory: an `unsloth/` folder in the cwd is on
+                # that interpreter's path too, and would answer for the venv's install.
+                cwd = str(python.parent),
+            ).stdout.strip()
+            if found:
+                dirs.append(Path(found))
     except Exception:
         pass
     seen: set = set()
@@ -1195,8 +1225,11 @@ def _base_model_candidates(base_model: str) -> list[str]:
     """
     tables = _unsloth_quant_mappers()
     bad = _unsloth_bad_mappings()
-    found: set = set()
-    pending = [base_model]
+    # The strip is applied after mapping, and an unmapped base falls through mapping
+    # unchanged, so the recorded name itself is a subject of it.
+    seeds = {base_model, _without_prequantized_suffix(base_model)}
+    found: set = seeds - {base_model}
+    pending = list(seeds)
     # Followed to a fixed point: the loader maps a name, then rewrites the result through
     # BAD_MAPPINGS, so the repo it downloads can be two steps from the recorded base.
     while pending:
@@ -1239,6 +1272,7 @@ class _ModelDownloadProgress:
         self._progress_prefix = "/api/hub"
         self._companions: Optional[list[str]] = None
         self._repo_bytes: dict[str, int] = {}
+        self._repo_in_flight: dict[str, int] = {}
         self._repo_measured: dict[str, bool] = {}
         self._companion_lookups = 0
         self._companion_retry_at = 0.0
@@ -1301,7 +1335,10 @@ class _ModelDownloadProgress:
                 timeout = 10,
             )
         except urllib.error.HTTPError as exc:
-            return [] if exc.code < 500 else None
+            # A timeout or a rate limit says try later, not "this is not an adapter".
+            if exc.code >= 500 or exc.code in _TRANSIENT_HTTP_STATUS:
+                return None
+            return []
         except Exception:
             return None
         if not info.get("is_lora"):
@@ -1378,18 +1415,19 @@ class _ModelDownloadProgress:
             # a reading already taken, never bytes merely being present: an abandoned
             # transfer leaves `.incomplete` blobs behind, and pruning to a corpse would
             # discard the repo the worker is about to fetch.
-            # Both readings have to be complete scans. `cache_measured` false is an
-            # explicit lower bound -- a cache root that could not be read -- so the larger
-            # figure that follows when the root returns is a rebound, not a transfer, and
-            # would otherwise prune away the repo the worker really fetches. A server too
-            # old to send the flag never prunes, which only costs a request per poll.
+            # Bytes in flight, not bytes on disk, and only between two complete scans.
+            # A cache mount that was absent and then appears grows the total by its whole
+            # cached size without anything transferring, and `cache_measured` false is an
+            # explicit lower bound from a root that could not be read; either read as
+            # growth would prune away the repo the worker really fetches. A server too old
+            # to send the flag never prunes, which only costs a request per poll.
             grew = [
                 repo
                 for repo, item in companions
                 if item is not None
                 and self._repo_measured.get(repo)
                 and item.get("cache_measured") is True
-                and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
+                and _in_flight_bytes(item) > self._repo_in_flight.get(repo, 0)
             ]
             if len(grew) == 1:
                 self._companions = grew
@@ -1406,6 +1444,7 @@ class _ModelDownloadProgress:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
                 )
+                self._repo_in_flight[repo] = _in_flight_bytes(item)
                 self._repo_measured[repo] = item.get("cache_measured") is True
             # Per repo, and kept after a candidate is dropped: an alternative base already
             # complete in the cache contributes its bytes to the first total, so forgetting

@@ -4243,6 +4243,36 @@ def test_base_model_candidates_include_the_loaders_suffix_strip():
     assert "unsloth/codellama-34b" in candidates
 
 
+def test_base_model_candidates_strip_the_recorded_base_itself():
+    # The strip runs after mapping, and an unmapped base passes mapping unchanged, so the
+    # recorded name is a subject of it too.
+    assert start._base_model_candidates("owner/custom-bnb-4bit") == [
+        "owner/custom-bnb-4bit",
+        "owner/custom",
+    ]
+
+
+def test_unsloth_package_dirs_ask_the_venv_for_an_editable_install(monkeypatch, tmp_path):
+    # `unsloth studio update --local` installs with -e, leaving a PEP 660 finder and no
+    # site-packages/unsloth directory, so the globs find nothing and the venv is asked.
+    editable = tmp_path / "src" / "unsloth"
+    editable.mkdir(parents = True)
+    fake_python = tmp_path / "unsloth_studio" / "bin" / "python"
+    fake_python.parent.mkdir(parents = True)
+    fake_python.touch()
+    import unsloth_cli.commands.studio as studio_mod
+
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path, raising = False)
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python, raising = False)
+
+    class _Result:
+        stdout = f"{editable}\n"
+
+    monkeypatch.setattr(start.subprocess, "run", lambda *a, **k: _Result())
+
+    assert editable in start._unsloth_package_dirs()
+
+
 def test_unsloth_package_dirs_include_the_studio_venv(monkeypatch, tmp_path):
     # The worker may run in the managed Studio venv, whose Unsloth can differ from the one
     # this CLI was launched from, so both sets of tables have to be read.
@@ -4624,6 +4654,116 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
     # The substitute has now grown twice; the recorded base is dropped.
     assert dead_polls() == 2
     assert progress.downloaded_bytes == 3 * 1024**3
+
+
+def test_model_download_progress_does_not_prune_when_a_cache_mount_appears(monkeypatch):
+    # A cached candidate whose mount was missing during one complete scan and present in
+    # the next grows its total by the whole cached size with nothing transferring.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
+    mount = iter(
+        [
+            {"downloaded_bytes": 0, "completed_bytes": 0, "cache_measured": True},
+            {
+                "downloaded_bytes": 16 * 1024**3,
+                "completed_bytes": 16 * 1024**3,
+                "cache_measured": True,
+            },
+            {
+                "downloaded_bytes": 16 * 1024**3,
+                "completed_bytes": 16 * 1024**3,
+                "cache_measured": True,
+            },
+        ]
+    )
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
+            return next(mount)
+        return {
+            "downloaded_bytes": 0,
+            "completed_bytes": 0,
+            "expected_bytes": 40 * 1024**3,
+            "cache_measured": True,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    for _ in range(3):
+        progress.poll()
+
+    assert "owner/base" in (progress._companions or [])
+
+
+def test_companion_lookup_retries_a_rate_limited_config_route(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            if len(lookups) == 1:
+                raise urllib.error.HTTPError(url, 429, "Too Many Requests", None, None)
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 1024
+    now[0] += start._COMPANION_LOOKUP_RETRY_S
+    progress.poll()
+
+    assert len(lookups) == 2
+    assert progress.downloaded_bytes == 1024 + 3 * 1024**3
+
+
+def test_download_progress_display_completes_after_following_a_second_repo(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: True, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(
+        {
+            "downloaded_bytes": 2 * 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 4 * 1024**3,
+            "progress": 0.5,
+        },
+        "owner/base",
+    )
+    # The base finished, so the line falls back to a fully cached adapter, which renders
+    # nothing. That must not wipe the state complete() and close() gate on.
+    display.update(
+        {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 1024},
+        "owner/adapter",
+    )
+    display.complete()
+    display.close()
+
+    out = capsys.readouterr().out
+    assert "100%" in out
+    assert out.endswith("\n")
 
 
 def test_model_download_progress_does_not_prune_on_a_cache_scan_rebound(monkeypatch):
