@@ -184,6 +184,10 @@ async def download_model_response(
     ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
     no token, for repos named over the API rather than chosen here.
     """
+    from core.training.account_jobs import account_is_retired
+
+    if account_is_retired():
+        raise HTTPException(status_code = 403, detail = "Account is retired")
     hf_token = account_access.account_hf_token(hf_token)
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     repo_id = body.repo_id.strip()
@@ -328,6 +332,8 @@ async def download_model_response(
         }
     # Record ownership with the claim, not at launch, or the last downloader keeps the key.
     download_lifecycle.record_download_account(_registry, key)
+    # Only then read the tombstone: an account retired during the awaits must not spawn.
+    download_lifecycle.require_live_account(_registry, key)
     download_manifest.clear_cancel_marker(
         "model",
         repo_id,

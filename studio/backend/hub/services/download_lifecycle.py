@@ -53,6 +53,17 @@ def require_download_account(registry, key: str) -> None:
         raise HTTPException(status_code = 404, detail = "Download not found")
 
 
+def require_live_account(registry, key: str) -> None:
+    """Called right after ownership is recorded: a claim before retirement's scan is cancelled
+    by it, and one after sees the tombstone here, so neither reaches spawn with the token."""
+    from core.training.account_jobs import account_is_retired
+
+    if not account_is_retired():
+        return
+    registry.set_job(key, "error", "Account is retired")
+    raise HTTPException(status_code = 403, detail = "Account is retired")
+
+
 def backend_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
@@ -1247,6 +1258,7 @@ def launch_worker(
     # transformers, on the request path.
     if account_access.account_scope() is not None:
         record_download_account(registry, key)
+        require_live_account(registry, key)
         try:
             account_access.authorize_download(repo_id, repo_type, hf_token)
         except HTTPException:

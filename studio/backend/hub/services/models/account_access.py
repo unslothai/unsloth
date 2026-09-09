@@ -85,10 +85,11 @@ def managed_account() -> bool:
 
 
 def account_scope() -> str | None:
-    """None preserves installation-wide legacy queries on one-account installs."""
+    """None keeps legacy installation-wide queries on installs that never had a managed
+    account; a deactivated account's downloads keep running, so any record scopes the owner."""
     if not is_owner_context():
         return current_account_id()
-    return current_account_id() if policy.installation_is_multi_user() else None
+    return current_account_id() if policy.installation_has_managed_accounts() else None
 
 
 _resident_accounts: dict[str, tuple[str, frozenset[str]]] = {}

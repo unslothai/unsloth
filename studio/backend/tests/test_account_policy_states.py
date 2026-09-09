@@ -85,3 +85,47 @@ def test_deactivating_the_last_managed_account_keeps_a_bound_request_isolated(
     with pytest.raises(HTTPException) as raised:
         run_as(alice, access.require_model_access, "/owner/private/checkpoint.gguf")
     assert raised.value.status_code == 404
+
+
+def test_deactivating_the_last_account_does_not_hand_its_download_to_the_owner(
+    auth_db, monkeypatch, tmp_path
+):
+    """Deactivation does not cancel downloads, so the owner must stay scoped."""
+    import logging
+
+    from fastapi import HTTPException
+    from hub.services import download_lifecycle
+    from hub.services.models import account_access as access
+    from hub.utils import download_registry
+    from utils.account_context import OWNER, AccountContext, run_as
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(download_lifecycle, "_job_accounts", {})
+    assert access.account_scope() is None
+    record = storage.issue_account_setup_code(username = "alice")["account"]
+    alice = AccountContext(record["account_id"], "alice")
+    registry = download_registry.DownloadRegistry()
+    key = "alice-org/private-secret::"
+    registry.claim(key, "http", repo_type = "model", repo_id = "alice-org/private-secret")
+    run_as(alice, download_lifecycle.record_download_account, registry, key)
+    storage.set_account_active(record["account_id"], False)
+    assert policy.installation_is_multi_user() is False
+    assert run_as(OWNER, download_lifecycle.download_belongs_to_account, registry, key) is False
+    assert (
+        run_as(
+            OWNER,
+            lambda: download_lifecycle.active_download_refs(registry, None, with_variant = True),
+        )
+        == []
+    )
+    with pytest.raises(HTTPException) as exc:
+        run_as(
+            OWNER,
+            lambda: download_lifecycle.cancel_worker(
+                registry, key, generation = None, label = "model", logger = logging.getLogger(__name__)
+            ),
+        )
+    assert exc.value.status_code == 404 and registry.get_job(key).state == "running"
+    legacy = "legacy-org/model::"
+    registry.claim(legacy, "http", repo_type = "model", repo_id = "legacy-org/model")
+    assert run_as(OWNER, download_lifecycle.download_belongs_to_account, registry, legacy) is True
