@@ -163,3 +163,20 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
     (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert len(installed) == 1
+
+
+def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypatch):
+    """Model activation goes through _ensure_venv_t5_latest_exists, not the provisioning
+    path; a healthy latest sidecar without tiktoken has to get its top-up there too, or a
+    latest-tier Qwen model keeps failing to tokenize after a transient install failure."""
+    latest = tmp_path / ".venv_t5_latest"
+    latest.mkdir()
+    packages = ("transformers==9.9.9", "huggingface_hub==1.8.0", "hf_xet==1.4.2", "tiktoken")
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(latest))
+    monkeypatch.setattr(tv, "_latest_pin_data", lambda: {"version": "9.9.9", "packages": packages})
+    monkeypatch.setattr(tv, "_venv_dir_health", lambda *a, **k: (True, True))
+    installed = []
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append((pkg, target)) or True)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    assert tv._ensure_venv_t5_latest_exists() is True
+    assert installed == [("tiktoken", str(latest))]
