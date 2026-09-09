@@ -22,7 +22,7 @@ from typing import Any, Optional
 from core.inference import gallery_flags
 from loggers import get_logger
 from utils.account_context import is_owner_context
-from utils.paths import ensure_dir, studio_root
+from utils.paths import ensure_account_dir, ensure_dir, studio_root
 from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
@@ -37,7 +37,7 @@ _THUMBNAIL_WIDTH = 192
 def gallery_dir() -> Path:
     if is_owner_context():
         return ensure_dir(studio_root() / "videos")
-    return ensure_dir(account_path("videos"))
+    return ensure_account_dir(account_path("videos"))
 
 
 def _job_dir() -> Path:

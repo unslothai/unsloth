@@ -21,6 +21,13 @@ BOB = AccountContext("22222222222222222222222222222222", "bob")
 ACCOUNTS = (OWNER, ALICE, BOB)
 
 
+@pytest.fixture(autouse = True)
+def fresh_retirement_tombstones(monkeypatch):
+    # Tombstones are process-global; one test retiring ALICE would fence the later ones.
+    from core.training import account_jobs
+    monkeypatch.setattr(account_jobs, "_retired", set())
+
+
 @pytest.fixture
 def account_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))

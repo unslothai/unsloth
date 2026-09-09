@@ -1349,3 +1349,124 @@ def test_deleting_an_account_cancels_its_video_render_and_keeps_its_roots(monkey
     finally:
         release.set()
         assert done.wait(10)
+
+
+def test_retirement_reaps_dataset_downloads_and_refuses_when_one_survives(tmp_path, monkeypatch):
+    """A dataset worker of a deleted account must be reaped, and a failed kill must block deletion."""
+    import subprocess
+    import sys
+
+    from hub.services import download_lifecycle
+    from hub.services.datasets import downloads as dataset_downloads
+    from hub.services.models import downloads as model_downloads
+    from hub.utils import download_registry
+    from core.rag import folder_sync, ingestion
+    from core import research_runs
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "_services", [])
+    monkeypatch.setattr(ingestion, "retire_account_ingestions", lambda: None)
+    monkeypatch.setattr(folder_sync, "retire_account_sync", lambda: None)
+    monkeypatch.setattr(research_runs, "retire_account_research", lambda account: None)
+    monkeypatch.setattr(model_downloads, "retire_account_downloads", lambda: None)
+
+    repo_id = "acme/retired-dataset"
+    registry = run_as(ALICE, dataset_downloads._account_registry)
+    key = dataset_downloads._download_job_key(repo_id)
+
+    def start_worker():
+        claimed, state = registry.claim(
+            key, download_registry.TRANSPORT_HTTP, repo_type = "dataset", repo_id = repo_id
+        )
+        assert claimed, state
+        run_as(ALICE, download_lifecycle.record_download_account, registry, key)
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"], stderr = subprocess.PIPE
+        )
+        assert registry.register_process(key, worker)
+        return worker
+
+    proc = start_worker()
+    try:
+        jobs.retire_account_jobs(ALICE)
+        assert proc.poll() is not None, "the retired account's dataset worker is still running"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        registry.drop_process(key, proc)
+        registry.set_job(key, "idle")
+
+    # A worker that cannot be killed must fail retirement instead of leaving the token in flight.
+    jobs.restore_account_jobs(ALICE.account_id)
+    survivor = start_worker()
+    monkeypatch.setattr(
+        survivor, "kill", lambda: (_ for _ in ()).throw(PermissionError("kill denied"))
+    )
+    try:
+        with pytest.raises(jobs.AccountRetirementError):
+            jobs.retire_account_jobs(ALICE)
+        assert survivor.poll() is None
+    finally:
+        monkeypatch.undo()
+        survivor.kill()
+        survivor.wait()
+        registry.drop_process(key, survivor)
+        registry.set_job(key, "idle")
+
+
+def test_a_late_finalizer_cannot_recreate_a_deleted_accounts_workspace(monkeypatch, tmp_path):
+    """cancel_all() only signals, so a finalizer still running after the rename must not mkdir the account back."""
+    from core.inference import image_gallery
+    from routes.accounts import retire_account_roots
+    from state import active_generations
+    from storage import studio_db
+    from utils.paths import storage_roots
+    from utils.paths.storage_roots import RetiredAccountError
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet())
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+    active_generations.reset_for_tests()
+    root = run_as(ALICE, storage_roots.workspace_root)
+    root.mkdir(parents = True)
+
+    cancel_event = threading.Event()
+    started, gate, finished = threading.Event(), threading.Event(), threading.Event()
+    refused = []
+
+    def producer():
+        with active_generations.ActiveGeneration(
+            cancel_event, run_id = "run-1", thread_id = "t-1", account_id = ALICE.account_id
+        ):
+            started.set()
+            assert cancel_event.wait(10)
+            # The finalizers that run after the cancel is observed: db.finish_run, then the gallery write.
+            assert gate.wait(10)
+            for call in (studio_db.get_connection, image_gallery.gallery_dir):
+                with pytest.raises(RetiredAccountError):
+                    run_as(ALICE, call)
+                refused.append(call)
+        finished.set()
+
+    worker = threading.Thread(target = producer, daemon = True)
+    worker.start()
+    try:
+        assert started.wait(10)
+        retire_account_roots(ALICE)
+        assert not root.exists()
+    finally:
+        gate.set()
+    assert finished.wait(10)
+    worker.join(10)
+    assert len(refused) == 2
+    assert not root.exists()

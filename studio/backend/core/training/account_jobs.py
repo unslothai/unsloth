@@ -465,6 +465,11 @@ def startup_reconciliation_accounts() -> list[AccountContext]:
     return accounts
 
 
+def sweepable_job_accounts() -> list[AccountContext]:
+    """The boot-reconcile set: a deactivated account still holds a registration and a GPU reservation."""
+    return startup_reconciliation_accounts()
+
+
 def validate_recipe_access(recipe) -> None:
     if not managed_account():
         return

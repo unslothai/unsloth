@@ -386,7 +386,19 @@ def retire_account_downloads() -> None:
     )
     if registry is None:
         return
+    stragglers = []
     for job in registry.active_job_refs():
         download_lifecycle.cancel_worker(
             registry, job.key, generation = job.generation, label = "dataset", logger = logger
+        )
+        proc = registry.get_process(job.key)
+        if proc is None:
+            continue
+        try:
+            proc.wait(timeout = 10)
+        except Exception:
+            stragglers.append(job.key)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account dataset downloads have not stopped: {sorted(stragglers)}"
         )

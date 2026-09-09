@@ -259,6 +259,20 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+class RetiredAccountError(RuntimeError):
+    """A write arrived for an account whose private roots have already been retired."""
+
+
+def ensure_account_dir(path: Path) -> Path:
+    """``ensure_dir`` inside the acting account's workspace. A finalizer outliving deletion
+    would recreate the renamed-aside roots; refuse once the tombstone is set and they are gone."""
+    if not is_owner_context() and not workspace_root().exists():
+        from core.training.account_jobs import account_is_retired
+        if account_is_retired():
+            raise RetiredAccountError(f"account has been deleted; refusing to recreate {path!s}")
+    return ensure_dir(path)
+
+
 def legacy_hf_cache_dir() -> Path:
     """Old Unsloth-specific HF hub cache, kept for backward-compat scans."""
     return cache_root() / "huggingface" / "hub"

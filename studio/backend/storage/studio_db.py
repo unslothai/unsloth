@@ -25,6 +25,7 @@ from typing import Any, Iterable, Optional
 
 from utils.account_context import is_owner_context
 from utils.paths import (
+    ensure_account_dir,
     ensure_dir,
     project_workspaces_root,
     studio_db_path,
@@ -1248,7 +1249,7 @@ def get_connection(
     _manage_keeper: bool = True,
 ) -> sqlite3.Connection:
     db_path = studio_db_path()
-    ensure_dir(db_path.parent)
+    ensure_account_dir(db_path.parent)
     conn = sqlite3.connect(
         str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )

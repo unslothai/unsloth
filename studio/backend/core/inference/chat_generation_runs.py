@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
-from core.training.account_jobs import job_accounts
+from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import run_as
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
@@ -267,7 +267,8 @@ class ChatGenerationLeaseSweeper:
         if not self.enabled:
             return []
         settled: list[str] = []
-        for account in job_accounts():
+        # Deactivated accounts too: their wedged producer never sees the cancel event.
+        for account in sweepable_job_accounts():
             settled.extend(
                 await _sweep_in_daemon_thread(
                     run_as,
