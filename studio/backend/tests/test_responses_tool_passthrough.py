@@ -1938,11 +1938,6 @@ class TestResponsesNonStreamingAdapter:
                 is_loaded = True,
                 reasoning_always_on = False,
                 supports_reasoning = True,
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
-                        {"enable_thinking": bool(enable_thinking)}
-                    )
-                ),
             ),
         )
 
@@ -1966,6 +1961,74 @@ class TestResponsesNonStreamingAdapter:
                         {"reasoning_effort": "low"}
                     )
                 ),
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
+    def test_inkling_numeric_zero_effort_keeps_think_tags_visible(self, monkeypatch):
+        # The real resolver, not a stand-in: for an Inkling template
+        # _coerce_reasoning_effort rewrites the "none" sentinel to numeric 0
+        # before the gate sees it, so a string comparison alone reads thinking
+        # as still on and eats the literal tags.
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = object()
+        backend._healthy = True
+        backend._supports_reasoning = True
+        backend._reasoning_always_on = False
+        backend._reasoning_style = "reasoning_effort"
+        backend._reasoning_effort_levels = ["none", "low", "medium", "high", "max"]
+        backend._supports_preserve_thinking = False
+        backend._preserve_thinking_default = False
+        backend._reasoning_default = True
+        backend._architecture = "inkling"
+
+        assert backend._request_reasoning_kwargs(False, "none", None) == {"reasoning_effort": 0.0}
+
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            payload = payload,
+            llama_backend = backend,
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_off_keeps_think_tags_visible(self, monkeypatch):
+        # An SDK client that names no reasoning field sends no override, so the
+        # model answers on the default it was launched with. The Qwen3.5 Small
+        # tier launches thinking off, and its literal tags must survive too.
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = False,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_on_still_parses_think_tags(self, monkeypatch):
+        # The mirror: the same unspecified request on a thinking-on default
+        # keeps splitting, so the fix above cannot be read as "never parse".
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = True,
             ),
         )
 

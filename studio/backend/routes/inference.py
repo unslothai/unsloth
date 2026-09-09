@@ -4208,6 +4208,26 @@ def _anthropic_preserve_thinking(llama_backend, payload) -> bool:
     return bool(getattr(llama_backend, "preserve_thinking_default", False))
 
 
+def _resolved_kwargs_think(llama_backend, resolved) -> bool:
+    """Whether the resolved template kwargs leave thinking on.
+
+    Effort-dial templates think at every level except "none" -- which Inkling's
+    numeric dial spells as 0, since _coerce_reasoning_effort rewrites the
+    sentinel before it gets here. With no explicit kwargs the model was launched
+    on the template's own default, so that decides.
+    """
+    if "enable_thinking" in resolved:
+        return bool(resolved["enable_thinking"])
+    if "reasoning_effort" in resolved:
+        effort = resolved["reasoning_effort"]
+        if isinstance(effort, str):
+            return effort.strip().lower() != "none"
+        if isinstance(effort, (int, float)) and not isinstance(effort, bool):
+            return float(effort) != 0.0
+        return True
+    return bool(getattr(llama_backend, "reasoning_default", True))
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Whether <think> markup in this reply can be genuine reasoning.
 
@@ -4236,13 +4256,7 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
         )
         or {}
     )
-    if "enable_thinking" in resolved:
-        return bool(resolved["enable_thinking"])
-    if "reasoning_effort" in resolved:
-        # Effort-dial templates think at every level except "none".
-        return resolved["reasoning_effort"] != "none"
-    # No explicit kwargs: the template's own default decides whether it thinks.
-    return bool(getattr(llama_backend, "reasoning_default", True))
+    return _resolved_kwargs_think(llama_backend, resolved)
 
 
 def _anthropic_count_template_kwargs(llama_backend, payload):
@@ -27854,11 +27868,7 @@ def _responses_should_parse_think_markers(
             )
             or {}
         )
-        if "enable_thinking" in resolved:
-            return bool(resolved["enable_thinking"])
-        if "reasoning_effort" in resolved:
-            return resolved["reasoning_effort"] != "none"
-        return True
+        return _resolved_kwargs_think(llama_backend, resolved)
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
