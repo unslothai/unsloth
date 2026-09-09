@@ -262,6 +262,8 @@ def test_a_plan_uv_announced_but_this_parser_could_not_read_is_not_an_empty_plan
         "Would install 2 packages\n + a==1\n + torch==2.9.0+cu128\n", {"a": "1"}
     )
     assert _studio_prefetch.plan_is_readable("Resolved 4 packages in 8ms\n", {})
+    # A plan that is nothing but local-tag pins reads fine and prepares nothing.
+    assert _studio_prefetch.plan_is_readable("Would install 1 package\n + torch==2.9.0+cu128\n", {})
     # Announced installs and nothing parsed: the format moved.
     assert not _studio_prefetch.plan_is_readable("Would install 2 packages\n> a 1\n> b 2\n", {})
     assert _studio_prefetch.planned_install_count("Would install 1 package\n") == 1

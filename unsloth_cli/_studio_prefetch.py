@@ -405,12 +405,20 @@ def planned_install_count(output: str) -> Optional[int]:
 
 
 def plan_is_readable(output: str, planned: Dict[str, str]) -> bool:
-    """False when uv announced installs and not one line parsed as a pin.
+    """False when uv announced installs and not one line parsed as a pin at all.
 
-    Fewer pins than uv counted is fine: local-tag versions are dropped on purpose.
-    Zero out of many is the parser having lost the format.
+    Deliberately measured against the lines, not against `planned`: dropping every
+    local-tag pin can legitimately empty the dict for a plan that was read perfectly
+    (a torch-only plan is one line, and it carries `+cu128`).
     """
-    return not planned_install_count(output) or bool(planned)
+    if not planned_install_count(output):
+        return True
+    if planned:
+        return True
+    return any(
+        _PLAN_LINE.match(line) and "==" in line
+        for line in output.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    )
 
 
 def parse_dry_run_plan(output: str) -> Dict[str, str]:
