@@ -210,7 +210,7 @@ export function MemoryEstimateRow({
         aria-expanded={expanded}
         aria-controls={contentId}
         aria-label={`Estimated Memory Usage: ${expanded ? "Hide" : "Show"} breakdown`}
-        className="group mb-0.5 flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="group flex min-h-7 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
