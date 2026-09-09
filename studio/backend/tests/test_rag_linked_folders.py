@@ -2351,6 +2351,8 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
     assert folder_sync.get_folder(folder["id"]) is not None
     assert seen["checks"] == 2
+    # and the scope is usable again immediately, not once the reconciler next runs
+    assert folder_sync.scope_retired(scope) is False
 
 
 @requires_sqlite_vec

@@ -1151,7 +1151,12 @@ def _delete_project_rag_sources(project_id: str) -> None:
         # sparing the new folders above buys nothing unless it is skipped too. Recheck rather
         # than bound it: a recreated project wants its scope back whole, and the periodic
         # reconciler already refuses to purge a scope whose owner exists.
-        if rag_db.rag_available() and get_chat_project(project_id) is None:
+        if get_chat_project(project_id) is not None:
+            # And drop the tombstone this pass just wrote, rather than only skipping the purge:
+            # scope_retired reads it, so the recreated project would have its uploads 409ed and
+            # its folder links refused until the reconciler comes round, up to 30s later.
+            folder_sync.unretire_scope(scope)
+        elif rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
 
