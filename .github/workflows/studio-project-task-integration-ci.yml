@@ -8,6 +8,8 @@ on:
     paths:
       - 'studio/backend/core/agent_workspace/**'
       - 'studio/backend/core/inference/studio_tool_loop.py'
+      - 'studio/backend/core/inference/tool_loop_controller.py'
+      - 'studio/backend/tests/test_tool_loop_controller.py'
       - 'studio/backend/core/project_retirement.py'
       - 'studio/backend/routes/project_tasks.py'
       - 'studio/backend/storage/credential_secrets.py'
@@ -23,6 +25,8 @@ on:
     paths:
       - 'studio/backend/core/agent_workspace/**'
       - 'studio/backend/core/inference/studio_tool_loop.py'
+      - 'studio/backend/core/inference/tool_loop_controller.py'
+      - 'studio/backend/tests/test_tool_loop_controller.py'
       - 'studio/backend/core/project_retirement.py'
       - 'studio/backend/routes/project_tasks.py'
       - 'studio/backend/storage/credential_secrets.py'
@@ -90,6 +94,7 @@ jobs:
           python -m pytest
           tests/test_project_task_integration.py tests/test_project_task_runtime.py
           tests/test_project_task_state.py tests/test_studio_tool_loop.py
+          tests/test_tool_loop_controller.py
           tests/test_project_retirement.py tests/test_agent_workspace_worktrees_focused.py
           tests/test_secure_cross_platform_tools.py
           -q --tb=short --timeout=120 --maxfail=5

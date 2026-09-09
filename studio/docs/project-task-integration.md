@@ -42,9 +42,9 @@ and bounded new-file previews. Symlinks, unreadable, binary or oversized new fil
 are labelled unavailable. Incomplete previews say so. Bound task worktrees are
 preserved after completion, cancellation or failure. A checkout whose setup fails
 before binding is rolled back only when Git can prove ownership and that it is
-clean; otherwise its Git record remains available for recovery. No commit, merge,
-publication or command execution occurs automatically unless command execution
-was explicitly enabled for the task. The existing Git panel
+clean; otherwise its Git record remains available for recovery. Tasks do not
+commit, merge or publish changes automatically. Command execution requires the
+explicit task opt-in and the optional command layer. The existing Git panel
 can show the owned checkout location for further inspection and explicit Git work.
 
 ## Execution and boundaries
@@ -59,6 +59,10 @@ can show the owned checkout location for further inspection and explicit Git wor
   API responses. Model-process replacement and provider/key changes reject work.
 - The existing Studio tool loop receives a private callback and an explicit
   task-only catalogue. Unknown tools never fall back to the general executor.
+  Task reads, file listings, child waits and optional commands may repeat identical
+  arguments to observe changes or rerun verification. All tool and model-turn
+  budgets still apply; ordinary-chat deduplication and one-shot tools retain
+  their existing behavior.
   Every task tool result is capped before model replay using the shared
   `UNSLOTH_TOOL_RESULT_MAX_CHARS` setting, including file reads, listings and child
   results. Truncated reads cannot supply the exact whole-file contents required

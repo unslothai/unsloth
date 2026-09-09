@@ -639,3 +639,43 @@ def test_command_opt_in_is_strict_and_does_not_accept_runtime_authority():
         json = {"instruction": "Check", "kind": "local", "model": "m", "allowCommands": "true"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "repeatable,expected", [(frozenset(), "duplicate"), (frozenset({"task_wait"}), "execute")]
+)
+def test_only_explicit_task_tools_can_repeat_successful_calls(repeatable, expected):
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    controller = ToolLoopController(
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "task_wait", "parameters": {"type": "object"}},
+            }
+        ],
+        repeatable_tools = repeatable,
+    )
+    call = {"id": "one", "function": {"name": "task_wait", "arguments": {"task_id": "child"}}}
+    decision = controller.prepare_call(call)
+    assert decision.should_execute
+    controller.record_result(decision, '{"status":"pending"}')
+    assert controller.prepare_call(call).action == expected
+    assert (
+        controller.prepare_call({"function": {"name": "terminal", "arguments": {}}}).action
+        == "disabled"
+    )
+
+
+def test_repeatable_policy_preserves_one_shot_restrictions():
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    controller = ToolLoopController(
+        tools = [{"type": "function", "function": {"name": "render_html"}}],
+        repeatable_tools = frozenset({"render_html"}),
+    )
+    call = {"id": "one", "function": {"name": "render_html", "arguments": {"html": "hello"}}}
+    decision = controller.prepare_call(call)
+    assert decision.should_execute
+    controller.record_result(decision, "Rendered")
+    assert controller.prepare_call(call).action == "render_html_repeat"

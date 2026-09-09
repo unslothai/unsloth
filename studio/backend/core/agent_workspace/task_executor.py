@@ -248,6 +248,9 @@ async def run_task(
         auto_heal = False,
         nudge_tool_calls = False,
         tool_executor = task_executor,
+        repeatable_tools = frozenset(
+            {"task_read_file", "task_list_files", "task_wait", "task_run_command"}
+        ),
     )
     messages = [
         {

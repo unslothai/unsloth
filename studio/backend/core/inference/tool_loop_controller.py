@@ -956,6 +956,7 @@ class ToolLoopController:
         auto_heal_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        repeatable_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
@@ -965,6 +966,7 @@ class ToolLoopController:
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
+        self._repeatable_tools = frozenset(repeatable_tools)
         self._successful_keys: set[str] = set()
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
@@ -1029,7 +1031,7 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif key in self._successful_keys:
+        elif key in self._successful_keys and tool_name not in self._repeatable_tools:
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

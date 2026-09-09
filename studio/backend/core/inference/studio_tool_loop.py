@@ -382,6 +382,9 @@ class ToolLoopPolicy:
     on_provider_turn_end: Callable[[], None] | None = None
     # Internal capability supplied by a server task; never deserialized from HTTP.
     tool_executor: Callable[..., str] | None = None
+    # Server-selected tools that observe mutable task state or deliberately rerun
+    # verification. Execution and provider-turn budgets still apply.
+    repeatable_tools: frozenset[str] = frozenset()
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1282,6 +1285,7 @@ async def stream_with_studio_tools(
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        repeatable_tools = policy.repeatable_tools,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
