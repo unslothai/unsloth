@@ -111,6 +111,55 @@ class TestTheNamedBudgetIsJudged:
         )
         assert short == (1024, 12 * 1024, 12 * 1024 + 64)
 
+    def test_the_draft_state_and_the_parked_slots_are_budgeted_too(self):
+        # A 1024 MiB pool beside a draft cache of its own size, four slots: three sequences
+        # can be parked at once, each holding a quarter of both pools, and the server holds
+        # one more snapshot while it rotates another in.
+        pool = 1024 * 1024 * 1024
+        need = llama_mod._exact_parking_need_mib(pool, draft_bytes = pool, parallel = 4)
+        assert need >= 3 * (256 + 256)
+        # The pool-plus-margin answer this replaces accepted 1088 MiB for the same shape.
+        assert llama_mod._exact_parking_need_mib(pool) == 1088
+        short = llama_mod._exact_parking_shortfall_mib(
+            pool,
+            args = ["--preempt-ram", "1088"],
+            env = {},
+            draft_bytes = pool,
+            parallel = 4,
+        )
+        assert short is not None
+        named, saved, reported = short
+        assert (named, saved, reported) == (1088, 2048, need)
+        # A budget that does hold it is no shortfall.
+        assert (
+            llama_mod._exact_parking_shortfall_mib(
+                pool,
+                args = ["--preempt-ram", str(need)],
+                env = {},
+                draft_bytes = pool,
+                parallel = 4,
+            )
+            is None
+        )
+
+    def test_a_single_slot_still_budgets_the_one_snapshot_it_writes(self):
+        pool = 1024 * 1024 * 1024
+        assert llama_mod._exact_parking_need_mib(pool, draft_bytes = pool, parallel = 1) == (
+            2048 + llama_mod._PARKING_MARGIN_MIB
+        )
+
+    def test_the_launch_prices_the_draft_state_and_the_slot_count(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_exact_draft_bytes = _draft_kv_state_bytes(effective_ctx)" in source
+        for call in ("_exact_parking_budget_mib(", "_exact_parking_shortfall_mib("):
+            site = source.index(call)
+            window = source[site : site + 500]
+            assert "draft_bytes = _exact_draft_bytes" in window
+            assert "parallel = n_parallel" in window
+        # The drafter's weights stay resident over a park, so the reserve is not the measure.
+        draft = inspect.getsource(LlamaCppBackend.load_model)
+        assert "self._mtp_draft_kv_bytes(" in draft
+
     def test_a_budget_that_holds_the_pool_is_fine(self):
         assert (
             llama_mod._exact_parking_shortfall_mib(
@@ -134,6 +183,16 @@ class TestTheNamedBudgetIsJudged:
         assert (
             llama_mod._exact_parking_shortfall_mib(0, args = ["--preempt-ram", "1"], env = {}) is None
         )
+
+    def test_the_pool_sized_after_launch_prices_its_draft_state_too(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        site = source.index("_fitted_bytes = _kv_bytes(_fitted_ctx)")
+        window = source[site : site + 900]
+        assert "_fitted_draft = _draft_kv_state_bytes(_fitted_ctx)" in window
+        assert "draft_bytes = _fitted_draft" in window
+        assert "parallel = n_parallel" in window
+        # A draft cache with no dimensions is a park nobody can size, so it is not certified.
+        assert "if _fitted_draft is None:" in window
 
     def test_the_servers_default_is_judged_for_a_pool_sized_after_launch(self):
         # An auto-fit context leaves the pool unknown at launch; after it the default budget
@@ -160,7 +219,7 @@ class TestTheNamedBudgetIsJudged:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._exact_pool_unknown = _exact_kv_bytes <= 0" in source
         judged = source.index('getattr(self, "_exact_pool_unknown", False)')
-        window = source[judged : judged + 1600]
+        window = source[judged : judged + 2000]
         assert "self._query_server_n_ctx()" in window
         assert "default_mib = _PREEMPT_RAM_DEFAULT_MIB" in window
         assert (

@@ -2058,14 +2058,42 @@ def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> b
 _PREEMPT_RAM_DEFAULT_MIB = 8192
 
 
-def _exact_parking_budget_mib(kv_bytes: int, *, args, env: Mapping[str, str]) -> Optional[int]:
-    """The ``--preempt-ram`` an exact launch needs so every park fits host RAM: the pool plus a
-    margin. None when the default holds it, the estimate is unknown, or a budget is named."""
+# Per-park slack over the sequence state itself: page rounding, sampler and slot metadata.
+_PARKING_MARGIN_MIB = 64
+
+
+def _exact_parking_need_mib(
+    kv_bytes: int,
+    *,
+    draft_bytes: int = 0,
+    parallel: int = 1,
+) -> int:
+    """The ``--preempt-ram`` every park fits in, in MiB.
+
+    A park saves a sequence's TARGET and DRAFT (MTP) state together, and the server holds the
+    parked sequences' state at once, so the bound is both pools, shared out per slot so the
+    rounding favours the parks, plus the margin. It refuses a rotation it cannot hold."""
+    slots = max(int(parallel or 1), 1)
+    total = max(int(kv_bytes), 0) + max(int(draft_bytes), 0)
+    per_slot = -(-total // (1024 * 1024 * slots))
+    return per_slot * (max(slots - 1, 0) + 1) + _PARKING_MARGIN_MIB
+
+
+def _exact_parking_budget_mib(
+    kv_bytes: int,
+    *,
+    args,
+    env: Mapping[str, str],
+    draft_bytes: int = 0,
+    parallel: int = 1,
+) -> Optional[int]:
+    """The ``--preempt-ram`` an exact launch names so every park fits host RAM. None when the
+    default holds it, the estimate is unknown, or a budget is named."""
     if kv_bytes <= 0 or "LLAMA_ARG_PREEMPT_RAM" in env:
         return None
     if any(str(a).startswith("--preempt-ram") for a in (args or ())):
         return None
-    need = -(-int(kv_bytes) // (1024 * 1024)) + 64
+    need = _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
     return need if need > _PREEMPT_RAM_DEFAULT_MIB else None
 
 
@@ -2094,11 +2122,14 @@ def _exact_parking_shortfall_mib(
     args,
     env: Mapping[str, str],
     default_mib: Optional[int] = None,
+    draft_bytes: int = 0,
+    parallel: int = 1,
 ) -> Optional[tuple[int, int, int]]:
-    """``(named, pool, need)`` when the budget in force cannot park the whole pool, else None: a
-    park that outgrows it is re-prefilled, which is not byte-identical on CUDA. ``-1`` is unlimited
-    and ``0`` is parking off, which ``server_preempts_kv`` already reports. ``default_mib`` is
-    judged when nothing named a budget (an auto-fit pool is judged after launch instead)."""
+    """``(named, saved, need)`` when the budget in force cannot hold every park, else None: a park
+    that outgrows it is re-prefilled, which is not byte-identical on CUDA. ``saved`` is the target
+    plus draft state one park writes. ``-1`` is unlimited and ``0`` is parking off, which
+    ``server_preempts_kv`` already reports. ``default_mib`` is judged when nothing named a budget
+    (an auto-fit pool is judged after launch instead)."""
     if kv_bytes <= 0:
         return None
     named = _named_preempt_ram_mib(args, env)
@@ -2106,9 +2137,9 @@ def _exact_parking_shortfall_mib(
         named = default_mib
     if named is None or named <= 0:
         return None
-    pool = -(-int(kv_bytes) // (1024 * 1024))
-    need = pool + 64
-    return (named, pool, need) if named < need else None
+    saved = -(-(int(kv_bytes) + max(int(draft_bytes), 0)) // (1024 * 1024))
+    need = _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
+    return (named, saved, need) if named < need else None
 
 
 def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[str]:
@@ -20533,6 +20564,24 @@ class LlamaCppBackend:
                             ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
                         )
 
+                    def _draft_kv_state_bytes(ctx: int) -> Optional[int]:
+                        # What a park saves BESIDE the target state. Not `_mtp_bytes`: that
+                        # prices the drafter weights too, and those stay resident over a park.
+                        # None means engaged but unsizable, which no budget can be proved against.
+                        if not _mtp_will_engage or ctx <= 0:
+                            return 0
+                        return self._mtp_draft_kv_bytes(
+                            ctx,
+                            drafter_path = _mtp_draft_for_budget,
+                            draft_cache_type_k = _mtp_draft_ck,
+                            draft_cache_type_v = _mtp_draft_cv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
+                        )
+
                     def _kv_bytes(ctx: int, ctx_checkpoints: int = 0) -> int:
                         # Checkpoints default OFF: the placement paths price the SWA
                         # snapshots themselves, so charging them again here would shrink
@@ -23604,44 +23653,58 @@ class LlamaCppBackend:
                             " ".join(_exact_added),
                         )
                     # A park that outgrows the host budget is re-prefilled, which is not
-                    # byte-identical on CUDA, so the budget has to hold the whole pool. Only when
-                    # nothing named one, and not when the stand-down below switches parking off.
+                    # byte-identical on CUDA, so the budget has to hold every park's target AND
+                    # draft state. Only when nothing named one, and not when the stand-down below
+                    # switches parking off.
                     if server_caps.get("supports_preempt_ram") and not _child_parking_stands_down():
                         try:
                             _exact_kv_bytes = _kv_bytes(effective_ctx)
+                            _exact_draft_bytes = _draft_kv_state_bytes(effective_ctx)
                         except Exception:
-                            _exact_kv_bytes = 0
+                            _exact_kv_bytes, _exact_draft_bytes = 0, 0
+                        if _exact_draft_bytes is None:
+                            # Draft state a park saves that cannot be priced is a pool that
+                            # cannot be sized: judged after launch rather than certified here.
+                            _exact_kv_bytes, _exact_draft_bytes = 0, 0
                         _exact_budget = _exact_parking_budget_mib(
                             _exact_kv_bytes,
                             args = list(cmd) + [str(a) for a in (extra_args or ())],
                             env = os.environ,
+                            draft_bytes = _exact_draft_bytes,
+                            parallel = n_parallel,
                         )
                         if _exact_budget is not None:
                             cmd.extend(["--preempt-ram", str(_exact_budget)])
                             logger.info(
-                                "Exact concurrency: --preempt-ram %d holds the whole %d MiB pool, "
-                                "so no park has to be re-prefilled.",
+                                "Exact concurrency: --preempt-ram %d holds every park of the "
+                                "%d MiB pool and its %d MiB of draft state, so no park has to be "
+                                "re-prefilled.",
                                 _exact_budget,
                                 _exact_kv_bytes // (1024 * 1024),
+                                _exact_draft_bytes // (1024 * 1024),
                             )
                         # An auto-fit context leaves the pool unknown, so no budget is sized: the
                         # server's default is judged after launch off the context it chose. A
                         # budget guessed here survives every abandoned attempt, parking unlimited.
                         self._exact_pool_unknown = _exact_kv_bytes <= 0
-                        # A budget somebody named is kept, and judged: below the pool the guarantee is gone.
+                        # A budget somebody named is kept, and judged: below the state a park
+                        # saves the guarantee is gone.
                         self._exact_parking_short = _exact_parking_shortfall_mib(
                             _exact_kv_bytes,
                             args = list(cmd) + [str(a) for a in (extra_args or ())],
                             env = os.environ,
+                            draft_bytes = _exact_draft_bytes,
+                            parallel = n_parallel,
                         )
                         if self._exact_parking_short is not None:
-                            _named, _pool, _need = self._exact_parking_short
+                            _named, _saved, _need = self._exact_parking_short
                             self._record_load_warning(
                                 f"Exact concurrency was requested, but --preempt-ram {_named} "
-                                f"MiB cannot hold the {_pool} MiB KV pool, so a parked chat that "
-                                "outgrows it is re-prefilled rather than restored, which is not "
-                                f"byte-identical. Raise it to at least {_need} MiB. The load will "
-                                "run without exact concurrency, or fail, depending on the setting."
+                                f"MiB cannot hold the parked chats' {_saved} MiB of KV and draft "
+                                "state, so a chat that outgrows it is re-prefilled rather than "
+                                f"restored, which is not byte-identical. Raise it to at least "
+                                f"{_need} MiB. The load will run without exact concurrency, or "
+                                "fail, depending on the setting."
                             )
                             if _exact_setting == _exact.EXACT_AUTO:
                                 # Known now, so the child does not start the mode for it.
@@ -25893,14 +25956,19 @@ class LlamaCppBackend:
                         _fitted_ctx = 0
                     try:
                         _fitted_bytes = _kv_bytes(_fitted_ctx) if _fitted_ctx > 0 else 0
+                        _fitted_draft = _draft_kv_state_bytes(_fitted_ctx)
                     except Exception:
-                        _fitted_bytes = 0
+                        _fitted_bytes, _fitted_draft = 0, 0
+                    if _fitted_draft is None:
+                        _fitted_bytes, _fitted_draft = 0, 0
                     if _fitted_bytes > 0:
                         _exact_short = _exact_parking_shortfall_mib(
                             _fitted_bytes,
                             args = _last_spawn_cmd or cmd,
                             env = env,
                             default_mib = _PREEMPT_RAM_DEFAULT_MIB,
+                            draft_bytes = _fitted_draft,
+                            parallel = n_parallel,
                         )
                     else:
                         _exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)
@@ -25924,14 +25992,15 @@ class LlamaCppBackend:
                         )
                     elif _exact_short is not None and _exact_short[1] <= 0:
                         _exact_why = (
-                            " The KV pool could not be sized after the auto-fit, so the "
-                            "parking budget cannot be checked; set an explicit context."
+                            " The state a park has to save could not be sized (an auto-fit "
+                            "context, or a draft cache with no dimensions), so the parking "
+                            "budget cannot be checked; set an explicit context."
                         )
                     elif _exact_short is not None:
                         _exact_why = (
                             f" --preempt-ram {_exact_short[0]} MiB cannot hold the "
-                            f"{_exact_short[1]} MiB KV pool; raise it to at least "
-                            f"{_exact_short[2]} MiB, or set an explicit context."
+                            f"{_exact_short[1]} MiB of KV and draft state a park saves; raise it "
+                            f"to at least {_exact_short[2]} MiB, or set an explicit context."
                         )
                     else:
                         _exact_why = ""
