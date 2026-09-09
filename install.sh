@@ -3328,11 +3328,12 @@ _ensure_rocm_probe_env() {
     fi
 }
 
-_has_amd_rocm_gpu() {
+# Whether ROCm can SEE an AMD GPU, with no opinion about whether this install will use
+# it. _has_amd_rocm_gpu wraps this in an NVIDIA short-circuit because its callers are
+# choosing a torch index, where a usable NVIDIA card wins; a diagnosis that has already
+# established the run opens AMD nodes needs the probe without that veto.
+_amd_rocm_gpu_visible() {
     _ensure_rocm_probe_env
-    if _has_usable_nvidia_gpu; then
-        return 1
-    fi
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
@@ -3353,6 +3354,14 @@ _has_amd_rocm_gpu() {
         return 0
     fi
     return 1
+}
+
+_has_amd_rocm_gpu() {
+    _ensure_rocm_probe_env
+    if _has_usable_nvidia_gpu; then
+        return 1
+    fi
+    _amd_rocm_gpu_visible
 }
 
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
@@ -5594,13 +5603,29 @@ _torch_opens_amd_nodes() {
 # under `if host.has_usable_nvidia:` and only reaches ROCm in the `elif host.has_rocm`
 # below it. So on a hybrid box with a usable NVIDIA GPU the automatic bundle opens no AMD
 # node, and the AMD-evidence gates cannot tell: the card IS there and its nodes ARE shut,
-# they are simply nothing this install will use. An explicit rocm request still passes,
-# being a decision the resolver honours.
+# they are simply nothing this install will use.
+#
+# Listed as the values that ARE decisions rather than the two that are not. setup.sh warns
+# "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside this set and the installer
+# normalises it away (is_requestable_backend -> None -> auto), so an unrecognised value --
+# "vul kan", a typo -- lands on the automatic route above and has to be treated as one.
 _auto_bundle_opens_amd_nodes() {
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | awk '{$1=$1; print tolower($0)}')" in
-        ""|auto) _has_usable_nvidia_gpu && return 1 ;;
+        cpu|cuda|rocm|hip|vulkan) return 0 ;;
     esac
+    # Memoized: _has_usable_nvidia_gpu shells out to `nvidia-smi -L` on every call and the
+    # two scope predicates below ask this question repeatedly, so an NVIDIA-less host paid
+    # one bounded probe per gate. Nothing it reads -- the driver's sysfs, CUDA_VISIBLE_DEVICES
+    # -- changes within a run.
+    if [ -z "${_amd_auto_nvidia_cached:-}" ]; then
+        if _has_usable_nvidia_gpu; then
+            _amd_auto_nvidia_cached=yes
+        else
+            _amd_auto_nvidia_cached=no
+        fi
+    fi
+    [ "$_amd_auto_nvidia_cached" = yes ] && return 1
     return 0
 }
 
@@ -5670,6 +5695,17 @@ if [ "$SKIP_TORCH" = true ]; then
         _amd_node_diag_route=false
     fi
 fi
+# ... and an EXPLICIT GPU bundle request opens AMD nodes whatever the wheels do. The route
+# above is derived from the torch index alone, so a CUDA or custom-pinned index asked for
+# the rocm or vulkan bundle read as false and silenced all three diagnoses for a run whose
+# bundle needs the very nodes they are about -- the SKIP_TORCH override could not catch it,
+# since it only runs when no wheel is installed at all. This only ever turns the route ON:
+# a cpu or cuda request is still settled by the two scope predicates below, which is where
+# a bundle that opens no AMD node belongs.
+case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
+        | awk '{$1=$1; print tolower($0)}')" in
+    rocm|hip|vulkan) _amd_node_diag_route=true ;;
+esac
 # The two diagnoses are separate branches, not one branch with an inner test, because
 # they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
 # amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
@@ -5689,7 +5725,7 @@ if [ "$_amd_node_diag_route" = true ] && \
 elif [ "$_amd_node_diag_route" = true ] && \
    _run_may_open_kfd && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
-   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+   ! _amd_rocm_gpu_visible && _amd_gpu_present_via_pci; then
         substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."

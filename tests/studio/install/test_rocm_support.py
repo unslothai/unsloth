@@ -2124,10 +2124,15 @@ class TestHasRocmGpuKfdVendorGuard:
         ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
 
     def test_install_sh_has_vendor_check(self):
-        """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
+        """The install.sh sysfs fallback must also check vendor_id 4098.
+
+        Read from _amd_rocm_gpu_visible, which is where the probe itself lives:
+        _has_amd_rocm_gpu is the wrapper that adds the NVIDIA veto, and the diagnostics
+        that have already established the run opens AMD nodes call the unwrapped one.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
+        func_start = source.find("_amd_rocm_gpu_visible()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
         assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
@@ -2799,10 +2804,10 @@ class TestInstallShStructure:
         assert "export UNSLOTH_TORCH_BACKEND" in source
 
     def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
-        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
+        """The sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
+        func_start = source.find("_amd_rocm_gpu_visible()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
         assert (
@@ -2825,7 +2830,7 @@ class TestInstallShStructure:
         """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        func_start = source.find("_has_amd_rocm_gpu()")
+        func_start = source.find("_amd_rocm_gpu_visible()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
         assert "$2 == 4098" in func_body, (

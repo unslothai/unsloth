@@ -10074,17 +10074,20 @@ class LlamaCppBackend:
                 # read, which keeps the behaviour it had before the check existed.
                 if not _is_vulkan:
                     return False
-                # A driver list REPLACES the loader's own search and the probe child
-                # inherits it, so a list naming AMD alone means the other vendor's driver
-                # never loads and its open node is no path. A list naming that vendor is the
-                # opposite case and must NOT suppress: the AMD node is then not a path
-                # either, so it cannot be why the probe came back empty.
+                # Which drivers the loader would actually load decides this, and a forced
+                # list is only one of the three things that decide it: the search dirs it
+                # replaces, the driver filters applied on top of either, and whether each
+                # manifest still resolves to a library. A loader that can only load AMD
+                # never opens the other vendor's driver, so its open node is no path. A
+                # loader that can load that vendor is the opposite case and must NOT
+                # suppress: the AMD node is then not a path either, so it cannot be why the
+                # probe came back empty.
                 try:
                     from utils.hardware.amd import (
                         a_non_amd_render_node_is_open,
-                        an_amd_only_icd_list_is_in_force,
+                        the_vulkan_loader_can_only_load_amd,
                     )
-                    if an_amd_only_icd_list_is_in_force():
+                    if the_vulkan_loader_can_only_load_amd():
                         return False
                     return a_non_amd_render_node_is_open()
                 except Exception:  # noqa: BLE001

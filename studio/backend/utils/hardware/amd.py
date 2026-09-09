@@ -818,40 +818,103 @@ def _icd_manifest_is_usable(path: str) -> bool:
         return False
 
 
-def an_amd_only_icd_list_is_in_force() -> bool:
-    """Whether the Vulkan loader is pinned to a driver list that names AMD and nothing else.
+def _is_an_amd_icd_name(path: str) -> bool:
+    """Whether a manifest's own filename is one an AMD driver registers under."""
+    stem = PurePath(path).stem.lower().replace("-", "_")
+    return any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES)
 
-    VK_DRIVER_FILES, or VK_ICD_FILENAMES when it is unset, REPLACES the loader's own search
-    rather than adding to it, so a list naming AMD alone means no other vendor's driver is
-    ever loaded and its open render node is not a path this binary has.
-    VK_ADD_DRIVER_FILES is the additive one and leaves the search in place, so it answers
-    nothing here.
 
-    POSITIVE evidence only. An entry this cannot classify -- a directory, an unfamiliar
-    name -- makes the answer False, so the caller keeps the behaviour it has with no list
-    at all rather than suppressing a finding on a guess.
+def _vulkan_icd_search_dirs() -> "list[str]":
+    """The icd.d directories the loader would search, in its own order.
+
+    From the XDG variables, since the loader falls back to the defaults only when one is
+    unset: reading the defaults regardless both misses a custom layout's only manifest and
+    counts stale ones the loader would never read.
+    install_llama_prebuilt._vulkan_icd_search_dirs is the same list, and a test holds them
+    together.
+    """
+
+    def _paths(var: str, default: str) -> "list[str]":
+        value = os.environ.get(var)
+        raw = value if (value or "").strip() else default
+        return [entry for entry in raw.split(os.pathsep) if entry.strip()]
+
+    def _home(var: str, default: str) -> "list[str]":
+        value = os.environ.get(var)
+        if (value or "").strip():
+            return [value]
+        try:
+            return [os.path.expanduser(os.path.join("~", default))]
+        except Exception:  # noqa: BLE001
+            return []
+
+    dirs = [
+        *(
+            os.path.join(base, "vulkan/icd.d")
+            for base in (
+                *_home("XDG_CONFIG_HOME", ".config"),
+                *_paths("XDG_CONFIG_DIRS", "/etc/xdg"),
+            )
+        ),
+        "/etc/vulkan/icd.d",
+        *(
+            os.path.join(base, "vulkan/icd.d")
+            for base in (
+                *_home("XDG_DATA_HOME", ".local/share"),
+                *_paths("XDG_DATA_DIRS", "/usr/local/share" + os.pathsep + "/usr/share"),
+            )
+        ),
+    ]
+    return list(dict.fromkeys(dirs))
+
+
+def _vulkan_icd_manifest_paths() -> "list[str]":
+    """Every ICD manifest the loader knows about here, before its filters are applied.
+
+    A forced list REPLACES the search rather than adding to it, and VK_DRIVER_FILES
+    supersedes VK_ICD_FILENAMES rather than joining it. VK_ADD_DRIVER_FILES is the additive
+    one and leaves the search in place, so it is not read: a driver it adds is found by the
+    walk below anyway or it is not the loader's to find.
+
+    Linux only, since the render nodes this is asked about exist nowhere else.
     """
     for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         value = (os.environ.get(var) or "").strip()
         if not value:
-            # Empty is unset to the loader, so the lower-priority spelling still decides.
             continue
-        entries = [entry for entry in value.split(os.pathsep) if entry.strip()]
-        if not entries:
-            return False
-        for entry in entries:
-            entry = entry.strip()
-            stem = PurePath(entry).stem.lower().replace("-", "_")
-            if not any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES):
-                return False
-            # The NAME is not the driver. A manifest that is missing, malformed, points at a
-            # library that is gone, or is filtered out by VK_LOADER_DRIVERS_DISABLE leaves
-            # the loader with no usable driver at all -- and then the closed AMD node is not
-            # why the probe was empty either, so this must not answer yes for it.
-            if not (_vulkan_loader_allows(entry) and _icd_manifest_is_usable(entry)):
-                return False
-        return True
-    return False
+        return [entry.strip() for entry in value.split(os.pathsep) if entry.strip()]
+    if platform.system() != "Linux":
+        return []
+    paths: "list[str]" = []
+    for directory in _vulkan_icd_search_dirs():
+        try:
+            paths.extend(sorted(glob.glob(os.path.join(directory, "*.json"))))
+        except OSError:
+            continue
+    return paths
+
+
+def the_vulkan_loader_can_only_load_amd() -> bool:
+    """Whether every driver this loader would actually load is an AMD one.
+
+    Then no other vendor's driver is ever opened, so its render node is not a path this
+    binary has however open it is. Three things decide it and all three are the loader's
+    own: which manifests it looks at (a forced list, else the search dirs), its driver
+    filters, and whether each manifest still resolves to a library.
+
+    POSITIVE evidence only, so both "nothing could be enumerated" and "the filters leave no
+    driver at all" answer False. The second is not an oversight: a loader with no driver
+    explains an empty probe by itself, and the closed AMD node is then not the cause either.
+    """
+    paths = _vulkan_icd_manifest_paths()
+    if not paths:
+        return False
+    loadable = [
+        path for path in paths if _vulkan_loader_allows(path) and _icd_manifest_is_usable(path)
+    ]
+    if not loadable:
+        return False
+    return all(_is_an_amd_icd_name(path) for path in loadable)
 
 
 def a_non_amd_render_node_is_open() -> bool:
@@ -1091,12 +1154,23 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     return not an_amd_render_node_is_open()
 
 
-def _selector_exposes_every_gpu(value: str, count: "int | None") -> bool:
+def _selector_exposes_every_gpu(
+    value: str,
+    count: "int | None",
+    *,
+    repeat_ends_the_list: bool = False,
+) -> bool:
     """Whether every measured GPU survives this selector, so it excludes nothing.
 
     HIP_VISIBLE_DEVICES=0,1 on a two-GPU host is a selector that selects the whole host:
     the open sibling is still reachable, and reading it as a narrowing hands that host the
     group repair in place of the driver diagnosis it needs.
+
+    ``repeat_ends_the_list`` is ROCr's rule and not clr's. RvdFilter terminates on a token
+    that "maps to a device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0,1
+    surfaces ONE device; clr's parser stops only on a token that is not its own index
+    written back out, so the same value there leaves both. _post_rocr_device_count in
+    llama_cpp.py records the ROCr half of this from the same source.
 
     False for anything this cannot map -- an unreadable count, a UUID, an out-of-range or
     non-canonical ordinal -- so an unrecognised selector goes on being treated as one that
@@ -1114,6 +1188,8 @@ def _selector_exposes_every_gpu(value: str, count: "int | None") -> bool:
         # clr's own rule: the token has to be the index written back out.
         if str(index) != token or index < 0 or index >= count:
             return False
+        if index in seen and repeat_ends_the_list:
+            break
         seen.add(index)
     return len(seen) == count
 
@@ -1125,22 +1201,39 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
     runtime is free to use it. Nothing here maps a render node back to the index a mask
     selected it by, so under a NARROWING mask the open node may belong to a GPU the mask
     excludes and stops being evidence.
+
+    Read the way the runtime layers them, which is not "all four at once". ROCr is its own
+    layer. The HIP layer then reads HIP_VISIBLE_DEVICES when it is non-empty and
+    CUDA_VISIBLE_DEVICES otherwise, so a CUDA value under a HIP one is SHADOWED and narrows
+    nothing -- the same precedence _explain_empty_gpu_probe's _hip_layer_var applies.
+    GPU_DEVICE_ORDINAL is OpenCL's, and independent of both.
     """
     count = amd_kfd_gpu_node_count()
-    return any(
-        not _selector_exposes_every_gpu(os.environ.get(_name, "").strip(), count)
-        for _name in (
-            "HIP_VISIBLE_DEVICES",
-            "ROCR_VISIBLE_DEVICES",
-            "CUDA_VISIBLE_DEVICES",
-            # ROCm's fourth visibility variable, modelled elsewhere in this tree
-            # (tests/test_amd_smi_inventory_matches_hip.py, llama_cpp.py's own selector
-            # check). Omitting it left one of the four selectors crediting a sibling the
-            # runtime had been narrowed away from.
-            "GPU_DEVICE_ORDINAL",
-        )
-        if os.environ.get(_name, "").strip()
+    _hip_layer = (
+        "HIP_VISIBLE_DEVICES"
+        if os.environ.get("HIP_VISIBLE_DEVICES", "").strip()
+        else "CUDA_VISIBLE_DEVICES"
     )
+    for _name in (
+        "ROCR_VISIBLE_DEVICES",
+        _hip_layer,
+        # ROCm's fourth visibility variable, modelled elsewhere in this tree
+        # (tests/test_amd_smi_inventory_matches_hip.py, llama_cpp.py's own selector
+        # check). Omitting it left one of the four selectors crediting a sibling the
+        # runtime had been narrowed away from.
+        "GPU_DEVICE_ORDINAL",
+    ):
+        _value = os.environ.get(_name, "").strip()
+        if not _value:
+            continue
+        if not _selector_exposes_every_gpu(
+            _value,
+            count,
+            # ROCr terminates its list on a repeat; clr does not.
+            repeat_ends_the_list = _name == "ROCR_VISIBLE_DEVICES",
+        ):
+            return True
+    return False
 
 
 def _repair_account() -> Optional[str]:

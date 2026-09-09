@@ -90,8 +90,19 @@ def _nodes(
     say so: a container can map the node and hide the entry that names its vendor, and the
     two are different answers.
     """
+    # Only the device-node enumeration. The module's other caller of the same helper walks
+    # the Vulkan icd.d directories, and answering that one with a list of render nodes made
+    # every loader question read as "no drivers at all" -- which is a verdict, not an
+    # absence, so it would have passed silently.
+    _real_glob = amd.glob.glob
     monkeypatch.setattr(
-        amd.glob, "glob", lambda pattern: [p for p in present if p.startswith("/dev/dri/renderD")]
+        amd.glob,
+        "glob",
+        lambda pattern: (
+            [p for p in present if p.startswith("/dev/dri/renderD")]
+            if pattern.startswith("/dev/dri/")
+            else _real_glob(pattern)
+        ),
     )
     monkeypatch.setattr(amd.os.path, "exists", lambda p: p in present)
     monkeypatch.setattr(amd.os, "access", lambda p, mode: p in openable)
@@ -545,7 +556,7 @@ def _kernel_stack_hint_runs(
     end = next(
         i
         for i, line in enumerate(lines)
-        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
     )
     start = end
     while not lines[start].lstrip().startswith("if "):
@@ -1569,9 +1580,10 @@ def _diag_route(
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     esac_at = next(i for i in range(start, len(lines)) if lines[i] == "esac")
-    # The --no-torch override sits below the case and is part of the same decision, so the
-    # span runs to the end of it rather than stopping at the esac.
-    end = next(i for i in range(esac_at, len(lines)) if lines[i] == "fi")
+    # The --no-torch override and the explicit-backend case below it are part of the same
+    # decision, so the span runs to the end of both rather than stopping at the first esac.
+    _skip_torch_end = next(i for i in range(esac_at, len(lines)) if lines[i] == "fi")
+    end = next(i for i in range(_skip_torch_end, len(lines)) if lines[i] == "esac")
     script = "\n".join(
         [
             f"TORCH_INDEX_URL={index_url!r}",
@@ -2176,7 +2188,7 @@ def _kernel_stack_hint_text(*, topology: bool, nvidia: bool = False) -> str:
     end = next(
         i
         for i, line in enumerate(lines)
-        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
     )
     start = end
     while not lines[start].lstrip().startswith("if "):
@@ -2250,7 +2262,8 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
 def _install_sh_missing_kfd(
     *,
     topology: bool,
-    amd_smi_sees_it: bool,
+    amd_smi_sees_it: "bool | None" = None,
+    rocm_visible: "bool | None" = None,
     skip_torch: bool = False,
     backend: "str | None" = None,
     nvidia: bool = False,
@@ -2266,14 +2279,15 @@ def _install_sh_missing_kfd(
         pytest.skip("this arm needs a host with no /dev/kfd, and cannot remove a device node")
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
-    # Anchored on the kernel-stack condition, which this change does not touch, then walked
-    # back to the `if` above it. Anchoring on the new mapping condition would make the
-    # control vacuous: a revert would stop the extraction finding anything, and "the text
-    # changed" would read as "the behaviour changed".
+    # Anchored on the kernel-stack SENTENCE, then walked back to the `if` above it, since
+    # neither branch's condition is stable enough to anchor on: the mapping one is what an
+    # earlier change edited, and a revert that stopped the extraction finding anything would
+    # read "the text changed" as "the behaviour changed". The predicate _amd_gpu_present_via_pci
+    # is named twice in this installer, so it is not an anchor either.
     end = next(
         i
         for i, line in enumerate(lines)
-        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+        if "An AMD GPU is on the PCI bus but ROCm cannot see it" in line
     )
     start = end
     while not lines[start].lstrip().startswith("if "):
@@ -2295,7 +2309,28 @@ def _install_sh_missing_kfd(
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
-            f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
+            # Two ways to answer the ROCm probe. Stubbed, when the arm is about something
+            # else and only needs a verdict; run for real over stubbed command lookups when
+            # the arm IS about which probe the branch consults, since a stub of the probe
+            # under test would answer for it.
+            *(
+                [
+                    # Both names, since the stub mode's claim is "the ROCm probe answers
+                    # this", not "the branch calls that spelling of it".
+                    f"_amd_rocm_gpu_visible() {{ return {0 if amd_smi_sees_it else 1}; }}",
+                    f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
+                ]
+                if rocm_visible is None
+                else [
+                    "_ensure_rocm_probe_env() { :; }",
+                    'command() { case "$2" in rocminfo) return 0 ;; *) return 1 ;; esac; }',
+                    "rocminfo() { echo '  Name: gfx1151'; }"
+                    if rocm_visible
+                    else "rocminfo() { return 1; }",
+                    _shell_fn(lines, "_amd_rocm_gpu_visible"),
+                    _shell_fn(lines, "_has_amd_rocm_gpu"),
+                ]
+            ),
             "_amd_gpu_present_via_pci() { return 0; }",
             "\n".join(lines[start : close + 1]),
         ]
@@ -3517,10 +3552,13 @@ def test_a_no_torch_cpu_backend_run_still_does_not():
 
 
 def test_a_cuda_wheel_install_is_still_off_the_route():
-    """The other control, and the boundary the case was written for: a run that IS
-    installing CUDA wheels stays off the route whatever bundle it asks for, so the fix is
-    scoped to the run that installs nothing rather than reopening the arm above."""
-    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "vulkan") is False
+    """The other control, and the boundary the case was written for: a run installing CUDA
+    wheels stays off the route as long as its bundle opens no AMD node either, so the fix is
+    scoped to the run that installs nothing rather than reopening the arm above. An explicit
+    rocm or vulkan request is the one case that does reopen it, and it has its own arm
+    below the override."""
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "cuda") is False
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "cpu") is False
 
 
 def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(
@@ -3768,16 +3806,32 @@ def _vulkan_reason_under_icd_list(
     value,
     *,
     var = "VK_DRIVER_FILES",
+    search_dirs = None,
+    filters = None,
 ):
     """The empty-probe reason for a Vulkan build with the AMD node shut and another
-    vendor's node open, under a given forced driver list."""
+    vendor's node open, under a given loader configuration.
+
+    ``value`` is a forced driver list, or None for a host that has none and is answered by
+    the loader's own search; ``search_dirs`` stands in for that search, so an arm cannot be
+    decided by whatever drivers the runner happens to have installed."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
     for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         monkeypatch.delenv(_var, raising = False)
-    monkeypatch.setenv(var, value)
+    if filters is not None or search_dirs is not None:
+        # Cleared only for the arms that state their own loader configuration, since an arm
+        # that names a filter is testing that filter and must keep it.
+        for _var in ("VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+            monkeypatch.delenv(_var, raising = False)
+    for _var, _value in (filters or {}).items():
+        monkeypatch.setenv(_var, _value)
+    if search_dirs is not None:
+        monkeypatch.setattr(amd, "_vulkan_icd_search_dirs", lambda: list(search_dirs))
+    if value is not None:
+        monkeypatch.setenv(var, value)
     monkeypatch.setattr(
         LlamaCppBackend,
         "_installed_ggml_backends",
@@ -3857,8 +3911,12 @@ def _blocks_under_selector(
     *,
     count,
     var = "HIP_VISIBLE_DEVICES",
+    also = None,
 ):
-    """Whether a closed render node blocks a HIP runtime, with one sibling open."""
+    """Whether a closed render node blocks a HIP runtime, with one sibling open.
+
+    ``also`` sets a second selector, since which of two the runtime reads is itself a
+    question here."""
     _nodes(
         monkeypatch,
         present = ["/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/kfd"],
@@ -3874,6 +3932,8 @@ def _blocks_under_selector(
         monkeypatch.delenv(_name, raising = False)
     if value is not None:
         monkeypatch.setenv(var, value)
+    for _name, _value in (also or {}).items():
+        monkeypatch.setenv(_name, _value)
     return amd.amd_closed_nodes_block_the_runtime()
 
 
@@ -3982,3 +4042,224 @@ def test_the_installers_unnamed_gid_repair_drops_its_groupadd_half_too(tmp_path)
     out = _install_sh_hint(str(node), id_user = None, env_user = "root", repairs = "gid:993")
     assert "usermod -a -G" not in out and "groupadd -g" not in out
     assert "--group-add 993" in out
+
+
+def test_a_repeated_rocr_token_ends_the_list_and_narrows(monkeypatch, linux):
+    """ROCr's filter terminates on a token naming a device it has already selected, so
+    ROCR_VISIBLE_DEVICES=0,0,1 surfaces ONE GPU on a two-GPU host. Counting distinct
+    ordinals read that as selecting the whole host and kept the open sibling as evidence
+    for a runtime that can no longer reach it.
+
+    Fails before the fix, which accumulated a set with no repeat rule."""
+    assert _blocks_under_selector(monkeypatch, "0,0,1", count = 2, var = "ROCR_VISIBLE_DEVICES") is True
+
+
+def test_the_same_repeat_under_hip_does_not_narrow(monkeypatch, linux):
+    """The control, and the reason the rule is per layer rather than global: clr's parser
+    stops only on a token that is not its own index written back out, so it accepts the
+    repeat and both GPUs survive. A repeat rule applied everywhere would hand this host the
+    group repair instead of the driver diagnosis."""
+    assert _blocks_under_selector(monkeypatch, "0,0,1", count = 2, var = "HIP_VISIBLE_DEVICES") is False
+
+
+def test_a_cuda_selector_under_a_hip_one_is_shadowed(monkeypatch, linux):
+    """The HIP layer reads HIP_VISIBLE_DEVICES when it is non-empty and
+    CUDA_VISIBLE_DEVICES only otherwise, so a CUDA value set beneath a HIP one selects
+    nothing and narrows nothing. Reading all four side by side let the shadowed value
+    discard an open sibling the runtime can still reach.
+
+    Fails before the fix, which asked every name independently."""
+    assert (
+        _blocks_under_selector(monkeypatch, "0,1", count = 2, also = {"CUDA_VISIBLE_DEVICES": "0"})
+        is False
+    )
+
+
+def test_a_cuda_selector_on_its_own_still_narrows(monkeypatch, linux):
+    """The control: with no HIP value the CUDA one IS the HIP layer's selector, which is
+    the precedence _explain_empty_gpu_probe's _hip_layer_var already applies. A rule that
+    simply stopped reading CUDA would lose every host masked that way."""
+    assert (
+        _blocks_under_selector(monkeypatch, None, count = 2, also = {"CUDA_VISIBLE_DEVICES": "0"})
+        is True
+    )
+
+
+def test_a_filter_that_leaves_only_amd_is_the_same_as_naming_it(monkeypatch, linux, tmp_path):
+    """VK_LOADER_DRIVERS_SELECT is applied to whatever the loader would load, forced list
+    or search, so a host with no list at all can still be pinned to AMD alone. Reading only
+    the two force-list variables left that host crediting the other vendor's open node to a
+    binary whose loader never opens that vendor's driver.
+
+    Fails before the fix, which asked what a forced list was named rather than what the
+    loader would load."""
+    amd_icd = _icd_manifest(tmp_path, "radeon_icd.x86_64.json", library = "libamd.so")
+    other = _icd_manifest(tmp_path, "nvidia_icd.json", library = "libnv.so")
+    assert amd_icd and other
+    reason = _vulkan_reason_under_icd_list(
+        monkeypatch,
+        None,
+        search_dirs = [str(tmp_path)],
+        filters = {"VK_LOADER_DRIVERS_SELECT": "radeon*"},
+    )
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_the_same_two_drivers_unfiltered_still_credit_the_other_vendor(
+    monkeypatch, linux, tmp_path
+):
+    """The control, on the same two manifests: with no filter the loader loads both, the
+    other vendor's open node IS a path for this binary, and the closed AMD node cannot be
+    why the probe came back empty. Without it the rule could be "a search always means
+    AMD only", which suppresses the finding on every host."""
+    _icd_manifest(tmp_path, "radeon_icd.x86_64.json", library = "libamd.so")
+    _icd_manifest(tmp_path, "nvidia_icd.json", library = "libnv.so")
+    reason = _vulkan_reason_under_icd_list(monkeypatch, None, search_dirs = [str(tmp_path)])
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_a_search_that_enumerates_nothing_answers_nothing(monkeypatch, linux, tmp_path):
+    """Positive evidence only. An empty search is not "AMD alone", it is a loader this
+    cannot read, and a loader with no driver at all explains the empty probe by itself --
+    so the closed AMD node is not the cause either and must not be suppressed."""
+    reason = _vulkan_reason_under_icd_list(
+        monkeypatch, None, search_dirs = [str(tmp_path / "nothing-here")]
+    )
+    assert reason.startswith("the Vulkan probe reported no device")
+
+
+def test_the_search_dirs_follow_the_xdg_variables(monkeypatch):
+    """The loader falls back to its defaults only when a variable is unset, so reading the
+    defaults regardless both misses a custom layout's only manifest and counts stale ones
+    the loader would never read. install_llama_prebuilt._vulkan_icd_search_dirs is the same
+    list, and the test below holds them together."""
+    monkeypatch.setenv("XDG_DATA_DIRS", "/opt/one:/opt/two")
+    monkeypatch.setenv("XDG_CONFIG_DIRS", "/opt/conf")
+    dirs = amd._vulkan_icd_search_dirs()
+    assert "/opt/one/vulkan/icd.d" in dirs
+    assert "/opt/two/vulkan/icd.d" in dirs
+    assert "/opt/conf/vulkan/icd.d" in dirs
+    assert "/usr/share/vulkan/icd.d" not in dirs
+    assert "/etc/xdg/vulkan/icd.d" not in dirs
+    assert dirs.count("/etc/vulkan/icd.d") == 1
+
+
+def test_the_search_dirs_match_the_installers(monkeypatch):
+    """The installer resolves the same question for the same loader, so the two lists are
+    one list; a copy that drifts sends the two halves of this diagnosis to different
+    drivers."""
+    import install_llama_prebuilt
+
+    monkeypatch.setenv("XDG_DATA_DIRS", "/opt/one:/opt/two")
+    monkeypatch.setenv("XDG_CONFIG_DIRS", "/opt/conf")
+    assert amd._vulkan_icd_search_dirs() == [
+        str(directory) for directory in install_llama_prebuilt._vulkan_icd_search_dirs()
+    ]
+
+
+def test_an_unrecognised_backend_is_the_automatic_route(tmp_path):
+    """setup.sh warns "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside its
+    list and the installer normalises it to auto, so a typo installs the automatically
+    chosen bundle -- which on a hybrid box is CUDA, opening no AMD node. Listing the two
+    spellings of "no decision" instead of the values that ARE decisions let a rejected
+    value pose as one.
+
+    Fails before the fix, which matched "" and auto alone."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "vul kan", nvidia = True)
+    assert out.strip() == ""
+
+
+def test_an_explicit_rocm_request_survives_a_usable_nvidia_gpu(tmp_path):
+    """The control, and the whole point of listing decisions: an explicit rocm request is
+    honoured by the resolver, so its bundle opens /dev/kfd on a hybrid box exactly as it
+    would on an AMD-only one. A rule that read every hybrid host as CUDA would silence the
+    #10466 diagnosis for the users who asked for ROCm."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "rocm", nvidia = True)
+    assert "cannot open its device nodes" in out
+    assert "/dev/kfd" in out
+
+
+def test_the_same_rejected_value_on_an_amd_only_host_still_reports(tmp_path):
+    """The second control: the automatic route is only silent where it resolves away from
+    AMD. With no NVIDIA card it resolves to ROCm, and the closed node is the diagnosis."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "vul kan", nvidia = False)
+    assert "/dev/kfd" in out
+
+
+def _nvidia_probe_calls(backend = None):
+    """How many times the two scope predicates run the NVIDIA probe for one install."""
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    script = "\n".join(
+        [
+            "SKIP_TORCH=true",
+            "TORCH_INDEX_URL=''",
+            f"export UNSLOTH_LLAMA_CPP_BACKEND={backend or ''!r}",
+            "_probe_calls=0",
+            "_has_usable_nvidia_gpu() { _probe_calls=$((_probe_calls + 1)); return 1; }",
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
+            _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
+            _shell_fn(lines, "_run_may_open_kfd"),
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
+            "for _i in 1 2 3 4; do _run_may_open_kfd; _run_may_open_a_gpu_node; done",
+            'echo "$_probe_calls"',
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, check = True)
+    return int(out.stdout.strip())
+
+
+def test_the_nvidia_probe_runs_once_per_install():
+    """_has_usable_nvidia_gpu shells out to a bounded `nvidia-smi -L` on every call and is
+    not memoized, while the two scope predicates are consulted at every diagnosis. Nothing
+    it reads changes within a run, so an NVIDIA-less host was paying a subprocess per gate.
+
+    Fails before the fix, which probed on every call."""
+    assert _nvidia_probe_calls() == 1
+
+
+def test_an_explicit_backend_never_probes_at_all():
+    """The control: a decision the resolver honours settles the question without asking
+    about the other vendor's hardware, so the memo is not merely cheaper, it is unreached."""
+    assert _nvidia_probe_calls("rocm") == 0
+
+
+def test_an_explicit_gpu_bundle_keeps_the_node_diagnoses(tmp_path):
+    """The route is derived from the torch index alone, so a CUDA-pinned index asked for
+    the ROCm bundle read as a CUDA route and silenced all three diagnoses -- for a run
+    whose bundle opens the very nodes they are about. The SKIP_TORCH override below the
+    case could not catch it, since it only runs when no wheel is installed at all.
+
+    Fails before the fix, which had no arm for the backend request here."""
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "rocm") is True
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "vulkan") is True
+
+
+def test_a_cpu_bundle_on_the_same_index_still_stays_quiet(tmp_path):
+    """The control, twice over: the new arm only ever turns the route ON, so a cpu request
+    and no request at all are both left to the case above and to the two scope predicates,
+    which is where a bundle that opens no AMD node belongs."""
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "cpu") is False
+    assert _diag_route("https://download.pytorch.org/whl/cu128") is False
+
+
+def test_a_hybrid_rocm_route_is_not_told_to_install_the_kernel_stack(tmp_path):
+    """_has_amd_rocm_gpu opens with `if _has_usable_nvidia_gpu; then return 1`, which is
+    right where it is choosing a torch index and wrong here: this branch has already
+    established the run opens AMD nodes, so the veto made rocminfo's answer unreachable and
+    a healthy hybrid ROCm host was told to install the ROCm kernel stack it already has.
+
+    Fails before the fix, which read the wrapped probe."""
+    out = _install_sh_missing_kfd(topology = False, nvidia = True, backend = "rocm", rocm_visible = True)
+    assert "ROCm cannot see it" not in out
+
+
+def test_the_same_host_without_rocm_still_gets_the_kernel_stack_hint(tmp_path):
+    """The control: an AMD card on the bus that ROCm genuinely cannot see is exactly what
+    the sentence is for, and dropping the NVIDIA veto must not have dropped the finding."""
+    out = _install_sh_missing_kfd(topology = False, nvidia = True, backend = "rocm", rocm_visible = False)
+    assert "ROCm cannot see it" in out
