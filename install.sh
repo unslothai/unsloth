@@ -682,16 +682,28 @@ _restore_uv_cache_marker() {
 
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
-    case "${UV_CACHE_DIR-}" in
-        *[![:space:]]*)
-            _UV_CACHE_MODE=custom
-            export UV_CACHE_DIR
-            # Recorded like any other choice; a caller still outranks the marker.
-            _record_uv_cache_choice
-            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
-            return 0
-            ;;
-    esac
+    # A CALLER's UV_CACHE_DIR outranks everything below. The installer's own default does not,
+    # and testing the variable alone could not tell them apart: the block near the top of this
+    # script exports $STUDIO_HOME/cache/uv whenever the caller left it unset -- it has to, since
+    # uv aborts on a cache it cannot create and several steps run before this one -- so on every
+    # writable install this case matched, took `custom`, and returned. That made the whole
+    # adaptive selection below unreachable: the `uv cache dir` probe never ran, `shared` was
+    # never chosen, users re-downloaded multi-gigabyte Torch and CUDA wheels into a second
+    # cache, and _prepare_studio_uv_cache_for_launch -- which begins by requiring `shared` --
+    # was dead code. The flag distinguishes the two, so a caller keeps priority and our own
+    # default falls through to the choice it was always meant to reach.
+    if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
+        case "${UV_CACHE_DIR-}" in
+            *[![:space:]]*)
+                _UV_CACHE_MODE=custom
+                export UV_CACHE_DIR
+                # Recorded like any other choice; a caller still outranks the marker.
+                _record_uv_cache_choice
+                step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+                return 0
+                ;;
+        esac
+    fi
 
     if [ "$_ISOLATE_UV_CACHE" = true ]; then
         UV_CACHE_DIR="$_uv_studio_cache"
@@ -787,9 +799,15 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # The fallback is required, since uv aborts on a cache it cannot create. mkdir -p exits 0 for
 # an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
 # with a real create.
+# Whether the value in UV_CACHE_DIR is this installer's own default rather than something the
+# caller asked for. _configure_uv_cache cannot tell the two apart by looking at the variable --
+# it sees a non-blank string either way -- and it has to, because a caller's choice outranks the
+# adaptive selection while our own default must not.
+_UV_CACHE_DIR_INSTALLER_DEFAULT=false
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
+    _UV_CACHE_DIR_INSTALLER_DEFAULT=true
     # mktemp, not a $$ name: a predictable path in another account's directory can be
     # pre-created as a symlink for `: >` to follow and truncate as root.
     _uv_cache_probe=""
@@ -798,6 +816,7 @@ if [ -z "${UV_CACHE_DIR:-}" ]; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=false
     fi
     [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
     unset _uv_cache_probe
