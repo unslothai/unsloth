@@ -5154,13 +5154,17 @@ export function createOpenAIStreamAdapter(
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
+      // Declared above the live metadata that reads it, or it is in its temporal dead zone.
+      let contextWindowExceeded = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
-      // rebuilds messages as "complete".
+      // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
-        incomplete: { reason: "cancelled" as const },
+        incomplete: {
+          reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
+        },
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5559,9 +5563,6 @@ export function createOpenAIStreamAdapter(
       // Latched on the `anthropic_refusal` tool event and stamped onto final metadata as
       // `custom.anthropicRefusal` to drive the history prune.
       let anthropicRefusalSeen = false;
-      // Latched on the `context_window_exceeded` tool event: a `length` cut with nothing
-      // left to resume into.
-      let contextWindowExceeded = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -6503,6 +6504,21 @@ export function createOpenAIStreamAdapter(
                 }
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
+                  // assistant-ui saves the last STREAMED yield and drops everything after an
+                  // abort, and the finish chunk that follows carries no delta, so nothing
+                  // between here and `[DONE]` need yield. Unconditional because redacted
+                  // thinking renders as no text: this publishes why the turn ended, not a body.
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7893,15 +7909,18 @@ export function createOpenAIStreamAdapter(
                 custom: {
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
-                  // This partial is unfinished too, so it also offers Continue.
+                  // Unfinished too, so it also offers Continue -- unless the provider already
+                  // said why the model stopped.
                   incomplete: {
-                    reason:
+                    reason: resolveIncompleteReason(
                       err instanceof GenerationLengthError
-                        ? "length"
+                        ? ("length" as const)
                         : err instanceof ChatGenerationTerminalError &&
                             err.generationStatus === "cancelled"
-                          ? "cancelled"
-                          : "interrupted",
+                          ? ("cancelled" as const)
+                          : ("interrupted" as const),
+                      contextWindowExceeded,
+                    ),
                   },
                   timing: partialTiming,
                   ...generationCustom(),

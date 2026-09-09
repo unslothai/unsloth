@@ -6,7 +6,7 @@
  *  the prompt ends mid-sentence and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
- *  request can never fit into, so it is a separate reason rather than a flavour of `length`. */
+ *  request can never fit into, hence its own reason. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
@@ -34,16 +34,22 @@ const MAX_OVERLAP = 400;
 /** How much of the partial's opening a restart has to reproduce to be called a restart. */
 const RESTART_PROBE = 48;
 
-/** The reason to stamp on a turn whose provider reported a `length` cut. A provider that says
- *  the reply filled the model's context window stopped for something no continuation can undo,
- *  and the distinction is what keeps the automatic resume off it. */
-export function resolveIncompleteReason(
-  reason: IncompleteReason | null,
+/** The stop reason for a turn. The provider reports a filled window on the event ending its
+ *  turn, so the model had already stopped: that outranks every inferred reason, missing ones
+ *  included. */
+export function resolveIncompleteReason<T extends IncompleteReason | null>(
+  reason: T,
   contextWindowExceeded: boolean,
-): IncompleteReason | null {
-  return contextWindowExceeded && reason === "length"
-    ? "context_window"
-    : reason;
+): T | "context_window" {
+  return contextWindowExceeded ? "context_window" : reason;
+}
+
+/** Whether the provider reported this reason rather than the client inferring it; the provider
+ *  wins where they disagree. */
+export function isProviderReportedReason(
+  reason: IncompleteReason | null | undefined,
+): boolean {
+  return reason === "context_window";
 }
 
 /** Read the incomplete marker off an assistant message's metadata. */
@@ -95,6 +101,17 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
 /** The user-facing explanation of why a turn stopped. */
 export function incompleteLabel(reason: IncompleteReason): string {
   return INCOMPLETE_LABELS[reason];
+}
+
+/** A hosted window is fixed and the partial has nothing left to replay into, so the only
+ *  levers are a shorter conversation or a new one. */
+const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
+  context_window: "Start a new chat, or shorten this one, to keep going",
+};
+
+/** What to do about a turn that stopped early, or `null` when resuming is the answer. */
+export function incompleteRemedy(reason: IncompleteReason): string | null {
+  return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
 /** Drop text the continuation repeated from the end of the partial: local models continue
@@ -305,10 +322,8 @@ export function readContinuationRequest(
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
  *  Every other reason is left alone, since `cancelled` would restart what the user just
  *  stopped, `interrupted` can hide a broken link, and `context_window` has no room left to
- *  resume into -- the partial is replayed as MORE prompt against the window that just
- *  overflowed, so every round would be a paid request that fails identically. Bounded,
- *  because a model that will not stop would loop forever and each round drives compaction
- *  harder. */
+ *  resume into. Bounded, because a model that will not stop would loop forever and each round
+ *  drives compaction harder. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a
