@@ -170,11 +170,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             loraParamEditGenerations: { ..._loraParamEditGenerations },
           };
         }
-        // A cache restart re-requests the same model; a fresh snapshot forgets its edits.
-        // True once this session owns a selection baseline for the model: either
-        // this request just took one, or an earlier request for the same model did
-        // and a restart is measuring against it. False after a reload, where the
-        // provenance came off disk and nothing here has a claim on it.
+        // A cache restart re-requests the same model, so it must measure against the
+        // original selection's snapshot or it forgets the edits made since. False after
+        // a reload, where the provenance came off disk and nothing here has a claim on it.
         const requestedSelectionOwnsLoraSnapshot =
           _modelDefaultsEditBaseline?.modelName === modelName;
         const requestedLoraParamEditGenerations =

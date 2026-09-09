@@ -734,8 +734,7 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
     );
   });
 
-  // The shape rehydration leaves behind: CPT active, the pre-CPT values the user
-  // configured persisted, defaults already recorded as applied for this model.
+  // The shape a rehydrate leaves: CPT active, pre-CPT values persisted, defaults applied.
   useTrainingConfigStore.setState({
     selectedModel: "org/reload-model",
     modelDefaultsAppliedFor: "org/reload-model",
