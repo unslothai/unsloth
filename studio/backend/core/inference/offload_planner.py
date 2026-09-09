@@ -755,7 +755,11 @@ def _units_of(blocks: Sequence[BlockLayout], cls: Optional[SpillClass]) -> list[
 
 
 def _select_units(
-    units: Sequence[SpillUnit], deficit: int, order: SpillOrder
+    units: Sequence[SpillUnit],
+    deficit: int,
+    order: SpillOrder,
+    *,
+    cost_ranked: bool = False,
 ) -> tuple[list[SpillUnit], int]:
     """The MINIMAL set of ``units`` freeing at least ``deficit``, and what it frees.
 
@@ -763,29 +767,58 @@ def _select_units(
     then least overshoot. Overshoot is not free -- every byte moved beyond the
     deficit is a byte read back across the host link on every token that touches
     it -- which is the whole reason the ladder was split finer than a block.
-    """
-    remaining = list(units)
-    if order is SpillOrder.FRONT_FIRST:
-        remaining.sort(key = lambda u: u.index)
-    elif order is SpillOrder.BACK_FIRST:
-        remaining.sort(key = lambda u: -u.index)
-    else:
-        remaining.sort(key = lambda u: -u.nbytes)
 
-    chosen: list[SpillUnit] = []
-    freed = 0
-    while freed < deficit and remaining:
-        if order is SpillOrder.LARGEST_FIRST:
-            residual = deficit - freed
-            # Prefer the SMALLEST unit that closes the gap: the last pick must
-            # not overshoot by a whole large one.
-            covering = [u for u in remaining if u.nbytes >= residual]
-            pick = min(covering, key = lambda u: u.nbytes) if covering else remaining[0]
+    BACK_FIRST, the default, is a POSITION rule and so was blind to size: on a
+    layout whose last block carries an 8 GiB FFN, a 100 MiB deficit took 4 GiB
+    of it while a 128 MiB block sat one row down. The 98-cell measurement behind
+    the order ran on layouts whose blocks are within a factor of two of each
+    other, where the two picks are near enough the same bytes, so it says
+    nothing about that case. The byte-minimal walk is therefore built alongside
+    the tail and taken when either
+
+      - the tail moves MORE THAN TWICE the bytes the minimal walk does. That is
+        the rule, and it is a ratio rather than an overshoot bound so that it
+        cannot fire on the sizes the measurement covers: it leaves every cell
+        behind the 1.0073 median alone and only catches the size accident.
+      - the caller is ranking on cost, where the smaller pick simply wins. Both
+        candidates are one rung, so one access class and one rate: ``rank`` is
+        monotone in bytes there and the byte comparison IS the ranking.
+
+    Ties keep the tail, which is what preserves the measured asymmetry result.
+    FRONT_FIRST is left as the benchmark's control that it is.
+    """
+
+    def walk(how: SpillOrder) -> tuple[list[SpillUnit], int]:
+        remaining = list(units)
+        if how is SpillOrder.FRONT_FIRST:
+            remaining.sort(key = lambda u: u.index)
+        elif how is SpillOrder.BACK_FIRST:
+            remaining.sort(key = lambda u: -u.index)
         else:
-            pick = remaining[0]
-        remaining.remove(pick)
-        chosen.append(pick)
-        freed += pick.nbytes
+            remaining.sort(key = lambda u: -u.nbytes)
+
+        chosen: list[SpillUnit] = []
+        freed = 0
+        while freed < deficit and remaining:
+            if how is SpillOrder.LARGEST_FIRST:
+                residual = deficit - freed
+                # Prefer the SMALLEST unit that closes the gap: the last pick must
+                # not overshoot by a whole large one.
+                covering = [u for u in remaining if u.nbytes >= residual]
+                pick = min(covering, key = lambda u: u.nbytes) if covering else remaining[0]
+            else:
+                pick = remaining[0]
+            remaining.remove(pick)
+            chosen.append(pick)
+            freed += pick.nbytes
+        return chosen, freed
+
+    chosen, freed = walk(order)
+    if order is not SpillOrder.BACK_FIRST or deficit <= 0:
+        return chosen, freed
+    minimal, least = walk(SpillOrder.LARGEST_FIRST)
+    if least < freed and (cost_ranked or freed > 2 * least):
+        return minimal, least
     return chosen, freed
 
 
@@ -2203,7 +2236,10 @@ def _select_units_per_device(
             if freed >= deficit:
                 break
             picked, got = _select_units(
-                _units_of(local_blocks, cls), deficit - freed, opts.spill_order
+                _units_of(local_blocks, cls),
+                deficit - freed,
+                opts.spill_order,
+                cost_ranked = opts.require_cost_win,
             )
             taken.extend(picked)
             freed += got
@@ -2611,7 +2647,10 @@ def _plan_at(
         if freed >= deficit:
             break
         chosen, got = _select_units(
-            _units_of(layout.blocks, cls), deficit - freed, opts.spill_order
+            _units_of(layout.blocks, cls),
+            deficit - freed,
+            opts.spill_order,
+            cost_ranked = opts.require_cost_win,
         )
         taken.extend(chosen)
         freed += got
@@ -2677,7 +2716,10 @@ def _plan_at(
     # reason: a load that needs these is a load --fit on should place.
     if opts.allow_attention_spill:
         attn, got = _select_units(
-            _units_of(layout.blocks, SpillClass.ATTENTION), deficit - freed, opts.spill_order
+            _units_of(layout.blocks, SpillClass.ATTENTION),
+            deficit - freed,
+            opts.spill_order,
+            cost_ranked = opts.require_cost_win,
         )
         if got >= deficit - freed:
             units = taken + attn

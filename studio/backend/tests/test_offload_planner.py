@@ -3133,3 +3133,69 @@ def test_an_all_zero_tensor_split_abstains_instead_of_being_modelled():
     assert not plan.changed and not plan.priced and not plan.spills_anything, plan.reason
     assert "all zero" in plan.reason, plan.reason
     assert plan_to_args(plan) == []
+
+
+# ------------------------------------- the trailing block is not always the cheap one
+
+
+def _tail_heavy_layout(
+    tail: int,
+    rest: int,
+    n_blocks: int = 8,
+) -> ModelLayout:
+    sizes = [rest] * (n_blocks - 1) + [tail]
+    return ModelLayout(
+        **{
+            **uneven_layout().__dict__,
+            "n_layers": n_blocks,
+            "n_attention_layers": n_blocks,
+            "blocks": tuple(
+                BlockLayout(index = i, spillable_bytes = s, resident_bytes = 10 * MIB)
+                for i, s in enumerate(sizes)
+            ),
+        }
+    )
+
+
+def _plan_for_deficit(layout: ModelLayout, deficit: int, **kwargs) -> Plan:
+    floor = resident_floor_bytes(layout, 4096)
+    budget = floor + layout.spillable_bytes - deficit + GIB
+    return plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, **kwargs),
+    )
+
+
+def test_the_trailing_pick_gives_way_when_the_tail_block_is_a_size_accident():
+    """BACK_FIRST is a POSITION rule and was blind to size: a 100 MiB deficit on
+    a layout whose last block carries an 8 GiB FFN moved 8 GiB of it while a
+    128 MiB block sat one row down. The measured asymmetry was never about that
+    -- its cells' blocks are within a factor of two of each other -- so the
+    byte-minimal walk takes over past twice the bytes."""
+    layout = _tail_heavy_layout(tail = 8 * GIB, rest = 128 * MIB)
+    plan = _plan_for_deficit(layout, 100 * MIB)
+    assert plan.spilled_blocks and 7 not in plan.spilled_blocks, plan.spilled_blocks
+    moved = sum(layout.blocks[i].spillable_bytes for i in plan.spilled_blocks)
+    assert moved < 256 * MIB, moved
+
+
+def test_a_uniform_layout_still_takes_the_contiguous_tail():
+    """The guard must not cost the order the 98 cells it was measured on, every
+    one of which has blocks of one size: there the two walks free the same bytes
+    and the tie goes to the tail."""
+    layout = _tail_heavy_layout(tail = 200 * MIB, rest = 200 * MIB, n_blocks = 4)
+    plan = _plan_for_deficit(layout, 40 * MIB)
+    assert plan.spilled_blocks == (3,), plan.spilled_blocks
+
+
+def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
+    """Under require_cost_win the caller is choosing between two placements of
+    one rung, where rank() is monotone in bytes, so the smaller pick simply
+    wins and only a tie keeps the tail."""
+    layout = _tail_heavy_layout(tail = 150 * MIB, rest = 100 * MIB, n_blocks = 4)
+    assert _plan_for_deficit(layout, 90 * MIB).spilled_blocks == (3,)
+    ranked = _plan_for_deficit(layout, 90 * MIB, require_cost_win = True, host = HostProfile(threads = 6))
+    assert ranked.spilled_blocks == (0,), ranked.spilled_blocks
