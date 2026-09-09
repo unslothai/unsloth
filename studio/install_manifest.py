@@ -311,6 +311,30 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     return True
 
 
+# The keys write_manifest owns, and the only ones verify_install, the setup fast path
+# and desktop-capabilities ever decide on. Additive evidence -- `extra` here, keyword
+# arguments to update_manifest -- may never shadow one: a caller that could rewrite
+# `package_version` or `requirement_files` would falsely validate or silently invalidate
+# an install, and nothing downstream re-derives them. The optional three are in for the
+# same reason as the rest: absent means "unknown", so evidence must not be able to
+# invent an answer the installing build never gave. ONE constant, because two copies of
+# this list is exactly how the two writers would come to disagree.
+PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (
+    "schema",
+    "completed_at_ms",
+    "package",
+    "package_version",
+    "python",
+    "platform",
+    "prefix",
+    "steps_total",
+    "requirement_files",
+    "no_torch",
+    "expected_torch_tag",
+    "expected_torch_tag_pinned",
+)
+
+
 def write_manifest(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
@@ -358,7 +382,7 @@ def write_manifest(
     # dropped rather than written, so "absent means unknown" holds for these keys too, and
     # nothing here may shadow a field above: those are what verify_install reads.
     for key, value in (extra or {}).items():
-        if value is None or key in payload:
+        if value is None or key in payload or key in PROTECTED_MANIFEST_KEYS:
             continue
         payload[key] = value
     path = manifest_path(root)
@@ -378,8 +402,17 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
     import probe runs there so a kill during its 180 s timeout cannot lose a
     finished install. False when there is nothing to update, which the callers
     treat as "record nothing", never as a failed install.
+
+    PROTECTED_MANIFEST_KEYS are dropped, exactly as write_manifest drops them from
+    `extra`: this merges into a manifest that already means "the install finished",
+    so a caller able to rewrite the fields that claim describes could leave the file
+    valid-looking and wrong with nothing on disk contradicting it.
     """
-    values = {key: value for key, value in extra.items() if value is not None}
+    values = {
+        key: value
+        for key, value in extra.items()
+        if value is not None and key not in PROTECTED_MANIFEST_KEYS
+    }
     if not values:
         return False
     data = read_manifest(root)
@@ -1000,6 +1033,43 @@ def _current_ext_tag() -> str:
     )
 
 
+def _sidecar_payload_present(root: Path, dist) -> bool:
+    """Whether anything *dist* records as installed is on disk under *root*.
+
+    The fallback for the distributions a directory name cannot reach: one that ships
+    top-level MODULES (`six.py`, `typing_extensions.py`) has no directory to find, and
+    an import name that matches neither spelling of the project (pillow -> PIL,
+    protobuf -> google) has one under a name this cannot guess. Reported stale, they
+    make `sidecar_is_current` rebuild a healthy several-hundred-MB tree on every update.
+
+    Deliberately weaker than _sidecar_damaged_files, which is the check that reads
+    every RECORD row: this only has to answer "did the payload arrive at all", the
+    question the directory probe was asking. Anything unreadable answers no, so the
+    existing failure messages still cover the cases they always covered.
+    """
+    try:
+        recorded = list(dist.files or [])
+    except Exception:
+        return False
+    for entry in recorded:
+        parts = tuple(part for part in str(entry).replace("\\", "/").split("/") if part)
+        # `..` escapes the tree, console scripts are recorded outside it (pip writes
+        # ../../bin/hf), and metadata is not payload: none of them says the files landed.
+        if (
+            not parts
+            or ".." in parts
+            or parts[0] in ("bin", "Scripts")
+            or parts[0].endswith((".dist-info", ".egg-info"))
+        ):
+            continue
+        try:
+            if (root / parts[0]).exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
     """None when the pin is satisfied in *root*, else why it is not."""
     from importlib.metadata import distributions
@@ -1010,24 +1080,34 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
     if not name:
         return None
     canonical = _canonical(name)
-    # The package tree itself, as _venv_dir_is_valid checks it: a dist-info whose
-    # payload was removed still answers every metadata question.
     module = canonical.replace("-", "_")
-    if not any((root / candidate).is_dir() for candidate in (module, canonical)):
-        return f"{name} directory missing"
+    # The package tree itself, as _venv_dir_is_valid checks it: a dist-info whose
+    # payload was removed still answers every metadata question. Two stats, and for
+    # every pin that has a directory that is the whole payload question -- the RECORD
+    # fallback below is only reached when neither spelling of the name is one.
+    directory_present = any((root / candidate).is_dir() for candidate in (module, canonical))
     found: List[str] = []
+    payload_present = False
     try:
         for dist in distributions(path = [str(root)]):
             try:
                 dist_name = dist.metadata.get("Name") or ""
             except Exception:
                 continue
-            if _canonical(dist_name) == canonical:
-                found.append(dist.version or "")
+            if _canonical(dist_name) != canonical:
+                continue
+            found.append(dist.version or "")
+            # Only when the directory probe came up empty, and only until one answers:
+            # this reads a RECORD, and paying that for every pin on every update is
+            # what the stats above exist to avoid.
+            if not directory_present and not payload_present:
+                payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
     if not found:
         return f"{name} not installed"
+    if not directory_present and not payload_present:
+        return f"{name} directory missing"
     if len(found) > 1:
         return f"{name} has {len(found)} metadata records"
     if wanted and found[0] != wanted:

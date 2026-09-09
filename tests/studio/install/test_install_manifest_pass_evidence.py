@@ -153,6 +153,84 @@ def test_update_manifest_survives_a_corrupt_manifest(tmp_path: pathlib.Path) -> 
     assert (tmp_path / im.MANIFEST_NAME).read_text(encoding = "utf-8") == "{not json"
 
 
+def test_update_manifest_cannot_shadow_a_field_verify_install_reads(tmp_path: pathlib.Path) -> None:
+    """The same guard write_manifest applies to `extra`, on the merge path.
+
+    This one merges into a manifest that already means "the install finished", so a
+    caller able to rewrite `package_version`, `requirement_files` or `prefix` leaves a
+    file that still validates and describes an install nobody has.
+    """
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    before = _payload(tmp_path)
+    assert (
+        im.update_manifest(
+            root = tmp_path,
+            schema = 7,
+            package_version = "9.9.9",
+            requirement_files = {"studio.txt": "no"},
+            prefix = "/somewhere/else",
+            steps_total = 999,
+            mlx_health = {"ok": True},
+        )
+        is True
+    )
+    after = _payload(tmp_path)
+    for key in ("schema", "package_version", "requirement_files", "prefix", "steps_total"):
+        assert after[key] == before[key], key
+    # The additive key it was actually called for still lands.
+    assert after["mlx_health"] == {"ok": True}
+
+
+def test_update_manifest_with_only_protected_keys_writes_nothing(tmp_path: pathlib.Path) -> None:
+    """Nothing left to merge is "record nothing", the same answer as no arguments at
+    all -- and, in particular, not a rewrite of the file with the keys dropped."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    raw = (tmp_path / im.MANIFEST_NAME).read_bytes()
+    assert im.update_manifest(root = tmp_path, package_version = "9.9.9") is False
+    assert (tmp_path / im.MANIFEST_NAME).read_bytes() == raw
+
+
+def test_both_writers_refuse_the_same_keys() -> None:
+    """One constant, because two copies of this list is how the two would drift.
+
+    Every key write_manifest sets from its own arguments is in it: the optional three
+    are there for the reason the docstring gives them, that absent means "unknown" and
+    only a build that knew the answer may write one.
+    """
+    for key in (
+        "schema",
+        "completed_at_ms",
+        "package",
+        "package_version",
+        "python",
+        "platform",
+        "prefix",
+        "steps_total",
+        "requirement_files",
+        "no_torch",
+        "expected_torch_tag",
+        "expected_torch_tag_pinned",
+    ):
+        assert key in im.PROTECTED_MANIFEST_KEYS, key
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (") == 1
+    # Both writers, and no third spelling of the rule.
+    assert source.count("key not in PROTECTED_MANIFEST_KEYS") == 1
+    assert source.count("or key in PROTECTED_MANIFEST_KEYS") == 1
+
+
+def test_an_optional_field_cannot_be_invented_by_evidence(tmp_path: pathlib.Path) -> None:
+    """no_torch absent means "unknown", and a GGUF-only venv is what the wrong answer
+    costs: the next update reinstalls torch into it."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    assert im.update_manifest(root = tmp_path, no_torch = True) is False
+    assert "no_torch" not in _payload(tmp_path)
+    im.write_manifest(
+        root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"no_torch": True}
+    )
+    assert "no_torch" not in _payload(tmp_path)
+
+
 # -- constraints ---------------------------------------------------------------
 
 
@@ -323,6 +401,87 @@ def test_every_distribution_is_scanned_not_only_the_pinned_ones(sidecar: pathlib
     (sidecar / "regex" / "__init__.py").write_bytes(b"")
     current, reason = im.sidecar_is_current(sidecar, PINS)
     assert current is False and "regex" in reason
+
+
+def _module_dist(
+    root: pathlib.Path,
+    name: str,
+    version: str,
+    *,
+    modules = ("six.py",),
+) -> None:
+    """A distribution that installs top-level MODULES, with no package directory."""
+    rows = []
+    for relative in modules:
+        target = root / relative
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"x" * 32)
+        rows.append(f"{relative},sha256=deadbeef,32")
+    dist_info = root / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_info.mkdir(parents = True, exist_ok = True)
+    (dist_info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8"
+    )
+    rows.append(f"{dist_info.name}/METADATA,,")
+    (dist_info / "RECORD").write_text("\n".join(rows) + "\n", encoding = "utf-8")
+
+
+def test_a_module_only_distribution_is_current(sidecar: pathlib.Path) -> None:
+    """six installs six.py and nothing else, so there is no directory named after it.
+
+    Called stale, `sidecar_is_current` deletes and refetches a healthy several-hundred-MB
+    tree on every single update -- for a pin that is satisfied.
+    """
+    _module_dist(sidecar, "six", "1.17.0")
+    assert im.sidecar_is_current(sidecar, ("six==1.17.0",)) == (True, "")
+    assert im.sidecar_is_current(sidecar, ("six",)) == (True, "")
+
+
+def test_a_module_only_distribution_still_answers_on_its_version(sidecar: pathlib.Path) -> None:
+    """The payload fallback decides whether the files arrived, never which release."""
+    _module_dist(sidecar, "six", "1.17.0")
+    current, reason = im.sidecar_is_current(sidecar, ("six==1.16.0",))
+    assert current is False
+    assert "six==1.17.0" in reason and "1.16.0" in reason
+
+
+def test_a_module_only_distribution_whose_module_is_gone_is_not_current(
+    sidecar: pathlib.Path,
+) -> None:
+    """The case the directory probe was there for, on the path that replaces it: an
+    interrupted pip leaves the METADATA and takes the module with it."""
+    _module_dist(sidecar, "six", "1.17.0")
+    (sidecar / "six.py").unlink()
+    current, reason = im.sidecar_is_current(sidecar, ("six==1.17.0",))
+    assert current is False and "directory missing" in reason
+
+
+def test_an_import_name_that_matches_neither_spelling_is_current(sidecar: pathlib.Path) -> None:
+    """pillow -> PIL. Neither `pillow` nor `pillow` with dashes swapped is on disk, and
+    guessing the mapping is not something an installer can do."""
+    _module_dist(sidecar, "pillow", "11.0.0", modules = ("PIL/__init__.py", "PIL/Image.py"))
+    assert im.sidecar_is_current(sidecar, ("pillow==11.0.0",)) == (True, "")
+
+
+def test_a_console_script_alone_does_not_prove_the_payload_arrived(sidecar: pathlib.Path) -> None:
+    """pip records ../../bin/hf and uv records bin/hf, and neither is inside the tree the
+    training worker puts on sys.path. Believing them fails CLOSED on a real sidecar."""
+    _module_dist(sidecar, "toolonly", "1.0", modules = ("bin/toolonly",))
+    current, reason = im.sidecar_is_current(sidecar, ("toolonly==1.0",))
+    assert current is False and "directory missing" in reason
+
+
+def test_a_distribution_with_no_record_at_all_is_not_current(sidecar: pathlib.Path) -> None:
+    """No directory and no RECORD to fall back to leaves nothing that says the files
+    landed, and the answer has to be the one that repairs rather than the one that
+    ships a sidecar the worker cannot import."""
+    dist_info = sidecar / "ghost-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: ghost\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    current, reason = im.sidecar_is_current(sidecar, ("ghost==1.0",))
+    assert current is False and "directory missing" in reason
 
 
 def test_a_sidecar_with_no_record_is_left_alone(sidecar: pathlib.Path) -> None:
