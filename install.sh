@@ -3402,6 +3402,23 @@ _amd_nodes_closed_to_this_user() {
     done
 }
 
+# Whether SOME AMD render node on this host is open to this account. The mirror image of
+# the enumeration above, and the same vendor guard: a second card, or a second node on the
+# same one, that this account can already open means the closed ones do not stop every GPU
+# backend on the box -- only the card behind them. utils/hardware/amd.py's
+# an_amd_render_node_is_open is the same rule, and the two claims are worded alike.
+_an_amd_render_node_is_open() {
+    for _anro_node in /dev/dri/renderD*; do
+        [ -e "$_anro_node" ] || continue
+        _anro_vendor_file="/sys/class/drm/${_anro_node##*/}/device/vendor"
+        [ -r "$_anro_vendor_file" ] || continue
+        read -r _anro_vendor < "$_anro_vendor_file" 2>/dev/null || continue
+        [ "$_anro_vendor" = "0x1002" ] || continue
+        { [ -r "$_anro_node" ] && [ -w "$_anro_node" ]; } && return 0
+    done
+    return 1
+}
+
 # Whether any AMD render node is PRESENT, whatever this account can do with it. A
 # container given --device /dev/kfd and not --device /dev/dri passes the probe above
 # and still cannot initialise ROCm, since ROCr opens a render node to reach amdgpu;
@@ -5621,6 +5638,21 @@ case "$_amd_node_diag_leaf" in
         fi
         ;;
 esac
+# ... but only when a wheel is actually being installed. TORCH_INDEX_URL is resolved
+# unconditionally above, SKIP_TORCH or not, so --no-torch on a hybrid or CUDA-pinned host
+# read as a CUDA route and silenced all three diagnoses below for a run whose Vulkan or
+# ROCm bundle opens the very nodes they are about. _torch_opens_amd_nodes already draws
+# exactly this line for the two scope predicates; this was the one place left reading an
+# index nothing will install from. `auto` is deliberately included: the AMD-evidence gates
+# below (closed AMD nodes, the KFD topology, _amd_gpu_present_via_pci) are what keep an
+# NVIDIA-only host silent, so routing here fails closed rather than guessing a backend.
+if [ "$SKIP_TORCH" = true ]; then
+    if _run_may_open_a_gpu_node; then
+        _amd_node_diag_route=true
+    else
+        _amd_node_diag_route=false
+    fi
+fi
 # The two diagnoses are separate branches, not one branch with an inner test, because
 # they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
 # amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
@@ -5663,7 +5695,17 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     # _amd_node_repairs deliberately names no group, and this used to leave "Add yourself
     # to the" hanging above a branch explaining that no membership opens the node.
     if printf '%s\n' "$_closed_amd_nodes" | grep -qv '^/dev/kfd$'; then
-        substep "  Every backend needs them, ROCm and Vulkan alike."
+        if _an_amd_render_node_is_open; then
+            # The repair still stands -- these nodes are still shut -- but the claim does
+            # not: some AMD render node here already opens, so a backend that enumerates
+            # every device has a path and it is the card behind THESE nodes that is out of
+            # reach. amd_node_permission_hint draws the same distinction on the Python side.
+            substep "  Every backend needs them, ROCm and Vulkan alike, but another AMD"
+            substep "  render node on this host is open, so what they block is the card"
+            substep "  behind them rather than all GPU work."
+        else
+            substep "  Every backend needs them, ROCm and Vulkan alike."
+        fi
     else
         substep "  ROCm needs it; Vulkan does not."
     fi

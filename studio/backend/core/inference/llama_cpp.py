@@ -10074,6 +10074,17 @@ class LlamaCppBackend:
                 # read, which keeps the behaviour it had before the check existed.
                 if not _is_vulkan:
                     return False
+                # VK_DRIVER_FILES and VK_ICD_FILENAMES REPLACE the loader's own driver
+                # search rather than adding to it -- only the drivers they list are used --
+                # and the probe child inherits them, so a list naming AMD alone means the
+                # loader never opens the other vendor's driver however open its node is.
+                # Nothing here can read that list's vendors, so crediting the node would
+                # suppress a real repair, which is the unsafe direction. VK_ADD_DRIVER_FILES
+                # is the additive one and leaves the standard search in place, so it is not
+                # tested for.
+                for _icd_var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+                    if os.environ.get(_icd_var, "").strip():
+                        return False
                 try:
                     from utils.hardware.amd import a_non_amd_render_node_is_open
                     return a_non_amd_render_node_is_open()

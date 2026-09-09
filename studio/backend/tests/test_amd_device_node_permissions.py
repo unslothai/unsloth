@@ -914,6 +914,7 @@ def _install_sh_hint(
     render_present: bool = True,
     amd_present: bool = True,
     self_uid: str = "4242",
+    render_open: bool = False,
     repairs: "str | None" = None,
     skip_torch: bool = False,
     backend: "str | None" = None,
@@ -960,6 +961,9 @@ def _install_sh_hint(
             # `id -un`, and a stub answering one for the other names a uid as an account.
             f'id() {{ case "$1" in -un) echo {id_user} ;; *) echo {self_uid} ;; esac; }}',
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if amd_present else 1}; }}",
+            # Stubbed for the same reason as _amd_render_node_present: the real one reads
+            # /dev and /sys, so a live one would answer from the runner's own hardware.
+            f"_an_amd_render_node_is_open() {{ return {0 if render_open else 1}; }}",
             # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
             "OS=linux",
@@ -1480,7 +1484,12 @@ def test_the_installer_says_the_same_thing_about_a_missing_render_node(tmp_path)
     assert "No AMD render node" not in _install_sh_hint(str(node), render_present = True)
 
 
-def _diag_route(index_url: str) -> bool:
+def _diag_route(
+    index_url: str,
+    *,
+    skip_torch: bool = False,
+    backend: "str | None" = None,
+) -> bool:
     """Whether install.sh routes the two node diagnoses for this wheel index.
 
     Lifted from install.sh rather than restated, since the thing under test is which
@@ -1491,14 +1500,22 @@ def _diag_route(index_url: str) -> bool:
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
-    end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
+    esac_at = next(i for i in range(start, len(lines)) if lines[i] == "esac")
+    # The --no-torch override sits below the case and is part of the same decision, so the
+    # span runs to the end of it rather than stopping at the esac.
+    end = next(i for i in range(esac_at, len(lines)) if lines[i] == "fi")
     script = "\n".join(
         [
             f"TORCH_INDEX_URL={index_url!r}",
+            f"SKIP_TORCH={'true' if skip_torch else 'false'}",
+            # Set either way, so the arms below do not inherit whatever the runner exports.
+            f"export UNSLOTH_LLAMA_CPP_BACKEND={backend or ''!r}",
             # The classifiers, not stubs: which leaves count as a ROCm route is exactly what
             # these tests are about, so a stub would have them assert about the stub.
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
             'echo "$_amd_node_diag_route"',
         ]
@@ -3363,3 +3380,135 @@ def test_an_unusable_hip_selector_is_a_blocker(monkeypatch, linux):
     reason = _reason_with_masks(monkeypatch, {"HIP_VISIBLE_DEVICES": "garbage"}, {"hip"})
     assert "HIP_VISIBLE_DEVICES='garbage'" in reason
     assert "visibility mask is also in force" in reason
+
+
+def test_the_installer_scopes_the_claim_when_a_sibling_node_is_open(tmp_path):
+    """The Python half already says an open sibling means the closed nodes stop the card
+    rather than the host, and the installer claimed every backend was blocked regardless --
+    on a host where a Vulkan run is working through the open node as the user reads it.
+
+    Fails before the fix, which printed the unconditional claim."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), render_open = True)
+    assert "another AMD" in out and "render node on this host is open" in out
+    # The repair is unchanged: these nodes are still shut and membership still opens them.
+    assert "usermod -a -G" in out
+
+
+def test_the_installer_still_claims_every_backend_when_none_is_open(tmp_path):
+    """The control, and the #10466 host: with no AMD node open anywhere the closed set does
+    block every backend, so the fix must not soften the claim into always saying maybe."""
+    node, _group = _a_node_a_membership_would_open(tmp_path)
+    out = _install_sh_hint(str(node), render_open = False)
+    assert "Every backend needs them, ROCm and Vulkan alike." in out
+    assert "render node on this host is open" not in out
+
+
+def test_a_no_torch_vulkan_run_still_diagnoses_its_render_nodes():
+    """--no-torch installs no wheel, so the index resolved above this gate describes
+    nothing that will run; on a hybrid host it is the CUDA one, and reading it as the route
+    silenced every node diagnosis for a run whose Vulkan bundle opens the very render node
+    they are about.
+
+    Fails before the fix, which read the unused index."""
+    assert (
+        _diag_route("https://download.pytorch.org/whl/cu128", skip_torch = True, backend = "vulkan")
+        is True
+    )
+
+
+def test_a_no_torch_cpu_backend_run_still_does_not():
+    """The control: --no-torch with a CPU llama.cpp bundle opens no AMD node at all, so the
+    diagnoses stay off. Without it the fix could be "--no-torch always diagnoses"."""
+    assert (
+        _diag_route("https://download.pytorch.org/whl/cu128", skip_torch = True, backend = "cpu")
+        is False
+    )
+
+
+def test_a_cuda_wheel_install_is_still_off_the_route():
+    """The other control, and the boundary the case was written for: a run that IS
+    installing CUDA wheels stays off the route whatever bundle it asks for, so the fix is
+    scoped to the run that installs nothing rather than reopening the arm above."""
+    assert _diag_route("https://download.pytorch.org/whl/cu128", backend = "vulkan") is False
+
+
+def test_an_icd_override_stops_another_vendors_node_from_excusing_the_amd_one(monkeypatch, linux):
+    """VK_DRIVER_FILES REPLACES the loader's driver search rather than adding to it, and
+    the probe child inherits it, so a list naming AMD alone means the loader never opened
+    the other vendor's driver. Crediting its node then suppressed the closed-node hint on
+    a run that had no other path -- a wrong suppression, which hides a real repair.
+
+    Fails before the fix, which asked only whether the node was open."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.setenv("VK_DRIVER_FILES", "/etc/vulkan/icd.d/radeon_icd.x86_64.json")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_the_deprecated_spelling_of_that_override_counts_too(monkeypatch, linux):
+    """VK_ICD_FILENAMES is the deprecated name for the same replacing list, and the loader
+    still honours it when VK_DRIVER_FILES is unset."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.delenv("VK_DRIVER_FILES", raising = False)
+    monkeypatch.setenv("VK_ICD_FILENAMES", "/etc/vulkan/icd.d/radeon_icd.x86_64.json")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "the Vulkan probe reported no device" not in reason
+
+
+def test_the_additive_icd_variable_leaves_the_other_vendor_credited(monkeypatch, linux):
+    """The control, and the reason the two are not treated alike: VK_ADD_DRIVER_FILES ADDS
+    to the standard search, so every driver the loader would have found is still found and
+    the other vendor's open node is still a complete path. Without this the fix could be
+    "any VK_ variable suppresses", which turns the finding off for a host that set the one
+    variable that changes nothing about which vendors load."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        monkeypatch.delenv(_var, raising = False)
+    monkeypatch.setenv("VK_ADD_DRIVER_FILES", "/opt/extra/icd.json")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
+    assert "Separately" in reason
+
+
+def test_an_empty_icd_override_is_not_an_override(monkeypatch, linux):
+    """The second control: the loader treats an empty value as unset, so an exported but
+    blank VK_DRIVER_FILES must not suppress the other vendor either."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setenv("VK_DRIVER_FILES", "")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
