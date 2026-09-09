@@ -991,3 +991,34 @@ def test_a_knob_only_plan_is_ranked_against_the_launch_the_caller_typed():
     assert priced.declined_by_gate and not priced.draft_dropped, priced.reason
     assert priced.predicted_request_ms > priced.predicted_fit_request_ms
     assert "not worth it" in priced.reason and "--fit on" in priced.reason
+
+
+def test_a_caller_nkvo_cache_is_host_ram_the_refusal_has_to_see():
+    """-nkvo puts the WHOLE cache in host RAM, and the refusal counted only the
+    spilled weights, the embedding and a pinned projector. A spill that fits the
+    box with the cache left out was admitted onto a box the cache had already
+    filled, which is the one configuration measured to be worse than --fit on.
+    """
+    from core.inference.offload_planner import _device_reserve, all_resident_bytes, cache_bytes
+
+    layout = dense_layout()
+    base = dict(host = HostProfile(threads = 6), kv_on_host = True, min_penalty_reduction = 0.0)
+    needed = all_resident_bytes(layout, 32768, kv_on_host = True)
+    card = [needed + _device_reserve(PlanOptions(), 32768) - 2 * GIB]
+    roomy = plan_placement(layout, card, 200 * GIB, 32768, opts = gated(**base))
+    assert roomy.spills_anything, roomy.reason
+
+    cache = cache_bytes(layout, 32768)
+    # What the refusal used to count: the embedding and the spilled weights.
+    weights = sum(layout.blocks[i].spillable_bytes for i in roomy.spilled_blocks)
+    without = layout.token_embd_bytes + weights
+    assert cache > 0 and roomy.host_bytes == without + cache
+
+    headroom = PlanOptions().host_ram_headroom_bytes
+    # Room for all of that and not for the cache.
+    refused = plan_placement(layout, card, headroom + without + MIB, 32768, opts = gated(**base))
+    assert refused.declined_by_gate and not refused.spills_anything, refused.reason
+    assert "host RAM" in refused.reason
+    # Room for the cache as well, and the same spill is taken.
+    fits = plan_placement(layout, card, headroom + without + cache, 32768, opts = gated(**base))
+    assert fits.spilled_blocks == roomy.spilled_blocks, fits.reason

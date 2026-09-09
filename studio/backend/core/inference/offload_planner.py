@@ -3132,6 +3132,20 @@ def _finish(
     # the surcharge is the caller's measured allowance for the second
     # (_MMPROJ_VRAM_SAFETY, ~1.3x runtime over file size).
     mmproj_host_bytes = opts.mmproj_bytes if (knobs is not None and knobs.mmproj_to_host) else 0
+    # -nkvo puts the cache and the recurrent state in host RAM for the life of the
+    # server, so they are part of the host side every decision below spends: the
+    # refusal that keeps a spill out of swap, the mmap decision and the --cache-ram
+    # clamp. The refusal saw only the weights, so a spill that fits the host with
+    # the cache left out was admitted onto a box the cache had already filled.
+    # One recurrent state per slot, the same count the floor was measured at.
+    kv_host_bytes = (
+        cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+        + layout.recurrent_bytes
+        * max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
+        if kv_on_host
+        else 0
+    )
+    host_side = layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes + kv_host_bytes
 
     # A projector alone can close the deficit, and then nothing below scores the
     # plan: ``units`` and ``spill_lm_head`` are both empty, the cost gate is
@@ -3140,12 +3154,7 @@ def _finish(
     # in a CPU backend buffer; mmap covers the model file, not that), so a host
     # that cannot hold it gets the same refusal a weight spill would.
     if mmproj_host_bytes:
-        refused = _host_ram_refusal(
-            opts,
-            n_ctx,
-            layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes,
-            host_ram_bytes,
-        )
+        refused = _host_ram_refusal(opts, n_ctx, host_side, host_ram_bytes)
         if refused is not None:
             return refused
 
@@ -3166,7 +3175,7 @@ def _finish(
             budget,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
-            host_bytes = layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes,
+            host_bytes = host_side,
             host_ram_bytes = host_ram_bytes,
             knobs = knobs,
         )
@@ -3192,18 +3201,9 @@ def _finish(
 
     spilled_bytes = spilled_weight_bytes
     # token_embd is host-resident on every launch, so it is host RAM this plan
-    # has to be able to pay for even when nothing is spilled.
-    host_bytes = layout.token_embd_bytes + spilled_bytes + mmproj_host_bytes
-    if kv_on_host:
-        # -nkvo moved the cache and the recurrent state out of VRAM, not out of
-        # existence: they are host RAM now, and the mmap decision below has to see
-        # them or it answers against a footprint short by the whole cache.
-        # One recurrent state per slot, the same count the floor was measured at.
-        host_bytes += cache_bytes(
-            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
-        ) + layout.recurrent_bytes * max(
-            1, knobs.n_parallel if knobs is not None else opts.n_parallel
-        )
+    # has to be able to pay for even when nothing is spilled; the -nkvo cache is
+    # in there too, on the terms above.
+    host_bytes = host_side
     vram_bytes = (
         all_resident_bytes(
             layout,
