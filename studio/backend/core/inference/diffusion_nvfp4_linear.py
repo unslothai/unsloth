@@ -110,11 +110,18 @@ def nvfp4_linear_class():
             a_gsf,
             bias = None,
             backend: str = DEFAULT_MM_BACKEND,
+            activation_scales_baked: bool = False,
         ):
             super().__init__()
             self.in_features = int(in_features)
             self.out_features = int(out_features)
             self.backend = str(backend)
+            # Whether ``a_gsf`` came from the checkpoint's baked scales rather than from anything
+            # measured at run time. Defaults to False so a layer built by some future path that
+            # does calibrate is reported as unbaked: ``diffusion_cuda_graph`` refuses to capture a
+            # module holding one, since a scale that is still moving would be frozen into the graph
+            # at whatever value the capture happened to see.
+            self.activation_scales_baked = bool(activation_scales_baked)
             self.register_buffer("wq", wq)
             self.register_buffer("w_sf", w_sf)
             self.register_buffer("alpha", alpha)
@@ -236,6 +243,9 @@ def nvfp4_linear_from_torchao(
         a_gsf = _as_scale_tensor(a_gsf, device = device, dtype = torch.float32),
         bias = bias,
         backend = backend,
+        # The caller reached this scale through the checkpoint's ``act_global_scales`` block, which
+        # is the only source ``convert_nvfp4_backend`` accepts, so it is baked by construction.
+        activation_scales_baked = True,
     )
 
 

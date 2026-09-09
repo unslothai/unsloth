@@ -41,7 +41,14 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 # hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
-PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
+# v3 is v1 plus a PER-LAYER PRECISION POLICY (see ``diffusion_nvfp4_policy``): the state dict holds NVFP4 weights and
+# fp8 weights side by side, chosen layer by layer, instead of one scheme applied to every admitted linear. A build that
+# predates this code reads such a file as a whole-model nvfp4 artifact: it loads clean, it renders, and the precisions
+# are not the ones any gate measured -- so it gets its own tag and is refused outright there. Biconditional with the
+# declaration, exactly as v2 is with the rotation: a v3 artifact MUST declare a policy and a v1/v2 one must NOT.
+PREQUANT_FORMAT_POLICY = "unsloth_prequant_transformer_state_dict_v3"
+
+PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED, PREQUANT_FORMAT_POLICY)
 
 # The denoiser subfolder a checkpoint is baked from when nothing says otherwise. Every image family has exactly one
 # ("transformer"); a MoE video family has a second expert in "transformer_2", whose artifact is a DIFFERENT set of
@@ -50,9 +57,25 @@ DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
 def prequant_format_for(metadata: Any) -> str:
-    """The on-disk format tag an offline builder should stamp for ``metadata``."""
+    """The on-disk format tag an offline builder should stamp for ``metadata``.
+
+    The two tags above v1 are mutually exclusive, and a build declaring both is refused rather
+    than given one of them: there is only one tag slot, so whichever it got would tell every
+    older build the other half is absent. The two features are also incompatible in substance --
+    a rotation is solved for one quantiser over the whole model, and a policy runs two."""
     from .diffusion_convrot import declares_rotation
-    return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
+    from .diffusion_nvfp4_policy import declares_policy
+
+    rotated = declares_rotation(metadata)
+    policy = declares_policy(metadata)
+    if rotated and policy:
+        raise ValueError(
+            "a pre-quant checkpoint cannot declare both an activation rotation and a per-layer "
+            "nvfp4 policy: the format tag can only warn older builds about one of them"
+        )
+    if policy:
+        return PREQUANT_FORMAT_POLICY
+    return PREQUANT_FORMAT_ROTATED if rotated else PREQUANT_FORMAT
 
 
 # A request-supplied ``kind == "path"`` is read ONLY inside an operator-configured directory ALLOWLIST: an arbitrary
@@ -126,6 +149,20 @@ _RESOLVED_SAFE_GLOBALS: set = set()
 # What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather than assumed: every
 # hosted repo the family tables list, plus a local bake of each scheme for the two nothing hosts. Only these are
 # required, so dropping an unused name does not fail a scheme.
+# fp8's own constructor names, pulled out because the nvfp4 entry below needs them too.
+_FP8_REQUIRED_GLOBALS: frozenset = frozenset(
+    {
+        # The ALIAS spelling, which is what the fp8 pickles record.
+        "torchao.quantization.Float8Tensor",
+        "torchao.quantization.quantize_.workflows.float8.float8_tensor."
+        "QuantizeTensorToFloat8Kwargs",
+        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+        "torchao.quantization.granularity.PerRow",
+        "torchao.float8.inference.Float8MMConfig",
+        "torch.torch_version.TorchVersion",
+    }
+)
+
 _SCHEME_REQUIRED_GLOBALS: dict = {
     "int8": frozenset(
         {
@@ -139,18 +176,7 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torch.torch_version.TorchVersion",
         }
     ),
-    "fp8": frozenset(
-        {
-            # The ALIAS spelling, which is what the fp8 pickles record.
-            "torchao.quantization.Float8Tensor",
-            "torchao.quantization.quantize_.workflows.float8.float8_tensor."
-            "QuantizeTensorToFloat8Kwargs",
-            "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
-            "torchao.quantization.granularity.PerRow",
-            "torchao.float8.inference.Float8MMConfig",
-            "torch.torch_version.TorchVersion",
-        }
-    ),
+    "fp8": _FP8_REQUIRED_GLOBALS,
     "mxfp8": frozenset(
         {
             "torchao.prototype.mx_formats.mx_tensor.MXTensor",
@@ -159,12 +185,20 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
+    # The UNION with fp8, because a per-layer policy checkpoint (format v3) is an nvfp4 artifact
+    # whose state dict holds Float8Tensor weights beside the NVFP4Tensor ones. Asking for the
+    # nvfp4 names alone would register an allowlist the file's own fp8 weights then trip, and the
+    # refusal would arrive as an UnpicklingError halfway through a multi-gigabyte load rather than
+    # as a "this install cannot open it" before the plan sized anything. Every torchao that ships
+    # the prototype nvfp4 tensor ships the fp8 one, so the union costs nothing for a whole-model
+    # nvfp4 artifact either.
     "nvfp4": frozenset(
         {
             "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
             "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
         }
-    ),
+    )
+    | _FP8_REQUIRED_GLOBALS,
 }
 
 
@@ -1168,17 +1202,30 @@ def _load_transformer_config(
     raise last  # type: ignore[misc]
 
 
+# The class name of the only tensor subclass this floor applies to. By NAME, because the class is re-exported under
+# several module paths and asking for it here would import torchao into a check that runs before the load.
+_FLOAT8_TENSOR_CLASS = "Float8Tensor"
+
+
 def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     """True unless some fp8 tensor was quantised with no activation lower bound.
 
-    Only the first quantised tensor is inspected: the builder applies one config to the whole
-    module, so the floor is uniform. A state dict with no fp8 tensor at all is left to the other
-    checks (an empty or wrong-scheme artifact is their business, not this one)."""
+    Only the first FLOAT8 tensor is inspected: the builder applies one fp8 config to every layer
+    that gets one, so the floor is uniform. A state dict with no fp8 tensor at all is left to the
+    other checks (an empty or wrong-scheme artifact is their business, not this one).
+
+    The class filter is not cosmetic. A per-layer policy checkpoint holds NVFP4Tensor weights
+    beside the fp8 ones, and an NVFP4Tensor also carries ``act_quant_kwargs`` -- with no
+    ``hp_value_lb``, because its activation quantiser has no such knob. Stopping at the first
+    tensor with the attribute would therefore refuse every policy checkpoint whose first quantised
+    weight happens to be a 4-bit one, for a floor that layer neither has nor needs."""
     from .diffusion_transformer_quant import TQ_FP8
 
     try:
         items = state_dict.items() if hasattr(state_dict, "items") else ()
         for name, tensor in items:
+            if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
+                continue
             kwargs = getattr(tensor, "act_quant_kwargs", None)
             if kwargs is None:
                 continue
@@ -1239,6 +1286,106 @@ def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logg
     return True
 
 
+def _validate_policy(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
+    """Reject a checkpoint whose per-layer nvfp4 policy this build cannot reproduce EXACTLY.
+
+    A policy artifact is a mixture: some layers at 4 bits, the rest at fp8, chosen by a table that
+    was solved and gated on one base repo. Nothing about the file's weights says which layers got
+    which, and a loader that guesses wrong renders finite, plausible, differently-quantised
+    pixels. So every way the artifact and this build can disagree is refused here:
+
+      * the artifact declares a policy and is tagged v1/v2, or is tagged v3 and declares none.
+        Only the v3 tag makes an Unsloth too old for this code refuse the file instead of loading
+        it as a whole-model nvfp4 one;
+      * the block does not parse (an unknown kind, a missing id, an empty fqn list);
+      * the scheme is not nvfp4. The policy's own default precision is fp8 and its rules name
+        nvfp4, so there is no other scheme it could describe;
+      * this build resolves no policy at all for the artifact's family and base, so there is
+        nothing to check the declaration against;
+      * the declared ``(policy_id, policy_version)`` or the declared counts differ from the
+        in-tree policy's. A retuned table bumps the version precisely so the artifacts built
+        under the old one stop loading rather than being read as the new one.
+
+    Refusing costs a dense fallback: slower and bigger, never wrong."""
+    from .diffusion_nvfp4_policy import (
+        NVFP4_POLICY_KEY,
+        declares_policy,
+        policy_expected_counts,
+        policy_metadata_error,
+        resolve_policy,
+    )
+    from .diffusion_transformer_quant import TQ_NVFP4
+
+    declared = declares_policy(meta)
+    tagged = ckpt_format == PREQUANT_FORMAT_POLICY
+    if declared != tagged:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint format {ckpt_format!r} and its per-layer nvfp4 policy disagree "
+                f"(declares a policy: {declared}); a policy checkpoint must be tagged "
+                f"{PREQUANT_FORMAT_POLICY!r} so older builds refuse it instead of loading it as a "
+                "whole-model artifact"
+            ),
+        )
+        return False
+    if not declared:
+        return True
+    problem = policy_metadata_error(meta)
+    if problem:
+        _warn(logger, scheme, ValueError(problem))
+        return False
+    block = meta.get(NVFP4_POLICY_KEY)
+    if scheme != TQ_NVFP4:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint declares the nvfp4 policy {block.get('policy_id')!r} but its scheme "
+                f"is {scheme!r}"
+            ),
+        )
+        return False
+    policy = resolve_policy(meta.get("family"), meta.get("base_model_id"))
+    if policy is None:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint declares the nvfp4 policy {block.get('policy_id')!r} but this build "
+                f"resolves none for family {meta.get('family')!r} on base "
+                f"{meta.get('base_model_id')!r}"
+            ),
+        )
+        return False
+    declared_id = (block.get("policy_id"), int(block.get("policy_version")))
+    expected_id = (policy.policy_id, int(policy.version))
+    if declared_id != expected_id:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint nvfp4 policy {declared_id!r} != the one this build resolves for "
+                f"{meta.get('base_model_id')!r}, {expected_id!r}"
+            ),
+        )
+        return False
+    declared_counts = {str(key): int(value) for key, value in (block.get("counts") or {}).items()}
+    expected_counts = policy_expected_counts(policy)
+    if declared_counts != expected_counts:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint nvfp4 policy {policy.policy_id!r} records {declared_counts!r}, this "
+                f"build's table expects {expected_counts!r}"
+            ),
+        )
+        return False
+    return True
+
+
 def _validate_checkpoint(
     ckpt: Any,
     scheme: str,
@@ -1269,6 +1416,8 @@ def _validate_checkpoint(
         return False
     meta = ckpt.get("metadata") or {}
     if not _validate_activation_rotation(ckpt.get("format"), meta, scheme, logger):
+        return False
+    if not _validate_policy(ckpt.get("format"), meta, scheme, logger):
         return False
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))

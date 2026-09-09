@@ -176,6 +176,7 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_NVFP4,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
@@ -1751,7 +1752,18 @@ class DiffusionBackend:
             return None
         try:
             from .diffusion_transformer_quant import auto_scheme_candidates
-            candidates = auto_scheme_candidates(target, getattr(fam, "name", None))
+            candidates = auto_scheme_candidates(
+                target,
+                getattr(fam, "name", None),
+                base_repo = base_repo,
+                # The retry only ever proposes a rung that HAS a usable checkpoint (it re-checks
+                # below), so answering the ladder's own prequant requirement with the same probe
+                # keeps the two from disagreeing about which rungs exist.
+                has_prequant = lambda candidate: usable_prequant_source(
+                    fam, candidate, path_override = path_override, base_repo = base_repo
+                )
+                is not None,
+            )
         except Exception:  # noqa: BLE001 -- no candidates is just "no retry"
             return None
         seen_chosen = False
@@ -4761,7 +4773,25 @@ class DiffusionBackend:
         """
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
+        scheme = select_transformer_quant_scheme(
+            target,
+            mode,
+            family = getattr(fam, "name", None),
+            # The base decides two things the family cannot: whether a gate record lifts the nvfp4
+            # deny for THESE weights, and whether the per-family auto head applies at all.
+            base_repo = base,
+            # Under auto, a scheme that only ships as a gated checkpoint is offered only where that
+            # checkpoint is actually resolvable for this load. usable_ (not resolve_) so a local
+            # override counts only when this loader would accept it -- the same question step 1
+            # below asks, so the ladder cannot pick a rung the very next line then cannot serve.
+            has_prequant = lambda candidate: (
+                fam is not None
+                and usable_prequant_source(
+                    fam, candidate, path_override = prequant_path, base_repo = base
+                )
+                is not None
+            ),
+        )
         if scheme is None:
             # Bail BEFORE the multi-GB dense download: an unsupported scheme (fp8 on Ampere, nvfp4 off Blackwell) would
             # materialise the transformer only to fail at quantize, after eviction. load_pipeline falls back to GGUF.
@@ -4796,6 +4826,16 @@ class DiffusionBackend:
                     logger = logger,
                 )
                 if transformer is not None:
+                    if scheme == TQ_NVFP4:
+                        # Autotune the FlashInfer NVFP4 GEMMs off the request path. Only the M = 1
+                        # modulation shapes are knowable here: the loader has no width or height,
+                        # and this family's other 4-bit layers see one row per token, so their M is
+                        # a function of the render's resolution. Those are tuned at the first
+                        # generate instead, in ``GraphedForward``'s warm-up, which sees the real
+                        # shapes and runs before any capture. A checkpoint on the torchao backend
+                        # has no converted layer and this is a walk that finds nothing.
+                        from .diffusion_nvfp4_linear import nvfp4_prewarm
+                        nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
                         pipeline_cls,
                         base,
@@ -4874,6 +4914,9 @@ class DiffusionBackend:
             target,
             mode = mode,
             family = getattr(fam, "name", None),
+            # The upstream id, not ``fetch_base``: the per-layer NVFP4 policy is a claim about one
+            # set of weights, and a mirror is those weights under another name.
+            base_repo = base,
             fast_accum = fast_accum,
             logger = logger,
         )
@@ -6457,6 +6500,7 @@ class DiffusionBackend:
                 "speed_optims": [],
                 "text_encoder_quant": None,
                 "transformer_quant": None,
+                "transformer_quant_backend": None,
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
@@ -6488,6 +6532,7 @@ class DiffusionBackend:
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
+            "transformer_quant_backend": _transformer_quant_backend(state),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "resolved": state.resolved,
@@ -6510,6 +6555,41 @@ class DiffusionBackend:
                 transformer_quant = state.transformer_quant,
             ),
         }
+
+
+def _transformer_quant_backend(state: Any) -> Optional[str]:
+    """Which NVFP4 kernel path the loaded denoiser is actually running, or None.
+
+    Only nvfp4 has two implementations, so every other scheme (and the GGUF) answers None. The
+    scheme is not the answer for nvfp4 either: flashinfer is chosen per device, and a checkpoint
+    without baked activation scales, a failed preflight or a Windows host all leave the model on
+    torchao with the same 'nvfp4' in ``transformer_quant``. Read from the module tree rather than
+    from what the load intended -- ``convert_nvfp4_backend`` is all-or-nothing, so a single
+    converted layer means the conversion ran.
+
+    Never raises: a status read is a poll, and a probe of someone else's module tree must not be
+    what takes it down."""
+    if getattr(state, "transformer_quant", None) != TQ_NVFP4:
+        return None
+    try:
+        pipe = getattr(state, "pipe", None)
+        denoiser_attr = getattr(getattr(state, "family", None), "denoiser_attr", "transformer")
+        denoiser = getattr(pipe, denoiser_attr or "transformer", None)
+        if denoiser is None:
+            return None
+        declared = getattr(denoiser, "_unsloth_nvfp4_backend", None)
+        if declared:
+            return str(declared)
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+
+        for module in denoiser.modules():
+            if is_nvfp4_flashinfer_linear(module):
+                return "flashinfer"
+        # nvfp4 engaged and nothing was converted: torchao is what ran, which is the fallback the
+        # backend selection is designed to reach rather than an error.
+        return "torchao"
+    except Exception:  # noqa: BLE001 -- see the docstring: a poll must not fail on a probe
+        return None
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:

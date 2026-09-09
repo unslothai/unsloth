@@ -21,9 +21,28 @@ Image and video families are both served: the image registry is asked first and 
 is the fallback (--modality forces either). A family with more than one denoiser builds one
 artifact per --component (Wan2.2 A14B's two experts).
 
+An image family with a gated per-layer NVFP4 policy builds the MIXED artifact instead of a
+whole-model one: --policy auto (the default) applies the policy core.inference.diffusion_nvfp4_policy
+resolves for (family, base) when the scheme is nvfp4, --policy off forces the whole-model build, and
+--policy <policy_id> pins one and refuses if that is not what resolves. A policy build runs two
+quantize_ passes, stamps the layer assignment into the metadata and writes the v3 format tag.
+
 A calibrated build takes --gptq-dir: every admitted linear whose GPTQ correction is MEASURED to
 lower that layer's output error on held-out activations gets the corrected bf16 weight before
-quantize_, the rest stay round-to-nearest, and the metadata records which was which.
+quantize_, the rest stay round-to-nearest, and the metadata records which was which. Under a policy
+the corrections apply to the NVFP4 layers alone, which is the rule the campaign measured: a
+correction that also becomes the source of an fp8 replica raised the error 46 percent.
+
+A build can also run its OWN calibration instead of replaying one: --gptq-prompts N accumulates
+per-layer Hessians on the layers this build quantises to 4 bits, corrects them onto the NVFP4 grid
+and keeps each correction only where it lowers that layer's output error through torchao's own
+quantiser, and --bake-activation-scales measures each of those layers' activation amax over the
+same prompts and stores a_gsf = 6 * 448 / amax per layer. The two are independent: the bake alone
+is what an artifact needs to run on the flashinfer NVFP4 backend, which refuses to calibrate a
+scale at run time. Both run on the DENSE pipeline, before quantize_, in that order.
+
+  python scripts/build_prequant_checkpoint.py --base ... --family z-image --scheme nvfp4 \
+      --policy auto --bake-activation-scales --gptq-prompts 32 --out a.pt
 
 Publishing is gated on a SECOND build: every checkpoint records an md5 fingerprint of each
 quantized weight's packed payload, --verify-against diffs this build against another one, and
@@ -42,8 +61,9 @@ import argparse
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 
@@ -96,6 +116,53 @@ def resolve_build_family(
     return detect_video_family(base, override = override)
 
 
+# --policy modes that are not a policy id.
+POLICY_AUTO = "auto"
+POLICY_OFF = "off"
+
+
+def resolve_build_policy(
+    mode: Optional[str], scheme: str, family: Optional[str], base_id: Optional[str]
+) -> tuple:
+    """``(policy, refusal)`` for this build: which per-layer NVFP4 policy applies, or why none can.
+
+    ``auto`` applies whatever the in-tree table resolves for (family, base) and builds the
+    whole-model artifact when nothing does, so the existing invocations keep building exactly what
+    they build today -- including every fp8 and int8 one, which no policy describes.
+
+    A NAMED policy is a pin rather than a lookup: it must be the one this build resolves for the
+    same family and base, so an operator who asks for the set they measured gets a refusal when the
+    table has moved under them instead of a differently-quantised artifact."""
+    from core.inference.diffusion_nvfp4_policy import policy_by_id, resolve_policy
+    from core.inference.diffusion_transformer_quant import TQ_NVFP4
+
+    mode = (mode or POLICY_AUTO).strip()
+    if mode == POLICY_OFF:
+        return None, None
+    if scheme != TQ_NVFP4:
+        # A policy's rules name nvfp4 and its default precision is fp8, so there is no other scheme
+        # it could describe. Under auto that is simply "no policy applies".
+        if mode == POLICY_AUTO:
+            return None, None
+        return None, (f"--policy {mode!r} describes an nvfp4 build, but --scheme is {scheme!r}")
+    resolved = resolve_policy(family, base_id)
+    if mode == POLICY_AUTO:
+        return resolved, None
+    if policy_by_id(mode) is None:
+        return None, (
+            f"unknown --policy {mode!r}; pass a policy id from "
+            "core/inference/diffusion_nvfp4_policy.py, or 'auto' / 'off'"
+        )
+    if resolved is None or resolved.policy_id != mode:
+        return None, (
+            f"--policy {mode!r} is not the policy this build resolves for family {family!r} on "
+            f"base {base_id!r} ({resolved.policy_id if resolved else 'none'}). The layer sets were "
+            "solved on one checkpoint's weights, so a policy is never applied to a base it was not "
+            "gated on."
+        )
+    return resolved, None
+
+
 def upload_destination(
     fam: Any,
     scheme: str,
@@ -140,6 +207,263 @@ def upload_destination(
             "entry to the family table, or pass --upload-filename."
         )
     return preferred
+
+
+# ── in-builder calibration (GPTQ Hessians and activation-scale baking) ────────────────────────
+# Both passes run the CALIBRATION prompts through the DENSE pipeline before anything is quantised,
+# which is the only point at which the activations a 4-bit layer will see can still be measured
+# against the weights it was solved for.
+
+# The default sample points for a 38-step schedule: the first step, both thirds and the last. A
+# Hessian over every step of every prompt is neither affordable nor better conditioned.
+DEFAULT_GPTQ_STEPS = "0,12,25,37"
+
+# Where --calib-prompts defaults to. A .py file is read for CALIBRATION_PROMPTS; anything else is
+# one prompt per line.
+DEFAULT_CALIB_PROMPTS = str(Path(__file__).resolve().parent / "gptq_prompts.py")
+
+
+def parse_step_spec(spec: str) -> tuple:
+    """``"0,12,25,37"`` -> ``(0, 12, 25, 37)``. Raises on anything that is not a step index."""
+    steps: list = []
+    for piece in str(spec or "").replace(" ", "").split(","):
+        if not piece:
+            continue
+        if not piece.isdigit():
+            raise ValueError(f"--gptq-steps takes comma-separated step indices, not {piece!r}")
+        steps.append(int(piece))
+    if not steps:
+        raise ValueError("--gptq-steps must name at least one step index")
+    return tuple(sorted(set(steps)))
+
+
+def load_calibration_prompts(path: Optional[str] = None) -> tuple:
+    """The calibration prompts from ``path`` (default ``scripts/gptq_prompts.py``).
+
+    A .py file is imported and read for ``CALIBRATION_PROMPTS``, so the default set is a reviewed
+    file with its rationale beside it rather than a bare list; any other file is one prompt per
+    line, blank lines and ``#`` comments skipped, which is what an operator calibrating on their
+    own set will have."""
+    source = str(path or DEFAULT_CALIB_PROMPTS)
+    if source.endswith(".py"):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("unsloth_calib_prompts", source)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"cannot read the calibration prompts at {source}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        prompts = tuple(getattr(module, "CALIBRATION_PROMPTS", ()) or ())
+    else:
+        with open(source) as handle:
+            prompts = tuple(
+                line.strip() for line in handle if line.strip() and not line.strip().startswith("#")
+            )
+    if not prompts:
+        raise ValueError(f"{source} defines no calibration prompts")
+    if len(set(prompts)) != len(prompts):
+        # A repeated prompt is counted twice in a Hessian and shifts it toward whatever that prompt
+        # activates, which is not what "32 prompts" then means.
+        raise ValueError(f"{source} repeats a calibration prompt")
+    return prompts
+
+
+def calibration_stage_order(gptq_prompts: int, bake: bool) -> tuple:
+    """The stages this build runs between the assignment and ``quantize_``, in order.
+
+    Fixed, and asserted: the Hessians must be accumulated on the UNCORRECTED weights (they describe
+    the activations the correction is solved against), and the activation scales must be measured
+    on the weights the artifact actually ships, which are the corrected ones. Swapping the two
+    bakes a scale for a model that was never built."""
+    stages: list = []
+    if int(gptq_prompts) > 0:
+        stages += ["hessians", "gptq"]
+    if bake:
+        stages.append("bake")
+    return tuple(stages)
+
+
+def calibration_refusal(
+    *,
+    scheme: str,
+    nvfp4: str,
+    gptq_prompts: int,
+    bake: bool,
+    gptq_dir: Optional[str],
+    convrot_groupsize: int,
+    available_prompts: int,
+) -> Optional[str]:
+    """Why the calibration flags cannot be honoured, or None. Decided before the dense load."""
+    if not (int(gptq_prompts) > 0 or bake):
+        return None
+    if scheme != nvfp4:
+        return (
+            f"--gptq-prompts / --bake-activation-scales describe an nvfp4 build (a 4-bit grid and "
+            f"a 4-bit activation scale), but --scheme is {scheme!r}"
+        )
+    if gptq_dir and int(gptq_prompts) > 0:
+        return (
+            "--gptq-prompts and --gptq-dir are two sources for the same corrected weights. Pass "
+            "one: --gptq-dir replays a calibration that already ran, --gptq-prompts runs one here."
+        )
+    if convrot_groupsize and int(gptq_prompts) > 0:
+        return (
+            "--gptq-prompts and --convrot-groupsize cannot be combined: the correction is solved "
+            "against unrotated activations, so rotating the corrected weight discards it."
+        )
+    if int(gptq_prompts) > available_prompts:
+        return (
+            f"--gptq-prompts {gptq_prompts} exceeds the {available_prompts} prompts the "
+            "calibration file defines"
+        )
+    return None
+
+
+def render_calibration(
+    pipe: Any,
+    prompts: Sequence[str],
+    *,
+    steps: int,
+    guidance: float,
+    cfg_kwarg: str = "guidance_scale",
+    width: int = 1024,
+    height: int = 1024,
+    seed: int = 3407,
+    device: str = "cuda",
+    callback: Any = None,
+    before_prompt: Any = None,
+    on_prompt: Any = None,
+) -> int:
+    """Run ``prompts`` through ``pipe`` for their activations alone. Returns how many ran.
+
+    Every render is seeded from ``seed`` plus its index, because the artifact this feeds is gated on
+    a SECOND build reproducing it byte for byte: an unseeded calibration would give two builds two
+    different Hessians and therefore two different corrected weights, and the fingerprint diff would
+    report that as corruption. ``output_type="latent"`` skips the VAE decode, which this pass has no
+    use for.
+
+    ``before_prompt`` runs before each render (the step gate arms step 0 there, since the pipeline's
+    own callback only fires at the END of a step)."""
+    import inspect as _inspect
+
+    import torch
+
+    # An explicit signature says which kwargs this family's pipeline takes; a ``**kwargs`` one says
+    # nothing, so nothing is filtered rather than everything.
+    kwargs_supported: set = set()
+    try:
+        parameters = _inspect.signature(pipe.__call__).parameters
+        if not any(param.kind is _inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+            kwargs_supported = set(parameters)
+    except Exception:  # noqa: BLE001 - a stub or a wrapped pipeline: pass what we have
+        kwargs_supported = set()
+    if callback is not None and kwargs_supported and "callback_on_step_end" not in kwargs_supported:
+        raise ValueError(
+            f"{type(pipe).__name__} takes no callback_on_step_end, so the Hessian pass cannot be "
+            "gated to sampled steps; calibrate this family with --gptq-prompts 0"
+        )
+    ran = 0
+    for index, prompt in enumerate(prompts):
+        if before_prompt is not None:
+            before_prompt()
+        call_kwargs: dict = {
+            "prompt": prompt,
+            "num_inference_steps": int(steps),
+            "width": int(width),
+            "height": int(height),
+            "generator": torch.Generator(device = device).manual_seed(int(seed) + index),
+            "output_type": "latent",
+        }
+        if cfg_kwarg:
+            call_kwargs[cfg_kwarg] = float(guidance)
+        if callback is not None:
+            call_kwargs["callback_on_step_end"] = callback
+        if kwargs_supported:
+            call_kwargs = {k: v for k, v in call_kwargs.items() if k in kwargs_supported}
+        with torch.no_grad():
+            pipe(**call_kwargs)
+        ran += 1
+        if on_prompt is not None:
+            on_prompt(index, prompt)
+    return ran
+
+
+def prompt_digest(prompts: Sequence[str]) -> str:
+    """A stable sha256 over the calibration set, so an artifact says which prompts made it."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for prompt in prompts:
+        digest.update(prompt.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def gptq_metadata_block(
+    *,
+    prompts: Sequence[str],
+    steps_sampled: Sequence[int],
+    schedule_steps: int,
+    max_regressions: int,
+    plan: Mapping,
+    scores: Mapping,
+    damps: Mapping,
+    seconds: float,
+) -> dict:
+    """The ``gptq`` metadata block an in-builder calibration writes.
+
+    Per layer, both errors and the damping that produced the correction, plus whether it was
+    applied: an artifact has to be able to say which of its weights are corrected and which are
+    plain round-to-nearest, and a summary count cannot answer that after the fact."""
+    applied = set(plan.get("apply") or ())
+    layers = {
+        fqn: {
+            "err_rtn": score.get("err_rtn"),
+            "err_gptq": score.get("err_gptq"),
+            "ratio": score.get("ratio"),
+            "damp": damps.get(fqn),
+            "applied": fqn in applied,
+            "reason": "applied" if fqn in applied else "no_gain",
+        }
+        for fqn, score in sorted(scores.items())
+    }
+    counts = dict(plan.get("counts") or {})
+    return {
+        "source": "in-builder",
+        "score_mode": "hessian_output_error",
+        "prompts": len(prompts),
+        "prompt_sha256": prompt_digest(prompts),
+        "schedule_steps": int(schedule_steps),
+        "steps_sampled": [int(step) for step in steps_sampled],
+        "max_regressions": int(max_regressions),
+        "applied": int(counts.get("applied", 0)),
+        "applied_regressed": int(counts.get("applied_regressed", 0)),
+        "skipped_no_gain": int(counts.get("skipped_no_gain", 0)),
+        "scored": len(scores),
+        "seconds": round(float(seconds), 1),
+        "layers": layers,
+    }
+
+
+def activation_scale_metadata(
+    *, prompts: Sequence[str], schedule_steps: int, scales: Mapping, layers: int
+) -> dict:
+    """What the baked activation scales were measured on. Documented rather than implied: the scale
+    is a property of a calibration set and a schedule, and an artifact whose scales came from four
+    prompts at four steps is not the one a gate ran on."""
+    values = sorted(float(value) for value in scales.values())
+    return {
+        "prompts": len(prompts),
+        "prompt_sha256": prompt_digest(prompts),
+        "schedule_steps": int(schedule_steps),
+        # Every step of every prompt: the step with the largest activation is the one a sampled
+        # subset would miss, and it is the one the scale has to cover.
+        "steps_sampled": "all",
+        "layers": int(layers),
+        "scaled": len(values),
+        "min_a_gsf": values[0] if values else None,
+        "max_a_gsf": values[-1] if values else None,
+    }
 
 
 # GPTQ scoring modes. "check" decides per layer on the OUTPUT error a held-out activation sample
@@ -245,7 +569,12 @@ def plan_gptq(
     return {"apply": apply, "layers": layers, "counts": counts, "mode": mode}
 
 
-def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> dict:
+def verify_gptq_idempotency(
+    modules: dict,
+    load_weight,
+    *,
+    sample: int = 0,
+) -> dict:
     """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
 
     The correction is only worth the GPU-hours if the packed 4-bit weight in the artifact IS the
@@ -263,7 +592,11 @@ def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> d
         layers = layers[:: max(1, len(layers) // sample)]
     for fqn, module in layers:
         weight = module.weight
-        packed = weight.dequantize(torch.float32) if hasattr(weight, "dequantize") else weight.detach().float()
+        packed = (
+            weight.dequantize(torch.float32)
+            if hasattr(weight, "dequantize")
+            else weight.detach().float()
+        )
         want = load_weight(fqn).to(packed.device, torch.float32)
         delta = (packed - want).abs()
         max_abs = float(delta.max())
@@ -433,6 +766,14 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--policy",
+        default = POLICY_AUTO,
+        help = "per-layer NVFP4 policy: 'auto' applies the one diffusion_nvfp4_policy resolves for "
+        "(--family, --base-id or --base) when --scheme is nvfp4 and builds the whole-model "
+        "artifact otherwise, 'off' forces the whole-model build, and a policy id pins one and "
+        "refuses if that is not what resolves",
+    )
+    p.add_argument(
         "--gptq-dir",
         default = None,
         help = "directory of GPTQ-corrected bf16 weights (as written by the calibration pass: "
@@ -450,6 +791,70 @@ def main(argv = None) -> int:
         default = None,
         help = "the do-no-harm score json (per layer out_err_rtn / out_err_gptq); defaults to "
         "gptq_score_<component>.json, gptq_score.json or gptq_check.json inside --gptq-dir",
+    )
+    p.add_argument(
+        "--gptq-prompts",
+        type = int,
+        default = 0,
+        help = "run a GPTQ calibration IN this build over the first N prompts of --calib-prompts "
+        "(0 = off). Hessians are accumulated on the layers this build quantises to 4 bits, the "
+        "correction is applied only where it lowers that layer's output error through torchao's "
+        "own quantiser, and the metadata records both errors per layer",
+    )
+    p.add_argument(
+        "--gptq-steps",
+        default = DEFAULT_GPTQ_STEPS,
+        help = "denoise steps to accumulate the Hessians on, for a 38-step schedule; a shorter "
+        "schedule is sampled at the same places (0, n/4, n/2, 3n/4) rather than the same indices",
+    )
+    p.add_argument(
+        "--gptq-max-regressions",
+        type = int,
+        default = 0,
+        help = "how many layers may take their correction despite scoring WORSE than "
+        "round-to-nearest, least harmful first. 0 is do no harm: a correction is applied only "
+        "where it is measured to help",
+    )
+    p.add_argument(
+        "--calib-prompts",
+        default = None,
+        help = f"calibration prompts for --gptq-prompts and --bake-activation-scales; a .py file "
+        f"is read for CALIBRATION_PROMPTS and anything else is one prompt per line. Defaults to "
+        f"{DEFAULT_CALIB_PROMPTS}, which is disjoint from the accuracy gate's evaluation suite",
+    )
+    p.add_argument(
+        "--bake-activation-scales",
+        action = "store_true",
+        help = "measure each 4-bit layer's activation amax over the calibration prompts and store "
+        "a_gsf = 6 * 448 / amax per layer in the metadata. The flashinfer NVFP4 backend refuses an "
+        "artifact without baked scales, because calibrating them at run time is neither "
+        "capture-safe nor deterministic",
+    )
+    p.add_argument(
+        "--bake-prompts",
+        type = int,
+        default = 8,
+        help = "how many calibration prompts the activation-scale bake runs (an amax converges far "
+        "faster than a Hessian); every step of each is measured",
+    )
+    p.add_argument(
+        "--calib-steps",
+        type = int,
+        default = 0,
+        help = "denoise steps per calibration render; 0 takes the family's default schedule",
+    )
+    p.add_argument(
+        "--calib-resolution",
+        type = int,
+        default = 1024,
+        help = "square resolution the calibration renders run at",
+    )
+    p.add_argument(
+        "--calib-seed",
+        type = int,
+        default = 3407,
+        help = "seed of the first calibration render (each later one adds its index). Fixed so a "
+        "second build reproduces the same corrections byte for byte",
     )
     p.add_argument(
         "--gptq-score-mode",
@@ -494,6 +899,7 @@ def main(argv = None) -> int:
     from core.inference.diffusion_transformer_quant import (
         FP8_GRANULARITY,
         TQ_FP8,
+        TQ_NVFP4,
         TQ_SCHEMES,
         _REQUIRE_BF16_SCHEMES,
         _make_quant_config,
@@ -526,7 +932,9 @@ def main(argv = None) -> int:
         if refusal:
             print(f"error: {refusal}", flush = True)
             return 2
-    fam = resolve_build_family(args.base_id or args.base, override = args.family, modality = args.modality)
+    fam = resolve_build_family(
+        args.base_id or args.base, override = args.family, modality = args.modality
+    )
     if fam is None:
         print(
             f"error: unknown family '{args.family}' (modality {args.modality})",
@@ -534,6 +942,41 @@ def main(argv = None) -> int:
         )
         return 2
     component = (args.component or DEFAULT_COMPONENT).strip() or DEFAULT_COMPONENT
+    policy, policy_refusal = resolve_build_policy(
+        args.policy, scheme, fam.name, args.base_id or args.base
+    )
+    if policy_refusal is None and policy is not None and args.convrot_groupsize:
+        # Both rewrite the weights before quantize_ and both claim the one format tag slot. The
+        # rotation is also solved for ONE quantiser over the whole model, which a policy is not.
+        policy_refusal = (
+            f"--policy {policy.policy_id!r} and --convrot-groupsize cannot be combined: a policy "
+            "build quantises its layers at two precisions, and the rotation was solved for one"
+        )
+    if policy_refusal:
+        print(f"error: {policy_refusal}", flush = True)
+        return 2
+    # The calibration prompts are read and checked BEFORE the dense load, so a typo in
+    # --calib-prompts costs a second rather than a multi-gigabyte download and an hour of Hessians.
+    calib_prompts: tuple = ()
+    if args.gptq_prompts > 0 or args.bake_activation_scales:
+        try:
+            calib_prompts = load_calibration_prompts(args.calib_prompts)
+            gptq_step_spec = parse_step_spec(args.gptq_steps)
+        except ValueError as exc:
+            print(f"error: {exc}", flush = True)
+            return 2
+        refusal = calibration_refusal(
+            scheme = scheme,
+            nvfp4 = TQ_NVFP4,
+            gptq_prompts = args.gptq_prompts,
+            bake = args.bake_activation_scales,
+            gptq_dir = args.gptq_dir,
+            convrot_groupsize = args.convrot_groupsize,
+            available_prompts = len(calib_prompts),
+        )
+        if refusal:
+            print(f"error: {refusal}", flush = True)
+            return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
     # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
     # after the quantise and the multi-gigabyte save.
@@ -552,7 +995,11 @@ def main(argv = None) -> int:
             print(f"error: {exc}", flush = True)
             return 2
 
-    print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
+    policy_note = f", policy={policy.policy_id} v{policy.version}" if policy else ""
+    print(
+        f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}{policy_note}) ==",
+        flush = True,
+    )
     print(f"  loading dense transformer from {args.base} (subfolder={component}) ...", flush = True)
     t0 = time.time()
     transformer = transformer_cls.from_pretrained(
@@ -565,7 +1012,8 @@ def main(argv = None) -> int:
     # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
-    fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
+    # A policy build has an fp8 half too, so it resolves and records one as well.
+    fast_accum = _resolve_fast_accum(None) if (scheme == TQ_FP8 or policy is not None) else None
     # The same GEMM tiling floor the runtime filter applies. Without it an offline fp8 / nvfp4
     # build bakes the ragged linears the runtime leaves dense, and the mismatch does not surface
     # until the first real matmul of the first render.
@@ -576,6 +1024,220 @@ def main(argv = None) -> int:
         require_bf16 = require_bf16,
         require_divisible = require_divisible,
     )
+
+    # The per-layer assignment, resolved BEFORE anything touches the weights: the GPTQ corrections
+    # are scoped to it and the metadata records it, and its own count assertions are what turn a
+    # diffusers rename into a refused build rather than a differently-quantised artifact.
+    assignment: dict = {}
+    if policy is not None:
+        from core.inference.diffusion_nvfp4_policy import (
+            PRECISION_NVFP4,
+            assign_precisions,
+            policy_metadata,
+            quantize_with_policy,
+        )
+
+        assignment = assign_precisions(transformer, policy, min_features = args.min_features)
+        counts = Counter(assignment.values())
+        print(
+            f"  policy {policy.policy_id} v{policy.version}: "
+            + ", ".join(f"{name} {counts[name]}" for name in sorted(counts)),
+            flush = True,
+        )
+
+    # ── in-builder calibration: Hessians -> GPTQ -> bake a_gsf, all on the DENSE model ────────
+    # The order is fixed (see calibration_stage_order): a Hessian describes the activations the
+    # correction is solved against, so it is accumulated before the weights move; an activation
+    # scale has to describe the model the artifact ships, so it is measured after they have.
+    inbuilder_gptq: dict = {}
+    act_scales: dict = {}
+    act_meta: dict = {}
+    if calib_prompts:
+        from core.inference.diffusion_families import default_generation_params
+        from core.inference.diffusion_nvfp4_gptq import (
+            ActivationAmaxAccumulator,
+            HessianAccumulator,
+            gptq_correct,
+            plan_corrections,
+            sampled_steps,
+            score_correction,
+        )
+        from core.inference.diffusion_nvfp4_policy import PRECISION_NVFP4
+
+        if policy is not None:
+            calib_layers = {
+                fqn: module
+                for fqn, module in transformer.named_modules()
+                if assignment.get(fqn) == PRECISION_NVFP4
+            }
+        else:
+            # A whole-model artifact quantises every admitted linear to 4 bits, so every admitted
+            # linear is what gets corrected and what needs a baked scale.
+            calib_layers = {
+                fqn: module for fqn, module in transformer.named_modules() if filter_fn(module, fqn)
+            }
+        if not calib_layers:
+            print(
+                "error: the calibration set is empty (no layer is quantised to 4 bits)", flush = True
+            )
+            return 2
+        pipeline_cls_name = getattr(fam, "pipeline_class", None)
+        if not pipeline_cls_name or not hasattr(diffusers, pipeline_cls_name):
+            print(
+                f"error: family {fam.name!r} names no diffusers pipeline class to calibrate "
+                f"through ({pipeline_cls_name!r})",
+                flush = True,
+            )
+            return 2
+        default_steps, default_guidance = default_generation_params(
+            args.base_id or args.base, fam.name
+        )
+        calib_steps = int(args.calib_steps or default_steps)
+        cfg_kwarg = getattr(fam, "cfg_kwarg", "guidance_scale")
+        print(
+            f"  calibration: {len(calib_layers)} 4-bit layers, {calib_steps} steps at "
+            f"{args.calib_resolution}px, stages "
+            + " -> ".join(calibration_stage_order(args.gptq_prompts, args.bake_activation_scales)),
+            flush = True,
+        )
+        pipe = getattr(diffusers, pipeline_cls_name).from_pretrained(
+            args.base,
+            transformer = transformer,
+            torch_dtype = torch.bfloat16,
+            token = args.hf_token,
+        )
+        pipe.to("cuda")
+        try:
+            pipe.set_progress_bar_config(disable = True)
+        except Exception:  # noqa: BLE001 - a pipeline without the knob simply prints
+            pass
+        render = lambda prompts, **kwargs: render_calibration(  # noqa: E731 - one call site each
+            pipe,
+            prompts,
+            steps = calib_steps,
+            guidance = default_guidance,
+            cfg_kwarg = cfg_kwarg,
+            width = args.calib_resolution,
+            height = args.calib_resolution,
+            seed = args.calib_seed,
+            **kwargs,
+        )
+
+        if args.gptq_prompts > 0:
+            t_gptq = time.time()
+            steps_sampled = sampled_steps(calib_steps, gptq_step_spec)
+            prompts = calib_prompts[: args.gptq_prompts]
+            hessians = HessianAccumulator(calib_layers)
+            refusal = hessians.budget_refusal()
+            if refusal:
+                print(f"error: {refusal}", flush = True)
+                return 2
+            hessians.attach()
+            print(
+                f"  gptq: accumulating Hessians on steps {list(steps_sampled)} of "
+                f"{len(prompts)} prompts ...",
+                flush = True,
+            )
+            try:
+                render(
+                    prompts,
+                    callback = hessians.step_callback(steps_sampled),
+                    before_prompt = lambda: hessians.arm_first(steps_sampled),
+                )
+            finally:
+                hessians.detach()
+            unseen = hessians.unseen()
+            if unseen:
+                # A layer the sampled steps never reached would be "corrected" from a Hessian of
+                # zeros, which is not a correction and not something to ship silently.
+                print(
+                    f"error: {len(unseen)} layers saw no calibration activation (first: "
+                    f"{unseen[0]}); widen --gptq-steps or raise --gptq-prompts",
+                    flush = True,
+                )
+                return 2
+            moments = hessians.normalised()
+            hessians.free()
+            scores: dict = {}
+            damps: dict = {}
+            corrected_weights: dict = {}
+            for index, (fqn, module) in enumerate(sorted(calib_layers.items())):
+                hessian = moments.pop(fqn)
+                corrected, damp = gptq_correct(module.weight.data, hessian)
+                scores[fqn] = score_correction(module.weight.data, corrected, hessian)
+                damps[fqn] = damp
+                corrected_weights[fqn] = corrected
+                del hessian
+                if (index + 1) % 25 == 0:
+                    print(f"    corrected {index + 1}/{len(calib_layers)} layers", flush = True)
+            plan = plan_corrections(scores, max_regressions = args.gptq_max_regressions)
+            for fqn in plan["apply"]:
+                module = calib_layers[fqn]
+                module.weight.data = corrected_weights[fqn].to(
+                    module.weight.device, module.weight.dtype
+                )
+            corrected_weights.clear()
+            torch.cuda.empty_cache()
+            inbuilder_gptq = gptq_metadata_block(
+                prompts = prompts,
+                steps_sampled = steps_sampled,
+                schedule_steps = calib_steps,
+                max_regressions = args.gptq_max_regressions,
+                plan = plan,
+                scores = scores,
+                damps = damps,
+                seconds = time.time() - t_gptq,
+            )
+            print(
+                f"  gptq: applied {inbuilder_gptq['applied']} of {len(calib_layers)} layers "
+                f"({inbuilder_gptq['skipped_no_gain']} scored no better, "
+                f"{inbuilder_gptq['applied_regressed']} applied against their score) in "
+                f"{inbuilder_gptq['seconds']:.0f}s",
+                flush = True,
+            )
+
+        if args.bake_activation_scales:
+            prompts = calib_prompts[: max(1, args.bake_prompts)]
+            amax = ActivationAmaxAccumulator(calib_layers).attach()
+            print(f"  baking activation scales over {len(prompts)} prompts ...", flush = True)
+            try:
+                render(prompts)
+            finally:
+                amax.detach()
+            unseen = amax.unseen()
+            if unseen:
+                print(
+                    f"error: {len(unseen)} layers saw no calibration activation (first: "
+                    f"{unseen[0]}), so their activation scale cannot be baked",
+                    flush = True,
+                )
+                return 2
+            act_scales = amax.global_scales()
+            missing = sorted(set(calib_layers) - set(act_scales))
+            if missing:
+                # An amax of zero or a non-finite one. Refused rather than partially baked: the
+                # loader converts all the NVFP4 layers or none, so a missing scale is a silently
+                # torchao artifact wearing a "baked" flag.
+                print(
+                    f"error: {len(missing)} layers produced no usable activation amax (first: "
+                    f"{missing[0]})",
+                    flush = True,
+                )
+                return 2
+            act_meta = activation_scale_metadata(
+                prompts = prompts,
+                schedule_steps = calib_steps,
+                scales = act_scales,
+                layers = len(calib_layers),
+            )
+            print(
+                f"  baked {len(act_scales)} activation scales, a_gsf "
+                f"{act_meta['min_a_gsf']:.4g} to {act_meta['max_a_gsf']:.4g}",
+                flush = True,
+            )
+
+        del pipe
+        torch.cuda.empty_cache()
 
     # GPTQ, BEFORE quantize_: the corrected weight is a plain bf16 tensor that already lies on the
     # NVFP4 grid, so it goes into module.weight and the quantiser then packs it exactly as it packs
@@ -606,7 +1268,9 @@ def main(argv = None) -> int:
                 with open(gptq_where["score"]) as handle:
                     score_layers = (json.load(handle) or {}).get("layers") or {}
             except Exception as exc:  # noqa: BLE001
-                print(f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True)
+                print(
+                    f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True
+                )
                 return 2
         elif args.gptq_score_mode == "check":
             print(
@@ -615,9 +1279,22 @@ def main(argv = None) -> int:
                 flush = True,
             )
             return 2
-        admitted = [
-            (fqn, module) for fqn, module in transformer.named_modules() if filter_fn(module, fqn)
-        ]
+        # Under a policy the corrections go to the NVFP4 layers and nowhere else. The campaign
+        # measured the correction on the 4-bit operand ALONE (+46% error once the corrected weight
+        # also became the source of an fp8 replica), and a static policy gives that by
+        # construction -- but only if the set it is applied to is the policy's, not the filter's.
+        if policy is not None:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if assignment.get(fqn) == PRECISION_NVFP4
+            ]
+        else:
+            admitted = [
+                (fqn, module)
+                for fqn, module in transformer.named_modules()
+                if filter_fn(module, fqn)
+            ]
         weights_dir = gptq_where["weights"]
         gptq_plan = plan_gptq(
             [fqn for fqn, _ in admitted],
@@ -679,7 +1356,18 @@ def main(argv = None) -> int:
             flush = True,
         )
 
-    quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
+    if policy is not None:
+        # Two passes over disjoint fqn sets, NVFP4 first. The filter above still defines the
+        # ADMITTED set the policy assigns over; what changes is that one config no longer applies
+        # to all of it.
+        quantize_with_policy(
+            transformer,
+            policy,
+            min_features = args.min_features,
+            fast_accum = fast_accum,
+        )
+    else:
+        quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     gptq_idempotency: dict = {}
     if gptq_applied_modules:
@@ -728,6 +1416,32 @@ def main(argv = None) -> int:
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
+    if policy is not None:
+        # Which layers are at which precision, and the counts the loader re-resolves against the
+        # in-tree table. Writes the v3 format tag through prequant_format_for below.
+        metadata.update(
+            policy_metadata(
+                policy,
+                assignment,
+                gptq = bool(gptq_applied_modules or inbuilder_gptq),
+                activation_scales_baked = bool(act_scales),
+            )
+        )
+        # The fp8 half is per-row like every other fp8 build, recorded for the same reason.
+        metadata["fp8_granularity"] = FP8_GRANULARITY
+    if act_scales:
+        from core.inference.diffusion_nvfp4_linear import ACT_SCALES_KEY
+
+        # One activation global scale per 4-bit layer, and what it was measured on. The flashinfer
+        # backend converts a layer only when it finds its scale here.
+        metadata[ACT_SCALES_KEY] = {fqn: float(value) for fqn, value in sorted(act_scales.items())}
+        metadata["activation_calibration"] = act_meta
+        if policy is None:
+            # A whole-model artifact has no policy block to carry the flag, so it declares it at
+            # the top level.
+            metadata["activation_scales_baked"] = True
+    if inbuilder_gptq:
+        metadata["gptq"] = inbuilder_gptq
     if gptq_plan is not None:
         # Provenance of every corrected weight in this artifact, and of every one that was left
         # alone. Not part of the fingerprint's identity: the fingerprint hashes the packed payloads,
@@ -764,7 +1478,15 @@ def main(argv = None) -> int:
     print(f"  saved {out}  ({size_gb:.2f} GB) in {time.time() - t0:.0f}s", flush = True)
     # The fingerprint is one line per quantized weight, so it is summarised here and printed in full only by
     # scripts/prequant_fingerprint.py.
-    shown = {k: v for k, v in metadata.items() if k != "fingerprint"}
+    # The per-layer blocks are the size of the summary they would drown: the artifact keeps them,
+    # the console gets the shape of them.
+    shown = {
+        k: v for k, v in metadata.items() if k not in ("fingerprint", "act_global_scales", "gptq")
+    }
+    if metadata.get("act_global_scales"):
+        shown["act_global_scales"] = f"<{len(metadata['act_global_scales'])} layers>"
+    if metadata.get("gptq"):
+        shown["gptq"] = {k: v for k, v in metadata["gptq"].items() if k != "layers"}
     print(f"  metadata: {shown}", flush = True)
     print(
         f"  fingerprint: {fingerprint['count']} quantized weights, "

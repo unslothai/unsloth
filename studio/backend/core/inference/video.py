@@ -925,7 +925,13 @@ def _video_auto_denoiser_scheme(
         if getattr(fam, "modular_workflow", None):
             return None
         scheme = select_transformer_quant_scheme(
-            target, requested, family = getattr(fam, "name", None)
+            # base_repo, because the deny table's nvfp4 entry is lifted per BASE by a gate record
+            # and a video family's auto head is keyed on the base its measurements were taken on.
+            # No video base carries a per-layer policy today, so this is the same answer as before.
+            target,
+            requested,
+            family = getattr(fam, "name", None),
+            base_repo = base_repo,
         )
         if scheme is None or scheme == TQ_AUTO:
             return None

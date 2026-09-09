@@ -501,15 +501,20 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
                 "steps_sampled": [0, 12, 25, 37],
                 "base_damp": 0.01,
                 "grid": "832x480x49f_50s",
-                "layers": {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}},
+                "layers": {
+                    "blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}
+                },
             }
         )
     )
     (gptq / "gptq_check.json").write_text(
-        _json.dumps({"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}})
+        _json.dumps(
+            {"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}}
+        )
     )
     # One admitted linear with a correction on disk, one without a file at all.
     (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
+
     # The runtime filter is the admitted set, so the stub has to look like what it inspects:
     # nn.Linear, 16-aligned, at or above the min_features floor.
     class _Linear:
@@ -609,3 +614,541 @@ def test_a_rotated_build_may_not_also_be_a_calibrated_one(monkeypatch, tmp_path)
     # Refused from the arguments alone: the correction was solved against unrotated activations.
     assert code == 2
     assert not out.exists()
+
+
+# ── per-layer NVFP4 policies ─────────────────────────────────────────────────────
+def test_the_policy_a_build_applies_is_the_one_that_resolves_for_its_base():
+    build = _script()
+    # auto is the default and must leave every existing invocation building what it builds today:
+    # no policy describes an fp8 or int8 artifact, and none resolves for the video families.
+    assert build.resolve_build_policy("auto", "fp8", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
+        None,
+        None,
+    )
+    assert build.resolve_build_policy(
+        "auto", "nvfp4", "wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    ) == (None, None)
+    policy, refusal = build.resolve_build_policy(
+        "auto", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is None and policy.policy_id == "zimg_f8mod_toq34_v1"
+    # off forces the whole-model build even where one would resolve.
+    assert build.resolve_build_policy("off", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo") == (
+        None,
+        None,
+    )
+    # A named policy is a pin: the operator says which layer set they measured, and a table that
+    # has moved under them is a refusal rather than a different artifact.
+    policy, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "nvfp4", "z-image", "unsloth/Z-Image-Turbo"
+    )
+    assert refusal is None and policy.policy_id == "zimg_f8mod_toq34_v1"
+    _, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "nvfp4", "flux.1", "black-forest-labs/FLUX.1-schnell"
+    )
+    assert refusal is not None and "flux_mod_single_v1" in refusal
+    _, refusal = build.resolve_build_policy(
+        "flux_mod_single_v1", "nvfp4", "flux.1", "black-forest-labs/FLUX.1-dev"
+    )
+    assert refusal is not None and "none" in refusal
+    _, refusal = build.resolve_build_policy(
+        "nope_v1", "nvfp4", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is not None and "unknown --policy" in refusal
+    _, refusal = build.resolve_build_policy(
+        "zimg_f8mod_toq34_v1", "fp8", "z-image", "Tongyi-MAI/Z-Image-Turbo"
+    )
+    assert refusal is not None and "nvfp4 build" in refusal
+
+
+class _PolicyLinear:
+    """A Linear as the shared filter and the two quantise passes read one."""
+
+    def __init__(
+        self,
+        in_features = 1024,
+        out_features = 1024,
+    ):
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = _StubParameter()
+
+
+class _StubParameter:
+    dtype = "bfloat16"
+    shape = (1024, 1024)
+    device = "cuda"
+    data = None
+
+
+class _Quantized:
+    """A torchao weight subclass as far as the post-pass walk is concerned: the class NAME."""
+
+    def __init__(self, name):
+        self.__class__ = type(name, (_Quantized,), {})
+
+
+def _stub_policy_build(monkeypatch, tmp_path):
+    """A two-linear DiT, a tiny policy over it, and a quantize_ that records each pass."""
+    import types as _types
+
+    from core.inference import diffusion_nvfp4_policy as policies
+
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+    torch = sys.modules["torch"]
+    nn = _types.ModuleType("torch.nn")
+    nn.Linear = _PolicyLinear
+    nn.Parameter = _StubParameter
+    torch.nn = nn
+    monkeypatch.setitem(sys.modules, "torch.nn", nn)
+
+    modules = {"blocks.0.attn1.to_q": _PolicyLinear(), "blocks.0.ffn.net.0": _PolicyLinear()}
+    transformer = sys.modules["diffusers"].WanTransformer3DModel()
+    transformer.named_modules = lambda: list(modules.items())
+    monkeypatch.setattr(
+        sys.modules["diffusers"].WanTransformer3DModel,
+        "from_pretrained",
+        classmethod(lambda cls, base, **kwargs: transformer),
+    )
+
+    tiny = policies.NVFP4Policy(
+        policy_id = "tiny_v1",
+        version = 3,
+        family = "wan2.2-ti2v-5b",
+        base_repos = ("wan-ai/wan2.2-ti2v-5b-diffusers",),
+        rules = (policies.Rule(suffix = "attn1.to_q", precision = policies.PRECISION_NVFP4, expect = 1),),
+        expected_counts = {
+            policies.PRECISION_NVFP4: 1,
+            policies.PRECISION_FP8: 1,
+            policies.PRECISION_BF16: 0,
+        },
+    )
+    monkeypatch.setattr(policies, "NVFP4_POLICIES", (tiny,))
+
+    passes: list = []
+    produced = {"nvfp4": "NVFP4Tensor", "fp8": "Float8Tensor"}
+
+    def _quantize_(
+        module,
+        config,
+        filter_fn = None,
+    ):
+        selected = [fqn for fqn, sub in module.named_modules() if filter_fn(sub, fqn)]
+        passes.append({"config": config, "selected": selected})
+        for fqn in selected:
+            modules[fqn].weight = _Quantized(produced[config.scheme])
+        # A pass that ran is not the whole-model call, which records its filter and nothing else.
+        saved["filter_fn"] = filter_fn
+
+    sys.modules["torchao.quantization"].quantize_ = _quantize_
+    dtq = sys.modules["core.inference.diffusion_transformer_quant"]
+    monkeypatch.setattr(
+        dtq,
+        "_make_quant_config",
+        lambda scheme, fast_accum = None: _types.SimpleNamespace(
+            scheme = scheme, fast_accum = fast_accum
+        ),
+    )
+    return saved, passes, modules
+
+
+def _policy_argv(out, *extra):
+    return [
+        "--base",
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "--family",
+        "wan2.2-ti2v-5b",
+        "--scheme",
+        "nvfp4",
+        "--out",
+        str(out),
+        *extra,
+    ]
+
+
+def test_a_policy_build_runs_two_passes_and_stamps_what_it_assigned(monkeypatch, tmp_path):
+    build = _script()
+    saved, passes, modules = _stub_policy_build(monkeypatch, tmp_path)
+    out = tmp_path / "policy.pt"
+    assert build.main(_policy_argv(out)) == 0
+    # NVFP4 first, then fp8, over disjoint sets: the order is what lets the fp8 filter also
+    # require a plain Parameter, so no layer can be quantised twice.
+    assert [p["config"].scheme for p in passes] == ["nvfp4", "fp8"]
+    assert passes[0]["selected"] == ["blocks.0.attn1.to_q"]
+    assert passes[1]["selected"] == ["blocks.0.ffn.net.0"]
+    assert type(modules["blocks.0.attn1.to_q"].weight).__name__ == "NVFP4Tensor"
+    assert type(modules["blocks.0.ffn.net.0"].weight).__name__ == "Float8Tensor"
+    ckpt = saved["ckpt"]
+    # The tag an older build refuses, rather than loading the mixture as a whole-model artifact.
+    assert ckpt["format"] == "unsloth_prequant_transformer_state_dict_v3"
+    block = ckpt["metadata"]["nvfp4_policy"]
+    assert block["policy_id"] == "tiny_v1" and block["policy_version"] == 3
+    assert block["counts"] == {"fp8": 1, "nvfp4": 1}
+    assert block["nvfp4_fqns"] == ["blocks.0.attn1.to_q"]
+    assert block["activation_scales_baked"] is False and block["gptq"] is False
+    # The scheme token does not change: the policy is metadata about an nvfp4 artifact.
+    assert ckpt["metadata"]["scheme"] == "nvfp4"
+    # The fp8 half bakes an accumulate mode and a granularity in, so both are recorded.
+    assert ckpt["metadata"]["fp8_granularity"] == "per_row"
+    assert ckpt["metadata"]["fast_accum"] is not None
+    assert passes[1]["config"].fast_accum == ckpt["metadata"]["fast_accum"]
+
+
+def test_a_policy_build_may_not_also_rotate_and_a_family_without_one_may_not_ask(
+    monkeypatch, tmp_path
+):
+    build = _script()
+    saved, passes, _ = _stub_policy_build(monkeypatch, tmp_path)
+    out = tmp_path / "policy.pt"
+    # Both rewrite the weights before quantize_ and both claim the one format tag slot.
+    assert build.main(_policy_argv(out, "--convrot-groupsize", "128")) == 2
+    assert not out.exists()
+    # A policy id that does not resolve for this family and base is refused from the arguments
+    # alone, before the hours: the layer set was solved on another checkpoint's weights.
+    assert build.main(_policy_argv(out, "--policy", "zimg_f8mod_toq34_v1")) == 2
+    assert build.main(_policy_argv(out, "--policy", "no_such_policy_v1")) == 2
+    assert not out.exists()
+    # off builds the whole-model artifact, which is also what every base without a policy gets:
+    # one pass over the filter's set, the v1 tag, and no policy block.
+    assert build.main(_policy_argv(out, "--policy", "off")) == 0
+    assert [p["config"].scheme for p in passes] == ["nvfp4"]
+    assert saved["ckpt"]["format"] == "unsloth_prequant_transformer_state_dict_v1"
+    assert "nvfp4_policy" not in saved["ckpt"]["metadata"]
+
+
+def test_a_calibrated_policy_build_corrects_the_4_bit_layers_only(monkeypatch, tmp_path):
+    build = _script()
+    saved, passes, modules = _stub_policy_build(monkeypatch, tmp_path)
+    import json as _json
+
+    gptq = tmp_path / "gptq"
+    (gptq / "weights").mkdir(parents = True)
+    layers = {
+        "blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12},
+        "blocks.0.ffn.net.0": {"err_rtn": 0.08, "err_gptq": 0.11},
+    }
+    (gptq / "gptq_meta.json").write_text(_json.dumps({"prompts": 32, "layers": layers}))
+    (gptq / "gptq_check.json").write_text(
+        _json.dumps(
+            {"layers": {fqn: {"out_err_rtn": 0.03, "out_err_gptq": 0.01} for fqn in layers}}
+        )
+    )
+    for fqn in layers:
+        (gptq / "weights" / build.gptq_weight_filename(fqn)).write_bytes(b"w")
+    sys.modules["torch"].load = lambda path, weights_only = True: types.SimpleNamespace(
+        shape = (1024, 1024), to = lambda *a: "corrected"
+    )
+    monkeypatch.setattr(
+        build,
+        "verify_gptq_idempotency",
+        lambda modules, load_weight: {
+            "checked": len(modules),
+            "max_abs": 0.0,
+            "max_abs_fqn": None,
+            "frac_diff": 0.0,
+        },
+    )
+    out = tmp_path / "policy_gptq.pt"
+    assert build.main(_policy_argv(out, "--gptq-dir", str(gptq))) == 0
+    block = saved["ckpt"]["metadata"]["gptq"]
+    # Both layers have a correction on disk that scores better, but only the NVFP4 one is in
+    # scope: correcting a weight that then becomes the source of an fp8 replica raised the error
+    # 46 percent in the campaign, and a static policy avoids that by construction.
+    assert set(block["layers"]) == {"blocks.0.attn1.to_q"}
+    assert block["applied"] == 1
+    assert saved["ckpt"]["metadata"]["nvfp4_policy"]["gptq"] is True
+
+
+# ── the in-builder calibration: flags, order, prompts, metadata ──────────────────
+
+
+def _calib_prompts():
+    build = _script()
+    return build.load_calibration_prompts()
+
+
+def test_the_calibration_prompts_are_disjoint_from_the_gate_suite():
+    """A quantisation calibrated on the prompts it is then scored on measures how well it memorised
+    them. The gate's seven cases are copied into gptq_prompts.py precisely so this can be asserted
+    rather than remembered."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[3] / "scripts" / "gptq_prompts.py"
+    spec = importlib.util.spec_from_file_location("gptq_prompts", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    calibration = module.CALIBRATION_PROMPTS
+    gate = module.GATE_SUITE_PROMPTS
+    assert len(calibration) == 32
+    assert len(set(calibration)) == 32
+    assert len(gate) == 7
+    assert not set(calibration) & set(gate)
+
+    def _normalise(text):
+        return " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
+
+    # Not just character-exact: a prompt that differs from an evaluation one by punctuation is the
+    # same prompt for this purpose.
+    assert not {_normalise(p) for p in calibration} & {_normalise(p) for p in gate}
+
+
+def test_the_default_calibration_file_is_the_one_the_flag_documents():
+    build = _script()
+    assert build.DEFAULT_CALIB_PROMPTS.endswith("scripts/gptq_prompts.py")
+    assert len(_calib_prompts()) == 32
+
+
+def test_a_prompt_file_is_read_line_by_line_and_a_repeat_is_refused(tmp_path):
+    build = _script()
+    path = tmp_path / "prompts.txt"
+    path.write_text("# a comment\na red bicycle\n\na blue bicycle\n")
+    assert build.load_calibration_prompts(str(path)) == ("a red bicycle", "a blue bicycle")
+    repeated = tmp_path / "repeat.txt"
+    repeated.write_text("a red bicycle\na red bicycle\n")
+    with pytest.raises(ValueError):
+        build.load_calibration_prompts(str(repeated))
+    empty = tmp_path / "empty.txt"
+    empty.write_text("\n\n")
+    with pytest.raises(ValueError):
+        build.load_calibration_prompts(str(empty))
+
+
+def test_the_step_spec_parses_or_refuses():
+    build = _script()
+    assert build.parse_step_spec("0,12,25,37") == (0, 12, 25, 37)
+    assert build.parse_step_spec(" 4 , 0 ,4") == (0, 4)
+    for bad in ("", "0,-3", "first"):
+        with pytest.raises(ValueError):
+            build.parse_step_spec(bad)
+
+
+def test_the_calibration_stages_run_hessians_then_gptq_then_the_bake():
+    """The order is the whole contract: a Hessian describes the activations the correction is
+    solved against, and an activation scale has to describe the model that ships."""
+    build = _script()
+    assert build.calibration_stage_order(32, True) == ("hessians", "gptq", "bake")
+    assert build.calibration_stage_order(32, False) == ("hessians", "gptq")
+    # --gptq-prompts 0 --bake-activation-scales is a supported build on its own.
+    assert build.calibration_stage_order(0, True) == ("bake",)
+    assert build.calibration_stage_order(0, False) == ()
+
+
+def test_the_calibration_flags_are_refused_for_a_build_that_cannot_honour_them():
+    build = _script()
+    common = {
+        "nvfp4": "nvfp4",
+        "gptq_dir": None,
+        "convrot_groupsize": 0,
+        "available_prompts": 32,
+    }
+    # Off: nothing to refuse.
+    assert build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = False, **common) is None
+    # A 4-bit grid and a 4-bit activation scale describe an nvfp4 build and nothing else.
+    assert "nvfp4" in build.calibration_refusal(scheme = "fp8", gptq_prompts = 0, bake = True, **common)
+    assert "nvfp4" in build.calibration_refusal(scheme = "int8", gptq_prompts = 4, bake = False, **common)
+    # Two sources for the same corrected weights.
+    both = dict(common, gptq_dir = "/tmp/gptq")
+    assert "--gptq-dir" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 4, bake = False, **both
+    )
+    # ... but --gptq-dir plus a BAKE is fine: they touch different halves of the artifact.
+    assert build.calibration_refusal(scheme = "nvfp4", gptq_prompts = 0, bake = True, **both) is None
+    rotated = dict(common, convrot_groupsize = 64)
+    assert "unrotated" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 4, bake = False, **rotated
+    )
+    assert "exceeds" in build.calibration_refusal(
+        scheme = "nvfp4", gptq_prompts = 64, bake = False, **common
+    )
+    assert build.calibration_refusal(scheme = "nvfp4", gptq_prompts = 32, bake = True, **common) is None
+
+
+class _StubPipe:
+    """A pipeline as far as the calibration pass drives it: prompts in, nothing out."""
+
+    def __init__(
+        self,
+        *,
+        supports = (
+            "prompt",
+            "num_inference_steps",
+            "width",
+            "height",
+            "generator",
+            "output_type",
+            "guidance_scale",
+            "callback_on_step_end",
+        ),
+    ):
+        self.calls: list = []
+        self._supports = tuple(supports)
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        callback = kwargs.get("callback_on_step_end")
+        if callback is not None:
+            for step in range(int(kwargs.get("num_inference_steps", 0))):
+                callback(self, step, 0.0, {})
+        return None
+
+
+def test_every_calibration_render_is_seeded_so_a_second_build_reproduces_it():
+    build = _script()
+    # A ``**kwargs`` pipeline declares nothing, so nothing is filtered out of the call.
+    pipe = _StubPipe()
+    armed: list = []
+    ran = build.render_calibration(
+        pipe,
+        ("a red bicycle", "a blue bicycle"),
+        steps = 4,
+        guidance = 3.5,
+        cfg_kwarg = "true_cfg_scale",
+        width = 512,
+        height = 512,
+        seed = 11,
+        device = "cpu",
+        before_prompt = lambda: armed.append(len(pipe.calls)),
+    )
+    assert ran == 2 and len(pipe.calls) == 2 and armed == [0, 1]
+    first, second = pipe.calls
+    assert first["prompt"] == "a red bicycle" and second["prompt"] == "a blue bicycle"
+    assert first["num_inference_steps"] == 4 and first["width"] == first["height"] == 512
+    # The family's own guidance kwarg, not a hardcoded one.
+    assert first["true_cfg_scale"] == 3.5 and "guidance_scale" not in first
+    # No VAE decode: this pass wants the denoiser's activations and nothing else.
+    assert first["output_type"] == "latent"
+    # Seeded from the index, so two builds accumulate the same Hessians and correct identically.
+    assert first["generator"].initial_seed() == 11
+    assert second["generator"].initial_seed() == 12
+
+
+def test_a_pipeline_with_no_step_callback_cannot_be_hessian_calibrated():
+    build = _script()
+
+    class _NoCallback:
+        def __call__(
+            self,
+            prompt,
+            num_inference_steps = 1,
+            generator = None,
+        ):
+            return None
+
+    with pytest.raises(ValueError) as excinfo:
+        build.render_calibration(
+            _NoCallback(),
+            ("a red bicycle",),
+            steps = 4,
+            guidance = 1.0,
+            device = "cpu",
+            callback = lambda *a: None,
+        )
+    assert "callback_on_step_end" in str(excinfo.value)
+    # Without a callback the same pipeline calibrates fine, and unsupported kwargs are dropped
+    # rather than raising.
+    assert (
+        build.render_calibration(
+            _NoCallback(), ("a red bicycle",), steps = 4, guidance = 1.0, device = "cpu"
+        )
+        == 1
+    )
+
+
+def test_the_gptq_metadata_block_says_which_weights_are_corrected_and_what_made_them():
+    build = _script()
+    scores = {
+        "blocks.0.attention.to_q": {
+            "err_rtn": 1.0,
+            "err_gptq": 0.5,
+            "ratio": 0.5,
+            "improved": True,
+        },
+        "blocks.1.attention.to_q": {
+            "err_rtn": 1.0,
+            "err_gptq": 1.5,
+            "ratio": 1.5,
+            "improved": False,
+        },
+    }
+    plan = {
+        "apply": ["blocks.0.attention.to_q"],
+        "counts": {"applied": 1, "applied_regressed": 0, "skipped_no_gain": 1},
+    }
+    block = build.gptq_metadata_block(
+        prompts = ("a red bicycle", "a blue bicycle"),
+        steps_sampled = (0, 2, 4, 6),
+        schedule_steps = 8,
+        max_regressions = 0,
+        plan = plan,
+        scores = scores,
+        damps = {"blocks.0.attention.to_q": 0.01, "blocks.1.attention.to_q": 0.05},
+        seconds = 12.34,
+    )
+    assert block["source"] == "in-builder"
+    assert block["prompts"] == 2 and len(block["prompt_sha256"]) == 64
+    assert block["steps_sampled"] == [0, 2, 4, 6] and block["schedule_steps"] == 8
+    assert (block["applied"], block["skipped_no_gain"], block["applied_regressed"]) == (1, 1, 0)
+    assert block["scored"] == 2 and block["seconds"] == 12.3
+    applied = block["layers"]["blocks.0.attention.to_q"]
+    skipped = block["layers"]["blocks.1.attention.to_q"]
+    assert applied["applied"] is True and applied["reason"] == "applied" and applied["damp"] == 0.01
+    assert skipped["applied"] is False and skipped["reason"] == "no_gain"
+    assert (skipped["err_rtn"], skipped["err_gptq"]) == (1.0, 1.5)
+    # The same prompts hash the same and different ones do not, so an artifact can say which set
+    # made it.
+    assert build.prompt_digest(("a red bicycle",)) != block["prompt_sha256"]
+
+
+def test_the_baked_scales_record_the_set_and_the_schedule_they_were_measured_on():
+    build = _script()
+    meta = build.activation_scale_metadata(
+        prompts = ("a red bicycle", "a blue bicycle"),
+        schedule_steps = 8,
+        scales = {"a": 12.0, "b": 4.0, "c": 100.0},
+        layers = 3,
+    )
+    assert meta["prompts"] == 2 and meta["schedule_steps"] == 8 and meta["layers"] == 3
+    # Every step of every prompt: the step with the largest activation is the one a sampled subset
+    # would miss.
+    assert meta["steps_sampled"] == "all"
+    assert (meta["min_a_gsf"], meta["max_a_gsf"], meta["scaled"]) == (4.0, 100.0, 3)
+
+
+def test_a_calibrated_build_is_refused_before_the_dense_download(monkeypatch, tmp_path):
+    """Every calibration refusal is decided by the arguments alone, so it costs a second rather
+    than a multi-gigabyte download."""
+    build = _script()
+    saved = _stub_build_stack(monkeypatch, _fake_state_dict())
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "fp8",
+            "--out",
+            str(tmp_path / "a.pt"),
+            "--bake-activation-scales",
+        ]
+    )
+    assert code == 2
+    assert "from_pretrained" not in saved  # nothing was downloaded
+
+    code = build.main(
+        [
+            "--base",
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            "--family",
+            "wan2.2-t2v-a14b",
+            "--scheme",
+            "nvfp4",
+            "--out",
+            str(tmp_path / "a.pt"),
+            "--gptq-prompts",
+            "64",
+        ]
+    )
+    assert code == 2
+    assert "from_pretrained" not in saved

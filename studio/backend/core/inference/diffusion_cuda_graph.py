@@ -130,6 +130,61 @@ def _drop_pool_if_unused() -> None:
         pass
 
 
+def _nvfp4_flashinfer_linears(module: Any) -> list:
+    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``, empty when there is none.
+
+    Imported lazily and swallowed: a load that never touched the NVFP4 backend must not pay the
+    import, and a build without it must not lose CUDA graphs over it."""
+    try:
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+    except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
+        return []
+    found: list = []
+    try:
+        for name, sub in module.named_modules():
+            if is_nvfp4_flashinfer_linear(sub):
+                found.append((name, sub))
+    except Exception:  # noqa: BLE001 - an exotic module tree is simply not an NVFP4 one
+        return []
+    return found
+
+
+def _unbaked_nvfp4_layers(layers: list) -> list:
+    """The fqns among ``layers`` whose activation global scale is not a baked, constant one.
+
+    A layer that still learns its scale mutates a buffer on its first forwards. Under capture that
+    mutation is recorded, not executed, so every later replay runs the scale the capture happened
+    to see, forever -- which is the flux black-frame latch with a graph around it. Fail closed: a
+    layer that does not answer the question at all counts as unbaked."""
+    return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
+
+
+def _prewarm_token_counts(live: list) -> tuple:
+    """Candidate GEMM row counts (M) for this call, smallest first.
+
+    A DiT's NVFP4 layers see two kinds of M: 1 for the per-sample modulation projections, and the
+    token count for the attention ones, which is a function of the resolution this call is running
+    at. The resolution is not knowable at load time, so it is read here, off the shapes the warm-up
+    is about to run anyway: every input tensor contributes the product of its leading dims. Tuning
+    an M no layer takes costs one profiling pass and is otherwise inert, so the set is generous
+    rather than exact, and bounded so a family with many inputs cannot turn a capture into a
+    profiling session."""
+    counts = {1}
+    for tensor in live:
+        try:
+            shape = tuple(int(dim) for dim in tensor.shape)
+        except Exception:  # noqa: BLE001 - not a shaped tensor, nothing to read
+            continue
+        if len(shape) < 2:
+            continue
+        rows = 1
+        for dim in shape[:-1]:
+            rows *= dim
+        if rows > 0:
+            counts.add(rows)
+    return tuple(sorted(counts)[:8])
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
@@ -373,12 +428,28 @@ class GraphedForward:
                 f"inside a captured region is baked in at its recorded value"
             )
 
+        nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
+        unbaked = _unbaked_nvfp4_layers(nvfp4_layers)
+        if unbaked:
+            raise RuntimeError(
+                f"{len(unbaked)} NVFP4 linear(s) report unbaked activation scales "
+                f"(first: {unbaked[0]}); a scale still being calibrated would be frozen into the "
+                f"graph at whatever value this capture saw, so this load runs eager"
+            )
+
         # A tensor made under ``torch.inference_mode()``, which renders run in, refuses ``copy_``.
         with torch.inference_mode(False):
             entry.static = [torch.empty_like(t) for t in live]
         for dst, src in zip(entry.static, live):
             dst.copy_(src)
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
+
+        if nvfp4_layers:
+            # BEFORE the warm-up and so before the capture: FlashInfer's autotuner profiles by
+            # launching candidate tactics, which under capture would be recorded rather than
+            # measured, and an untuned layer inside a capture bakes in the default tactic.
+            from .diffusion_nvfp4_linear import nvfp4_prewarm
+            nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 
         # Side stream: a workspace first created DURING capture is only valid while recording.
         side = torch.cuda.Stream()

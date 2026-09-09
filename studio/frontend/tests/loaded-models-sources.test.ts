@@ -531,3 +531,53 @@ test("the announced row yields once that same model is resident", () => {
   assert.equal(rows.length, 1);
   assert.notEqual(rows[0].loading, true);
 });
+
+test("an nvfp4 image row names the kernel backend that served it", () => {
+  // nvfp4 is the one scheme with two implementations, and which ran is decided per device at
+  // load time, so "NVFP4" alone does not say what the render's speed should be attributed to.
+  const [flashinfer] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-NVFP4",
+    family: "z-image",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "flashinfer",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(flashinfer.detail, "z-image · NVFP4 · FlashInfer · cuda");
+
+  // The same load that fell back (no baked scales, a failed preflight, Windows) reads torchao.
+  const [torchao] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-NVFP4",
+    family: "z-image",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "torchao",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(torchao.detail, "z-image · NVFP4 · torchao · cuda");
+});
+
+test("a row without a quant backend is unchanged, on old and new backends alike", () => {
+  // Every scheme but nvfp4 reports null, and a server predating the field sends nothing at all.
+  const [fp8] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo",
+    family: "z-image",
+    transformer_quant: "fp8",
+    transformer_quant_backend: null,
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(fp8.detail, "z-image · FP8 · cuda");
+  const [old] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo",
+    family: "z-image",
+    transformer_quant: "fp8",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(old.detail, "z-image · FP8 · cuda");
+});

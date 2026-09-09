@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). Written by scripts/record_nvfp4_gate.py from a scripts/prequant_accuracy_gate.py results.json, read by core/inference/diffusion_nvfp4_gate.py. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family.",
+  "records": []
+}
