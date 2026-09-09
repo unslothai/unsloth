@@ -750,6 +750,8 @@ def _select_torchcodec_spec(torch_version: "str | None") -> "str | None":
     if minor < _TORCHCODEC_MIN_KNOWN_MINOR:
         return None
     # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
+    # 0.12+ only from torch 2.12. cu128 publishes neither, so this cannot emit an uninstallable
+    # ABI pin; the checkers still have to see a hand-written one (unslothai/unsloth#10434).
     minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
     return _TORCHCODEC_TORCH_SPECS.get(minor, _TORCHCODEC_DEFAULT_SPEC)
 
