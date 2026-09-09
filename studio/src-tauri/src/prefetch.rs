@@ -160,12 +160,23 @@ pub(crate) fn cache_has_packages(cache_dir: &Path) -> bool {
 /// unsloth from one that kept everything else, and a marker reported ready over such a
 /// cache made Restart perform the download it had presented as done.
 pub(crate) fn cache_holds_wheel(cache_dir: &Path, name: &str, version: &str) -> bool {
+    cached_dist_infos(cache_dir).contains(&wanted_dist_info(name, version))
+}
+
+fn wanted_dist_info(name: &str, version: &str) -> String {
     // Compared normalised, not spelled: the dist-info keeps the wheel's own spelling
     // (Faker-20.1.0.dist-info for the plan's faker), and a case-sensitive filesystem
     // would otherwise report a cached wheel absent and the marker stale.
-    let wanted = normalized_dist_info(&format!("{}-{}.dist-info", name.trim(), version.trim()));
+    normalized_dist_info(&format!("{}-{}.dist-info", name.trim(), version.trim()))
+}
+
+/// Every unpacked wheel's dist-info name under `archive-v*`, normalised, read once: a
+/// status request checks every marker pin against it, where a walk per pin over a
+/// large shared cache was pins times entries, polled every second after a reload.
+fn cached_dist_infos(cache_dir: &Path) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
     let Ok(buckets) = fs::read_dir(cache_dir) else {
-        return false;
+        return names;
     };
     for bucket in buckets.flatten() {
         let bucket_name = bucket.file_name().to_string_lossy().into_owned();
@@ -181,16 +192,13 @@ pub(crate) fn cache_holds_wheel(cache_dir: &Path, name: &str, version: &str) -> 
             };
             for child in children.flatten() {
                 let child_name = child.file_name().to_string_lossy().into_owned();
-                if child_name.ends_with(".dist-info")
-                    && normalized_dist_info(&child_name) == wanted
-                    && child.path().is_dir()
-                {
-                    return true;
+                if child_name.ends_with(".dist-info") && child.path().is_dir() {
+                    names.insert(normalized_dist_info(&child_name));
                 }
             }
         }
     }
-    false
+    names
 }
 
 /// PEP 503 spirit for a dist-info directory name: case-folded, with `-`, `_` and `.`
@@ -226,17 +234,21 @@ fn same_cache(a: &Path, b: &Path) -> bool {
     trim(a) == trim(b)
 }
 
-fn cache_holds_plan(cache_dir: &Path, plan: &std::collections::BTreeMap<String, String>) -> bool {
+fn cache_holds_plan(
+    cached: &std::collections::HashSet<String>,
+    plan: &std::collections::BTreeMap<String, String>,
+) -> bool {
     plan.iter()
-        .all(|(name, version)| cache_holds_wheel(cache_dir, name, version))
+        .all(|(name, version)| cached.contains(&wanted_dist_info(name, version)))
 }
 
 /// Every wheel the marker says it fetched: the core plan and each requirement file's
 /// pins. A file recorded with a skipped_reason fetched nothing and is not held to
 /// anything; `uv cache clean <package>` on any fetched pin makes the marker stale.
 fn cache_holds_marker(cache_dir: &Path, marker: &PrefetchMarker) -> bool {
+    let cached = cached_dist_infos(cache_dir);
     if let Some(plan) = marker.core_plan.as_ref() {
-        if !cache_holds_plan(cache_dir, plan) {
+        if !cache_holds_plan(&cached, plan) {
             return false;
         }
     }
@@ -246,7 +258,7 @@ fn cache_holds_marker(cache_dir: &Path, marker: &PrefetchMarker) -> bool {
                 continue;
             }
             if let Some(pins) = record.pins.as_ref() {
-                if !cache_holds_plan(cache_dir, pins) {
+                if !cache_holds_plan(&cached, pins) {
                     return false;
                 }
             }

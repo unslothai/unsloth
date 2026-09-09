@@ -882,8 +882,11 @@ pub fn prefetch_status(
     prefetch_state: tauri::State<'_, update::PrefetchState>,
 ) -> prefetch::PrefetchStatus {
     let mut status = prefetch::status(&diagnostics::studio_dir());
-    status.running = update::is_prefetch_running(&prefetch_state);
-    status.running_shell_version = update::running_prefetch_version(&prefetch_state);
+    // One observation, not two reads: a prefetch completing in between would report
+    // running with no version, which the renderer reads as an older offer's run.
+    let (running, version) = update::prefetch_running_snapshot(&prefetch_state);
+    status.running = running;
+    status.running_shell_version = version;
     status
 }
 

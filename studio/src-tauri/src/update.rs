@@ -135,7 +135,7 @@ pub fn begin_prefetch(
         *running = shell_version;
     }
     Ok(PrefetchReservation {
-        _slot: reservation,
+        slot: Some(reservation),
         running_version: prefetch_state.running_version.clone(),
     })
 }
@@ -143,16 +143,32 @@ pub fn begin_prefetch(
 /// The prefetch slot plus the version it is preparing for, held by the runner for the
 /// whole prefetch; dropping it releases the slot and clears the version together.
 pub struct PrefetchReservation {
-    _slot: UpdateStartReservation,
+    slot: Option<UpdateStartReservation>,
     running_version: Arc<Mutex<Option<String>>>,
 }
 
 impl Drop for PrefetchReservation {
     fn drop(&mut self) {
+        // Under the start lock, so `prefetch_running_snapshot` never sees the version
+        // gone while the slot still reads as running, or the reverse.
+        let _starts = START_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Ok(mut running) = self.running_version.lock() {
             *running = None;
         }
+        drop(self.slot.take());
     }
+}
+
+/// `(running, version)` read under the start lock, as one observation: a prefetch that
+/// completes between two separate reads would report running with no version, which a
+/// reader takes for an older offer's run and restarts.
+pub fn prefetch_running_snapshot(state: &PrefetchState) -> (bool, Option<String>) {
+    let _starts = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (is_prefetch_running(state), running_prefetch_version(state))
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -1058,6 +1074,20 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_running_snapshot_is_one_observation() {
+        let prefetch = new_prefetch_state();
+        let update = new_update_state();
+        let held = begin_prefetch(&prefetch, &update, Some("0.1.901".to_string()))
+            .expect("the slot was free");
+        assert_eq!(
+            prefetch_running_snapshot(&prefetch),
+            (true, Some("0.1.901".to_string()))
+        );
+        drop(held);
+        assert_eq!(prefetch_running_snapshot(&prefetch), (false, None));
+    }
 
     #[test]
     fn the_prefetch_version_is_visible_for_the_whole_reservation() {

@@ -636,7 +636,14 @@ def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str
         current = installed.get(_canonical_name(name))
         if not current:
             continue
-        if _release_tuple(version.strip()) < _release_tuple(current.strip()):
+        planned, present = version.strip(), current.strip()
+        if _release_tuple(planned) < _release_tuple(present):
+            return False
+        # The same release segment with another spelling (2026.9.5rc1 against 2026.9.5,
+        # 2026.9.5 against 2026.9.5.post1) orders by pre, dev and post parts this
+        # stdlib-only module does not parse; unequal, it is treated as behind, since the
+        # cost of a wrong yes is a downgrade the offline retry would report as success.
+        if _release_tuple(planned) == _release_tuple(present) and planned.lower() != present.lower():
             return False
     return True
 

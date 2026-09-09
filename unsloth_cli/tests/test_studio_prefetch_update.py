@@ -1199,3 +1199,13 @@ def test_a_successful_update_leaves_a_running_prefetchs_directory_alone(managed)
         assert root.is_dir()
     assert _studio_prefetch.discard_after_update(managed) is True
     assert not root.exists()
+
+
+def test_a_plan_spelled_otherwise_at_the_same_release_is_not_trusted():
+    """2026.9.5rc1 against 2026.9.5, or 2026.9.5 against 2026.9.5.post1, order by parts this
+    stdlib-only module does not parse; unequal, the plan is treated as behind, since a
+    wrong yes is a downgrade the offline retry would report as success."""
+    assert not _studio_prefetch.plan_is_not_behind({"core_plan": {"unsloth": "2026.9.5rc1"}}, {"unsloth": "2026.9.5"})
+    assert not _studio_prefetch.plan_is_not_behind({"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5.post1"})
+    assert _studio_prefetch.plan_is_not_behind({"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5"})
+    assert _studio_prefetch.plan_is_not_behind({"core_plan": {"unsloth": "2026.9.6"}}, {"unsloth": "2026.9.5.post1"})
