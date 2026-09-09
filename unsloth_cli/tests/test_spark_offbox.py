@@ -2232,9 +2232,9 @@ def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts
         if isinstance(n, ast.FunctionDef) and n.name == "_main_data_parallel"
     )
     body = ast.get_source_segment(text, fn) or ""
-    assert "find_unused_parameters = sparse_experts" in body, (
-        "the flag must follow the architecture, not be hardcoded either way"
-    )
+    assert (
+        "find_unused_parameters = sparse_experts" in body
+    ), "the flag must follow the architecture, not be hardcoded either way"
 
     helper = next(
         n

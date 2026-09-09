@@ -2348,7 +2348,6 @@ class SparkServing:
         if running_peer is not None and running_peer.alive:
             try:
                 from core.inference.llama_server_args import validate_extra_args
-
                 validate_extra_args(getattr(request, "llama_extra_args", None))
             except ValueError:
                 logger.info(
@@ -2653,9 +2652,7 @@ class SparkServing:
         candidates: List[str] = []
         for rpc_name in rpc_names:
             candidates += [
-                c
-                for c in peer_binary_candidates(local_rpc, rpc_name)
-                if c not in candidates
+                c for c in peer_binary_candidates(local_rpc, rpc_name) if c not in candidates
             ]
         rc, out, _err = await ssh_run(peer, find_binary_script(candidates))
         binary = out.strip().splitlines()[-1] if out.strip() else "MISSING"
