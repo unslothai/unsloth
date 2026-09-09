@@ -6529,8 +6529,19 @@ if ($llamaBinState -eq "Present") {
     }
 }
 
-$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
-    -not ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
+# One predicate for the plan and the shortcut. The health gate belongs in both: read only
+# by the shortcut, a tree it refuses left $WillBuildLlamaFromSource false, so the git
+# install and Ensure-BuildToolsForLlamaSourceBuild below were skipped and the rebuild the
+# refusal forces then reached cmake on a prebuilt-only box with no toolchain.
+# Asked once, so the helper runs once and its "incomplete" line is printed once. A linked
+# local dir is excluded here as it is everywhere else on this route: nothing reads into the
+# user's own checkout, and the branch below takes it before the shortcut anyway.
+$CanReuseLlamaBuild = (Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and `
+    $RequestedLlamaTag -ne "master"
+if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked) {
+    $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
+}
+$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -6564,11 +6575,11 @@ if ($LocalLlamaCppLinked) {
 } elseif (-not $NeedLlamaSourceBuild) {
     Write-StudioLine ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and
-          $RequestedLlamaTag -ne "master" -and (Test-LlamaTreeStillHealthy $LlamaCppDir)) {
+} elseif ($CanReuseLlamaBuild) {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
-    # up new model architecture support (e.g. Gemma 4).
+    # up new model architecture support (e.g. Gemma 4). Health is folded into
+    # $CanReuseLlamaBuild above, so refusing here also planned the toolchain.
     Write-StudioLine ""
     step "llama.cpp" "already built"
 } elseif (-not $HasGitForBuild) {

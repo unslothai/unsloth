@@ -606,3 +606,37 @@ def test_a_directory_where_a_runtime_entrypoint_belongs_is_broken(tmp_path, name
         "llama_runtime_binaries_missing",
     )
     assert not ILP._entrypoint_is_runnable(binary, _macos_host())
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.parametrize("name", ["server", "quantize"])
+def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, name):
+    """``create_exec_entrypoint`` writes a real wrapper at the install root when it cannot
+    make a symlink, and ``_find_llama_server_binary`` reaches that root copy before
+    build/bin, so it can rot on its own. ``_existing_install_runs`` probes the root copies
+    first for exactly this reason; grading only build/bin here left the tree Ready while the
+    backend launched the wrapper the loader refuses."""
+    root = _macos_tree(tmp_path)
+    wrapper = root / f"llama-{name}"
+    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    os.chmod(wrapper, 0o755)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+
+    os.chmod(wrapper, 0o644)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+def test_a_root_entrypoint_that_is_not_there_is_not_a_pin(tmp_path):
+    """An absent root copy, and a link whose target went with it, both read as absent to the
+    finder, which then falls through to build/bin. Calling either one broken would fail
+    health on every install that never got a root entrypoint at all."""
+    root = _macos_tree(tmp_path)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+
+    os.symlink("build/bin/llama-server-that-went-away", root / "llama-server")
+    assert not (root / "llama-server").exists()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")

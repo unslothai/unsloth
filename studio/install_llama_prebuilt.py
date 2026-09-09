@@ -7406,10 +7406,20 @@ def installed_runtime_health(
     # X_OK answers true for it and exists() does too, while _file_status in the
     # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
     # that.
+    # Root copies too, and for the same reason _existing_install_runs probes them
+    # first: _find_llama_server_binary reaches install_dir/llama-server before
+    # build/bin, and when create_exec_entrypoint could not make a symlink it wrote a
+    # real wrapper there, which can rot on its own while build/bin stays intact.
+    # Only when one is there. An absent root copy is not a pin, the finder falls
+    # through, and a symlink whose target went is absent by exists() as well, which
+    # is the state the build/bin check below already rejects.
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}{ext}"
         if not _entrypoint_is_runnable(binary, host):
+            return False, "llama_runtime_binaries_missing"
+        root_binary = root / f"llama-{name}{ext}"
+        if root_binary.exists() and not _entrypoint_is_runnable(root_binary, host):
             return False, "llama_runtime_binaries_missing"
     return True, ""
 

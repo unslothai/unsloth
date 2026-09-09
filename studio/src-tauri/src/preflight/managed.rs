@@ -664,8 +664,9 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     if cfg!(windows) {
         bin = bin.join("Release");
     }
+    let root_part = root_entrypoints(root);
     match fs::read_dir(&bin) {
-        Ok(entries) => Some(format!("bin:{}", counted(entries))),
+        Ok(entries) => Some(format!("bin:{}|root:{root_part}", counted(entries))),
         // build/bin is gone but something is still there. Answering None would
         // make that identical to "nothing was ever installed", so a Ready cached
         // while no runtime existed kept matching once a marker appeared over a
@@ -673,8 +674,42 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
         // Fingerprinting the root's own entries makes the marker's arrival move it.
         Err(_) => fs::read_dir(root)
             .ok()
-            .map(|entries| format!("nobin:{}", counted(entries))),
+            .map(|entries| format!("nobin:{}|root:{root_part}", counted(entries))),
     }
+}
+
+/// The two entrypoints at the install root, which the walk above cannot see.
+///
+/// `_find_llama_server_binary` reaches `<root>/llama-server` before `build/bin`, and
+/// `create_exec_entrypoint` writes a real wrapper there when it cannot make a symlink, so
+/// its mode can move while `build/bin` stays byte for byte identical. That is what
+/// `installed_runtime_health` now grades, and without it here the cached Ready survived the
+/// damage and the CLI was never asked. Following links deliberately: the CLI follows them
+/// too, and a dangling one is absent to both.
+fn root_entrypoints(root: &Path) -> String {
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let mut out = String::new();
+    for name in ["llama-server", "llama-quantize"] {
+        if !out.is_empty() {
+            out.push(',');
+        }
+        match fs::metadata(root.join(format!("{name}{ext}"))) {
+            Ok(meta) => {
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    u64::from(meta.permissions().mode() & 0o7777)
+                };
+                #[cfg(not(unix))]
+                let mode = 0u64;
+                out.push_str(&format!("{}:{}:{mode}", u64::from(meta.is_file()), meta.len()));
+            }
+            // Absent, or a link whose target went. Not a pin either way, which is
+            // what installed_runtime_health does with it.
+            Err(_) => out.push('-'),
+        }
+    }
+    out
 }
 
 /// How many files a directory holds, how many bytes they total, how many links
@@ -1478,7 +1513,7 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some("bin:0:0:0:0:0")
+            Some("bin:0:0:0:0:0|root:-,-")
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -2296,6 +2331,55 @@ mod tests {
     }
 
     #[test]
+    fn a_root_entrypoint_is_part_of_the_fingerprint() {
+        // Codex 3971674487, P2. _find_llama_server_binary reaches <root>/llama-server
+        // before build/bin, and create_exec_entrypoint writes a real wrapper there when
+        // it cannot make a symlink, so it rots on its own. installed_runtime_health
+        // grades it; the walk above only reads build/bin, so without this the cached
+        // Ready outlived the damage and the CLI was never asked.
+        let root = scratch_dir("runtime-root-entrypoint");
+        install_fake_runtime(&root);
+        let without = llama_runtime_fingerprint_at(&root).unwrap();
+
+        let wrapper = root.join(if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        });
+        fs::write(&wrapper, b"#!/bin/sh\n").unwrap();
+        let with_wrapper = llama_runtime_fingerprint_at(&root).unwrap();
+        assert_ne!(without, with_wrapper, "a root entrypoint appearing must invalidate");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = fs::metadata(&wrapper).unwrap().permissions();
+            mode.set_mode(0o755);
+            fs::set_permissions(&wrapper, mode).unwrap();
+            let executable = llama_runtime_fingerprint_at(&root).unwrap();
+            assert_ne!(with_wrapper, executable, "the wrapper's mode is graded, so watch it");
+
+            mode = fs::metadata(&wrapper).unwrap().permissions();
+            mode.set_mode(0o644);
+            fs::set_permissions(&wrapper, mode).unwrap();
+            assert_eq!(
+                with_wrapper,
+                llama_runtime_fingerprint_at(&root).unwrap(),
+                "and the same tree must fingerprint the same both times"
+            );
+        }
+
+        fs::remove_file(&wrapper).unwrap();
+        assert_eq!(
+            without,
+            llama_runtime_fingerprint_at(&root).unwrap(),
+            "an absent root entrypoint is the state a plain build/bin install is in"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn renaming_a_runtime_file_in_place_moves_the_fingerprint() {
         // Codex 3962938547, P2. Quarantine does not always delete: some products
         // rename the file beside itself. The count, the byte total, the link count
@@ -2318,10 +2402,11 @@ mod tests {
             "a required library renamed in place must not fingerprint as the healthy tree"
         );
         // And the counters really are blind to it, which is why the names are here.
-        assert_eq!(
-            intact.rsplit_once(':').unwrap().0,
-            renamed.rsplit_once(':').unwrap().0
-        );
+        // The root segment is dropped first: it carries its own colons.
+        let counters = |value: &str| {
+            value.split_once('|').unwrap().0.rsplit_once(':').unwrap().0.to_string()
+        };
+        assert_eq!(counters(&intact), counters(&renamed));
 
         // Renaming it back restores the original exactly, so the sum is a property
         // of the tree rather than of the order the names arrived in.
@@ -2357,7 +2442,7 @@ mod tests {
             llama_runtime_fingerprint_at(&root).as_deref(),
             Some(
                 format!(
-                    "bin:2:6144:0:{}:{}",
+                    "bin:2:6144:0:{}:{}|root:-,-",
                     if cfg!(unix) { 913 } else { 0 },
                     names_sum(&["llama-server", "libggml-base.so"])
                 )
@@ -2426,7 +2511,7 @@ mod tests {
             fingerprint.as_deref(),
             Some(
                 format!(
-                    "bin:5000:5000:0:{}:{}",
+                    "bin:5000:5000:0:{}:{}|root:-,-",
                     if cfg!(unix) { 2100000 } else { 0 },
                     names_sum(
                         &(0..5000)
@@ -2471,7 +2556,7 @@ mod tests {
             llama_runtime_fingerprint_at(&linked).as_deref(),
             Some(
                 format!(
-                    "bin:1:4096:0:{}:{}",
+                    "bin:1:4096:0:{}:{}|root:-,-",
                     if cfg!(unix) { 493 } else { 0 },
                     names_sum(&["llama-server"])
                 )

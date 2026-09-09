@@ -555,12 +555,30 @@ def test_both_shells_gate_their_reuse_shortcut_on_the_same_check():
         "--check-existing-install" in ps1
     ), "the PowerShell gate must ask install_llama_prebuilt, not reimplement healthy"
     # On the shortcut itself, not somewhere else in the file: an elseif that reaches
-    # "already built" without it is the exact defect.
-    shortcut = ps1[ps1.index('$RequestedLlamaTag -ne "master"') :]
-    shortcut = shortcut[: shortcut.index("already built")]
+    # "already built" without it is the exact defect. The shortcut now reads one
+    # predicate, so the gate has to be inside what computes it.
+    plan = ps1[ps1.index("$CanReuseLlamaBuild = ") :]
+    plan = plan[: plan.index("$WillBuildLlamaFromSource = ")]
+    assert "Test-LlamaTreeStillHealthy" in plan, "the reuse shortcut skips the health gate again"
+    shortcut = ps1[ps1.index("} elseif ($CanReuseLlamaBuild) {") :]
+    assert "already built" in shortcut[: shortcut.index("} elseif", 1)]
+
+
+def test_the_windows_build_plan_asks_the_same_question_as_its_reuse_shortcut():
+    """Codex 3971674498, P2. ``$WillBuildLlamaFromSource`` gates the last-chance git install
+    and ``Ensure-BuildToolsForLlamaSourceBuild``. With the health check read only by the
+    shortcut, a tree the shortcut refused left that predicate false, so a prebuilt-only box
+    reached the rebuild the refusal forces with no cmake and no Visual Studio toolchain.
+    Both now read ``$CanReuseLlamaBuild``, and it is computed once, above the plan."""
+    ps1 = (Path(__file__).resolve().parents[3] / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    assert ps1.index("$CanReuseLlamaBuild = ") < ps1.index("$WillBuildLlamaFromSource = ")
     assert (
-        "Test-LlamaTreeStillHealthy" in shortcut
-    ), "the reuse shortcut skips the health gate again"
+        "$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild" in ps1
+    ), "the build plan must derive from the same predicate the shortcut reads"
+    # Once, so the helper runs once and its "incomplete" line is not printed twice.
+    assert ps1.count("Test-LlamaTreeStillHealthy $LlamaCppDir") == 1, ps1.count(
+        "Test-LlamaTreeStillHealthy $LlamaCppDir"
+    )
 
 
 def test_the_offline_repair_terminates_with_the_shell_rebuild_skip_in_place(tmp_path, offline):
