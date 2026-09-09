@@ -7431,6 +7431,34 @@ def _api_newest_release_tag(repo: str) -> "str | None":
         return None
 
 
+def _api_newest_release_tag_for_upstream(
+    repo: str, upstream_tag: str, recorded_release: str
+) -> "str | None":
+    """The newest published fork release packaging *upstream_tag*.
+
+    The fork names its releases after the build (bNNNN, bNNNN-mix-<sha>); the release
+    the marker records is known to package it whatever it is called, so it is a
+    candidate too, and the newest of them all is what the selector would install.
+    """
+    try:
+        releases = github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+    except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
+        log(f"could not list the releases packaging {upstream_tag} ({exc})")
+        return None
+    matching = [
+        release
+        for release in releases
+        if isinstance(release, dict)
+        and isinstance(release.get("tag_name"), str)
+        and (
+            release["tag_name"] == upstream_tag
+            or release["tag_name"].startswith(upstream_tag + "-")
+            or release["tag_name"] == recorded_release
+        )
+    ]
+    return _newest_release_tag_from_releases(matching)
+
+
 def _memoized_api_newest_release_tag(repo: str) -> "str | None":
     """The API's notion of latest, but only when this process already has the payload.
 
@@ -7453,6 +7481,30 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
     return _newest_release_tag_from_releases(releases) if releases else None
 
 
+def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
+    """Whether torch now prefers another CUDA runtime line than the one installed.
+
+    The selectors order the CUDA bundles around detect_torch_cuda_runtime_preference
+    (torch.version.cuda), which the host profile does not see: a torch upgrade from a
+    CUDA 12 to a CUDA 13 build leaves the GPU and driver as they were. A marker recorded
+    under the old preference is then not what this run would choose. Only a CUDA install
+    on a CUDA host is asked; a preference torch cannot state keeps the fast path.
+    """
+    if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
+        return False
+    recorded_line = marker.get("runtime_line")
+    if not isinstance(recorded_line, str) or not recorded_line.startswith("cuda"):
+        return False
+    preferred = detect_torch_cuda_runtime_preference(host).runtime_line
+    if not preferred or preferred == recorded_line:
+        return False
+    log(
+        f"kept install rejected: torch now prefers the {preferred} runtime line, "
+        f"the install is {recorded_line}"
+    )
+    return True
+
+
 def _expected_release_tag_without_plan(
     marker: "dict[str, Any]",
     llama_tag: str,
@@ -7465,10 +7517,11 @@ def _expected_release_tag_without_plan(
     None means "cannot say", and every caller treats that as a reason to take the full
     path. Three shapes:
       * a pinned UNSLOTH_LLAMA_RELEASE_TAG names the answer outright;
-      * an upstream bNNNN pin is answered by the marker's recorded upstream tag, since
-        the fork publishes one release per upstream build (bNNNN-mix-<sha>, never a
-        second packaging revision of the same build; whisper's fork does the opposite,
-        which is why its check treats an upstream pin differently);
+      * an upstream bNNNN pin: the marker must record that upstream tag, and on the
+        fork the newest published release packaging that build is the answer (the fork
+        can republish a build, b9596-mix-aaa then b9596-mix-bbb, and the selector takes
+        the newest, as does test_llama_cpp_freshness), so this lists the releases; on the
+        upstream repo the release tag is the upstream tag itself;
       * "latest" costs ONE HEAD on github.com/<repo>/releases/latest -- no
         api.github.com call, so no rate limit, and no manifest or checksum download.
 
@@ -7496,15 +7549,22 @@ def _expected_release_tag_without_plan(
             if not isinstance(recorded_upstream, str) or recorded_upstream != requested:
                 return None
         return pinned
+    repo = published_repo or DEFAULT_PUBLISHED_REPO
     if requested != "latest":
         # An upstream pin. The recorded upstream tag is what would be asked for, so a
-        # marker that already names it is current by construction; anything else is not.
+        # marker naming another build is not current whatever else it says.
         recorded_upstream = marker.get("tag")
         if not isinstance(recorded_upstream, str) or recorded_upstream != requested:
             return None
         recorded_release = marker.get("release_tag")
-        return recorded_release if isinstance(recorded_release, str) else None
-    repo = published_repo or DEFAULT_PUBLISHED_REPO
+        if not isinstance(recorded_release, str) or not recorded_release:
+            return None
+        if repo != DEFAULT_PUBLISHED_REPO:
+            # Upstream publishes one release per build under the build's own tag.
+            return recorded_release
+        # The fork can package the same upstream build more than once, and the selector
+        # installs the newest packaging; a pinned build therefore still asks the API.
+        return _api_newest_release_tag_for_upstream(repo, requested, recorded_release)
     # On a Mac below the floor the selector answers "latest" for the upstream repo with
     # the pinned fallback release (resolve_simple_install_release_plans), never with the
     # newest published one; the marker of a current install names that pin.
@@ -7695,6 +7755,8 @@ def existing_install_current_without_plan(
         return False
     if recorded_profile != host_profile(host):
         log("kept install rejected: this host no longer matches the one it was installed for")
+        return False
+    if _runtime_preference_moved(marker, host):
         return False
     # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(

@@ -6207,14 +6207,33 @@ def test_a_pinned_release_tag_needs_no_lookup_at_all(tmp_path, monkeypatch):
 
 
 def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monkeypatch):
+    """The marker must record the pinned build, and the release installed must be the
+    fork's newest packaging of it (the fork can republish a build); /releases/latest
+    has nothing to say about a pin."""
     install_dir = _current_install(tmp_path, monkeypatch)
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
 
     def boom(_repo):
-        raise AssertionError("an upstream pin needs no release listing")
+        raise AssertionError("an upstream pin never asks /releases/latest")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", boom)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "github_releases",
+        lambda repo, **kw: [{"tag_name": marker["release_tag"], "published_at": "2026-01-01T00:00:00Z", "id": 1}],
+    )
     assert _check(install_dir, llama_tag = "b9001") is True
     assert _check(install_dir, llama_tag = "b9999") is False
+    # A newer packaging of the same build supersedes the installed one.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "github_releases",
+        lambda repo, **kw: [
+            {"tag_name": marker["release_tag"], "published_at": "2026-01-01T00:00:00Z", "id": 1},
+            {"tag_name": "b9001-mix-newer", "published_at": "2026-02-01T00:00:00Z", "id": 2},
+        ],
+    )
+    assert _check(install_dir, llama_tag = "b9001") is False
 
 
 def test_a_full_check_request_always_does_the_work(tmp_path, monkeypatch):
@@ -6633,3 +6652,51 @@ def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch
         )
         == "b9999"
     )
+
+
+def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeypatch):
+    """The fork can republish a build (b9596-mix-aaa, then b9596-mix-bbb) and the selector
+    installs the newest packaging; the marker check asks the same question instead of
+    reading the recorded release as current forever."""
+    M = INSTALL_LLAMA_PREBUILT
+    releases = [
+        {"tag_name": "b9600-mix-ccc", "published_at": "2026-03-01T00:00:00Z", "id": 3},
+        {"tag_name": "b9596-mix-bbb", "published_at": "2026-02-01T00:00:00Z", "id": 2},
+        {"tag_name": "b9596-mix-aaa", "published_at": "2026-01-01T00:00:00Z", "id": 1},
+    ]
+    monkeypatch.setattr(M, "github_releases", lambda repo, **kw: releases)
+    marker = {"tag": "b9596", "release_tag": "b9596-mix-aaa"}
+    expected = M._expected_release_tag_without_plan(marker, "b9596", M.DEFAULT_PUBLISHED_REPO, "")
+    assert expected == "b9596-mix-bbb"
+    assert expected != marker["release_tag"]
+    # A marker for another build is not current whatever the listing says.
+    assert M._expected_release_tag_without_plan({"tag": "b9500", "release_tag": "x"}, "b9596", M.DEFAULT_PUBLISHED_REPO, "") is None
+    # Upstream publishes one release per build under the build's own tag: no listing.
+    monkeypatch.setattr(M, "github_releases", lambda repo, **kw: pytest.fail("listed upstream"))
+    assert M._expected_release_tag_without_plan({"tag": "b9596", "release_tag": "b9596"}, "b9596", M.UPSTREAM_REPO, "") == "b9596"
+
+
+def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch):
+    """torch moving from a CUDA 12 to a CUDA 13 build leaves the GPU and driver, and so
+    the host profile, unchanged; the selector would still reorder the bundles around it."""
+    M = INSTALL_LLAMA_PREBUILT
+    from types import SimpleNamespace
+
+    host = SimpleNamespace(has_usable_nvidia = True, is_linux = True, is_windows = False)
+    monkeypatch.setattr(
+        M,
+        "detect_torch_cuda_runtime_preference",
+        lambda _host: SimpleNamespace(runtime_line = "cuda13", selection_log = []),
+    )
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is True
+    assert M._runtime_preference_moved({"runtime_line": "cuda13"}, host) is False
+    # A non-CUDA install, or a preference torch cannot state, keeps the fast path.
+    assert M._runtime_preference_moved({"runtime_line": "vulkan"}, host) is False
+    monkeypatch.setattr(
+        M,
+        "detect_torch_cuda_runtime_preference",
+        lambda _host: SimpleNamespace(runtime_line = None, selection_log = []),
+    )
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
+    cpu_host = SimpleNamespace(has_usable_nvidia = False, is_linux = True, is_windows = False)
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, cpu_host) is False

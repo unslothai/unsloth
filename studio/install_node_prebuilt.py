@@ -678,9 +678,10 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
     destination = metadata_path(install_dir)
     destination.parent.mkdir(parents = True, exist_ok = True)
     try:
-        original_mode: int | None = stat.S_IMODE(destination.stat().st_mode)
+        original: os.stat_result | None = destination.stat()
     except OSError:
-        original_mode = None
+        original = None
+    original_mode: int | None = stat.S_IMODE(original.st_mode) if original is not None else None
     # newline left at the default, as write_text had it: the marker's bytes must not
     # change spelling on Windows just because the writer moved.
     handle = tempfile.NamedTemporaryFile(
@@ -708,6 +709,15 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
             os.chmod(tmp_path, original_mode)
         except OSError:
             pass
+        if original is not None:
+            # Best effort, as the llama marker writer does: os.replace installs the temp
+            # file's ownership, so a group-shared marker refreshed by another member
+            # would otherwise take that member's group and stop being readable by the
+            # rest. A no-op for a non-root user.
+            try:
+                os.chown(tmp_path, original.st_uid, original.st_gid)
+            except (OSError, AttributeError):
+                pass
         atomic_replace_from_tempfile(tmp_path, destination)
         tmp_path = None
     finally:

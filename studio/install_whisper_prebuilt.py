@@ -1694,10 +1694,14 @@ def install_prebuilt(
         # against this run's -- and --cpu-fallback is a backend request too
         # (resolve_backend makes it "cpu"), so a kept CPU tree honours it exactly as an
         # explicit --backend cpu does, and an offline update with one is recoverable.
+        # UNSLOTH_WHISPER_FORCE_COMPILE counts as explicit too: setup.sh runs the source
+        # build only after this installer exits nonzero, so a lookup failure kept as
+        # success here would silently take that opt-in path away.
         explicit_release_request = (
             force
             or bool((published_release_tag or "").strip())
             or (whisper_tag or "latest").strip().lower() not in ("", "latest")
+            or os.environ.get("UNSLOTH_WHISPER_FORCE_COMPILE", "").strip() == "1"
         )
         marker = (
             None

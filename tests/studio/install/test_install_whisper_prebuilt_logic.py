@@ -2875,3 +2875,20 @@ def test_a_failing_compatibility_listing_keeps_an_intact_install(tmp_path, monke
     assert rc == M.EXIT_SUCCESS
     assert KEPT_GREP in output
     assert calls["n"] == 1
+
+
+def test_force_compile_lets_a_lookup_failure_reach_the_source_build(tmp_path, monkeypatch, capsys):
+    """setup.sh runs the opt-in source build only after this installer exits nonzero; a
+    lookup failure kept as success under UNSLOTH_WHISPER_FORCE_COMPILE=1 would take that
+    path away, so the switch counts as an explicit request."""
+    install_dir, host, _calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    _no_network(monkeypatch)
+
+    def listing_denied(_repo):
+        raise RuntimeError("HTTP 403: rate limit")
+
+    monkeypatch.setattr(M, "_published_release_tags", listing_denied)
+    monkeypatch.setenv("UNSLOTH_WHISPER_FORCE_COMPILE", "1")
+    rc, output = _cli_install(capsys, install_dir)
+    assert rc != M.EXIT_SUCCESS
+    assert KEPT_GREP not in output
