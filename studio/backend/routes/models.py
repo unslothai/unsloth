@@ -3764,6 +3764,7 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         want = (quant or "").strip()
         best_total = 0
         best_first: Optional[str] = None
+        per_root: list[tuple[Path, dict[int, list[tuple[str, Path, int]]]]] = []
         for root in roots:
             ranked: dict[int, list[tuple[str, Path, int]]] = {0: [], 1: []}
             for f in _iter_gguf_paths(root):
@@ -3779,6 +3780,22 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 except OSError:
                     continue
                 ranked[rank].append((rel, f, size))
+            per_root.append((root, ranked))
+        # The legacy bare spelling is judged across EVERY cached revision before any one is
+        # chosen: two tagged builds of one quant in two revisions each looked unambiguous alone,
+        # and the larger one was priced and revealed for a spelling the loader refuses. Exact
+        # keys anywhere still win outright.
+        if not any(ranked[0] for _root, ranked in per_root):
+            from utils.models.model_config import _gguf_variant_key
+
+            label_keys = {
+                _gguf_variant_key(rel).lower()
+                for _root, ranked in per_root
+                for rel, _f, _size in ranked[1]
+            }
+            if len(label_keys) > 1:
+                return None, 0
+        for root, ranked in per_root:
             # Exact keys alone when any exist: summing them with the label matches counts other
             # checkpoints' bytes into this row's estimate and can reveal one of their files.
             # ... and within those, ONE shard family, the same rule group_gguf_variant_files

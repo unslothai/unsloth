@@ -3607,14 +3607,27 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
             # one. It may stand in for exactly one build; across two builds of a single quant it
             # names neither, and the looser tiers below would hand llama-server a mixed set of
             # two checkpoints. ``plan_for_variant`` already refuses the same request.
-            from hub.utils.gguf import bare_quant_alias
+            from hub.utils.gguf import resolve_variant_alias
 
-            aliased = {
-                _gguf_variant_key(f).lower()
-                for f in main_files
-                if bare_quant_alias(_gguf_variant_key(f)).lower() == variant_key
+            # The shared resolution, root precedence included: a tagged root beside
+            # ``distilled/model-Q4_K_M.gguf`` is two aliases, and counting them refused a legacy
+            # pin the plan lookup accepts -- from_identifier then read the empty list as proof
+            # the variant is absent. Two root builds still resolve to nothing, and still refuse.
+            keys = [_gguf_variant_key(f) for f in main_files]
+            resolved = resolve_variant_alias(keys, variant_key)
+            if resolved is not None:
+                return sorted(f for f in main_files if _gguf_variant_key(f).lower() == resolved.lower())
+            # Nothing owns it and no alias resolves it. Refuse ONLY a bare quant that names two
+            # builds; every other spelling (a shard suffix, a label the key does not carry) still
+            # reaches the label and boundary tiers below, as it always did.
+            from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias
+
+            claimants = {
+                key.lower()
+                for key in keys
+                if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == variant_key
             }
-            if len(aliased) > 1:
+            if len(claimants) > 1:
                 return []
         except Exception as e:
             logger.warning("Failed to derive GGUF variant keys: %s", e)

@@ -3235,11 +3235,26 @@ def _find_local_gguf_by_variant(
     # stand in for exactly one build; when two builds of one quant are cached (``-mtp`` beside
     # ``-fp16``) it names neither, and returning the first by name loads a checkpoint the user
     # did not ask for. ``plan_for_variant`` already refuses the same request.
-    if len({_gguf_variant_key(f.relative_to(p).as_posix()).lower() for f in matches}) > 1:
-        return None
+    # MIRROR of ``hub.utils.gguf.resolve_variant_alias``'s root precedence (utils cannot import
+    # hub): among several keys the bare spelling names, the ONE at the repo root -- every parent
+    # a quant-only directory -- owns it, because that build keyed as the bare quant exactly
+    # before the split. Two root builds still name neither.
+    keyed = {f: _gguf_variant_key(f.relative_to(p).as_posix()) for f in matches}
+    distinct = {k.lower() for k in keyed.values()}
+    if len(distinct) > 1:
+        root_keys = {k.lower() for k in distinct if _key_at_repo_root(k)}
+        if len(root_keys) != 1:
+            return None
+        matches = [f for f in matches if keyed[f].lower() in root_keys]
     if matches:
         return str(_local_gguf_load_path(matches[0]))
     return None
+
+
+def _key_at_repo_root(key: str) -> bool:
+    """MIRROR of ``hub.utils.gguf._keys_at_repo_root``: every parent segment names a quant."""
+    parents = key.replace("\\", "/").rpartition("/")[0]
+    return all(_select_known_quant_match(seg) is not None for seg in parents.split("/") if seg)
 
 
 def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:

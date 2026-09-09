@@ -251,7 +251,9 @@ def _add_gguf_picks(
             [f"{key}:{spelling}" for key in keys for spelling in spellings],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
-    unqualified = [quant for quant in openable if "/" not in quant]
+    from hub.utils.gguf import _keys_at_repo_root
+
+    unqualified = [quant for quant in openable if _keys_at_repo_root(quant)]
     # Same collapse the chat and OpenAI resolvers apply, so a bare id means one build here too.
     unqualified = collapse_same_quant_root_builds(unqualified) or unqualified
     best = preferred_quant(unqualified or list(openable)) or next(iter(unqualified or openable))

@@ -1176,3 +1176,119 @@ def test_cached_path_resolution_sees_every_revision_at_once(tmp_path, monkeypatc
     assert gguf_module.resolve_local_gguf_path("org/repo", "Q4_K_M") == str(
         first / "model-Q4_K_M-mtp.gguf"
     )
+
+
+# --------------------------------------------------------------------------------------
+# The prefilters and counters that still tested for a slash or counted aliases
+# --------------------------------------------------------------------------------------
+
+
+def test_every_default_prefilter_keeps_quant_directory_builds_in_the_root_set():
+    """``_keys_at_repo_root`` classifies ``Q4_K_M/model-Q4_K_M-mtp`` as root-level, but the
+    remote, local, picker and media defaults each dropped every slashed key BEFORE collapsing,
+    so the root set was empty and the fallback took the whole map in listing order."""
+    import types
+
+    from core.inference.openai_auto_download import _match_variant
+    from hub.services.models.gguf_variants import _default_variant_candidates
+
+    keys = ["Q4_K_M/model-Q4_K_M-mtp", "Q4_K_M/model-Q4_K_M-fp16"]
+    forward = {k: 100 - i for i, k in enumerate(keys)}
+    backward = dict(reversed(list(forward.items())))
+    assert _match_variant(None, forward) == _match_variant(None, backward)
+
+    rows = [types.SimpleNamespace(quant = k, filename = f"{k}.gguf") for k in keys]
+    assert len(_default_variant_candidates(rows)) == 1
+    assert _default_variant_candidates(rows) == _default_variant_candidates(rows[::-1])
+    # The prefilter earns its keep only beside a REAL subordinate checkpoint: with the slash test
+    # the quant-directory build fell out of the root set, the set came up empty, and the fallback
+    # admitted ``distilled/`` to a contest the docstring says it must never enter.
+    with_subordinate = rows + [types.SimpleNamespace(quant = "distilled/model-Q4_K_M", filename = "distilled/model-Q4_K_M.gguf")]
+    candidates = _default_variant_candidates(with_subordinate)
+    assert len(candidates) == 1 and candidates[0].startswith("Q4_K_M/")
+
+
+def test_both_loaders_give_the_bare_spelling_to_the_root_build(tmp_path):
+    """Counting every key with the same bare label refused a legacy pin that the plan lookup
+    resolves to the root build -- and ``from_identifier`` read the empty list as proof the
+    variant is absent. Two root builds still refuse."""
+    root_beside_subordinate = ["model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]
+    assert _gguf_files_for_variant(root_beside_subordinate, "q4_k_m") == ["model-Q4_K_M-mtp.gguf"]
+    assert _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+
+    snapshot = _materialize(tmp_path / "snap", [(p, 1) for p in root_beside_subordinate])
+    assert _find_local_gguf_by_variant(str(snapshot), "Q4_K_M") == str(snapshot / "model-Q4_K_M-mtp.gguf")
+    two_roots = _materialize(tmp_path / "two", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)])
+    assert _find_local_gguf_by_variant(str(two_roots), "Q4_K_M") is None
+
+
+def test_the_resident_check_canonicalises_both_spellings(monkeypatch):
+    """A lone tagged build loaded through its legacy bare spelling keeps that value in
+    ``hf_variant``; a request through the advertised qualified row resolved to the qualified key
+    and compared unequal, forcing a full reload of weights already serving."""
+    from core.inference import local_model_resolver
+    from routes.inference import _resident_variant_matches
+
+    inventory = {"q4_0": "gemma-4-31B_q4_0-it", "gemma-4-31b_q4_0-it": "gemma-4-31B_q4_0-it"}
+    monkeypatch.setattr(
+        local_model_resolver, "resolve_local_gguf",
+        lambda requested, **kw: (("/p", inventory.get(requested.split(":", 1)[1].lower()), "id")
+                                 if inventory.get(requested.split(":", 1)[1].lower()) else None),
+    )
+    assert _resident_variant_matches("repo", "gemma-4-31B_q4_0-it", "q4_0") is True
+    assert _resident_variant_matches("repo", "q4_0", "gemma-4-31B_q4_0-it") is True
+    # A plain sibling owning the bare key keeps the two apart.
+    split = {"q4_k_m": "Q4_K_M", "model-q4_k_m-mtp": "model-Q4_K_M-mtp"}
+    monkeypatch.setattr(
+        local_model_resolver, "resolve_local_gguf",
+        lambda requested, **kw: (("/p", split.get(requested.split(":", 1)[1].lower()), "id")
+                                 if split.get(requested.split(":", 1)[1].lower()) else None),
+    )
+    assert _resident_variant_matches("repo", "Q4_K_M", "model-Q4_K_M-mtp") is False
+
+
+def test_the_estimate_resolves_the_bare_spelling_across_every_revision(tmp_path):
+    """Two revisions each caching one tagged build looked unambiguous on their own, so the
+    larger one was priced and revealed for a spelling the loader refuses."""
+    from routes.models import _resolve_quant_gguf
+
+    hub = tmp_path / "hub"
+    snaps = hub / "models--org--repo" / "snapshots"
+    (snaps / "rev1").mkdir(parents = True)
+    (snaps / "rev2").mkdir(parents = True)
+    (snaps / "rev1" / "model-Q4_K_M-mtp.gguf").write_bytes(b"x" * 10)
+    (snaps / "rev2" / "model-Q4_K_M-fp16.gguf").write_bytes(b"x" * 20)
+    import hub.utils.hf_cache_state as cache_state
+    import routes.models as models_module
+
+    entries = [snaps.parent]
+    orig = models_module.iter_repo_cache_dirs if hasattr(models_module, "iter_repo_cache_dirs") else None
+    import unittest.mock as mock
+    with mock.patch.object(cache_state, "iter_repo_cache_dirs", lambda repo_type, repo_id: entries):
+        assert _resolve_quant_gguf("org/repo", "Q4_K_M", False) == (None, 0)
+        # One build across revisions still resolves, under its legacy spelling.
+        (snaps / "rev2" / "model-Q4_K_M-fp16.gguf").unlink()
+        path, total = _resolve_quant_gguf("org/repo", "Q4_K_M", False)
+        assert path == str(snaps / "rev1" / "model-Q4_K_M-mtp.gguf") and total == 10
+
+
+def test_the_media_default_keeps_a_quant_directory_build_ahead_of_a_subordinate(tmp_path, monkeypatch):
+    """Same prefilter, same failure: the media index dropped every slashed key before ranking
+    its bare default, so beside ``distilled/`` the root set was empty and the fallback ranked the
+    subordinate checkpoint for a bare repo id."""
+    import types
+
+    from core.inference import media_model_index as mmi
+    from utils.models import model_config
+
+    monkeypatch.setattr(mmi, "_gguf_load_path", lambda info, on_disk, load_dir: str(load_dir))
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda load_path, filename: True)
+    # The subordinate is listed FIRST: the two keys tie on the quant text, so a fallback that
+    # ranked the whole set would hand the bare id to whichever came first -- the wrong one here.
+    for files in (["distilled/model-Q4_K_M.gguf", "Q4_K_M/model-Q4_K_M-mtp.gguf"],
+                  ["Q4_K_M/model-Q4_K_M-mtp.gguf", "distilled/model-Q4_K_M.gguf"]):
+        monkeypatch.setattr(model_config, "list_local_gguf_variants",
+                            lambda p, files = files: ([types.SimpleNamespace(quant = gguf_variant_key(f), filename = f) for f in files], False))
+        index = {}
+        assert mmi._add_gguf_picks(index, None, ("repo",), tmp_path, tmp_path) is True
+        assert index["repo"].gguf_filename == "Q4_K_M/model-Q4_K_M-mtp.gguf", files

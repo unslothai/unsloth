@@ -31,6 +31,7 @@ from hub.utils.hf_cache_state import (
 )
 from hub.utils.gguf import (
     GgufVariantInfo,
+    _keys_at_repo_root,
     collapse_same_quant_root_builds,
     extract_quant_label,
     gguf_variant_key,
@@ -1040,7 +1041,10 @@ def _default_variant_candidates(variants) -> list[str]:
     """
     keys = collapse_same_quant_root_builds([v.quant for v in variants])
     ranked = [v for v in variants if v.quant in set(keys)]
-    root_rows = [v.filename for v in ranked if "/" not in v.quant]
+    # Root-level by the lister's rule (every parent a quant-only directory), not the absence of a
+    # slash, or two builds filed under ``Q4_K_M/`` fall out of the root set the collapse just
+    # narrowed and the fallback re-admits every row in listing order.
+    root_rows = [v.filename for v in ranked if _keys_at_repo_root(v.quant)]
     return root_rows or [v.filename for v in ranked] or [v.filename for v in variants]
 
 

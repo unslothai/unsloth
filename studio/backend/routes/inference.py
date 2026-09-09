@@ -8037,13 +8037,29 @@ def _resident_variant_matches(base: str, requested_variant: str, loaded_variant:
     right = (requested_variant or "").strip().lower()
     if not right or left == right:
         return True
+    # Both sides through the inventory: a lone tagged build loaded through its legacy bare
+    # spelling keeps that bare value in ``hf_variant``, and a request through its advertised
+    # qualified row resolved to the qualified key and compared unequal -- a needless full reload
+    # of the weights already serving. Where a plain sibling owns the bare key the two resolve to
+    # different rows and stay apart.
     try:
         from core.inference.local_model_resolver import resolve_local_gguf
-        hit = resolve_local_gguf(f"{base}:{requested_variant}", allow_scan = False)
+
+        def canon(spelling: str) -> str:
+            hit = resolve_local_gguf(f"{base}:{spelling}", allow_scan = False)
+            resolved = hit[1] if hit and len(hit) > 1 and hit[1] else None
+            return (resolved or spelling).strip().lower()
+
+        # Canonicalise the two together only when they COULD name one build: an inventory that
+        # answers the same entry for any spelling would otherwise fold two different quants into
+        # "already serving" and suppress a switch the request actually asked for.
+        from hub.utils.gguf import variant_spellings_may_name_one_build
+
+        if not variant_spellings_may_name_one_build(requested_variant, loaded_variant):
+            return canon(requested_variant) == left
+        return canon(requested_variant) == canon(loaded_variant)
     except Exception:
         return False
-    resolved = hit[1] if hit and len(hit) > 1 and hit[1] else None
-    return bool(resolved) and resolved.strip().lower() == left
 
 
 def _loaded_satisfies(requested: str) -> bool:

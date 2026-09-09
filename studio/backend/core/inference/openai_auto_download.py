@@ -928,7 +928,12 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     # model-Q6_K could serve the sibling for a bare id -- the same id that resolves to the root locally. Same filter
     # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way. A repo with nothing at
     # the root falls back to the whole set rather than refusing.
-    unqualified = {name: size for name, size in variants.items() if "/" not in name}
+    from hub.utils.gguf import _keys_at_repo_root
+
+    # Root-level by the lister's rule, not the absence of a slash: two builds under a quant-only
+    # directory are AT the root, and dropping them here emptied the ranking so the fallback took
+    # the whole map in Hub order while the local resolver took its rows by size.
+    unqualified = {name: size for name, size in variants.items() if _keys_at_repo_root(name)}
     # Collapse a repo's several root builds at ONE quant to a single candidate first: they tie in
     # preferred_quant, so otherwise the winner comes out of listing order and this resolver and
     # the local one can disagree about what a bare org/repo means.

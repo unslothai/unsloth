@@ -349,7 +349,9 @@ def _local_gguf_entry(
         # hand a bare id an equally-good ``distilled/...`` row that sorts earlier -- the same id serving different
         # weights depending on which resolver answered it. The qualified rows stay advertised; they are not what a bare
         # id means.
-        unqualified = tuple(q for q in quants if "/" not in q)
+        from hub.utils.gguf import _keys_at_repo_root
+
+        unqualified = tuple(q for q in quants if _keys_at_repo_root(q))
         # Same collapse the remote resolver applies, for the same reason: several root builds at
         # one quant tie in preferred_quant, and the two resolvers see them in different orders.
         from hub.utils.gguf import collapse_same_quant_root_builds
