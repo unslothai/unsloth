@@ -2158,10 +2158,10 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         """The same output, from a run that then overran its limit."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
-        code = f"print('x' * {self.PRINTED})\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
-        return tools.execute_tool(
-            "python", {"code": code}, timeout = 1, result_budget_tokens = room
+        code = (
+            f"print('x' * {self.PRINTED})\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
         )
+        return tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = room)
 
     def _captured_everything(self, out: str) -> None:
         """The notice counts the whole captured text, so this is what says the drain got
@@ -2187,12 +2187,12 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         _tokenizer(monkeypatch)
         printing = f"awk 'BEGIN {{ for (i = 0; i < {self.PRINTED}; i++) printf \"x\" }}'"
 
-        completed = tools.execute_tool(
-            "terminal", {"command": printing}, result_budget_tokens = 400
-        )
+        completed = tools.execute_tool("terminal", {"command": printing}, result_budget_tokens = 400)
         timed_out = tools.execute_tool(
-            "terminal", {"command": f"{printing}; sleep 30"},
-            timeout = 1, result_budget_tokens = 400,
+            "terminal",
+            {"command": f"{printing}; sleep 30"},
+            timeout = 1,
+            result_budget_tokens = 400,
         )
         assert f"{self.PRINTED} chars total" in completed
         assert f"{self.PRINTED} chars total" in timed_out
@@ -2218,8 +2218,10 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         _tokenizer(monkeypatch)
 
         out = tools.execute_tool(
-            "python", {"code": "import time\ntime.sleep(30)\n"},
-            timeout = 1, result_budget_tokens = 400,
+            "python",
+            {"code": "import time\ntime.sleep(30)\n"},
+            timeout = 1,
+            result_budget_tokens = 400,
         )
 
         assert out == "Execution timed out after 1 seconds."

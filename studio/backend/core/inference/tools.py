@@ -15950,7 +15950,6 @@ def _cut_by_the_replay_stripper(text: str) -> bool:
     Read from the stripper rather than restated here, so the two cannot drift apart.
     """
     from .tool_loop_controller import REPLAY_SPLIT_SENTINELS  # noqa: PLC0415
-
     return any(sentinel in text for sentinel in REPLAY_SPLIT_SENTINELS)
 
 
