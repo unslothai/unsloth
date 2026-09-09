@@ -1055,6 +1055,7 @@ def test_public_api_has_no_root_identity_or_boundary_injection():
         "output_limit_bytes",
         "cancel_event",
         "output_callback",
+        "before_start",
     }
     assert "root" not in inspect.signature(supervisor.run_project_python).parameters
     assert "identity" not in inspect.signature(supervisor.run_project_python).parameters
