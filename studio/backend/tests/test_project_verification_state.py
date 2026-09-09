@@ -607,14 +607,30 @@ def test_initial_database_creation_identity_race_fails_closed(tmp_path, monkeypa
     replacement.close()
     original_get_connection = studio_db.get_connection
 
+    opened = []
+
     def replace_after_open(*args, **kwargs):
         connection = original_get_connection(*args, **kwargs)
+        opened.append(connection)
         os.replace(replacement_path, database_path)
         return connection
 
     monkeypatch.setattr(studio_db, "get_connection", replace_after_open)
-    with pytest.raises(state.VerificationStateError, match = "changed while it was being opened"):
-        state.get_verification_config("initial-create-race")
+    try:
+        if os.name == "nt":
+            # Windows denies replacement while SQLite holds the file open.
+            # That kernel refusal prevents the identity swap before our attestation.
+            with pytest.raises(PermissionError):
+                state.get_verification_config("initial-create-race")
+            assert replacement_path.exists()
+        else:
+            with pytest.raises(
+                state.VerificationStateError, match = "changed while it was being opened"
+            ):
+                state.get_verification_config("initial-create-race")
+    finally:
+        for connection in opened:
+            connection.close()
 
 
 def test_concurrent_first_open_serializes_schema_cache_refresh(monkeypatch):

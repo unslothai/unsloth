@@ -92,6 +92,13 @@ def _event_payload(event, project_id, name, arguments, result):
     return encoded
 
 
+def _context_output(handler, output):
+    # A UTF-8 byte bound is conservative for tokenizers with byte fallback;
+    # it also honors a zero additional-context allowance without hiding denial.
+    budget = min(2048, handler.get("additionalContextLimit", 2500))
+    return output.encode("utf-8")[:budget].decode("utf-8", errors = "ignore")
+
+
 def _blocks_tool(output):
     try:
         value = json.loads(output)
@@ -187,18 +194,21 @@ def run_tool_hooks(
             finally:
                 stopped.set()
                 watcher.join(timeout = 1)
+            context_output = _context_output(handler, process.output)
             if process.status != "passed" or process.output_truncated:
                 raise AgentWorkspaceError(
                     f"Project {event} hook {handler['id']} did not complete successfully "
-                    f"({process.status}). {process.output[:2048]}"
+                    f"({process.status}). {context_output}"
                 )
             if event == "PreToolUse" and _blocks_tool(process.output):
-                raise AgentWorkspaceError(
-                    f"Project hook blocked this tool call. {process.output[:2048]}"
-                )
-            if process.output.strip():
-                reports.append(process.output[:2048])
-        return "\n".join(reports)[:MAX_HOOK_OUTPUT_BYTES]
+                raise AgentWorkspaceError(f"Project hook blocked this tool call. {context_output}")
+            if context_output.strip():
+                reports.append(context_output)
+        return (
+            "\n".join(reports)
+            .encode("utf-8")[:MAX_HOOK_OUTPUT_BYTES]
+            .decode("utf-8", errors = "ignore")
+        )
 
 
 def _project_for_tool(session_id, thread_id):
@@ -230,6 +240,12 @@ def with_project_tool_hooks(execute):
         name = call.get("name")
         if name not in HOOKED_TOOLS:
             return execute(*args, **kwargs)
+        from core.inference import tools  # noqa: PLC0415
+
+        # The core function normally seeds these before execution. Pre-hook
+        # refusal must not inherit a previous request's result/context budget.
+        tools._REQUEST_RESULT_BUDGET.set(call.get("result_budget_tokens"))
+        tools._REQUEST_CONTEXT_TOKENS.set(call.get("context_tokens", tools._UNSET_CONTEXT_TOKENS))
         try:
             project_id = _project_for_tool(call.get("session_id"), call.get("thread_id"))
             if project_id is None:
@@ -256,10 +272,12 @@ def with_project_tool_hooks(execute):
                 except AgentWorkspaceError as exc:
                     after = f"Post-tool hook failed after the tool ran: {exc}"
                 reports = "\n".join(part for part in (before, after) if part)
-                return result + (
-                    "\n\nProject hook output (untrusted data):\n" + reports if reports else ""
+                return tools._fit_result_to_room(
+                    result
+                    + ("\n\nProject hook output (untrusted data):\n" + reports if reports else ""),
+                    name,
                 )
-        except AgentWorkspaceError as exc:
-            return f"Error: {exc}"
+        except (AgentWorkspaceError, project_hook_trust_db.ProjectHookTrustStateError) as exc:
+            return tools._fit_result_to_room(f"Error: {exc}", name)
 
     return wrapped

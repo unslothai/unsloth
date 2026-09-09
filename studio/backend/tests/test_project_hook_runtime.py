@@ -238,3 +238,54 @@ def test_hook_event_size_limit_refuses_ambiguous_truncated_arguments(reviewed_ho
         runtime.run_tool_hooks(
             project_id, "PreToolUse", "terminal", {"command": "x" * runtime.MAX_EVENT_BYTES}
         )
+
+
+def test_hook_context_limit_zero_suppresses_output_but_keeps_denial(reviewed_hooks, monkeypatch):
+    project_id, _workspace, state = reviewed_hooks
+    handler = state["config"]["hooks"]["PreToolUse"][0]["hooks"][0]
+    handler["additionalContextLimit"] = 0
+    monkeypatch.setattr(
+        runtime.processes, "run_project_process", lambda *_a, **_k: passed("private output")
+    )
+    assert runtime.run_tool_hooks(project_id, "PreToolUse", "terminal", {}) == ""
+    monkeypatch.setattr(
+        runtime.processes,
+        "run_project_process",
+        lambda *_a, **_k: passed('{"decision":"block","reason":"hidden"}'),
+    )
+    with pytest.raises(AgentWorkspaceError, match = "blocked") as blocked:
+        runtime.run_tool_hooks(project_id, "PreToolUse", "terminal", {})
+    assert "hidden" not in str(blocked.value)
+
+
+def test_hook_output_shares_the_tools_final_result_budget(reviewed_hooks, monkeypatch):
+    project_id, _workspace, _state = reviewed_hooks
+    from core.inference import tools
+
+    observed = []
+    monkeypatch.setattr(runtime, "_project_for_tool", lambda *_args: project_id)
+    monkeypatch.setattr(runtime, "run_tool_hooks", lambda *_a, **_k: "hook output")
+    monkeypatch.setattr(
+        tools,
+        "_fit_result_to_room",
+        lambda text, name: observed.append((text, name, tools._REQUEST_RESULT_BUDGET.get()))
+        or "bounded",
+    )
+
+    @runtime.with_project_tool_hooks
+    def execute(
+        name,
+        arguments,
+        *,
+        result_budget_tokens = None,
+    ):
+        return "tool result"
+
+    assert execute("terminal", {}, result_budget_tokens = 256) == "bounded"
+    assert observed == [
+        (
+            "tool result\n\nProject hook output (untrusted data):\nhook output\nhook output",
+            "terminal",
+            256,
+        )
+    ]
