@@ -39,6 +39,10 @@ struct PrefetchMarker {
     cache_dir: Option<String>,
     #[serde(default)]
     created_at: Option<i64>,
+    /// `_studio_prefetch`'s `core_plan`: the exact pins the swap will read from the
+    /// cache. A marker from a build that did not record one is checked for payload only.
+    #[serde(default)]
+    core_plan: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// `none` no prefetch on disk; `ready` everything it planned is cached; `noop`
@@ -136,6 +140,41 @@ pub(crate) fn cache_has_packages(cache_dir: &Path) -> bool {
         .any(|entry| dir_has_payload(&entry.path(), 6))
 }
 
+/// Whether the cache still holds the unpacked wheel of `name==version`.
+///
+/// uv unpacks every wheel it installs from under `archive-v*/<id>/`, where the wheel's
+/// `<name>-<version>.dist-info` directory sits at the top; `uv cache clean <package>`
+/// removes exactly those entries. `cache_has_packages` cannot tell a cache that lost
+/// unsloth from one that kept everything else, and a marker reported ready over such a
+/// cache made Restart perform the download it had presented as done.
+pub(crate) fn cache_holds_wheel(cache_dir: &Path, name: &str, version: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    let dist_info = format!("{normalized}-{}.dist-info", version.trim());
+    let Ok(buckets) = fs::read_dir(cache_dir) else {
+        return false;
+    };
+    for bucket in buckets.flatten() {
+        let bucket_name = bucket.file_name().to_string_lossy().into_owned();
+        if !bucket_name.starts_with("archive-") || !bucket.path().is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(bucket.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().join(&dist_info).is_dir() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn cache_holds_plan(cache_dir: &Path, plan: &std::collections::BTreeMap<String, String>) -> bool {
+    plan.iter()
+        .all(|(name, version)| cache_holds_wheel(cache_dir, name, version))
+}
+
 pub fn status(home: &Path) -> PrefetchStatus {
     let Some(marker) = read_marker(home) else {
         return PrefetchStatus {
@@ -152,10 +191,14 @@ pub fn status(home: &Path) -> PrefetchStatus {
     // directory at all is one this build did not write, and the schema check above
     // has already decided about that.
     let cache_cold = marker.state != "noop"
-        && marker
-            .cache_dir
-            .as_deref()
-            .is_some_and(|dir| !cache_has_packages(Path::new(dir)));
+        && marker.cache_dir.as_deref().is_some_and(|dir| {
+            let cache = Path::new(dir);
+            !cache_has_packages(cache)
+                || marker
+                    .core_plan
+                    .as_ref()
+                    .is_some_and(|plan| !cache_holds_plan(cache, plan))
+        });
     let state = if marker.schema != MARKER_SCHEMA || !known || expired || cache_cold {
         "stale"
     } else {
@@ -247,6 +290,14 @@ mod tests {
         let unpacked = cache.join("archive-v0").join("abc123").join("unsloth");
         fs::create_dir_all(&unpacked).unwrap();
         fs::write(unpacked.join("__init__.py"), b"").unwrap();
+        // The layout uv unpacks a wheel into: its dist-info beside the package.
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("abc123")
+                .join("unsloth-2026.9.2.dist-info"),
+        )
+        .unwrap();
         fs::write(
             cache.join("CACHEDIR.TAG"),
             b"Signature: 8a477f597d28d172789f06886806bc55",
@@ -323,6 +374,68 @@ mod tests {
             assert_eq!(status(&home).state, "stale", "{name}");
             fs::remove_dir_all(home.parent().unwrap()).unwrap();
         }
+    }
+
+    /// `uv cache clean unsloth` removes one package's entries and leaves the rest of
+    /// the cache warm. The marker's plan names that package, so it is stale; a marker
+    /// that recorded no plan (an older build) is held to payload only, as before.
+    #[test]
+    fn a_plan_whose_wheel_was_cleaned_from_the_cache_is_stale() {
+        let home = temp_home("plan-cleaned");
+        let cache = warm_cache(&home);
+        let marker = |plan: serde_json::Value| {
+            let mut body = serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "backend_version": "2026.9.2",
+                "shell_version": "0.1.900-beta",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+            });
+            if !plan.is_null() {
+                body["core_plan"] = plan;
+            }
+            body
+        };
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"unsloth": "2026.9.2"})),
+            true,
+        );
+        assert_eq!(status(&home).state, "ready");
+        // A second pin the cache never held: not ready.
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"unsloth": "2026.9.2", "unsloth-zoo": "2026.9.1"})),
+            true,
+        );
+        assert_eq!(status(&home).state, "stale");
+        // Normalisation: the plan spells the name with a dash, the dist-info with an underscore.
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("def456")
+                .join("unsloth_zoo-2026.9.1.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(status(&home).state, "ready");
+        // The planned wheel cleaned away while unrelated payload remains: stale.
+        fs::remove_dir_all(cache.join("archive-v0").join("abc123")).unwrap();
+        fs::create_dir_all(cache.join("archive-v0").join("other").join("numpy")).unwrap();
+        fs::write(
+            cache
+                .join("archive-v0")
+                .join("other")
+                .join("numpy")
+                .join("x.so"),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(status(&home).state, "stale");
+        // No plan recorded: payload alone still answers.
+        write_prefetch(&home, marker(serde_json::Value::Null), true);
+        assert_eq!(status(&home).state, "ready");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
     }
 
     #[test]

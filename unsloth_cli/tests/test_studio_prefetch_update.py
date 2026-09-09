@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import subprocess
+import time
 import sys
 import threading
 from pathlib import Path
@@ -961,3 +962,108 @@ def test_the_prefetch_module_stays_importable_under_isolated_python():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "3"
+
+
+# ── the installer's override, the budget inside each call, and redaction ──
+
+
+def test_the_dry_run_carries_the_installer_override_on_apple_silicon(managed, monkeypatch):
+    """Without the override uv answers for a different resolver than the core step's:
+    on the staging matrix it planned mlx-vlm and mlx-audio downgrades the update never
+    makes, and the offline swap installed them."""
+    site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
+    overrides = site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    overrides.write_text("transformers>=5.5.0,<=5.5.0\n", encoding = "utf-8")
+    monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_studio_prefetch.platform, "machine", lambda: "arm64")
+    seen = []
+
+    def respond(cmd, env):
+        seen.append(dict(env or {}))
+        return _plan_response("")
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    assert seen and all(e.get("UV_OVERRIDE") == str(overrides) for e in seen)
+
+    # A caller's own override is kept, as the installer keeps it.
+    seen.clear()
+    _studio_prefetch.run(studio_home = managed, env = {**os.environ, "UV_OVERRIDE": "/my/overrides.txt"}, echo = lambda line: None)
+    assert seen and all(e.get("UV_OVERRIDE") == "/my/overrides.txt" for e in seen)
+
+    # Off Apple silicon nothing is set.
+    monkeypatch.setattr(_studio_prefetch.platform, "machine", lambda: "x86_64")
+    seen.clear()
+    _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    assert seen and all("UV_OVERRIDE" not in e for e in seen)
+
+
+def test_every_uv_call_is_bounded_by_what_is_left_of_the_budget(monkeypatch):
+    """A stalled index used to hold the UI at Preparing for the full 30 minutes of each
+    of the two core calls before the deadline was looked at."""
+    timeouts = []
+
+    def fake_run(cmd, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch.subprocess, "run", fake_run)
+    _studio_prefetch._run(["uv", "--version"], None)
+    assert timeouts[-1] == _studio_prefetch.SUBPROCESS_TIMEOUT_SECONDS
+    with _studio_prefetch._within_budget(time.monotonic() + 5):
+        _studio_prefetch._run(["uv", "--version"], None)
+        assert 0 < timeouts[-1] <= 5
+        with pytest.raises(subprocess.TimeoutExpired):
+            with _studio_prefetch._within_budget(time.monotonic() - 1):
+                _studio_prefetch._run(["uv", "--version"], None)
+    # Restored: the next call outside the budget is unbounded again.
+    _studio_prefetch._run(["uv", "--version"], None)
+    assert timeouts[-1] == _studio_prefetch.SUBPROCESS_TIMEOUT_SECONDS
+
+
+def test_a_core_call_that_runs_out_of_time_is_a_bounded_error(managed, monkeypatch):
+    def stall(cmd, env):
+        raise subprocess.TimeoutExpired(list(cmd), 1)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", stall)
+    with pytest.raises(_studio_prefetch.PrefetchError) as failure:
+        _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    assert "out of time" in str(failure.value)
+
+
+SECRET_INDEX = "https://user:s3cret@index.example/simple?token=t0k3n#frag=f"
+
+
+def test_index_credentials_never_reach_the_failure_text(managed, monkeypatch):
+    """uv echoes the failing index URL, and what is raised here goes to the desktop log
+    and the renderer; the installer already redacts the same shape."""
+    monkeypatch.setattr(
+        _studio_prefetch,
+        "_run",
+        lambda cmd, env: _completed(1, stderr = f"error: Failed to fetch: `{SECRET_INDEX}`"),
+    )
+    with pytest.raises(_studio_prefetch.PrefetchError) as failure:
+        _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    text = str(failure.value)
+    assert "s3cret" not in text and "t0k3n" not in text and "frag=f" not in text
+    assert "<redacted>" in text
+
+    # ...and from a requirement file's recorded reason.
+    target = _studio_prefetch.site_dir(managed)
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        if "--dry-run" in cmd and any(a.startswith("unsloth>=") for a in cmd):
+            return _plan_response(" + unsloth==2026.9.2\n")
+        if "--dry-run" in cmd:
+            return _completed(1, stderr = f"no solution: {SECRET_INDEX}")
+        if "--target" in cmd:
+            _install_new_wheel_tree(target)
+            return _completed(0)
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+    payload = _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
+    reason = payload["requirements"]["studio.txt"]["skipped_reason"]
+    assert "s3cret" not in reason and "t0k3n" not in reason and "<redacted>" in reason

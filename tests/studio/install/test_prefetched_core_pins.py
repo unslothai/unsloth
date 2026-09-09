@@ -112,14 +112,40 @@ def test_only_well_formed_pins_are_read_from_the_environment(monkeypatch, value,
     assert stack._prefetched_core_pins() == expected
 
 
-def test_the_core_step_is_the_one_that_gets_the_pins():
-    """A source guard: the default (PyPI) core step passes the pins, and only it does.
-    A --local update overlays a checkout and a no-torch update pins --no-deps; neither
-    is what a prefetch prepared."""
+def test_the_core_steps_are_the_ones_that_get_the_pins():
+    """A source guard: the default (PyPI) core step and the no-torch core step pass the
+    pins, and only they do. A --local update overlays a checkout, which no prefetch
+    prepared; a no-torch prefetch fetches the core packages with --no-deps, which is
+    exactly what that step installs."""
     import inspect
 
     source = inspect.getsource(stack.install_python_stack)
     core = source[source.index('"[TAURI:DIAG] uv cache=') :]
     core = core[: core.index("if not skip_base:")]
     assert "offline_pins = _prefetched_core_pins()" in core
-    assert source.count("offline_pins = _prefetched_core_pins()") == 1
+    no_torch = source[source.index("(no-torch mode)") :]
+    no_torch = no_torch[: no_torch.index("pip_install(") ]
+    assert "offline_pins = _prefetched_core_pins()" in no_torch
+    local = source[source.index("# Local dev install:") :]
+    local = local[: local.index("_overlay_local_core_packages(local_repo)")]
+    assert "offline_pins" not in local
+    assert source.count("offline_pins = _prefetched_core_pins()") == 2
+
+
+def test_the_offline_retry_keeps_no_deps_for_the_no_torch_step(uv_only):
+    stack.pip_install(
+        "Updating unsloth + unsloth-zoo (no-torch mode)",
+        "--no-cache-dir",
+        "--no-deps",
+        "--upgrade-package",
+        "unsloth",
+        "unsloth",
+        "unsloth-zoo",
+        offline_pins = PINS,
+    )
+    first, second = uv_only
+    assert "--no-deps" in first and "--offline" in second and "--no-deps" in second
+    # The default core step installs with dependencies, and so does its retry.
+    uv_only.clear()
+    stack.pip_install("Updating core packages", "--no-cache-dir", "unsloth", offline_pins = PINS)
+    assert "--no-deps" not in uv_only[1]

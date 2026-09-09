@@ -800,13 +800,11 @@ pub async fn start_backend_update(
         return Err("Cannot update while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Update is already running.".to_string());
-    }
+    // Held until this command returns, which is after the update has finished: from
+    // here on `is_update_running` answers yes, so a prefetch arriving while the old
+    // prefetch or the backend is still being stopped is refused rather than started
+    // beside the update.
+    let _reservation = update::reserve_update_start(update_state.inner())?;
 
     // The real update takes the runtime gate the prefetch deliberately does not,
     // so the two would not deadlock -- but they would both be resolving against

@@ -7473,7 +7473,13 @@ def pip_install(
                         "   uv could not reach the index; installing the prefetched core packages from the uv cache..."
                     )
                 )
-                offline_cmd = _build_uv_cmd(("--offline", *offline_pins)) + constraint_args_uv
+                # --no-deps travels with the pins: the no-torch core step installs
+                # without dependencies so torch is never resolved, and its retry must not
+                # start resolving them from the cache either.
+                offline_args = ("--no-deps",) if "--no-deps" in args else ()
+                offline_cmd = (
+                    _build_uv_cmd(("--offline", *offline_args, *offline_pins)) + constraint_args_uv
+                )
                 offline_result = subprocess.run(
                     offline_cmd,
                     stdout = subprocess.PIPE,
@@ -7772,6 +7778,9 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
+        # The same prefetched pins as the default core step: the prefetch resolves and
+        # fetches the core packages with --no-deps on a no-torch install, and the
+        # offline retry keeps --no-deps, so the cache is read without torch being asked for.
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -7782,6 +7791,7 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             unsloth_spec,
             "unsloth-zoo",
+            offline_pins = _prefetched_core_pins(),
         )
         # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(

@@ -712,6 +712,33 @@ def _free_bytes(path: Path) -> Optional[int]:
 # ── Runner ──
 
 
+# The wall-clock deadline of the prefetch in progress, read by _run so every uv call
+# is bounded by what is LEFT of the budget rather than by its own 30 minutes: a stalled
+# index used to hold the UI at "Preparing" for up to an hour across the two core calls
+# before the deadline was so much as looked at.
+_RUN_DEADLINE: Optional[float] = None
+
+
+@contextlib.contextmanager
+def _within_budget(deadline: Optional[float]) -> Iterator[None]:
+    global _RUN_DEADLINE
+    previous = _RUN_DEADLINE
+    _RUN_DEADLINE = deadline
+    try:
+        yield
+    finally:
+        _RUN_DEADLINE = previous
+
+
+def _run_timeout(cmd: Sequence[str]) -> float:
+    if _RUN_DEADLINE is None:
+        return float(SUBPROCESS_TIMEOUT_SECONDS)
+    remaining = _RUN_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(list(cmd), 0)
+    return min(float(SUBPROCESS_TIMEOUT_SECONDS), remaining)
+
+
 def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess:
     return subprocess.run(
         list(cmd),
@@ -720,8 +747,30 @@ def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess
         encoding = "utf-8",
         errors = "replace",
         env = env,
-        timeout = SUBPROCESS_TIMEOUT_SECONDS,
+        timeout = _run_timeout(cmd),
     )
+
+
+# The installer's _redact_install_output, kept in step with it: uv and pip failure text
+# embeds the failing index URL verbatim, which can carry user:token@, ?token= or
+# #token= secrets, and what is raised here reaches the desktop log and the renderer.
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/@\s`]+@")
+_URL_QUERY_VALUE_RE = re.compile(r"([?&][^=\s&`]+)=[^&#\s`]+")
+_URL_FRAGMENT_RE = re.compile(r"(https?://[^\s`#]+)#[^\s`]+")
+
+
+def _redact(text: str) -> str:
+    text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
+    text = _URL_QUERY_VALUE_RE.sub(r"\1=<redacted>", text)
+    return _URL_FRAGMENT_RE.sub(r"\1#<redacted>", text)
+
+
+def _failure_text(result: subprocess.CompletedProcess, limit: int) -> str:
+    return _redact(_combined(result).strip()[-limit:]) or f"uv exited {result.returncode}"
+
+
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, subprocess.TimeoutExpired)
 
 
 def _combined(result: subprocess.CompletedProcess) -> str:
@@ -910,6 +959,24 @@ def run(
     )
     if live_constraints is not None and not live_constraints.is_file():
         live_constraints = None
+    # The installer sets UV_OVERRIDE to the bundled macOS arm64 overrides when it loads
+    # (install_python_stack.py, kept when a caller set one), and uv applies an override
+    # to every resolution. Without it the core dry run answers for a different resolver:
+    # it honoured mlx-vlm's transformers requirement against the constraints and planned
+    # mlx-vlm and mlx-audio DOWNGRADES the update never makes, and the offline swap then
+    # installed them from the cache (observed on the staging matrix). Same file, same
+    # rule: the live tree's, since the live installer is what runs the core step.
+    if (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and "UV_OVERRIDE" not in child_env
+        and live_studio is not None
+    ):
+        overrides = (
+            live_studio / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+        )
+        if overrides.is_file():
+            child_env["UV_OVERRIDE"] = str(overrides)
 
     # 2. Resolve. The plan is what the update's core step would do, asked of the
     #    live venv so anything already satisfied is absent from it.
@@ -924,20 +991,53 @@ def run(
         no_torch = no_torch,
         uv = uv,
     )
+    with _within_budget(deadline):
+        return _run_prefetch(
+            studio_home = studio_home,
+            core_cmd = core_cmd,
+            child_env = child_env,
+            floor = floor,
+            shell_version = shell_version,
+            cache_dir = cache_dir,
+            interpreter = interpreter,
+            uv = uv,
+            no_torch = no_torch,
+            target = target,
+            live_constraints = live_constraints,
+            deadline = deadline,
+            step = step,
+        )
+
+
+def _run_prefetch(
+    *,
+    studio_home: Path,
+    core_cmd: Sequence[str],
+    child_env: Optional[dict],
+    floor: str,
+    shell_version: Optional[str],
+    cache_dir: Optional[str],
+    interpreter: Path,
+    uv: str,
+    no_torch: bool,
+    target: Path,
+    live_constraints: Optional[Path],
+    deadline: float,
+    step: Callable[[str], None],
+) -> dict:
     try:
         resolved = _run(core_cmd, child_env)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise PrefetchError(f"could not resolve the core packages: {exc}") from exc
+        if _timed_out(exc):
+            raise PrefetchError("out of time while resolving the core packages") from exc
+        raise PrefetchError(f"could not resolve the core packages: {_redact(str(exc))}") from exc
     if resolved.returncode != 0:
-        raise PrefetchError(
-            "could not resolve the core packages: "
-            + (_combined(resolved).strip()[-800:] or f"uv exited {resolved.returncode}")
-        )
+        raise PrefetchError("could not resolve the core packages: " + _failure_text(resolved, 800))
     core_output = _combined(resolved)
     planned = parse_dry_run_plan(core_output)
     if not plan_is_readable(core_output, planned):
         raise PrefetchError(
-            "could not read the core plan uv printed: " + core_output.strip()[-800:]
+            "could not read the core plan uv printed: " + _redact(core_output.strip()[-800:])
         )
 
     installed_backend = _installed_version("unsloth")
@@ -990,12 +1090,11 @@ def run(
     try:
         fetched = _run(fetch_cmd, child_env)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise PrefetchError(f"could not download the core packages: {exc}") from exc
+        if _timed_out(exc):
+            raise PrefetchError("out of time while downloading the core packages") from exc
+        raise PrefetchError(f"could not download the core packages: {_redact(str(exc))}") from exc
     if fetched.returncode != 0:
-        raise PrefetchError(
-            "could not download the core packages: "
-            + (_combined(fetched).strip()[-800:] or f"uv exited {fetched.returncode}")
-        )
+        raise PrefetchError("could not download the core packages: " + _failure_text(fetched, 800))
     payload["core_records"] = core_record_digests(target, planned)
 
     # 4. Requirement files, best effort. These come from the NEW wheel, resolved
@@ -1076,12 +1175,11 @@ def _prefetch_requirement_file(
             env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"skipped_reason": f"resolve failed: {exc}"}
+        if _timed_out(exc):
+            return {"skipped_reason": "out of time"}
+        return {"skipped_reason": f"resolve failed: {_redact(str(exc))}"}
     if resolved.returncode != 0:
-        return {
-            "skipped_reason": "resolve failed: "
-            + (_combined(resolved).strip()[-400:] or f"uv exited {resolved.returncode}")
-        }
+        return {"skipped_reason": "resolve failed: " + _failure_text(resolved, 400)}
     output = _combined(resolved)
     planned = parse_dry_run_plan(output)
     if not plan_is_readable(output, planned):
@@ -1102,11 +1200,9 @@ def _prefetch_requirement_file(
             env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"pins": dict(planned), "skipped_reason": f"download failed: {exc}"}
+        if _timed_out(exc):
+            return {"pins": dict(planned), "skipped_reason": "out of time"}
+        return {"pins": dict(planned), "skipped_reason": f"download failed: {_redact(str(exc))}"}
     if fetched.returncode != 0:
-        return {
-            "pins": dict(planned),
-            "skipped_reason": "download failed: "
-            + (_combined(fetched).strip()[-400:] or f"uv exited {fetched.returncode}"),
-        }
+        return {"pins": dict(planned), "skipped_reason": "download failed: " + _failure_text(fetched, 400)}
     return {"pins": dict(planned)}

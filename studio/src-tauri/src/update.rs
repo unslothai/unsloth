@@ -12,6 +12,39 @@ pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
+    /// Set by `reserve_update_start` while an update is being started but has no
+    /// child yet: stopping the prefetch, stopping the backend, waiting for ports.
+    /// Reported as running so a prefetch cannot start into that window.
+    pub starting: bool,
+}
+
+/// Holds the update's `starting` reservation; dropping it releases the slot.
+pub struct UpdateStartReservation(UpdateState);
+
+impl Drop for UpdateStartReservation {
+    fn drop(&mut self) {
+        if let Ok(mut update) = self.0.lock() {
+            update.starting = false;
+        }
+    }
+}
+
+/// Claim the update slot before any of the work that precedes the spawn.
+///
+/// `start_backend_update` used to check for a child, then stop the prefetch, then stop
+/// the backend, then spawn. A prefetch command arriving during those stops saw no child
+/// and started, and the two then resolved against the live environment and wrote the
+/// same cache side by side. The reservation is taken under the same lock as the child
+/// check, so there is no gap between "no update" and "an update is starting".
+pub fn reserve_update_start(state: &UpdateState) -> Result<UpdateStartReservation, String> {
+    let mut update = state
+        .lock()
+        .map_err(|_| "Update state is unavailable.".to_string())?;
+    if update.child.is_some() || update.starting {
+        return Err("Update is already running.".to_string());
+    }
+    update.starting = true;
+    Ok(UpdateStartReservation(state.clone()))
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -777,7 +810,7 @@ fn clear_current_attempt(state: &UpdateState) {
 pub fn is_update_running(state: &UpdateState) -> bool {
     state
         .lock()
-        .map(|update| update.child.is_some())
+        .map(|update| update.child.is_some() || update.starting)
         .unwrap_or(false)
 }
 
@@ -899,6 +932,20 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// The window between deciding to update and having a child is the one a prefetch
+    /// used to start into; the reservation closes it and releases on drop.
+    #[test]
+    fn an_update_reservation_counts_as_running_until_it_is_dropped() {
+        let state = new_update_state();
+        assert!(!is_update_running(&state));
+        let reservation = reserve_update_start(&state).expect("slot is free");
+        assert!(is_update_running(&state));
+        assert!(reserve_update_start(&state).is_err());
+        drop(reservation);
+        assert!(!is_update_running(&state));
+        assert!(reserve_update_start(&state).is_ok());
+    }
 
     /// A directory that looks enough like a managed install for
     /// `build_update_command` to resolve an interpreter beside the launcher.
