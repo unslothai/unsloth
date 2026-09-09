@@ -6811,6 +6811,7 @@ def _drafter_for_path(
     *,
     kind: str = "mtp",
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     """The drafter of ``kind`` that pairs with a local GGUF, or None.
 
@@ -6838,7 +6839,16 @@ def _drafter_for_path(
             rejected |= not usable
             return usable
 
-    detected = detect(gguf_path, search_root = root, accept = accept)
+    # The load resolved its companions across these roots, so the comparison has to
+    # look where the launch looked or an Apply reloads against a drafter it cannot see.
+    detected = next(
+        (
+            found
+            for candidate_root in (companion_roots or (root,))
+            if (found := detect(gguf_path, search_root = candidate_root, accept = accept))
+        ),
+        None,
+    )
     if log_native_fallback and rejected and detected:
         logger.info(
             "Using %s subdirectory drafter for native load: %s",
@@ -6882,9 +6892,13 @@ def _mtp_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
-        gguf_path, native_grant_backed, log_native_fallback = log_native_fallback
+        gguf_path,
+        native_grant_backed,
+        log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -6893,12 +6907,14 @@ def _dspark_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dspark",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -6907,12 +6923,14 @@ def _dflash_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dflash",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -6957,6 +6975,7 @@ def _active_gguf_intent(
     else:
         effective_extra = request.llama_extra_args
         batch_overrides_inherit = False
+    _request_roots = tuple(request._gguf_companion_roots)
     source = llama_backend.last_load_intent or GgufLoadIntent(
         model_identifier = model_identifier,
         gguf_path = None if llama_backend.hf_repo else llama_backend.gguf_path,
@@ -6984,9 +7003,15 @@ def _active_gguf_intent(
         preserve_multi_gpu_on_layer = (
             llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
-        mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        mtp_draft_path = _mtp_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _request_roots
+        ),
+        dspark_draft_path = _dspark_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _request_roots
+        ),
+        dflash_draft_path = _dflash_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _request_roots
+        ),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
@@ -12977,18 +13002,21 @@ def _resolve_gguf_load_intent(
                     config.gguf_file,
                     True,
                     log_native_fallback = True,
+                    companion_roots = tuple(request._gguf_companion_roots),
                 )
             if config.gguf_dspark_file:
                 config.gguf_dspark_file = _dspark_draft_for_path(
                     config.gguf_file,
                     True,
                     log_native_fallback = True,
+                    companion_roots = tuple(request._gguf_companion_roots),
                 )
             if config.gguf_dflash_file:
                 config.gguf_dflash_file = _dflash_draft_for_path(
                     config.gguf_file,
                     True,
                     log_native_fallback = True,
+                    companion_roots = tuple(request._gguf_companion_roots),
                 )
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
@@ -14142,6 +14170,16 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+
+        # A row pinned to a snapshot path means refs/main stopped holding a complete
+        # quant, which is what fetching a companion after the weights does. The
+        # revision is the cache's bookkeeping, so the companion scan still spans the
+        # repo and an MTP head or mmproj one snapshot over is still found (#10599).
+        if not request._gguf_companion_roots:
+            from core.inference.local_model_resolver import hf_cache_snapshot_companion_roots
+            request._gguf_companion_roots = await asyncio.to_thread(
+                hf_cache_snapshot_companion_roots, model_identifier
+            )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -14411,9 +14449,21 @@ async def _load_model_impl(
             if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
                 gguf_intent = replace(
                     gguf_intent,
-                    mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
-                    dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
-                    dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, False),
+                    mtp_draft_path = _mtp_draft_for_path(
+                        llama_backend.gguf_path,
+                        False,
+                        companion_roots = tuple(request._gguf_companion_roots),
+                    ),
+                    dspark_draft_path = _dspark_draft_for_path(
+                        llama_backend.gguf_path,
+                        False,
+                        companion_roots = tuple(request._gguf_companion_roots),
+                    ),
+                    dflash_draft_path = _dflash_draft_for_path(
+                        llama_backend.gguf_path,
+                        False,
+                        companion_roots = tuple(request._gguf_companion_roots),
+                    ),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(
