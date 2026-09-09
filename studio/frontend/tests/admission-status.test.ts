@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   ADMISSION_COMMENT_DONE,
   ADMISSION_COMMENT_PAUSED,
+  ADMISSION_COMMENT_RECOMPUTED,
   ADMISSION_COMMENT_RESUMED,
   ADMISSION_COMMENT_WAIT,
   admissionStatusLabel,
@@ -21,6 +22,16 @@ test("the four signals are recognised", () => {
     readAdmissionComment(`: ${ADMISSION_COMMENT_RESUMED}`),
     "resumed",
   );
+});
+
+test("a recompute is read, and says nothing about what the run is doing", () => {
+  // It qualifies the resume before it: the answer came back, it just is not the one a
+  // restore would have produced, so no status line changes.
+  assert.equal(
+    readAdmissionComment(`: ${ADMISSION_COMMENT_RECOMPUTED}`),
+    "recomputed",
+  );
+  assert.equal(admissionStatusLabel("recomputed"), null);
 });
 
 test("the space after the colon is optional", () => {

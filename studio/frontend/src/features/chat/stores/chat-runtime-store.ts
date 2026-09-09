@@ -2441,6 +2441,10 @@ type ChatRuntimeStore = {
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
+  /** Whether this conversation's last answer was re-prefilled after a park the server could not
+   *  hold, so it is not byte-identical however exact concurrency is reported. Keyed like the
+   *  canvas above: the server reports a recompute per answer, not per load. */
+  preemptRecomputedByThreadId: Record<string, boolean>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
    *  Apply can tell an explicit pin from Auto. */
@@ -2620,6 +2624,9 @@ type ChatRuntimeStore = {
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
+  /** Record that this conversation took a recompute; cleared when its next turn starts. */
+  notePreemptRecompute: (threadId: string | null) => void;
+  clearPreemptRecompute: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
@@ -4014,6 +4021,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvasByThreadId: {},
+  preemptRecomputedByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
@@ -4531,6 +4539,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      move(state.preemptRecomputedByThreadId, "preemptRecomputedByThreadId");
       return Object.keys(moved).length > 0 ? moved : state;
     }),
   runKeyForOwner: (fallbackKey, owner) => {
@@ -4932,6 +4941,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolLiveOutput: {},
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
+      preemptRecomputedByThreadId: {},
       kvCacheDtype: null,
       mlxKvBits: null,
       loadedMlxKvBitsRequested: null,
@@ -5514,6 +5524,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.activeDiffusionCanvasByThreadId };
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
+    }),
+  notePreemptRecompute: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if (state.preemptRecomputedByThreadId[key]) return state;
+      return {
+        preemptRecomputedByThreadId: {
+          ...state.preemptRecomputedByThreadId,
+          [key]: true,
+        },
+      };
+    }),
+  clearPreemptRecompute: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if (state.preemptRecomputedByThreadId[key] === undefined) return state;
+      const next = { ...state.preemptRecomputedByThreadId };
+      delete next[key];
+      return { preemptRecomputedByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>

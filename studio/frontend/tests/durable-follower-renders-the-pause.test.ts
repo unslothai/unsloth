@@ -22,10 +22,23 @@ const source = readFileSync(
 test("the follower renders a relayed pause through the live adapter's label", () => {
   const start = source.indexOf("chunk._admissionStatus !== undefined");
   assert.notEqual(start, -1, "the chunk branch reads _admissionStatus");
-  const branch = source.slice(start, start + 500);
+  const branch = source.slice(start, start + 800);
   assert.match(branch, /setToolStatus\(\s*threadId,\s*admissionStatusLabel\(chunk\._admissionStatus\),\s*serverCancel,?\s*\)/);
   assert.match(branch, /continue;/);
   assert.match(source, /import \{\s*type AdmissionStatus,\s*admissionStatusLabel,\s*\} from "\.\/utils\/admission-status"/);
+});
+
+test("a recompute marks the thread instead of rewriting the status line", () => {
+  // It arrives after the resume it qualifies, so the run is generating again: showing a
+  // pause label for it would say the opposite of what happened.
+  const start = source.indexOf("chunk._admissionStatus !== undefined");
+  const branch = source.slice(start, start + 800);
+  assert.match(branch, /chunk\._admissionStatus === "recomputed"/);
+  assert.match(branch, /notePreemptRecompute\(threadId\)/);
+  assert.ok(
+    branch.indexOf("notePreemptRecompute") < branch.indexOf("setToolStatus"),
+    "the recompute is taken before the label branch it must not reach",
+  );
 });
 
 test("the label goes with the run", () => {

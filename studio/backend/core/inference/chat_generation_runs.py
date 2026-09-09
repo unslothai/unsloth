@@ -362,6 +362,8 @@ _ADMISSION_DONE_MARKER = ": admission-done"
 # Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
+# Resumed by re-prefilling: the park did not fit, so the answer is not byte-identical.
+_PREEMPT_RECOMPUTED_MARKER = ": preempt-recomputed"
 # Still paused, every two seconds. Renewed on like a queue wait: a pause outlasting the lease
 # reaped the run waiting in it.
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
@@ -377,6 +379,8 @@ def _admission_status_chunks(text: str) -> list[dict]:
             chunks.append({"_admissionStatus": "paused"})
         elif stripped == _PREEMPT_RESUMED_MARKER:
             chunks.append({"_admissionStatus": "resumed"})
+        elif stripped == _PREEMPT_RECOMPUTED_MARKER:
+            chunks.append({"_admissionStatus": "recomputed"})
     return chunks
 
 

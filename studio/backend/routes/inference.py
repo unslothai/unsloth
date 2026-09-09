@@ -1743,11 +1743,15 @@ _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # Paused mid-answer so another chat could finish, and resumed; not the queue pair above.
 _OPENAI_PREEMPT_SSE_PAUSED = ": preempt-paused\n\n"
 _OPENAI_PREEMPT_SSE_RESUMED = ": preempt-resumed\n\n"
+# Resumed by re-prefilling rather than restoring, so this answer is not byte-identical under
+# exact concurrency. Follows the resume it qualifies.
+_OPENAI_PREEMPT_SSE_RECOMPUTED = ": preempt-recomputed\n\n"
 # Still paused. Ignored by the frontend, renewed on by a durable run's lease.
 _OPENAI_PREEMPT_SSE_KEEPALIVE = ": preempt-keepalive\n\n"
 _OPENAI_PREEMPT_SSE_BY_STATE = {
     "paused": _OPENAI_PREEMPT_SSE_PAUSED,
     "resumed": _OPENAI_PREEMPT_SSE_RESUMED,
+    "recomputed": _OPENAI_PREEMPT_SSE_RECOMPUTED,
     "keepalive": _OPENAI_PREEMPT_SSE_KEEPALIVE,
 }
 # llama-server's own park notices (unslothai/llama.cpp#197) mapped onto the comments every other
@@ -1755,6 +1759,7 @@ _OPENAI_PREEMPT_SSE_BY_STATE = {
 _SERVER_PARK_SSE_BY_COMMENT = {
     ": preempted": _OPENAI_PREEMPT_SSE_PAUSED,
     ": resumed": _OPENAI_PREEMPT_SSE_RESUMED,
+    ": recomputed": _OPENAI_PREEMPT_SSE_RECOMPUTED,
     ": preempt-keepalive": _OPENAI_PREEMPT_SSE_KEEPALIVE,
 }
 

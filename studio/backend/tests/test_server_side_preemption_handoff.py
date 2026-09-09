@@ -329,6 +329,15 @@ class TestADurableRunRelaysThePause:
         # Renewed on, never relayed: a keepalive is progress for the lease, not a status.
         assert _admission_status_chunks(": preempt-keepalive\n\n") == []
 
+    def test_a_recompute_reaches_a_follower_after_the_resume_it_qualifies(self):
+        # The park could not be held, so the answer was re-prefilled: the durable follower
+        # needs it to mark the thread, not to change the status line.
+        both = ": preempt-resumed\n\n: preempt-recomputed\n\n"
+        assert [c["_admissionStatus"] for c in _admission_status_chunks(both)] == [
+            "resumed",
+            "recomputed",
+        ]
+
 
 class TestEverySignalTheClientReadsHasAProducer:
     """The one cross-language contract here: the client understands four comments, and a
@@ -336,7 +345,7 @@ class TestEverySignalTheClientReadsHasAProducer:
 
     # No behavioural reach: the producers are asserted elsewhere in this file, but only
     # the frontend source says which comments the client is prepared to read.
-    def test_the_frontend_declares_exactly_the_four_comments_the_route_emits(self):
+    def test_the_frontend_declares_exactly_the_comments_the_route_emits(self):
         backend_dir = pathlib.Path(__file__).resolve().parent.parent
         ts = backend_dir.parent / "frontend/src/features/chat/utils/admission-status.ts"
         if not ts.exists():
@@ -348,6 +357,7 @@ class TestEverySignalTheClientReadsHasAProducer:
             "admission-done",
             "preempt-paused",
             "preempt-resumed",
+            "preempt-recomputed",
         }
 
 

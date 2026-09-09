@@ -6347,6 +6347,8 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
+            // A fresh answer has not been re-prefilled yet; the chip's note is per answer.
+            runtime.clearPreemptRecompute(liveThreadKey(serverCancel));
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -6361,6 +6363,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _admissionStatus?: AdmissionStatus }
               )._admissionStatus;
               if (admissionStatus !== undefined) {
+                if (admissionStatus === "recomputed") {
+                  // Qualifies the resume before it, so the status line stays as it is.
+                  runtime.notePreemptRecompute(liveThreadKey(serverCancel));
+                  continue;
+                }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
                   admissionStatusLabel(admissionStatus),

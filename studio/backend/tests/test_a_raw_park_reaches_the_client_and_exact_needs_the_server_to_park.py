@@ -35,7 +35,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 
 class TestARawStreamForwardsTheServersPark:
-    def test_the_three_notices_map_onto_the_studio_comments(self):
+    def test_the_notices_map_onto_the_studio_comments(self):
         assert inference._server_park_sse(llama_mod._SERVER_PARKED_COMMENT) == (
             inference._OPENAI_PREEMPT_SSE_PAUSED
         )
@@ -44,6 +44,9 @@ class TestARawStreamForwardsTheServersPark:
         )
         assert inference._server_park_sse(llama_mod._SERVER_KEEPALIVE_COMMENT) == (
             inference._OPENAI_PREEMPT_SSE_KEEPALIVE
+        )
+        assert inference._server_park_sse(llama_mod._SERVER_RECOMPUTED_COMMENT) == (
+            inference._OPENAI_PREEMPT_SSE_RECOMPUTED
         )
         # The routes spell the notices out; the backend's constants are the source of truth.
         assert set(inference._SERVER_PARK_SSE_BY_COMMENT) == set(llama_mod._SERVER_PARK_COMMENTS)
@@ -99,6 +102,61 @@ class TestExactNeedsTheServerToPark:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "server_parks = self.server_preempts_kv" in source
         assert "parking_holds = _exact_short is None" in source
+
+
+class TestARecomputeReachesTheClient:
+    """A park the host budget could not hold is restored by re-prefilling, so the answer is no
+    longer byte-identical. The server says so three ways (unslothai/llama.cpp#197) and Studio has
+    to be tolerant of a build that sends none of them."""
+
+    def test_the_notice_becomes_a_preempt_event_without_ending_an_epoch(self):
+        seen = []
+
+        class _Policy:
+            def on_server_parked(self):
+                seen.append("parked")
+
+            def on_server_resumed(self):
+                seen.append("resumed")
+
+        event = LlamaCppBackend._server_park_event(llama_mod._SERVER_RECOMPUTED_COMMENT, _Policy())
+        assert event == {"type": "preempt", "state": "recomputed", "source": "server"}
+        # It follows the resume it qualifies, so the policy has already been told.
+        assert seen == []
+
+    def test_every_state_the_backend_emits_has_a_comment_to_relay_it(self):
+        for state in ("paused", "resumed", "recomputed", "keepalive"):
+            assert state in inference._OPENAI_PREEMPT_SSE_BY_STATE
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ({"preempt": {"parks": 2, "recomputes": 1}}, {"parks": 2, "recomputes": 1}),
+            ({"preempt": {"parks": 2}}, {"parks": 2, "recomputes": 0}),
+            ({"preempt": {"parks": "x", "recomputes": None}}, {"parks": 0, "recomputes": 0}),
+            ({"preempt": {"recomputes": -3}}, {"parks": 0, "recomputes": 0}),
+            # A server that does not report parks says nothing, which is not zero.
+            ({}, None),
+            ({"preempt": None}, None),
+            ({"preempt": 1}, None),
+            ("not a chunk", None),
+        ],
+    )
+    def test_the_final_objects_counters_are_read_tolerantly(self, body, expected):
+        assert LlamaCppBackend._server_preempt_counts(body) == expected
+
+    def test_the_stream_relays_the_notice_and_carries_the_counters(self):
+        source = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+        assert "_metadata_preempt = _chunk_preempt" in source
+        assert '"preempt": _metadata_preempt' in source
+        # A build that counts without writing the notice still reaches the client.
+        synth = source.index('yield {"type": "preempt", "state": "recomputed", "source": "server"}')
+        assert "not _saw_recompute" in source[synth - 400 : synth]
+
+    def test_the_tool_loop_carries_the_counters_too(self):
+        source = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
+        assert "_turn_preempt.update(_chunk_preempt)" in source
+        assert '"preempt": dict(_turn_preempt) or None' in source
 
 
 _GIB = 1024 * 1024 * 1024

@@ -142,3 +142,31 @@ test("the chip applies to a resident local model and to nothing else", () => {
     "a load in flight describes the next server, not this one",
   );
 });
+
+test("a recompute in this chat is named in the chip, whatever the load reports", () => {
+  // The mode can be up and this one answer still re-prefilled: a chip that stayed silent
+  // would say the guarantee held for an answer it did not hold for.
+  const on = exactConcurrencyChip("on", { recomputed: true });
+  assert.ok(on);
+  assert.match(on.title, /re-prefilled after a park the server could not hold/);
+  assert.match(on.title, /not byte-identical/);
+  assert.notEqual(on.label, "Exact");
+  const unavailable = exactConcurrencyChip("unavailable", { recomputed: true });
+  assert.ok(unavailable);
+  assert.match(unavailable.title, /re-prefilled after a park the server could not hold/);
+});
+
+test("without a recompute the chip reads exactly as it did", () => {
+  assert.deepEqual(exactConcurrencyChip("on"), exactConcurrencyChip("on", {}));
+  assert.equal(exactConcurrencyChip("on")?.label, "Exact");
+  assert.doesNotMatch(exactConcurrencyChip("on")!.title, /re-prefilled/);
+  // `off` renders nothing at all, so a recompute there has no chip to annotate.
+  assert.equal(exactConcurrencyChip("off", { recomputed: true }), null);
+});
+
+test("the chip reads the flag for the conversation on screen", () => {
+  // The store keys the flag by thread, so a recompute in a background chat cannot annotate
+  // the one the user is looking at.
+  assert.match(STORE, /preemptRecomputedByThreadId: Record<string, boolean>/);
+  assert.match(CHIP, /preemptRecomputedByThreadId\[s\.activeThreadId/);
+});

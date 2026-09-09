@@ -21,16 +21,27 @@ export const ADMISSION_COMMENT_PAUSED = "preempt-paused";
 /** The upstream request has been re-opened and tokens are flowing again. */
 export const ADMISSION_COMMENT_RESUMED = "preempt-resumed";
 
+/** Follows the resume: the park could not be held, so the answer was re-prefilled instead of
+ *  restored and is no longer byte-identical under exact concurrency. */
+export const ADMISSION_COMMENT_RECOMPUTED = "preempt-recomputed";
+
 /** What the stream last said about this run's access to the model. `waiting` and `paused` are
  *  deliberately distinct: queued-before-start promises nothing, while paused-mid-answer has
- *  visible text on screen that the user needs told is not lost. */
-export type AdmissionStatus = "waiting" | "admitted" | "paused" | "resumed";
+ *  visible text on screen that the user needs told is not lost. `recomputed` is not a state the
+ *  run is IN: it qualifies the resume that preceded it. */
+export type AdmissionStatus =
+  | "waiting"
+  | "admitted"
+  | "paused"
+  | "resumed"
+  | "recomputed";
 
 const BY_COMMENT: Record<string, AdmissionStatus> = {
   [ADMISSION_COMMENT_WAIT]: "waiting",
   [ADMISSION_COMMENT_DONE]: "admitted",
   [ADMISSION_COMMENT_PAUSED]: "paused",
   [ADMISSION_COMMENT_RESUMED]: "resumed",
+  [ADMISSION_COMMENT_RECOMPUTED]: "recomputed",
 };
 
 /** Read one raw SSE line as an admission signal, or null for anything else. Matched on the

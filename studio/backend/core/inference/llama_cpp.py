@@ -2029,9 +2029,17 @@ _SERVER_PARK_STALL_CAP_S = 1800.0  # 30 min
 # SSE comments a swap-capable llama-server (unslothai/llama.cpp#184) writes on park and restore.
 _SERVER_PARKED_COMMENT = ": preempted"
 _SERVER_RESUMED_COMMENT = ": resumed"
+# Written straight after `: resumed` when the park could not be restored and was re-prefilled
+# instead (unslothai/llama.cpp#197): the answer is no longer byte-identical under exact concurrency.
+_SERVER_RECOMPUTED_COMMENT = ": recomputed"
 # Every two seconds while parked: the server is alive, not that anything changed.
 _SERVER_KEEPALIVE_COMMENT = ": preempt-keepalive"
-_SERVER_PARK_COMMENTS = (_SERVER_PARKED_COMMENT, _SERVER_RESUMED_COMMENT, _SERVER_KEEPALIVE_COMMENT)
+_SERVER_PARK_COMMENTS = (
+    _SERVER_PARKED_COMMENT,
+    _SERVER_RESUMED_COMMENT,
+    _SERVER_RECOMPUTED_COMMENT,
+    _SERVER_KEEPALIVE_COMMENT,
+)
 # How often a Studio-side pause says it is still waiting. Matches the server's parked keepalive.
 _PREEMPT_KEEPALIVE_S = 2.0
 
@@ -7008,12 +7016,34 @@ class LlamaCppBackend:
         return at is not None and time.monotonic() - float(at) <= float(within_s)
 
     @staticmethod
+    def _server_preempt_counts(data) -> Optional[dict]:
+        """The ``preempt`` field every final completion object carries on a parking build
+        (unslothai/llama.cpp#197) as ``{"parks": n, "recomputes": n}``, else None.
+
+        A recompute is a park the host budget could not hold, so the answer was re-prefilled
+        and is not byte-identical. A server that does not send the field says nothing, which is
+        not the same as saying zero."""
+        raw = data.get("preempt") if isinstance(data, dict) else None
+        if not isinstance(raw, dict):
+            return None
+        counts: dict = {}
+        for key in ("parks", "recomputes"):
+            try:
+                counts[key] = max(int(raw.get(key) or 0), 0)
+            except (TypeError, ValueError):
+                counts[key] = 0
+        return counts
+
+    @staticmethod
     def _server_park_event(line: str, preempt_policy = None) -> Optional[dict]:
         """A `: preempted` / `: resumed` / `: preempt-keepalive` server comment as the stream event
         the routes relay. The policy is told of a park and a resume, so the epoch ends."""
         if line == _SERVER_KEEPALIVE_COMMENT:
             # Still parked. Relayed to renew a durable run's lease; the policy is not told twice.
             return {"type": "preempt", "state": "keepalive", "source": "server"}
+        if line == _SERVER_RECOMPUTED_COMMENT:
+            # Follows the resume it qualifies, so the policy's epoch has already ended.
+            return {"type": "preempt", "state": "recomputed", "source": "server"}
         parked = line == _SERVER_PARKED_COMMENT
         if not parked and line != _SERVER_RESUMED_COMMENT:
             return None
@@ -29827,6 +29857,10 @@ class LlamaCppBackend:
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
+        # The turn's park counters, once the server has sent them. See `_server_preempt_counts`.
+        _metadata_preempt = None
+        # Whether the server's own `: recomputed` notice was already relayed for this turn.
+        _saw_recompute = False
         _metadata_finish_reason = None
 
         try:
@@ -29884,6 +29918,9 @@ class LlamaCppBackend:
                             # llama-server parked this slot or restored it; nothing here is torn down.
                             _park_event = self._server_park_event(line, preempt_policy)
                             if _park_event is not None:
+                                _saw_recompute = _saw_recompute or (
+                                    _park_event.get("state") == "recomputed"
+                                )
                                 yield _park_event
                             continue
                         if not line.startswith("data: "):
@@ -29905,6 +29942,9 @@ class LlamaCppBackend:
                             _chunk_usage = data.get("usage")
                             if _chunk_usage:
                                 _metadata_usage = _chunk_usage
+                            _chunk_preempt = self._server_preempt_counts(data)
+                            if _chunk_preempt is not None:
+                                _metadata_preempt = _chunk_preempt
                             # An error chunk carries no choices, so without this the loop
                             # ignored it and the reply ended with no finish_reason and no
                             # incomplete stamp: to the user, a mid-sentence stop for no
@@ -29970,7 +30010,16 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
-                if _metadata_usage or _metadata_timings or _metadata_finish_reason:
+                if _metadata_preempt and _metadata_preempt.get("recomputes") and not _saw_recompute:
+                    # A build that counts recomputes without writing the notice still says so
+                    # here, and the client learns of it either way.
+                    yield {"type": "preempt", "state": "recomputed", "source": "server"}
+                if (
+                    _metadata_usage
+                    or _metadata_timings
+                    or _metadata_finish_reason
+                    or _metadata_preempt
+                ):
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
@@ -29987,6 +30036,8 @@ class LlamaCppBackend:
                         "usage": _metadata_usage or {},
                         "timings": _metadata_timings,
                         "finish_reason": _metadata_finish_reason,
+                        # Absent on a server that does not report parks; never invented as zero.
+                        "preempt": _metadata_preempt,
                     }
 
         except _preemption.LlamaStreamPreempted:
@@ -30530,6 +30581,10 @@ class LlamaCppBackend:
                 return text
             return _streaming_stripper.strip(text)
 
+        # This turn's park counters, kept across the attempts a tool loop makes: a mutable holder
+        # so the nested builders read the latest without a `nonlocal` in every one of them.
+        _turn_preempt: dict = {}
+
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
             usage/timings with the running cross-iteration accumulators. None when
@@ -30561,6 +30616,8 @@ class LlamaCppBackend:
                 "usage": _usage,
                 "timings": _mt,
                 "finish_reason": finish_reason,
+                # Absent on a server that does not report parks; never invented as zero.
+                "preempt": dict(_turn_preempt) or None,
             }
 
         def _folded_attempt(usage, timings):
@@ -34402,6 +34459,10 @@ class LlamaCppBackend:
                                 _chunk_usage = chunk_data.get("usage")
                                 if _chunk_usage:
                                     _metadata_usage = _chunk_usage
+                                _chunk_preempt = self._server_preempt_counts(chunk_data)
+                                if _chunk_preempt is not None:
+                                    _turn_preempt.clear()
+                                    _turn_preempt.update(_chunk_preempt)
                                 # See the note on the first stream loop.
                                 _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:

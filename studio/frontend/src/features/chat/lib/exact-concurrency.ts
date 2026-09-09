@@ -24,15 +24,23 @@ export function normalizeExactConcurrency(
 const EXACT_MEANING =
   "identical output regardless of other chats sharing this model";
 
+/** Appended when the server said this thread took a recompute: the mode is running, but one
+ *  answer here did not get the guarantee, and a chip that stayed silent would overstate it. */
+const RECOMPUTED_NOTE =
+  "This answer was re-prefilled after a park the server could not hold, so it is not byte-identical.";
+
 /** What the header chip shows, or null when there is nothing to say. `off` is the default and
- *  the common case, so a chip for it would be noise on every load. */
+ *  the common case, so a chip for it would be noise on every load. `recomputed` is this thread's,
+ *  not the load's: the server reports it per answer. */
 export function exactConcurrencyChip(
   state: ExactConcurrencyState,
+  options: { recomputed?: boolean } = {},
 ): { label: string; title: string } | null {
+  const note = options.recomputed ? ` ${RECOMPUTED_NOTE}` : "";
   if (state === "on") {
     return {
-      label: "Exact",
-      title: `Exact concurrency is on: ${EXACT_MEANING}.`,
+      label: options.recomputed ? "Exact, one answer re-prefilled" : "Exact",
+      title: `Exact concurrency is on: ${EXACT_MEANING}.${note}`,
     };
   }
   if (state === "unavailable") {
@@ -40,7 +48,7 @@ export function exactConcurrencyChip(
       label: "Exact unavailable",
       // Not "refused": Studio withholds the mode itself on some launches, and the load
       // warnings carry the reason.
-      title: `Exact concurrency was requested (${EXACT_MEANING}), but this load is not running with it, so a chat's output can depend on the other chats sharing this model.`,
+      title: `Exact concurrency was requested (${EXACT_MEANING}), but this load is not running with it, so a chat's output can depend on the other chats sharing this model.${note}`,
     };
   }
   return null;

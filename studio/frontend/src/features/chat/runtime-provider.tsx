@@ -1062,6 +1062,11 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
               };
               if (chunk._admissionStatus !== undefined) {
+                if (chunk._admissionStatus === "recomputed") {
+                  // Qualifies the resume before it, so the status line stays as it is.
+                  useChatRuntimeStore.getState().notePreemptRecompute(threadId);
+                  continue;
+                }
                 // Queued or paused: the line the live adapter shows, so a follower does
                 // not read the pause as a wedged backend. Cleared with the run below.
                 useChatRuntimeStore

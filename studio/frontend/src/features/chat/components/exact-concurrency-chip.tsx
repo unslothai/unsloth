@@ -11,7 +11,13 @@ import { exactConcurrencyChip } from "../lib/exact-concurrency";
  */
 export function ExactConcurrencyChip() {
   const state = useChatRuntimeStore((s) => s.loadedExactConcurrency);
-  const chip = exactConcurrencyChip(state);
+  // A first turn files its flag under "__default", which is also where activeThreadId sits
+  // until the conversation persists.
+  const recomputed = useChatRuntimeStore(
+    (s) =>
+      s.preemptRecomputedByThreadId[s.activeThreadId || "__default"] === true,
+  );
+  const chip = exactConcurrencyChip(state, { recomputed });
   if (!chip) return null;
   return (
     <span
@@ -19,6 +25,7 @@ export function ExactConcurrencyChip() {
       title={chip.title}
       data-testid="exact-concurrency-chip"
       data-exact-concurrency={state}
+      data-exact-recomputed={recomputed ? "true" : undefined}
       className="pointer-events-auto shrink-0 self-center rounded-full border border-border/60 px-2 py-0.5 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"
     >
       {chip.label}
