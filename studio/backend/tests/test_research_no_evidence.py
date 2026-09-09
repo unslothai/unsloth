@@ -76,7 +76,11 @@ def _claimed_run(
     return research_db.claim_next(supervisor.worker_id)
 
 
-def _run(monkeypatch, tool_results: list[str], website_policy: dict | None = None) -> dict:
+def _run(
+    monkeypatch,
+    tool_results: list[str],
+    website_policy: dict | None = None,
+) -> dict:
     from core import research_runs as worker
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
