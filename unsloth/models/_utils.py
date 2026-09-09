@@ -3232,6 +3232,46 @@ def patch_bnb_optimizer_step_sync():
     Optimizer8bit.step = step
 
 
+def patch_fla_autotuner_fast_path():
+    """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
+    tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run`
+    still builds its own `AutotuneKey` (dict zips, dtype strings, JSON-able normalisation) and
+    then Triton's `Autotuner.run` builds the key a second time, per launch, ~25 us of Python
+    for a lookup whose answer is always the same config. The Qwen3.5 GDN layers make ~2,500
+    such launches per optimizer step. Once a config exists, launch the kernel with it directly.
+    Same config, same kernel, same numerics.
+    """
+    try:
+        import fla.ops.utils.cache as fla_cache
+    except Exception:
+        return
+    CachedAutotuner = getattr(fla_cache, "CachedAutotuner", None)
+    if CachedAutotuner is None or getattr(CachedAutotuner.run, "_unsloth_fast_path", False):
+        return
+    original_run = CachedAutotuner.run
+
+    @functools.wraps(original_run)
+    def run(self, *args, **kwargs):
+        cfg = getattr(self, "_unsloth_fixed_config", None)
+        if cfg is None:
+            cache = self.cache
+            if len(self.configs) == 1:
+                cfg = self.configs[0]
+            elif type(cache).__name__ == "_ReuseBestCache" and len(cache) > 0:
+                cfg = next(iter(cache.values()))
+            else:
+                return original_run(self, *args, **kwargs)
+            if cfg.pre_hook is not None:
+                return original_run(self, *args, **kwargs)
+            self._unsloth_fixed_config = cfg
+            self._unsloth_fixed_kwargs = cfg.all_kwargs()
+        self.best_config = cfg
+        return self.fn.run(*args, **kwargs, **self._unsloth_fixed_kwargs)
+
+    run._unsloth_fast_path = True
+    CachedAutotuner.run = run
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3347,6 +3387,7 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.training_step = _unsloth_training_step
 
     patch_bnb_optimizer_step_sync()
+    patch_fla_autotuner_fast_path()
 
     # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
     if getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
