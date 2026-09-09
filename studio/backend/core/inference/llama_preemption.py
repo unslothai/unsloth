@@ -38,18 +38,6 @@ PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
 DEFAULT_PREEMPT_ENABLED = True
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw.strip())
-    except ValueError:
-        return default
-    # A ratio outside (0, 0.5) is a typo: zero disables the margin, half is drastic.
-    return value if 0.0 < value < 0.5 else default
-
-
 def _int_env(name: str, default: int) -> int:
     """Positive integer from the environment, else the default. Never raises."""
     raw = os.environ.get(name)
@@ -62,20 +50,9 @@ def _int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-# Kept only so an operator who set the old knob is not silently ignored.
-DEFAULT_PREEMPT_BUFFER_RATIO = _float_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_RATIO", 0.15)
 # Reaction headroom for ONE decoding slot, between a sweep and the victim stopping.
 DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
-
-# Escape hatch: reserve a whole --batch-size always, for a surface that forgets to announce.
-STATIC_BATCH_ENV = "UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH"
-DEFAULT_PREEMPT_STATIC_BATCH = False
-
-# Drop the batch term where `_committed_locked` already charges the prefill on top of
-# `resident`, so the same room is not reserved twice. Off: it assumes `resident` is fresh.
-CHARGED_PREFILL_ENV = "UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED"
-DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED = False
 
 # Backstop for an announced prefill that never happens. The stream waits this long for a
 # first token (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`), so a shorter figure dropped the reserve
@@ -85,16 +62,13 @@ PENDING_PREFILL_TTL_S = 1200.0
 # Bounds churn under contention. _MAX_LENGTH_CONTINUATIONS is a quality cap, not this.
 DEFAULT_MAX_PREEMPT_RESUMES = 32
 
-# A chat preempted this many times in a row outranks longest-wins for the next epoch.
+# A chat preempted this many times in a row outranks newest-first, so repeatedly losing
+# does not become never finishing.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 
 # What a chat running ALONE must leave clear. Without it a chat past the shared ceiling
 # can never be admitted OR resumed, and hangs until its client gives up.
 SOLO_MARGIN_DIVISOR = 200
-
-# The reclaim barrier gives up after this long: a server without --metrics never answers.
-DEFAULT_RECLAIM_BARRIER_TIMEOUT_S = 10.0
-DEFAULT_RECLAIM_BARRIER_POLL_S = 0.05
 
 # An unbounded await_resume() turned three paused chats into a 33-minute hang. On expiry
 # the turn finishes with what it has.
@@ -211,7 +185,6 @@ class StreamCheckpoint:
     visible_text: str = ""
     reasoning_text: str = ""
     # Carried rather than re-derived: the `context_truncated` SSE event is not idempotent.
-    pending_truncations: list = field(default_factory = list)
     charged_tokens: int = 0
     resumes: int = 0
     reason: Optional[str] = None
@@ -424,8 +397,7 @@ def preemption_buffer_tokens(
     drafter fills up to ``--spec-draft-n-max`` cells per slot before acceptance and
     admission never sees them; without that reserve llama-server halves n_batch looking for
     room and throws ``speculative batch index 4 is not inside the current sub-batch [0, 4)``
-    (ggml-org/llama.cpp#24840). The batch term is charged only while a prefill is pending;
-    ``UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH=1`` reserves one permanently.
+    (ggml-org/llama.cpp#24840). The batch term is charged only while a prefill is pending.
     """
     if budget <= 0:
         return 0
@@ -439,11 +411,7 @@ def preemption_buffer_tokens(
     # submits no chunk. Summed then capped, as llama-server does for itself
     # (`res + std::min(res_pmt, n_batch)`); max() because both buy space for the next step.
     n_batch = max(0, int(batch_tokens or 0))
-    if _bool_env(STATIC_BATCH_ENV, DEFAULT_PREEMPT_STATIC_BATCH):
-        batch_reserve = n_batch
-    else:
-        batch_reserve = min(n_batch, max(0, int(pending_prefill or 0)))
-    reserve = max(reserve, batch_reserve)
+    reserve = max(reserve, min(n_batch, max(0, int(pending_prefill or 0))))
     # Drafts are additional: cells put in BEFORE acceptance, on top of the batch.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
     # Never the whole cache: a large draft window on a small -c degrades to a tight buffer.
@@ -747,7 +715,8 @@ class PreemptionController:
             self._resume_tickets.pop(gen_id, None)
 
     def resume_queue_depth(self) -> int:
-        """How many waits are in the resume line."""
+        """How many waits are in the resume line. Read by the tests; the mechanism itself
+        works off `_resume_reserved_locked`."""
         with self._lock:
             return len(self._resume_tickets)
 
@@ -1302,6 +1271,8 @@ class PreemptionController:
             return not self._participants
 
     def committed_tokens(self) -> int:
+        """What the watermark compares against the ceiling. `snapshot().committed` for
+        callers that want the rest of it; this is the figure on its own."""
         with self._lock:
             return self._committed_locked()
 
@@ -1331,13 +1302,10 @@ class PreemptionController:
         drops one participant so a caller asking about itself does not count it twice.
         """
         now = time.monotonic()
-        # See CHARGED_PREFILL_ENV: an unmeasured holder's chunk comes out of cells
-        # `_committed_locked` already adds on top of the resident figure.
-        skip_charged = _bool_env(CHARGED_PREFILL_ENV, DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED)
         return sum(
             p.prefill_pending(now)
             for gen_id, p in self._participants.items()
-            if (exclude is None or gen_id != exclude) and not (skip_charged and not p.measured)
+            if exclude is None or gen_id != exclude
         )
 
     def _buffer_locked(self, *, pending: Optional[int] = None) -> int:
@@ -1533,38 +1501,6 @@ class PreemptionController:
                 prefilling = self._pending_prefill_locked(),
                 holders = sum(1 for p in self._participants.values() if p.holds_kv),
             )
-
-
-def wait_for_reclaim(
-    scrape: Callable[[], Optional[dict]],
-    *,
-    target_processing: int,
-    timeout_s: float = DEFAULT_RECLAIM_BARRIER_TIMEOUT_S,
-    poll_s: float = DEFAULT_RECLAIM_BARRIER_POLL_S,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> bool:
-    """Block until llama-server reports at most ``target_processing`` requests in flight.
-
-    Socket teardown is not evidence the cells are free. A BARRIER, never an attribution: the
-    gauge cannot say which generation owns a slot. False means it could not be confirmed
-    within ``timeout_s``, or ``/metrics`` is unavailable, and the caller proceeds anyway,
-    since blocking forever on a gauge that may never answer is worse than the overrun.
-
-    ``scrape`` is injected so this is testable without a server.
-    """
-    deadline = monotonic() + max(0.0, float(timeout_s))
-    while True:
-        metrics = scrape()
-        if metrics is not None:
-            processing = metrics.get("requests_processing")
-            if processing is None:
-                return False
-            if int(processing) <= max(0, int(target_processing)):
-                return True
-        if monotonic() >= deadline:
-            return False
-        sleep(poll_s)
 
 
 class ControllerPreemptionPolicy:

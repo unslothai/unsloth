@@ -6043,6 +6043,50 @@ def _await_resume(policy, cancel_event):
     return result
 
 
+def _decline_preemption(policy, where: str) -> None:
+    """Take back a pause a stream has been asked for and will not take.
+
+    PREEMPTING is outside `_PREEMPTABLE` and nothing in the ordinary path moves it back, so
+    a stream that clears the signal and decodes on decodes while permanently unselectable,
+    holding cells the planner has already counted as reclaimed.
+
+    `getattr`, because the policy is caller supplied and doubles written against the older
+    protocol are still handed in. Nothing here may end the turn, so failures are swallowed.
+    """
+    declined = getattr(policy, "on_declined", None)
+    if not callable(declined):
+        return
+    try:
+        declined()
+    except Exception:
+        logger.debug(
+            "preemption policy raised on a declined pause (%s); continuing anyway",
+            where,
+            exc_info = True,
+        )
+
+
+def _preempt_charge(usage, timings, chunks: int, visible: str, reasoning: str) -> int:
+    """What a paused attempt is charged for what it decoded.
+
+    The OBSERVED count leads, with four-characters-per-token only as a floor: the estimate
+    undercharges token-dense text, and this same figure spends down `max_tokens` AND
+    re-baselines the controller through `note_replayed`, so an undercharge is both an
+    unagreed output cap and cells the watermark cannot see. Both readings are routinely
+    absent on an aborted attempt -- it never receives a terminal chunk and per-token timings
+    are opt-in -- which is why the chunk tally is the second source and not the third.
+
+    One function for all three pause sites: written out at each of them, the round loop
+    spent two rounds charging the estimate alone while the other two already took the
+    larger of the two.
+    """
+    counted = _backfill_usage_from_timings(usage, timings) or {}
+    return max(
+        int(counted.get("completion_tokens") or 0) or max(0, int(chunks or 0)),
+        LlamaCppBackend._preempt_charged(visible, reasoning),
+    )
+
+
 def _preempt_gave_up_event(context_length, max_tokens) -> dict:
     """What a client is owed when a paused chat stops waiting for KV room.
 
@@ -29956,19 +30000,15 @@ class LlamaCppBackend:
             # documents.
             if preempt_policy is None:
                 return
-            # The OBSERVED count first, with four-characters-per-token only as a fallback:
-            # that estimate undercharges token-dense text, and the same figure spends down
-            # `max_tokens` and re-baselines the controller through `note_replayed`, so an
-            # undercharge is both an unagreed output cap and cells the watermark cannot see.
-            _charged_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
-            _charged_tokens = (
-                int(_charged_usage.get("completion_tokens") or 0) or _tokens_this_stream
-            )
             checkpoint = _preemption.StreamCheckpoint(
                 visible_text = content_text,
                 reasoning_text = reasoning_text,
-                charged_tokens = max(
-                    _charged_tokens, self._preempt_charged(content_text, reasoning_text)
+                charged_tokens = _preempt_charge(
+                    _metadata_usage,
+                    _metadata_timings,
+                    _tokens_this_stream,
+                    content_text,
+                    reasoning_text,
                 ),
                 resumes = _preempt_resumes + 1,
                 reason = "kv-pressure",
@@ -33929,49 +33969,20 @@ class LlamaCppBackend:
                 # Paused to free KV, not abandoned: only the upstream request was closed,
                 # so the ledger, the conversation and the client's SSE response are all
                 # still alive, and no tool has run.
-                _pre_usage = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                # A pause aborts the stream before its terminal chunk and per-token timings
-                # are opt-in, so both readings are routinely absent and zero here would skip
-                # `note_replayed` and leave the caller's cap unspent. The OBSERVED chunk
-                # count leads, with four-characters-per-token only as a floor: that estimate
-                # undercharges token-dense text, and the same figure is replayed to the
-                # controller and deducted from the allowance.
-                _pre_charged = max(
-                    int(_pre_usage.get("completion_tokens") or 0) or _tokens_this_stream,
-                    self._preempt_charged(content_accum, reasoning_accum),
+                _pre_charged = _preempt_charge(
+                    _iter_usage,
+                    _iter_timings,
+                    _tokens_this_stream,
+                    content_accum,
+                    reasoning_accum,
                 )
                 _checkpoint = _preemption.StreamCheckpoint(
                     visible_text = content_accum,
                     reasoning_text = reasoning_accum,
-                    pending_truncations = list(_respawn_truncations),
                     charged_tokens = _pre_charged,
                     resumes = _preempt_resumes + 1,
                     reason = getattr(preempt_event, "reason", None),
                 )
-
-                def _decline_the_pause(_where: str) -> None:
-                    """Take back a pause this stream has been asked for and will not take.
-
-                    PREEMPTING is outside `_PREEMPTABLE` and nothing in the ordinary path
-                    moves it back, so a stream that clears the signal and goes on decoding
-                    decodes while permanently unselectable, holding cells the planner has
-                    already counted as reclaimed.
-
-                    `getattr`, because the policy is caller supplied and doubles written
-                    against the older protocol are still handed in. Nothing here may end the
-                    turn, so every failure is swallowed.
-                    """
-                    _declined = getattr(preempt_policy, "on_declined", None)
-                    if not callable(_declined):
-                        return
-                    try:
-                        _declined()
-                    except Exception:
-                        logger.debug(
-                            "preemption policy raised on a declined pause (%s); continuing anyway",
-                            _where,
-                            exc_info = True,
-                        )
 
                 if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
                     # Churning rather than progressing; the admitted output clamp still
@@ -33982,7 +33993,7 @@ class LlamaCppBackend:
                     )
                     # The break below decodes a whole final pass, so the decision is handed
                     # back first: clearing the signal alone leaves it PREEMPTING.
-                    _decline_the_pause("tool round")
+                    _decline_preemption(preempt_policy, "tool round")
                     if preempt_event is not None:
                         preempt_event.clear()
                     break
@@ -35073,19 +35084,12 @@ class LlamaCppBackend:
                 logger.info("llama preemption caught in the final answering pass")
                 _paused_visible = _last_emitted[_final_replayed_chars:]
                 _paused_reasoning = reasoning_text[_final_replayed_reasoning_chars:]
-                # Both readings are routinely absent on an aborted attempt, so the estimate
-                # is what is left. Charged once: uncharged, the controller never learns the
-                # resume carries the partial back as prompt and the caller's cap goes
-                # unspent.
-                _pre_usage_f = (
-                    _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
-                )
-                # The OBSERVED chunk count leads, with four-characters-per-token only as a
-                # floor: that estimate undercharges token-dense text, and the same figure
-                # spends down `max_tokens` and re-baselines the controller.
-                _pre_charged_f = max(
-                    int(_pre_usage_f.get("completion_tokens") or 0) or _final_tokens_this_stream,
-                    self._preempt_charged(_paused_visible, _paused_reasoning),
+                _pre_charged_f = _preempt_charge(
+                    _metadata_usage,
+                    _metadata_timings,
+                    _final_tokens_this_stream,
+                    _paused_visible,
+                    _paused_reasoning,
                 )
                 _checkpoint_f = _preemption.StreamCheckpoint(
                     visible_text = _paused_visible,
@@ -35094,28 +35098,6 @@ class LlamaCppBackend:
                     resumes = _preempt_resumes + 1,
                     reason = getattr(preempt_event, "reason", None),
                 )
-
-                def _decline_the_final_pause() -> None:
-                    """Take back a pause this pass has been asked for and will not take.
-
-                    Clearing the signal alone leaves PREEMPTING behind, which is outside
-                    `_PREEMPTABLE`, so no later sweep can ask again and the ledger holds a
-                    victim that is never going to pause.
-
-                    `getattr`, because the policy is caller supplied and older doubles are
-                    still handed in. Nothing here may end the turn, so failures are swallowed.
-                    """
-                    _declined_f = getattr(preempt_policy, "on_declined", None)
-                    if not callable(_declined_f):
-                        return
-                    try:
-                        _declined_f()
-                    except Exception:
-                        logger.debug(
-                            "preemption policy raised on a declined pause (final pass); "
-                            "continuing anyway",
-                            exc_info = True,
-                        )
 
                 def _final_pause_gave_up(folded: bool = False):
                     """End the turn the way a client can read, not by falling silent.
@@ -35149,7 +35131,7 @@ class LlamaCppBackend:
                     # Nothing decodes after this, but the participant must not be left
                     # PREEMPTING: a sweep before teardown would count a chosen victim whose
                     # pause is never coming.
-                    _decline_the_final_pause()
+                    _decline_preemption(preempt_policy, "final pass")
                     if preempt_event is not None:
                         preempt_event.clear()
                     yield from _final_pause_gave_up()

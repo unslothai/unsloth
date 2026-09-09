@@ -14,14 +14,12 @@ from core.inference.llama_admission import (
 )
 from core.inference.llama_preemption import (
     DEFAULT_PREEMPT_BUFFER_MIN_TOKENS,
-    DEFAULT_PREEMPT_BUFFER_RATIO,
     PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS,
     ParticipantState,
     PreemptionController,
     get_preemption_controller,
     preemption_buffer_tokens,
     reset_preemption_controllers,
-    wait_for_reclaim,
 )
 
 
@@ -517,68 +515,6 @@ class TestTheSwitchesThatTurnItOff:
                     line for line in body.split("\n") if not line.strip().startswith("#")
                 )
                 assert "idle_slot_clearing_active" not in code, name
-
-
-class TestTheReclaimBarrier:
-    def test_it_waits_until_the_count_falls(self):
-        readings = iter(
-            [
-                {"requests_processing": 3.0},
-                {"requests_processing": 2.0},
-                {"requests_processing": 1.0},
-            ]
-        )
-        assert (
-            wait_for_reclaim(
-                lambda: next(readings),
-                target_processing = 1,
-                sleep = lambda _s: None,
-            )
-            is True
-        )
-
-    def test_it_returns_at_once_when_already_clear(self):
-        calls = []
-
-        def _scrape():
-            calls.append(1)
-            return {"requests_processing": 0.0}
-
-        assert wait_for_reclaim(_scrape, target_processing = 1, sleep = lambda _s: None) is True
-        assert len(calls) == 1
-
-    def test_a_server_without_the_counter_is_not_a_confirmation(self):
-        assert (
-            wait_for_reclaim(
-                lambda: {"n_decode_total": 5.0},
-                target_processing = 0,
-                sleep = lambda _s: None,
-            )
-            is False
-        )
-
-    def test_an_unreadable_metrics_endpoint_times_out_rather_than_blocking(self):
-        clock = iter([0.0, 0.0, 1.0, 99.0])
-        assert (
-            wait_for_reclaim(
-                lambda: None,
-                target_processing = 0,
-                timeout_s = 1.0,
-                sleep = lambda _s: None,
-                monotonic = lambda: next(clock),
-            )
-            is False
-        )
-
-    def test_it_never_claims_to_know_which_generation_finished(self):
-        """It is a barrier, not an attribution: the gauge cannot say who owns a slot."""
-        import inspect
-
-        from core.inference import llama_preemption
-
-        signature = inspect.signature(llama_preemption.wait_for_reclaim)
-        assert "target_processing" in signature.parameters
-        assert "gen_id" not in signature.parameters
 
 
 class TestTheRegistry:

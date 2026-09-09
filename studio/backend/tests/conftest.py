@@ -1003,3 +1003,30 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _admitted_inference_count_is_balanced():
+    """Restore the admitted-inference tally around every test.
+
+    In a request it is balanced by the keep-warm middleware's finally; a test that calls a
+    route helper directly hands it a fabricated scope no middleware ever wraps, so the
+    increment stays on a module global for the rest of the process. Four of this branch's
+    tool-loop tests do exactly that, and `load_model_for_preview`'s busy guard reads the
+    tally, so `test_preview_chat_waits_for_a_slow_checkpoint_load` began 503-ing in a full
+    run while passing alone. Same shape as the shutdown latch above, and the same reason:
+    a process-wide counter needs a per-test boundary.
+    """
+    mod = sys.modules.get("core.inference.llama_keepwarm")
+
+    def _restore(to):
+        live = sys.modules.get("core.inference.llama_keepwarm")
+        if live is not None:
+            with live._lock:
+                live._admitted_inference = to
+
+    before = 0 if mod is None else mod._admitted_inference
+    try:
+        yield
+    finally:
+        _restore(before)

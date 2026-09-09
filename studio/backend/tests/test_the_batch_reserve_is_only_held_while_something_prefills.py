@@ -256,20 +256,8 @@ class TestTheRace:
         assert c.room_for("solo", 3000) is True
 
 
-class TestTheStaticOverride:
-    def test_the_env_restores_the_permanent_batch_term(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH", "1")
-        assert _buffer() == PREFILL_BUFFER
-        assert _buffer(pending_prefill = 5000) == PREFILL_BUFFER
-
-    def test_a_controller_under_the_override_never_drops_the_ceiling(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH", "1")
-        c = _controller("test://static")
-        c.register("chat", tokens = 800, signal = PreemptSignal())
-        c.observe("chat", 32)
-        assert c.snapshot().buffer == PREFILL_BUFFER
-
-    def test_off_by_default(self):
+class TestTheBufferBounds:
+    def test_an_idle_controller_holds_no_batch(self):
         c = _controller("test://default")
         c.register("chat", tokens = 800, signal = PreemptSignal())
         c.observe("chat", 32)
@@ -278,12 +266,6 @@ class TestTheStaticOverride:
     def test_the_per_slot_override_still_works(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", "300")
         assert _buffer() == 300 * SLOTS + DRAFTS * SLOTS
-
-    def test_the_per_slot_override_and_the_static_batch_compose(self, monkeypatch):
-        """max(), as before: the larger of reaction headroom and the chunk."""
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", "800")
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH", "1")
-        assert _buffer() == 800 * SLOTS + DRAFTS * SLOTS
 
     def test_the_floor_and_the_cap_survive(self):
         """Neither the floor nor the half-budget cap moved with the batch term."""
@@ -310,15 +292,6 @@ class TestPlanPreemptionsAtTheLowerCeiling:
         assert c.committed_tokens() == 6804
         assert c.snapshot().prefilling == 0
         assert c.plan_preemptions(needed = 0) == []
-
-    def test_the_static_override_would_have_evicted_them(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH", "1")
-        c = _controller("test://static-evict")
-        for i in range(SLOTS):
-            c.register(f"chat{i}", tokens = 1700, signal = PreemptSignal())
-            c.observe(f"chat{i}", 1)
-        assert c.committed_tokens() == 6804
-        assert c.plan_preemptions(needed = 0), "6804 is past the 6136 static ceiling"
 
     def test_it_still_fires_once_the_lower_ceiling_is_passed(self):
         c = _controller()
@@ -468,29 +441,19 @@ class TestTheRouteReadsTheLaunchesBatchSize:
         ), "512 is under the reaction headroom, which then covers it"
 
 
-class TestNotReservingRoomTwiceForTheSameChunk:
-    """`UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED=1`, off by default."""
-
-    def test_an_admitted_prompt_stops_costing_a_batch(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED", "1")
-        c = _controller("test://uncharged")
+class TestAnArrivalReservesForItsOwnPrompt:
+    def test_an_arriving_chat_reserves_a_batch(self):
+        c = _controller("test://charged-default")
         c.register("arriving", tokens = 3499, signal = PreemptSignal())
-        assert c.snapshot().prefilling == 0
-        assert c.snapshot().buffer == IDLE_BUFFER
-        # And its charge is still reserved, in `committed` where it belongs.
+        assert c.snapshot().prefilling == 3499
+        assert c.snapshot().buffer == PREFILL_BUFFER
+        # And its charge is reserved on top, in `committed` where it belongs.
         assert c.committed_tokens() == 3499
 
-    def test_a_round_boundarys_growth_still_costs_one(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED", "1")
-        c = _controller("test://uncharged-growth")
+    def test_a_round_boundarys_growth_costs_one_too(self):
+        c = _controller("test://charged-growth")
         c.register("chat", tokens = 1000, signal = PreemptSignal())
         c.observe("chat", 20)
         c.note_tokens("chat", 4000)
         assert c.snapshot().prefilling == 2980
-        assert c.snapshot().buffer == PREFILL_BUFFER
-
-    def test_the_default_still_reserves_for_an_arrival(self):
-        c = _controller("test://charged-default")
-        c.register("arriving", tokens = 3499, signal = PreemptSignal())
-        assert c.snapshot().prefilling == 3499
         assert c.snapshot().buffer == PREFILL_BUFFER
