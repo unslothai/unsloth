@@ -1075,3 +1075,25 @@ def test_an_unreadable_directory_is_skipped_rather_than_refused(tmp_path):
         assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
     finally:
         locked.chmod(0o700)
+
+
+def test_a_configured_hugging_face_cache_root_is_the_one_shared(tmp_path, monkeypatch):
+    """An operator who keeps models on another disk sets HF_HOME. Sharing the
+    default path instead shares an empty directory and re-downloads the weights
+    into every session, which is the cost this hole exists to avoid."""
+    elsewhere = tmp_path / "models"
+    (elsewhere / "hub").mkdir(parents = True)
+    monkeypatch.setenv("HF_HOME", str(elsewhere))
+    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(elsewhere)
+    # And it is still refused when it would be inside the workdir.
+    assert sandbox_linux._model_cache_path(str(elsewhere)) is None
+
+
+def test_the_default_cache_root_is_used_when_nothing_is_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_HOME", raising = False)
+    home = tmp_path / "home"
+    (home / ".cache" / "huggingface" / "hub").mkdir(parents = True)
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(home) if p == "~" else p)
+    assert sandbox_linux._model_cache_path(str(tmp_path / "session")) == str(
+        home / ".cache" / "huggingface"
+    )

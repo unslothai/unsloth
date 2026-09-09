@@ -423,10 +423,23 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
 
 
 def _model_cache_path(workdir: str) -> str | None:
-    home = os.path.expanduser("~")
-    if not os.path.isabs(home):
-        return None
-    path = os.path.join(home, _MODEL_CACHE_RELPATH)
+    """The host cache to share, which is where the SERVER's own downloads went.
+
+    HF_HOME is read from Studio's environment rather than assumed: an operator
+    who keeps models on another disk sets it, and sharing the default path
+    instead would share an empty directory and re-download the weights into every
+    session, which is the cost this hole exists to avoid. The child never sees the
+    variable -- _build_safe_env drops it as a credential location, and the backend
+    sets its own -- so this is the only place it can be honoured.
+    """
+    configured = os.environ.get("HF_HOME", "").strip()
+    if configured:
+        path = os.path.abspath(configured)
+    else:
+        home = os.path.expanduser("~")
+        if not os.path.isabs(home):
+            return None
+        path = os.path.join(home, _MODEL_CACHE_RELPATH)
     if not os.path.isdir(path) or _within(path, workdir):
         return None
     return path
