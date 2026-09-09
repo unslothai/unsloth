@@ -2097,6 +2097,13 @@ _target_has_pkg_version() {
 # The pins, once. install_manifest.sidecar_is_current audits these exact strings and
 # _install_sidecar installs them, so the check and the install can never disagree about
 # what a current sidecar holds.
+#
+# Every name here has to be one that audit can actually reach. It proves a distribution
+# arrived by looking for its package directory, and falls back to the top-level names in
+# that distribution's own RECORD only when neither spelling of the project name is a
+# directory (six.py has no directory at all; pillow's is PIL). A pin whose payload is
+# neither -- nothing recorded either -- reads as stale forever, and then every update
+# deletes and refetches a healthy several-hundred-MB sidecar.
 _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2 tiktoken"
 
 _sidecar_current() {
