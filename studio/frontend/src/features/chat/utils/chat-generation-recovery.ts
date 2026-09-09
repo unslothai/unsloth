@@ -489,7 +489,9 @@ export function recoveredContentToImport<TContent>(
       return recoveredContent;
     }
     // An empty projection is a prefix of every reply, so it cannot vouch for one that disagrees:
-    // a view holding only an old card would otherwise graft it onto a repaired body.
+    // a view holding only an old card would otherwise graft it onto a repaired body. Only a
+    // recovered reply that HAS text disagrees; with both sides text-free there is no evidence
+    // either way, and an unmatched view card is a live call the replay has not reached yet.
     if (!view.raw && recovered.raw) {
       return recoveredContent;
     }

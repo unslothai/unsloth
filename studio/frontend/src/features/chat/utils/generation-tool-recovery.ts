@@ -127,7 +127,7 @@ export function createGenerationToolRecovery(
   for (const entry of savedPending) {
     const id = record(entry.part)?.backendToolCallId;
     if (typeof id === "string") {
-      pending.set(id || ` idless:saved:${savedIdless++}`, entry);
+      pending.set(id || `#idless:saved:${savedIdless++}`, entry);
     }
   }
   const replayFrom = savedPending.some(
@@ -233,7 +233,7 @@ export function createGenerationToolRecovery(
           backendToolCallId: backendId,
           generationToolCallId: `${runId}:${seq}`,
         };
-        pending.set(backendId || ` idless:legacy:${seq}`, entry);
+        pending.set(backendId || `#idless:legacy:${seq}`, entry);
       }
       return;
     }
@@ -322,7 +322,7 @@ export function createGenerationToolRecovery(
         argsText: toolCallArgumentsText(event.arguments_text, args),
         ...(record(event.provenance) ? { provenance: event.provenance } : {}),
       };
-      pending.set(backendId || ` idless:${runId}:${seq}`, entry);
+      pending.set(backendId || `#idless:${runId}:${seq}`, entry);
       if (backendId) completed.delete(backendId);
       else lastIdless = undefined;
       return;

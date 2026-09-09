@@ -1145,3 +1145,19 @@ test("a divergent reply wins over a view that is only a tool card", () => {
     recovered,
   );
 });
+
+test("the id-less sentinel keeps the file searchable and cannot collide", () => {
+  const src = readFileSync(
+    new URL(
+      "../src/features/chat/utils/generation-tool-recovery.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.ok(!src.includes("\0"), "a NUL byte makes the file read as binary");
+  // A backend tool call id must satisfy ^[a-zA-Z0-9_-]+$, so '#' can never appear in one.
+  for (const key of src.matchAll(/`(#idless:[^`]*)`/g)) {
+    assert.ok(/^#/.test(key[1]), key[1]);
+  }
+  assert.equal(src.match(/`#idless:/g)?.length, 3);
+});
