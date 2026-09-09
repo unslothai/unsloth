@@ -1217,7 +1217,8 @@ def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_
             yield
 
     monkeypatch.setattr(M, "install_lock", swapping_lock)
-    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    # ...and the tree that changed hands is not reported as the one that was asked for.
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
     after = M.load_metadata(tmp_path)
     assert after["version"] == "24.18.0"
     assert "node_version_checked" not in after

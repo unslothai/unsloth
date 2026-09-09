@@ -840,26 +840,32 @@ def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, ver
 
 def _record_runtime_verification_under_lock(
     install_dir: Path, host: HostInfo, meta: dict, *, version: str, npm_major: int
-) -> None:
+) -> bool:
     """record_runtime_verification for a caller that does not hold the install lock.
 
     The record is a read-modify-write of the marker, and the pre-lock check in
     install_prebuilt is exactly where another installer can be mid-swap: it reads the
     old marker, the other process swaps a new tree into place, and the old version and
     checksum are written over the new tree's marker. So the write takes the lock and
-    goes ahead only if the marker is still the one that was read. Never raises: a
-    record that could not be written costs the two spawns again next time.
+    goes ahead only if the marker is still the one that was read.
+
+    Returns whether the marker was still the one that was read. False means another
+    installer replaced the tree while this one waited, so what was just verified is no
+    longer what is installed; the caller re-checks rather than reporting it current.
+    A write that failed for any other reason still answers True: the install is the one
+    that was verified, and the record merely costs the two spawns again next time.
     """
     try:
         with install_lock(install_lock_path(install_dir)):
             current = load_metadata(install_dir)
             if current is None:
-                return
+                return False
             if any(current.get(key) != meta.get(key) for key in ("version", "sha256", "asset")):
-                return
+                return False
             record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
     except Exception:  # noqa: BLE001
         pass
+    return True
 
 
 def existing_install_matches(
@@ -894,11 +900,13 @@ def existing_install_matches(
     # under the install lock either way: the caller's, or one taken here for the write.
     if under_lock:
         record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
-    else:
-        _record_runtime_verification_under_lock(
-            install_dir, host, meta, version = version, npm_major = npm_major
-        )
-    return True
+        return True
+    # A marker that changed hands while the lock was being taken is another installer's
+    # tree; what was verified above is gone, so this is not a match. The caller's locked
+    # re-check decides about whatever is installed now.
+    return _record_runtime_verification_under_lock(
+        install_dir, host, meta, version = version, npm_major = npm_major
+    )
 
 
 def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
