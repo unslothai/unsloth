@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AppReadinessBoundary } from "@/components/app-readiness";
 import { LlamaUpdateBanner } from "@/components/llama-update-banner";
 import {
   ClosingScreen,
@@ -553,15 +554,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [appShellReady, setAppShellReady] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
 
-  // Subscribe while the backend splash is still up, before children can emit
-  // their layout-effect readiness signal. CredentialBootstrapGate remains in
-  // charge of releasing credential-dependent routes underneath this splash.
-  useEffect(() => {
-    if (!isTauri) return;
-    const onReady = () => setAppShellReady(true);
-    window.addEventListener("unsloth:app-shell-ready", onReady);
-    return () => window.removeEventListener("unsloth:app-shell-ready", onReady);
-  }, []);
+  // Readiness is delivered by the mounted AppReadinessBoundary, not the
+  // global reload-snapshot event: an obsolete async load cannot reveal us.
 
   useEffect(() => {
     if (!isTauri) return;
@@ -755,19 +749,21 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           inert={!showApp}
           aria-hidden={!showApp}
         >
-          <TauriUpdateLayer
-            isExternalServer={isExternalServer}
-            appContent={
-              <>
-                {showApp && <NativeIntentDrain />}
-                {children}
-              </>
-            }
-          >
-            <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
-            <DownloadManagerPanel positioned={false} />
-            <LoadedModelsIndicator positioned={false} />
-          </TauriUpdateLayer>
+          <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
+            <TauriUpdateLayer
+              isExternalServer={isExternalServer}
+              appContent={
+                <>
+                  {showApp && <NativeIntentDrain />}
+                  {children}
+                </>
+              }
+            >
+              <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+              <DownloadManagerPanel positioned={false} />
+              <LoadedModelsIndicator positioned={false} />
+            </TauriUpdateLayer>
+          </AppReadinessBoundary>
         </div>
       )}
       {!showApp && (

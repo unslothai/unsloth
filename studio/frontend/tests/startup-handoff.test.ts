@@ -7,9 +7,9 @@ import { readSrc } from "./helpers/kit.ts";
 
 const source = readSrc("app/provider.tsx");
 
-test("desktop splash waits for the existing route readiness event, not just backend auth", () => {
-  assert.match(source, /window\.addEventListener\("unsloth:app-shell-ready", onReady\)/);
-  assert.match(source, /window\.removeEventListener\("unsloth:app-shell-ready", onReady\)/);
+test("desktop splash waits for scoped route readiness, not global events or backend auth", () => {
+  assert.match(source, /<AppReadinessBoundary onReady=\{setAppShellReady\} revealed=\{showApp\}>/);
+  assert.doesNotMatch(source, /addEventListener\("unsloth:app-shell-ready"/);
   assert.match(source, /const showApp = canMountApp && appShellReady/);
   assert.match(source, /\{canMountApp && \(/);
   assert.match(source, /inert=\{!showApp\}/);
