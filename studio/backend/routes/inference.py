@@ -119,6 +119,7 @@ from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionLease,
     LlamaAdmissionQueueFull,
+    LlamaAdmissionRecostRefused,
     LlamaAdmissionReservation,
     LlamaAdmissionTimeout,
     get_llama_admission_queue,
@@ -2915,9 +2916,11 @@ def _openai_llama_admission_enforced_max_tokens(
     enforcement.
 
     ``conversation`` prices it from the messages actually sent, which a translating route
-    must pass, else ``system`` is charged twice. Returns None to leave the caller's value
-    alone: a client that named its own cap is already honest, a disabled reservation is the
-    operator's escape hatch, and unpriceable media carries no prompt count to bound against.
+    must pass, else ``system`` is charged twice. None leaves a disabled reservation and
+    unpriceable media alone, and leaves a STATED cap alone only where it is positive and
+    strictly below the window: a cap at or above the window buys nothing the window did
+    not already bound, so it is treated as unstated and enforced like one, which is what
+    ``_openai_llama_admission_tokens`` charges such a request for.
     """
     if capacity is None:
         capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -3077,6 +3080,12 @@ def _openai_llama_admission_recost(
 
     Returns the wire cap this round earned, or None to leave the one in force alone.
     ``wire_tools`` is the catalogue this request sends, None on the final answer.
+
+    Raises ``LlamaAdmissionRecostRefused`` when the growth is declined: the lease then
+    still holds the previous round's figure, so there is no cap this round could be
+    handed that the ledger has actually paid for, and the caller must end the turn
+    rather than send. Raises ``LlamaAdmissionCancelled`` when the wait ended on a Stop
+    or the lease's release, which the caller finishes as a cancel.
     """
     if reservation is None:
         return None
@@ -3088,32 +3097,16 @@ def _openai_llama_admission_recost(
         if not budget:
             return None
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. Counting fewer
-        # things than the reservation it replaces would SHRINK a correctly sized lease --
-        # and since the callback fires at the top of round zero, before any growth, it
-        # would hand back room llama-server is already using.
-        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation
-        )
-        conversation_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
-        catalogue_tokens = _openai_llama_admission_injected_tool_tokens(injected_tools)
-        # mtmd embeddings, KV the message text cannot show: image parts compact to
-        # "[image]" for the text estimate, so their real cost comes from the compaction
-        # count. A screenshot tool adds more of them, so this grows with the rounds.
-        media_tokens = _openai_llama_admission_media_tokens(
-            payload,
-            message_image_parts = message_image_parts,
+        # Priced as the opening reservation prices a conversation it was handed: the
+        # messages and catalogue actually sent (media from the compaction count, since
+        # image parts compact to "[image]" for the text estimate) plus transport. Not the
+        # payload's own `system` and `tools` on top: a translating route has folded them
+        # into the conversation, and charging them again refused rounds that fit.
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-        )
-        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-        # that route this is most of the prompt.
-        prompt_tokens = (
-            conversation_tokens
-            + catalogue_tokens
-            + _openai_llama_admission_extra_prompt_tokens(payload)
-            + media_tokens
-        )
+            injected_tools = injected_tools,
+        ) + _openai_llama_admission_transport_tokens(payload)
         # Not the parts above: the charge counts three things this request does not send.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
@@ -3140,14 +3133,27 @@ def _openai_llama_admission_recost(
             _progress = get_preemption_controller(_preempt_key(llama_backend)).progress_signature
         except Exception:
             _progress = None
-        lease.recost_waiting(
+        if not lease.recost_waiting(
             want,
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
             progress = _progress,
             gen_id = getattr(reservation, "completion_id", None)
             or getattr(reservation, "gen_id", None),
-        )
+        ):
+            # False is also what a Stop or a teardown during the wait returns: the run
+            # is over, not refused, and the caller ends it the way a cancel always did.
+            if (cancel_event is not None and cancel_event.is_set()) or getattr(
+                lease, "released", False
+            ):
+                raise LlamaAdmissionCancelled("stopped while waiting for cache room")
+            # The lease still holds the PREVIOUS round's figure, so pricing a bound off
+            # this bigger prompt would authorise exactly the overcommit the re-cost
+            # exists to prevent. Raised rather than returned, since every "no bound"
+            # answer this helper can give leaves a stale allowance in force.
+            raise LlamaAdmissionRecostRefused(
+                f"the admission ledger refused {want} tokens for this round"
+            )
         # After the wait, so the bound matches the conversation the round waited on.
         return _openai_llama_admission_enforced_max_tokens(
             payload,
@@ -3158,6 +3164,8 @@ def _openai_llama_admission_recost(
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
         )
+    except (LlamaAdmissionRecostRefused, LlamaAdmissionCancelled):
+        raise
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
     return None
