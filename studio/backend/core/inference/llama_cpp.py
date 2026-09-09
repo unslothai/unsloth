@@ -411,7 +411,7 @@ from utils.subprocess_compat import (
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
-from core.inference.llama_admission import LlamaAdmissionRecostRefused
+from core.inference.llama_admission import LlamaAdmissionCancelled, LlamaAdmissionRecostRefused
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
@@ -29340,6 +29340,18 @@ class LlamaCppBackend:
                 "finish_reason": finish_reason,
             }
 
+        # The prompt side of the last attempt that completed, for an ending that sends
+        # nothing: its generation is already in the accumulators, its prompt is not.
+        _last_attempt: dict = {}
+
+        def _remember_attempt(usage, timings):
+            _last_attempt["usage"] = {
+                k: v for k, v in (usage or {}).items() if k.startswith("prompt")
+            }
+            _last_attempt["timings"] = {
+                k: v for k, v in (timings or {}).items() if not k.startswith("predicted")
+            }
+
         def _admission_refused_ending(shown: str):
             """End the turn on a refused re-cost, keeping what is on screen.
 
@@ -29349,7 +29361,9 @@ class LlamaCppBackend:
             yield {"type": "status", "text": ""}
             if not (shown or "").strip():
                 yield {"type": "content", "text": _admission_room_refused_message()}
-            _meta = _build_metadata_event(None, None, "length")
+            _meta = _build_metadata_event(
+                _last_attempt.get("usage"), _last_attempt.get("timings"), "length"
+            )
             if _meta is not None:
                 yield _meta
 
@@ -29656,24 +29670,6 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
-            # All six growth sites pass here, below the narrowing that sets what is SENT.
-            if on_conversation_grew is not None:
-                try:
-                    _recosted_allowance = on_conversation_grew(conversation, safe_tools)
-                    if _recosted_allowance is not None:
-                        admission_output_allowance = _recosted_allowance
-                except LlamaAdmissionRecostRefused:
-                    # The lease still holds the previous round's figure, so this prompt
-                    # is not covered; sending it is the overcommit that kills every slot.
-                    logger.info(
-                        "Tool round %d: no cache room for this prompt; keeping the "
-                        "partial answer instead of sending it",
-                        iteration,
-                    )
-                    yield from _admission_refused_ending(_last_emitted)
-                    return
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("tool loop recost failed", exc_info = True)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -29826,6 +29822,29 @@ class LlamaCppBackend:
                     _preflight_succeeded = True
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
+
+            # All six growth sites pass here, below the narrowing that sets what is SENT
+            # and the fit above it: a refusal has to be for the prompt this round sends,
+            # not for history the compaction was about to drop.
+            if on_conversation_grew is not None:
+                try:
+                    _recosted_allowance = on_conversation_grew(conversation, safe_tools)
+                    if _recosted_allowance is not None:
+                        admission_output_allowance = _recosted_allowance
+                except LlamaAdmissionRecostRefused:
+                    # The lease still holds the previous round's figure, so this prompt
+                    # is not covered; sending it is the overcommit that kills every slot.
+                    logger.info(
+                        "Tool round %d: no cache room for this prompt; keeping the "
+                        "partial answer instead of sending it",
+                        iteration,
+                    )
+                    yield from _admission_refused_ending(_last_emitted)
+                    return
+                except LlamaAdmissionCancelled:
+                    return  # a Stop during the wait ends the turn as a Stop always does
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
 
             payload = {
                 # Re-run every iteration: tool results land in ``conversation`` as the
@@ -30821,6 +30840,7 @@ class LlamaCppBackend:
                                     _it_c = _iter_timings or {}
                                     _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
                                     _accumulated_predicted_n += _it_c.get("predicted_n", 0)
+                                    _remember_attempt(_fu_c, _it_c)
                                     if _continuation_credits < _MAX_CONTINUATION_CREDITS:
                                         _continuation_credits += 1
                                     yield {"type": "status", "text": ""}
@@ -30925,6 +30945,7 @@ class LlamaCppBackend:
                                 _it_l = _iter_timings or {}
                                 _accumulated_predicted_ms += _it_l.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_l.get("predicted_n", 0)
+                                _remember_attempt(_fu_l, _it_l)
                                 # Blank first so the route resets its text cursor, as the
                                 # re-prompt below does; else the retry reads as a hang.
                                 if _continuation_credits < _MAX_CONTINUATION_CREDITS:
@@ -31038,6 +31059,7 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            _remember_attempt(_fu_r, _it_r)
                             # Blank first (the route resets its text cursor only on an
                             # empty status), then the badge so the retry is not a hang.
                             yield {"type": "status", "text": ""}
@@ -31185,12 +31207,12 @@ class LlamaCppBackend:
                 # helper exists to preserve and which strict templates reject.
                 _merge_into_partial = continue_final_message
                 continue_final_message = _caller_continue_final_message
-                _accumulated_completion_tokens += (
-                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                ).get("completion_tokens", 0)
+                _fu = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                _accumulated_completion_tokens += _fu.get("completion_tokens", 0)
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+                _remember_attempt(_fu, _it)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
@@ -32625,6 +32647,8 @@ class LlamaCppBackend:
                     )
                     yield from _admission_refused_ending(_last_emitted)
                     return
+                except LlamaAdmissionCancelled:
+                    return
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop final recost failed", exc_info = True)
             # After it, so a continuation that rewrote the cap is bounded too. Rebuilt from
@@ -32854,6 +32878,7 @@ class LlamaCppBackend:
                             _it_f = _metadata_timings or {}
                             _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_f.get("predicted_n", 0)
+                            _remember_attempt(_fu_f, _it_f)
                             _stream_done = False
                             _metadata_finish_reason = None
                             # Per attempt, like the finish reason. This attempt's usage has
@@ -32980,6 +33005,7 @@ class LlamaCppBackend:
                                 _it_r = _metadata_timings or {}
                                 _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                                _remember_attempt(_fu_r, _it_r)
                                 _stream_done = False
                                 _metadata_finish_reason = None
                                 # Per attempt, like the finish reason. This attempt's usage has

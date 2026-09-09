@@ -348,6 +348,11 @@ class LlamaAdmissionLease:
         """Pool slot this lease holds, or None when admission is disabled."""
         return self._slot
 
+    @property
+    def released(self) -> bool:
+        """Whether release() has run: the run is being torn down, not refused."""
+        return self._released
+
     def park(self) -> bool:
         """Hand the slot back while this holder waits on something off the GPU.
 

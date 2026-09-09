@@ -2458,7 +2458,8 @@ def _openai_llama_admission_recost(
     Raises ``LlamaAdmissionRecostRefused`` when the growth is declined: the lease then
     still holds the previous round's figure, so there is no cap this round could be
     handed that the ledger has actually paid for, and the caller must end the turn
-    rather than send.
+    rather than send. Raises ``LlamaAdmissionCancelled`` when the wait ended on a Stop
+    or the lease's release, which the caller finishes as a cancel.
     """
     if reservation is None:
         return None
@@ -2470,32 +2471,16 @@ def _openai_llama_admission_recost(
         if not budget:
             return None
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. Counting fewer
-        # things than the reservation it replaces would SHRINK a correctly sized lease --
-        # and since the callback fires at the top of round zero, before any growth, it
-        # would hand back room llama-server is already using.
-        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation
-        )
-        conversation_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
-        catalogue_tokens = _openai_llama_admission_injected_tool_tokens(injected_tools)
-        # mtmd embeddings, KV the message text cannot show: image parts compact to
-        # "[image]" for the text estimate, so their real cost comes from the compaction
-        # count. A screenshot tool adds more of them, so this grows with the rounds.
-        media_tokens = _openai_llama_admission_media_tokens(
-            payload,
-            message_image_parts = message_image_parts,
+        # Priced as the opening reservation prices a conversation it was handed: the
+        # messages and catalogue actually sent (media from the compaction count, since
+        # image parts compact to "[image]" for the text estimate) plus transport. Not the
+        # payload's own `system` and `tools` on top: a translating route has folded them
+        # into the conversation, and charging them again refused rounds that fit.
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-        )
-        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-        # that route this is most of the prompt.
-        prompt_tokens = (
-            conversation_tokens
-            + catalogue_tokens
-            + _openai_llama_admission_extra_prompt_tokens(payload)
-            + media_tokens
-        )
+            injected_tools = injected_tools,
+        ) + _openai_llama_admission_transport_tokens(payload)
         # Not the parts above: the charge counts three things this request does not send.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
@@ -2518,6 +2503,12 @@ def _openai_llama_admission_recost(
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
         ):
+            # False is also what a Stop or a teardown during the wait returns: the run
+            # is over, not refused, and the caller ends it the way a cancel always did.
+            if (cancel_event is not None and cancel_event.is_set()) or getattr(
+                lease, "released", False
+            ):
+                raise LlamaAdmissionCancelled("stopped while waiting for cache room")
             # The lease still holds the PREVIOUS round's figure, so pricing a bound off
             # this bigger prompt would authorise exactly the overcommit the re-cost
             # exists to prevent. Raised rather than returned, since every "no bound"
@@ -2535,7 +2526,7 @@ def _openai_llama_admission_recost(
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
         )
-    except LlamaAdmissionRecostRefused:
+    except (LlamaAdmissionRecostRefused, LlamaAdmissionCancelled):
         raise
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
