@@ -113,6 +113,18 @@ class Proxy:
                 break
         return data
 
+    def _record(self, t0: float, host, port, method: str, down: int, up: int, status: str) -> dict:
+        return {
+            "ts": round(t0, 3),
+            "host": host,
+            "port": port,
+            "method": method,
+            "bytes_down": down,
+            "bytes_up": up,
+            "seconds": round(_now() - t0, 3),
+            "status": status,
+        }
+
     def handle(self, conn: socket.socket) -> None:
         t0 = _now()
         host = port = None
@@ -120,6 +132,9 @@ class Proxy:
         down = up = 0
         status = "ok"
         upstream = None
+        # Set once this connection is in the journal, so a path that has to journal
+        # early does not get a second record from the `finally` below.
+        recorded = False
         try:
             head = self._read_head(conn)
             if not head:
@@ -137,6 +152,13 @@ class Proxy:
             if self.denied(probe):
                 host, status = probe, "refused"
                 port = 443 if method == "CONNECT" else 80
+                # Journalled BEFORE the 403 reaches the client, not from the `finally`.
+                # A caller can observe the refusal and tear this proxy down in the same
+                # breath, and a record still waiting to be written is then lost -- which,
+                # for a harness whose claim is that an update made ZERO connections, reads
+                # as a connection that never happened.
+                self.log(self._record(t0, host, port, method, down, up, status))
+                recorded = True
                 conn.sendall(
                     b"HTTP/1.1 403 Forbidden\r\nProxy-Agent: unsloth-idempotency\r\n"
                     b"Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -191,18 +213,8 @@ class Proxy:
                         s.close()
                 except OSError:
                     pass
-            self.log(
-                {
-                    "ts": round(t0, 3),
-                    "host": host,
-                    "port": port,
-                    "method": method,
-                    "bytes_down": down,
-                    "bytes_up": up,
-                    "seconds": round(_now() - t0, 3),
-                    "status": status,
-                }
-            )
+            if not recorded:
+                self.log(self._record(t0, host, port, method, down, up, status))
 
 
 def summary(

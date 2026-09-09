@@ -239,6 +239,54 @@ def _start_proxy(directory: pathlib.Path, *extra: str):
     return process, f"http://127.0.0.1:{port_file.read_text().strip()}", log
 
 
+def _wait_until(
+    predicate,
+    *,
+    timeout: float = 5.0,
+    interval: float = 0.05,
+) -> bool:
+    """Poll until `predicate` holds or the deadline passes. A monotonic deadline rather
+    than a fixed sleep: the wait is for something the proxy is already doing, and a sleep
+    long enough to be safe on a loaded CI box is wasted on every ordinary run."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def _settle_journal(
+    log_path: pathlib.Path,
+    *,
+    timeout: float = 5.0,
+    quiet: float = 0.25,
+) -> None:
+    """Wait for the proxy's journal to stop growing, before the proxy is terminated.
+
+    A worker appends its record once the connection it describes has closed, so the child
+    can exit -- or a client can see its response -- with records still in flight, and
+    terminating the proxy at that moment drops them. A dropped record is a connection this
+    harness would then report as never having happened, which is precisely the claim it
+    exists to make. Waits for quiescence rather than for a count, because how many
+    connections a run makes is the thing being measured.
+    """
+    size = -1
+    stable_since = time.monotonic()
+    deadline = stable_since + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = log_path.stat().st_size
+        except OSError:
+            current = 0
+        if current != size:
+            size, stable_since = current, time.monotonic()
+        elif time.monotonic() - stable_since >= quiet:
+            return
+        time.sleep(0.05)
+
+
 def run_update(
     tmp_path: pathlib.Path,
     label: str,
@@ -317,6 +365,7 @@ def run_update(
         rc = completed.returncode
     finally:
         seconds = time.time() - started
+        _settle_journal(log_path)
         process.terminate()
         try:
             process.wait(timeout = 10)
@@ -766,6 +815,13 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
         with pytest.raises(urllib.error.URLError) as excinfo:
             opener.open("https://pypi.org/simple/", timeout = 30)
         assert "403" in str(excinfo.value)
+        # The client sees the 403 off the socket; the journal is written by the proxy
+        # worker. The proxy writes that record before it answers (see the refused branch
+        # of Proxy.handle), so all that is left to absorb here is the write itself being
+        # in flight -- but a proxy that had stopped journalling altogether must fail
+        # loudly rather than be papered over, hence the deadline and the failure below.
+        if not _wait_until(lambda: module.summary(str(log_path))["connections"] >= 1):
+            pytest.fail(f"the proxy answered 403 but never journalled the connection: {log_path}")
     finally:
         process.terminate()
         process.wait(timeout = 10)
