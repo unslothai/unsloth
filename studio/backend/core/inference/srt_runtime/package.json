@@ -1,0 +1,15 @@
+{
+  "name": "unsloth-studio-srt-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "test": "node --test windows-read-lease.test.mjs windows-platform.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.75"
+  }
+}
