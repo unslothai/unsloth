@@ -201,3 +201,19 @@ def test_windows_hook_discovery_refuses_without_reading_commands(tmp_path):
     from core.agent_workspace.hooks import discover_project_hooks
     with pytest.raises(AgentWorkspaceError):
         discover_project_hooks(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "matcher,tool_name",
+    [
+        ("Bash", "terminal"),
+        ("Terminal", "terminal"),
+        ("Edit", "edit_file"),
+        ("Write", "edit_file"),
+        ("Python", "python"),
+    ],
+)
+def test_studio_tool_names_match_reviewed_hook_aliases(matcher, tool_name):
+    config = hooks.validate_project_hooks(_document(_command("true"), matcher = matcher))
+    assert len(hooks.matching_project_hooks(config, "PreToolUse", {"tool_name": tool_name})) == 1
+    assert hooks.matching_project_hooks(config, "PreToolUse", {"tool_name": "web_search"}) == []

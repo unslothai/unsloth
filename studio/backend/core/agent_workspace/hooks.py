@@ -556,8 +556,12 @@ def _matcher_values(event: str, event_input: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(value, str) or len(value) > 512:
         return ()
     aliases = [value]
-    if field == "tool_name" and value == "apply_patch":
+    if field == "tool_name" and value in {"apply_patch", "edit_file"}:
         aliases.extend(("Edit", "Write"))
+    elif field == "tool_name" and value == "terminal":
+        aliases.extend(("Bash", "Terminal"))
+    elif field == "tool_name" and value == "python":
+        aliases.append("Python")
     elif field == "tool_name" and value == "spawn_agent":
         aliases.append("Agent")
     return tuple(aliases)
