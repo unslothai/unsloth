@@ -1248,9 +1248,8 @@ export const zhCN = {
       docs: "文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1667,7 +1666,7 @@ export const zhCN = {
         desktopChecking: "正在检查更新",
         desktopCheckingDescription: "通常只需几秒钟。",
         desktopAvailable: "桌面应用 {version} 已可用",
-        desktopAvailableDescription: "立即更新，更新将在后台准备。你可以继续工作，准备好后再重启。",
+        desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
           "请在启动服务器的终端中运行 `unsloth studio update`。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
@@ -1675,17 +1674,11 @@ export const zhCN = {
         desktopCheckFailedDescription: "请检查网络连接后重试。",
         desktopCurrent: "桌面应用已是最新版本",
         desktopCurrentDescription: "Unsloth 会继续自动检查更新。",
-        desktopPreparingDescription: "更新正在后台准备中。你可以继续工作。",
-        desktopReadyToRestartDescription: "一切就绪。重启即可完成更新安装。",
-        desktopReadyToInstallDescription: "应用更新已下载。请完成后端更新以安装该版本。",
         checkForUpdates: "检查更新",
         checkAgain: "再次检查",
         retryCheck: "重试",
         checking: "正在检查...",
-        preparing: "正在准备...",
         updateNow: "立即更新",
-        restartToUpdate: "重启以更新",
-        finishUpdate: "完成更新",
         openReleasePage: "打开发布页面",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",

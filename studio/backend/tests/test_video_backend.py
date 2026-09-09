@@ -9105,3 +9105,78 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
     assert (
         progress["error"] == VIDEO_CANCELLED_MSG
     ), f"a direct call reported {progress['error']!r} instead of the cancellation sentinel"
+
+
+def test_cuda_graph_is_a_per_family_opt_in():
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None and h3.name == "minimax-h3"
+    assert h3.supports_cuda_graph is True
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and wan.name == "wan2.2-ti2v-5b"
+    assert wan.supports_cuda_graph is False
+
+
+def test_every_rebuilt_speed_target_carries_the_backend():
+    """The CUDA-graph arm refuses ROCm by target.backend, which ROCm reports as device "cuda"."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    rebuilt = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "apply_speed_optims":
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Call) and getattr(arg.func, "attr", None) == "SimpleNamespace":
+                rebuilt.append(arg)
+    assert rebuilt
+    for call in rebuilt:
+        fields = {kw.arg for kw in call.keywords}
+        assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
+
+
+class _GraphHandle:
+    """Stands in for a captured denoiser graph: only reset() matters to generate()."""
+
+    def __init__(self):
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        return self
+
+
+def test_h3_generate_oom_drops_the_graphs_before_raising(fake_runtime):
+    """H3 is the one video family that captures graphs; an OOM must not leave them pinned."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _oom(_n):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 1.70 GiB")
+
+    pipe.scheduler.on_step = _oom
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 1, "the graphs stayed pinned across the raise"
+
+
+def test_h3_generate_non_oom_error_leaves_the_graphs_alone(fake_runtime):
+    """Only an OOM justifies throwing away working graphs; a bad shape does not."""
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    handle = _GraphHandle()
+    pipe._unsloth_cuda_graphs = (handle,)
+
+    def _boom(_n):
+        raise RuntimeError("shape mismatch")
+
+    pipe.scheduler.on_step = _boom
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert handle.resets == 0
