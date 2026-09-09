@@ -568,12 +568,10 @@ def search_lexical(
     subject the newest assignment is unreachable at any k.
 
     Both ordered forms SELECT rather than arrange: under the `LIMIT` they decide which rows
-    the caller is offered at all, and the caller cannot recover a row the query never
-    returned. So the tiebreak has to be `conversation_archive._conversation_order` component
-    for component -- ordinal, `created_at`, document rowid, chunk index -- and ending it on
-    a chunk id ends it on a uuid4. On a legacy archive, where every ordinal is NULL and one
-    clock tick stamped every row, that uuid IS the whole cut, so both halves come back with
-    the ends of the id space rather than the ends of the conversation.
+    the caller is offered at all. So the tiebreak has to be
+    `conversation_archive._conversation_order` component for component, and ending it on a
+    chunk id ends it on a uuid4 -- which on a legacy archive, every ordinal NULL and one
+    clock tick over every row, IS the whole cut.
     `test_the_candidate_window_is_cut_in_conversation_order` pins the two orders together.
     """
     mq = match_query if match_query is not None else _match_query(query)
@@ -593,11 +591,9 @@ def search_lexical(
         # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
         # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # Ordinal (NULLs first, as oldest), created_at, DOCUMENT rowid, chunk index:
-            # `_conversation_order` component for component, because this clause chooses the
-            # window rather than arranging it. The document rowid, not the chunk one, since
-            # a re-embed rewrites a document's chunk rows and only the document's own rowid
-            # survives that rewrite (`create_document`'s `rowid`).
+            # `_conversation_order` component for component. The DOCUMENT rowid, not the
+            # chunk one: a re-embed rewrites the chunk rows and only the document's own
+            # rowid survives it (`create_document`'s `rowid`).
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -607,8 +603,7 @@ def search_lexical(
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
-            # The mirror of the clause above, every component reversed, so the two halves cut
-            # the same run at opposite ends.
+            # The mirror of the clause above, so the two halves cut the run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "

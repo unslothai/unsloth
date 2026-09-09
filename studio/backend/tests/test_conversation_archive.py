@@ -2214,26 +2214,17 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
 def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
     """The two orderings are written twice, in two languages, so pin them to each other.
 
-    `store.search_lexical`'s ordered clauses and `_conversation_order` have to sort the same
-    rows the same way. They cannot share an implementation across the SQL boundary, so
-    nothing but this test stops one from being extended and the other left behind, and the
-    consequence of drift is not cosmetic: the SQL runs under a LIMIT and CHOOSES the
-    candidates, the Python only arranges the survivors, so a disagreement silently deletes
-    whichever turns the two ends disagree about.
+    `store.search_lexical`'s ordered clauses and `_conversation_order` cannot share an
+    implementation across the SQL boundary, and drift is not cosmetic: the SQL runs under a
+    LIMIT and CHOOSES the candidates, so a disagreement silently deletes the turns the two
+    ends disagree about.
 
-    Agreement is asserted WITHIN each BM25 score, which is the whole of what is being
-    claimed and all that can be. The SQL sorts by relevance first and the recall key has no
-    relevance component at all, by design: relevance decides which turns are eligible and
-    the archive decides the order among them. A tied run is also the only place the question
-    arises, since it is exactly where the score stops separating rows and the conversation
-    order becomes the cut.
-
-    The document ids are assigned here rather than left to `uuid4`, and assigned so that
-    sorting by them REVERSES conversation order. Left random the test would pass or fail on
-    the draw, which for a guard against silent drift is no better than not having one. The
-    archive is mixed on purpose too, numbered turns and legacy NULL ones, a shared timestamp
-    and a distinct one, single-chunk and multi-chunk documents, so every component of the key
-    is exercised and not only the one the current bug lives in.
+    Asserted WITHIN each BM25 score, since the SQL sorts by relevance first and the recall
+    key deliberately has no relevance component: relevance decides which turns are eligible,
+    the archive decides the order among them. Document ids are assigned so that sorting by
+    them REVERSES conversation order, or the test would pass on the draw. The archive is
+    mixed on purpose (numbered and legacy turns, a shared timestamp and a distinct one,
+    single- and multi-chunk documents) so every component of the key is exercised.
     """
     import types
 

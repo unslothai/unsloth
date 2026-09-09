@@ -415,24 +415,15 @@ def test_a_quoted_function_word_survives_the_stopword_filter():
 def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
     """Ordering the candidates cannot rescue a candidate the SELECT never returned.
 
-    Past `_BRANCH_FILTER_MAX_CANDIDATES` the archive stops taking every match and takes two
-    windows instead, one from each end of the tied run, and the LIMIT that cuts them runs
-    in SQL. So this ORDER BY is not an arrangement of a full set, it is the choice of which
-    rows exist as far as the rest of recall is concerned.
+    Past `_BRANCH_FILTER_MAX_CANDIDATES` the archive takes two windows, one from each end
+    of the tied run, and the LIMIT that cuts them runs in SQL: this ORDER BY chooses which
+    rows exist for the rest of recall. On a legacy archive the run is one flat tie (FTS5
+    floors the IDF of the scope's shared term, every ordinal NULL, one clock tick over every
+    `created_at`), so cutting at the chunk id cut at a `uuid4` and both true ends could go.
 
-    On a legacy archive the run is one flat tie: FTS5 floors the IDF of the term the whole
-    scope shares, so every score is equal, every `archive_ordinal` is NULL and one clock
-    tick stamped every `created_at`. Cut at the chunk id, as it was, the two windows are
-    the ends of the UUID space, and the ids are assigned by `uuid4`, so which turns survive
-    is unrelated to the conversation. The oldest and the newest statement can BOTH be gone
-    before any comparator runs.
-
-    The ids here are rotated exactly half a turn against conversation order, so that the
-    lexicographic ends of the id space are the conversation's middle and the conversation's
-    two ends sit dead centre in it. That makes the right answer and the wrong one
-    distinguishable: a window cut by id cannot contain either true end, and one cut in
-    conversation order must contain both. Cut by id the windows come back holding
-    conversation positions 50 to 92 and 7 to 49.
+    The ids are rotated half a turn against conversation order, putting the conversation's
+    ends dead centre of the id space: cut by id neither end survives, cut in conversation
+    order both must. Cut by id the windows held conversation positions 50-92 and 7-49.
     """
     import types
 
@@ -503,19 +494,15 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
 def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
     """The rowid this ORDER BY sorts on has to outlive a re-embed, so hold one and check.
 
-    A re-embed is a delete followed by an insert, which is exactly the operation that
-    scrambles insertion order, and the SQL above leans on that order whenever ordinal and
-    `created_at` have both run out. It survives only because `create_document` takes a
-    `rowid` and the archive hands it back the one it just deleted. That is a property of
-    another module, asserted here because this query is what breaks if it stops holding.
+    A re-embed deletes and re-inserts, the one operation that scrambles insertion order,
+    and it survives only because `create_document` takes a `rowid` and the archive hands
+    back the one it just deleted. A property of another module, asserted here because this
+    query is what breaks if it stops holding.
 
-    Rewritten in reverse, positions 4 then 3 then 2, so a fresh rowid would not merely be
-    different but wrongly ORDERED: the rewritten turns would come back 5, 4, 3 behind the
-    two the pass never touched. Rewriting them in conversation order would renumber them
-    ascending and pass on a tree where the carry had been deleted.
-
-    Document ids descend as the conversation advances, so an answer taken from the id
-    space is the exact reverse of the right one and the two cannot be confused.
+    Rewritten in REVERSE, positions 4 then 3 then 2, so a fresh rowid would be wrongly
+    ordered rather than merely different; rewriting in conversation order would renumber
+    ascending and pass even with the carry deleted. Document ids descend as the
+    conversation advances, so an id-space answer is the exact reverse of the right one.
     """
     import types
 
