@@ -148,7 +148,21 @@ export function createGenerationToolRecovery(
     return entry;
   };
   // A card a provider completes twice. Cleared by a start on the same id, which means a new round.
+  // Seeded like the pending map is: a reload between the two completions saved the first one, so
+  // without this the second arrives after the card has left every lookup.
   const completed = new Map<string, CarriedPart>();
+  for (const entry of carried) {
+    const part = record(entry.part);
+    const id = part?.backendToolCallId;
+    if (
+      part?.type === "tool-call" &&
+      part.result !== undefined &&
+      typeof id === "string" &&
+      id
+    ) {
+      completed.set(id, entry);
+    }
+  }
   const findSavedEntry = (backendId: string, approvalId: unknown) => {
     const matches = savedPending.filter((entry) => {
       const part = record(entry.part);

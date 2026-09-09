@@ -1000,3 +1000,56 @@ test("a legacy id-less pending card is matched through replay", async () => {
   );
   assert.equal(cards[0].result, "done");
 });
+
+test("a citation result reaches a card whose placeholder was already saved", async () => {
+  const citations = [
+    "Title: Unsloth docs",
+    "URL: https://docs.unsloth.ai/",
+    "Snippet: guide",
+  ].join("\n");
+  const saved = {
+    type: "tool-call",
+    toolCallId: "ws_0:saved",
+    backendToolCallId: "ws_0",
+    toolName: "web_search",
+    args: {},
+    argsText: "{}",
+    result: "Searching: unsloth",
+  };
+  const { content } = await recoverRun(
+    [saved],
+    [{ type: "tool_end", tool_call_id: "ws_0", result: citations }],
+  );
+  const cards = content.filter((part) => part.type === "tool-call");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].result, citations);
+  assert.deepEqual(
+    content.filter((part) => part.type === "source").map((part) => part.url),
+    ["https://docs.unsloth.ai/"],
+  );
+});
+
+test("a saved completed card still yields to a new round on its id", async () => {
+  const saved = {
+    type: "tool-call",
+    toolCallId: "call_0:saved",
+    backendToolCallId: "call_0",
+    toolName: "edit_file",
+    args: {},
+    argsText: "{}",
+    result: "first",
+  };
+  const { content } = await recoverRun(
+    [saved],
+    [
+      { type: "tool_start", tool_call_id: "call_0", tool_name: "edit_file" },
+      { type: "tool_end", tool_call_id: "call_0", result: "second" },
+    ],
+  );
+  assert.deepEqual(
+    content
+      .filter((part) => part.type === "tool-call")
+      .map((part) => part.result),
+    ["first", "second"],
+  );
+});
