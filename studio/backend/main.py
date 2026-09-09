@@ -23,6 +23,12 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # card. setdefault so an override wins; full rationale in utils/hardware/hardware.py.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Match the library entry point for ROCm AOTriton kernels that PyTorch still gates as
+# experimental. Studio deliberately defers importing torch, and spawned workers inherit this
+# value. PyTorch keeps its normal hardware and backend checks; `setdefault` preserves an explicit
+# override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
