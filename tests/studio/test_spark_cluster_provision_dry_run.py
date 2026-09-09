@@ -121,3 +121,51 @@ def test_a_missing_peer_directory_is_reported_not_attempted(monkeypatch, tmp_pat
         assert "test" in cmd and "-d" in cmd, cmd
     assert any("would create" in reason for _, reason in results["skipped"]), results["skipped"]
     assert not results["failed"], results["failed"]
+
+
+# ── the GPU probe's fail-closed contract ────────────────────────────────────────
+# A row that cannot be read is not an absent process. nvidia-smi reports `[N/A]` for
+# used_memory in real situations, and skipping such a row and then declaring the peer idle
+# inverts the whole point of the probe: provisioning would overwrite a venv the process behind
+# that row is running out of.
+
+
+def _probe(cluster, monkeypatch, stdout: str):
+    monkeypatch.setattr(cluster.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(cmd, *a, **k):
+        return subprocess.CompletedProcess(cmd, 0, stdout = stdout, stderr = "")
+
+    monkeypatch.setattr(cluster.subprocess, "run", fake_run)
+    return cluster.peer_gpu_busy("192.0.2.7")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "4242, [N/A]",          # the documented one: nvidia-smi cannot report the memory
+        "4242, ",               # empty memory field
+        "4242, not-a-number",
+        "[N/A], 900 MiB",       # unreadable pid
+    ],
+)
+def test_an_unreadable_process_row_leaves_the_peer_busy(monkeypatch, row: str) -> None:
+    cluster = _cluster()
+    out = _probe(cluster, monkeypatch, f"pid, used_memory\n{row}\nRC=0\n")
+    assert out["busy"] is True, out
+    assert out["known"] is False, out
+    assert "could not be read" in out["reason"], out
+
+
+def test_a_clean_idle_peer_is_still_idle(monkeypatch) -> None:
+    """No regression: the whole reason provisioning is allowed to run at all."""
+    cluster = _cluster()
+    out = _probe(cluster, monkeypatch, "pid, used_memory\nRC=0\n")
+    assert out["busy"] is False and out["known"] is True, out
+
+
+def test_a_readable_busy_peer_is_still_busy(monkeypatch) -> None:
+    cluster = _cluster()
+    out = _probe(cluster, monkeypatch, "pid, used_memory\n4242, 40000 MiB\nRC=0\n")
+    assert out["busy"] is True and out["known"] is True, out
+    assert out["processes"] == [{"pid": 4242, "used_mib": 40000}], out

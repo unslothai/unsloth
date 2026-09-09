@@ -406,7 +406,9 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     ran.clear()
     monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: pytest.fail("dry run probed the peer"))
     sc.provision_peer("192.168.200.13", dry_run = True)
-    assert all("--dry-run" in cmd for cmd in ran)
+    # rsync commands only: a dry run also runs a read-only `ssh test -d` to decide whether the
+    # destination exists, and that is not an rsync invocation.
+    assert all("--dry-run" in cmd for cmd in ran if cmd and cmd[0] == "rsync")
 
 
 def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
@@ -928,7 +930,12 @@ def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> 
     assert ("llama.cpp prebuilt", str(tmp_path / "elsewhere" / "llama.cpp")) in res["copied"]
     bundle_cmd = next(c for c in ran if c[-2].startswith(str(tmp_path / "elsewhere" / "llama.cpp")))
     assert bundle_cmd[-1].endswith(":" + str(tmp_path / "elsewhere" / "llama.cpp") + "/")
-    assert any("mkdir -p" in part for part in bundle_cmd)
+    # This asserted `mkdir -p` was present, which pinned a defect rather than a contract:
+    # --rsync-path runs on the PEER before any transfer, so --dry-run never suppressed it and
+    # the dry run created the very directories it was meant to only report. A dry run must ask
+    # the peer for nothing. The real run's parent creation is covered in
+    # tests/studio/test_spark_cluster_provision_dry_run.py.
+    assert not any("mkdir" in part for part in bundle_cmd), bundle_cmd
 
 
 # Signal (a): the bundle identity, from BUILD_INFO.txt and the libggml-rpc hash.

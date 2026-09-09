@@ -1798,19 +1798,34 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     if rc is None or rc != "0":
         out["reason"] = f"nvidia-smi did not run on the peer (rc={rc!r}); treating the GPU as BUSY"
         return out
+    # A row that cannot be read is not an absent process. nvidia-smi reports `[N/A]` for
+    # used_memory in real situations, and skipping such a row and then declaring the peer idle
+    # inverts this function's whole contract: provisioning would overwrite a venv the process
+    # behind that row is running out of. Unreadable means unverifiable, which means busy.
+    unreadable = []
     for line in lines:
         if line.startswith("RC=") or line.lower().startswith("pid"):
             continue
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 2 or not parts[0].isdigit():
+            unreadable.append(line)
             continue
         mem = parts[1].replace("MiB", "").replace("MB", "").strip()
         try:
             mib = int(float(mem))
         except ValueError:
+            unreadable.append(line)
             continue
         if mib >= PEER_BUSY_MIB:
             out["processes"].append({"pid": int(parts[0]), "used_mib": mib})
+    if unreadable:
+        out["known"] = False
+        out["busy"] = True
+        out["reason"] = (
+            f"{len(unreadable)} process row(s) from nvidia-smi could not be read "
+            f"({unreadable[0][:80]!r}); treating the GPU as BUSY"
+        )
+        return out
     out["known"] = True
     out["busy"] = bool(out["processes"])
     out["reason"] = (
