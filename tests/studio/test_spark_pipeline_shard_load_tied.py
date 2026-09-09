@@ -36,8 +36,13 @@ def _pipeline_module():
 
 def _saved(transformers, tmp_path, *, tied: bool) -> str:
     config = transformers.LlamaConfig(
-        vocab_size = 64, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 4,
-        num_attention_heads = 4, num_key_value_heads = 4, max_position_embeddings = 32,
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        max_position_embeddings = 32,
         tie_word_embeddings = tied,
     )
     out = str(tmp_path / ("tied" if tied else "untied"))
@@ -67,8 +72,13 @@ def test_a_tied_head_loads_from_the_embedding_it_is_tied_to(tmp_path) -> None:
 
     # The last stage of a two-way split: no embedding, keeps the head.
     model, _, _ = pipeline.build_stage_model(
-        saved, rank = 1, world = 2, device = "cpu", shard_load = True,
-        dtype = torch.float32, log = lambda *a, **k: None,
+        saved,
+        rank = 1,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
     )
     assert not model.lm_head.weight.is_meta
 
@@ -89,8 +99,13 @@ def test_a_stage_holding_both_keeps_them_one_tensor(tmp_path) -> None:
 
     saved = _saved(transformers, tmp_path, tied = True)
     model, _, _ = pipeline.build_stage_model(
-        saved, rank = 0, world = 1, device = "cpu", shard_load = True,
-        dtype = torch.float32, log = lambda *a, **k: None,
+        saved,
+        rank = 0,
+        world = 1,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
     )
     embed = model.get_input_embeddings().weight
     assert model.lm_head.weight.data_ptr() == embed.data_ptr()
@@ -106,8 +121,13 @@ def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
     assert "lm_head.weight" in _keys(saved)
 
     model, _, _ = pipeline.build_stage_model(
-        saved, rank = 1, world = 2, device = "cpu", shard_load = True,
-        dtype = torch.float32, log = lambda *a, **k: None,
+        saved,
+        rank = 1,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
     )
     # The last stage has no embedding at all, so the head must have come from its own key.
     assert not model.lm_head.weight.is_meta
@@ -124,18 +144,16 @@ def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
         ("1f1b", 2, True),
         ("gpipe", 2, True),
         ("interleaved", 2, True),
-        ("zbv", 2, False),        # a V layout puts the first and last stage on one rank
+        ("zbv", 2, False),  # a V layout puts the first and last stage on one rank
         ("dualpipev", 2, False),
-        ("1f1b", 1, False),       # one rank is one parameter
+        ("1f1b", 1, False),  # one rank is one parameter
     ],
 )
 def test_a_tied_checkpoint_is_refused_only_where_it_would_actually_split(
     schedule: str, world: int, expected: bool
 ) -> None:
     pipeline = _pipeline_module()
-    plan = pipeline.torch_pp_plan(
-        schedule, world, microbatches = 4, virtual_stages = 2, n_layers = 8
-    )
+    plan = pipeline.torch_pp_plan(schedule, world, microbatches = 4, virtual_stages = 2, n_layers = 8)
     problem = pipeline.tied_split_problem(
         tied = True, full_finetune = True, world = world, stage_to_rank = plan["stage_to_rank"]
     )

@@ -335,7 +335,10 @@ def _has_parameter(model, name: str) -> bool:
 
 
 def tied_split_problem(
-    tied: bool, full_finetune: bool, world: int, stage_to_rank: Optional[dict] = None
+    tied: bool,
+    full_finetune: bool,
+    world: int,
+    stage_to_rank: Optional[dict] = None,
 ) -> Optional[str]:
     """Why a tied embedding must not be split across ranks, or None when it is not.
 
