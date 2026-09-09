@@ -1666,7 +1666,13 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         """The `result_budget_tokens` one round hands a tool, through the real loop."""
         seen: list[int] = []
 
-        def _fake_execute_tool(name, arguments, *, result_budget_tokens = None, **_kwargs):
+        def _fake_execute_tool(
+            name,
+            arguments,
+            *,
+            result_budget_tokens = None,
+            **_kwargs,
+        ):
             seen.append(result_budget_tokens)
             return "Linux kernel 6.10."
 
@@ -1717,9 +1723,7 @@ class TestTheSizingSitesReadTheClampedFigure:
     """Source-level, because a seventh sizing site added against the unclamped name is
     the same defect again and no single behaviour test sees all of them."""
 
-    _SOURCE = " ".join(
-        Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8").split()
-    )
+    _SOURCE = " ".join(Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8").split())
 
     def test_the_iteration_fit_receives_the_clamped_figure(self):
         assert "max_tokens = _iteration_fit_max_tokens," in self._SOURCE
