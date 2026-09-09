@@ -2681,10 +2681,26 @@ def _unretire_project_rag_scope(project_id: str) -> None:
     that write. The Studio row is already committed, so a delete still sitting
     on its last owner check will see the project and skip the purge; one that
     already passed that check races this on the RAG database instead of two.
+
+    The owner re-check happens under that same lock: a pre-upsert snapshot can
+    lose a concurrent delete/recreate, and unretiring from it would either skip
+    a live project or clear a tombstone whose owner is already gone. A locked
+    or missing RAG database must not fail the Studio write that already landed.
     """
     from core.rag import folder_sync, store as rag_store
 
-    folder_sync.unretire_scope(rag_store.project_scope(project_id))
+    scope = rag_store.project_scope(project_id)
+    try:
+        with folder_sync.scope_lock(scope):
+            if get_chat_project(project_id) is None:
+                return
+            folder_sync.unretire_scope(scope)
+    except Exception:
+        logger.warning(
+            "could not clear RAG retirement for project %s after the Studio row committed",
+            project_id,
+            exc_info = True,
+        )
 
 
 def upsert_chat_project(project: dict) -> dict:
@@ -2722,8 +2738,7 @@ def upsert_chat_project(project: dict) -> dict:
         saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
-    if existing is None:
-        _unretire_project_rag_scope(project["id"])
+    _unretire_project_rag_scope(project["id"])
     return saved
 
 
