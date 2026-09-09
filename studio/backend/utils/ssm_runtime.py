@@ -316,7 +316,15 @@ def _install_kernel(
         release_base_url = release_base_url,
         env = env,
     )
-    if wheel_url and url_exists(wheel_url):
+    wheel_available = url_exists(wheel_url) if wheel_url else False
+    if wheel_available is None:
+        _emit(
+            status_cb,
+            f"Could not check the {display_name} prebuilt wheel; skipping installation. "
+            "Retry when the download host is available.",
+        )
+        return False
+    if wheel_available:
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
         # Keep quiet downloads and unpacks within the inactivity deadline (#9398).
         with _heartbeat(

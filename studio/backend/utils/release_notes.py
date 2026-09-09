@@ -678,6 +678,19 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
             RELEASES_FAILURE_TTL_SECONDS,
         )
 
+    if urllib.parse.urlparse(url).hostname == "api.github.com":
+        from utils.prebuilt.freshness_flow import github_rate_limit_remaining
+        remaining = github_rate_limit_remaining()
+        if remaining > 0:
+            return (
+                ReleaseSource(
+                    release = None,
+                    source = None,
+                    error = "GitHub is rate limiting release note requests.",
+                ),
+                remaining,
+            )
+
     headers = {
         "User-Agent": "unsloth-studio-update-check",
         "Accept": "application/vnd.github+json",

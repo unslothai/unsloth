@@ -440,7 +440,10 @@ def _timed_out(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
 
 
-def url_exists(url: str, *, attempts: int = 2) -> bool:
+def url_exists(url: str, *, attempts: int = 2) -> bool | None:
+    """True if reachable, False for a 404, None when availability cannot be checked."""
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
     # Only a 404 means "not published"; a refusal is retried and reported, or the caller
     # starts a many-minute source build for a wheel that exists.
     for attempt in range(1, attempts + 1):
@@ -462,5 +465,7 @@ def url_exists(url: str, *, attempts: int = 2) -> bool:
             time.sleep(1.5 * attempt)
             continue
         break
-    _logger.warning("url_exists(%s): %s; treating the prebuilt wheel as unavailable", url, reason)
-    return False
+    _logger.warning(
+        "url_exists(%s): %s; could not determine prebuilt wheel availability", url, reason
+    )
+    return None

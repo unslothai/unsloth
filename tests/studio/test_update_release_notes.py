@@ -828,6 +828,56 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
     assert hits["count"] == 1, "refresh must not bypass a rate-limit lockout"
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+def test_notes_honor_shared_github_backoff_and_resume_after_reset(
+    notes_module, monkeypatch, refresh
+):
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    now = time.monotonic()
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    freshness_flow.note_github_rate_limited(wait = 60)
+    calls = []
+
+    def capture(request, **kwargs):
+        calls.append(request.full_url)
+        raise notes_module.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    try:
+        result = notes_module.get_latest_release(refresh = refresh)
+        assert "rate limit" in result.error.lower()
+        assert calls == []
+        now += 61
+        notes_module.get_latest_release(refresh = refresh)
+        assert calls == [notes_module.RELEASES_API_URL]
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
+def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_module, monkeypatch):
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    url = "https://mirror.example/releases"
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url)
+    freshness_flow.note_github_rate_limited(wait = 60)
+    calls = []
+
+    def capture(request, **kwargs):
+        calls.append(request.full_url)
+        raise notes_module.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    try:
+        notes_module.get_latest_release()
+        assert calls == [url]
+    finally:
+        notes_module.reset_release_notes_cache()
+
+
 def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
     """GH_TOKEN lifts the 60/hour per-IP limit, and must never travel to an
     UNSLOTH_RELEASES_URL override."""
