@@ -3557,9 +3557,7 @@ def test_a_registration_is_taken_only_when_windows_calls_it_absolute(monkeypatch
     # os.path.isabs as posixpath, which answers False for "C:\..." and True for
     # "/...". Neither spelling is what a real VulkanDriverName holds.
     monkeypatch.setattr(ilp, "os", _WindowsPaths({value.strip()}))
-    got = ilp._windows_vulkan_driver_value_paths(
-        _FakeIcdWinreg, value, _FakeIcdWinreg.REG_SZ
-    )
+    got = ilp._windows_vulkan_driver_value_paths(_FakeIcdWinreg, value, _FakeIcdWinreg.REG_SZ)
     assert got == ([value.strip()] if taken else [])
 
 

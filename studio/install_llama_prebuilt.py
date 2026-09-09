@@ -7955,9 +7955,7 @@ def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst:
     status = wintypes.ULONG(0)
     problem = wintypes.ULONG(0)
     if (
-        cfgmgr.CM_Get_DevNode_Status(
-            ctypes.pointer(status), ctypes.pointer(problem), devinst, 0
-        )
+        cfgmgr.CM_Get_DevNode_Status(ctypes.pointer(status), ctypes.pointer(problem), devinst, 0)
         != _CR_SUCCESS
     ):
         return False
