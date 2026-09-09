@@ -456,6 +456,12 @@ def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]
         reference = reference.strip()
         if reference.startswith(("./", "../", "~")):
             continue
+        cached = _cached_repo(Path(reference))
+        if cached is not None and cached[1] == repo_type:
+            repo_id = cached[0]
+            if _grant_key(repo_id, repo_type) not in grants:
+                candidates.setdefault(repo_id, repo_id)
+            continue
         parts = reference.split(":", 1)[0].split("/")
         if len(parts) < 2 or not all(parts[:2]):
             continue

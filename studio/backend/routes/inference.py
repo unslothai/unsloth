@@ -26806,12 +26806,13 @@ async def _openai_catalog_objects() -> list[dict]:
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
+    catalog_at = _account_catalog_cache()["at"]
+    rows = await asyncio.to_thread(_servable_catalog_rows, catalog, catalog_at)
     if account_access.managed_account():
         catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
-    catalog_at = _account_catalog_cache()["at"]
-    for info, is_gguf, quants, loaded in await asyncio.to_thread(
-        _servable_catalog_rows, catalog, catalog_at
-    ):
+        visible = {id(info) for info in catalog}
+        rows = [row for row in rows if id(row[0]) in visible]
+    for info, is_gguf, quants, loaded in rows:
         if account_access.resident_hidden("chat"):
             loaded = False
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))

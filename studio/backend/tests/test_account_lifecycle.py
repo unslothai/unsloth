@@ -807,3 +807,18 @@ def test_logout_from_a_deleted_identity_spares_the_recreated_account(matrix):
     assert response.status_code == 204
     assert replacement["account_id"] != old["account_id"]
     assert storage.verify_refresh_token(replacement["refresh"]) == ("alice", False)
+
+
+def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
+    """Every auth connection re-ran the schema DDL; it is cached per file and schema version."""
+    storage._auth_schema_ready.clear()
+    storage.get_connection().close()
+    storage.get_connection().close()
+    assert len(storage._auth_schema_ready) == 1
+    replaced = tmp_path / "studio" / "auth" / "auth.db"
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(replaced) + suffix).unlink(missing_ok = True)
+    conn = storage.get_connection()
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert "auth_user" in tables and len(storage._auth_schema_ready) == 2

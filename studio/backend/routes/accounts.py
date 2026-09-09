@@ -48,6 +48,12 @@ def retire_account_roots(account: AccountContext) -> None:
     from core.training.account_jobs import retire_account_jobs
 
     retire_account_jobs(account)
+    from core.inference.video import generation_account_in_flight, get_video_backend
+    from core.training.account_jobs import AccountRetirementError
+
+    if generation_account_in_flight() == account.account_id:
+        get_video_backend().cancel_generate(expected_account = account.account_id)
+        raise AccountRetirementError("Video generation is still active; retry deletion")
     run_as(account, close_mcp_sessions)
     run_as(account, invalidate_tool_cache)
     from storage.studio_db import close_wal_keeper_for

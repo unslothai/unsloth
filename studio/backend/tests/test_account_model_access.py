@@ -562,3 +562,13 @@ def test_one_segment_hub_ids_follow_their_grant(monkeypatch, tmp_path, repo_id, 
     assert run_as(ALICE, access.model_visible, str(weights))
     assert not run_as(BOB, access.model_visible, repo_id)
     assert not run_as(BOB, access.model_visible, str(weights))
+
+
+def test_cache_path_rows_join_the_concurrent_hub_warmup():
+    """Inventory rows carry snapshot paths; skipping them serialised one Hub call per repo."""
+    path = "/cache/models--org--m/snapshots/abc/model.gguf"
+    assert access._hub_probe_targets([path], "model", set()) == {"org/m"}
+    assert (
+        access._hub_probe_targets([path], "model", {access._grant_key("org/m", "model")}) == set()
+    )
+    assert access._hub_probe_targets([path], "dataset", set()) == set()

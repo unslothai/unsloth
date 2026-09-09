@@ -10,7 +10,9 @@ import json
 import multiprocessing
 import os
 import queue
+import importlib
 import threading
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1233,3 +1235,117 @@ def test_retirement_cancels_model_downloads_and_no_late_grant_recreates_the_work
             if handle is not None and handle.poll() is None:
                 handle.kill()
         registry.set_job(key, "idle")
+
+
+def test_retirement_is_refused_while_a_start_is_in_flight(training, monkeypatch):
+    """Retiring under an admitted start deadlocked on the lifecycle lock or spawned a child afterwards."""
+    backend, _, _ = training
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet([backend]))
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+    paused, resume = threading.Event(), threading.Event()
+
+    def persist():
+        paused.set()
+        assert resume.wait(10)
+
+    monkeypatch.setattr(backend, "_ensure_db_run_created", persist)
+    run_as(ALICE, backend.reserve_start_request, "request", "job")
+    starter = threading.Thread(
+        target = lambda: run_as(
+            ALICE,
+            backend.start_training,
+            "job",
+            start_request_id = "request",
+            model_name = "org/model",
+            hf_token = "account-token",
+        ),
+        daemon = True,
+    )
+    starter.start()
+    assert paused.wait(10)
+    outcome = []
+    retiring = threading.Thread(
+        target = lambda: outcome.append(
+            _catch(jobs.AccountRetirementError, jobs.retire_account_jobs, ALICE)
+        ),
+        daemon = True,
+    )
+    retiring.start()
+    retiring.join(5)
+    resume.set()
+    starter.join(10)
+    assert not retiring.is_alive() and not starter.is_alive()
+    assert isinstance(outcome[0], jobs.AccountRetirementError)
+
+
+def _catch(error, fn, *args):
+    try:
+        return fn(*args)
+    except error as exc:
+        return exc
+
+
+def test_deleting_an_account_cancels_its_video_render_and_keeps_its_roots(monkeypatch, tmp_path):
+    from core.inference import video
+    from routes.accounts import retire_account_roots
+    from utils.paths import storage_roots
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(jobs, "_services", weakref.WeakSet())
+    for module, name in (
+        ("hub.services.datasets.downloads", "retire_account_downloads"),
+        ("hub.services.models.downloads", "retire_account_downloads"),
+        ("core.rag.ingestion", "retire_account_ingestions"),
+        ("core.rag.folder_sync", "retire_account_sync"),
+    ):
+        monkeypatch.setattr(importlib.import_module(module), name, lambda: None)
+    monkeypatch.setattr("core.research_runs.retire_account_research", lambda account: None)
+    backend = video.VideoBackend()
+    monkeypatch.setattr(video, "_backend", backend)
+    backend._state = SimpleNamespace(
+        family = SimpleNamespace(
+            name = "fam", default_fps = 24, default_num_frames = 49, frame_step = 4, frame_offset = 1
+        ),
+        h3_task = None,
+        engine = "diffusers",
+        repo_id = "r",
+    )
+    backend._resolve_keyframes = lambda *a, **k: (None, None, 512, 512, "t2v")
+    backend._resolve_references = lambda *a, **k: None
+    backend._resolve_flow_shifts = lambda *a, **k: (None, None)
+    monkeypatch.setattr(video, "validate_video_request_shape", lambda *a, **k: None)
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    cancels = []
+
+    def render(**kwargs):
+        cancels.append(kwargs["cancel_event"])
+        entered.set()
+        try:
+            assert release.wait(10)
+        finally:
+            with backend._lock:
+                backend._generate_job_active = False
+                backend._active_generate_cancel = None
+            done.set()
+
+    monkeypatch.setattr(backend, "_run_generate", render)
+    root = run_as(ALICE, storage_roots.workspace_root)
+    root.mkdir(parents = True)
+    run_as(ALICE, backend.begin_generate, prompt = "review", steps = 5)
+    try:
+        assert entered.wait(10)
+        with pytest.raises(jobs.AccountRetirementError):
+            retire_account_roots(ALICE)
+        assert root.exists() and cancels[0].is_set()
+    finally:
+        release.set()
+        assert done.wait(10)

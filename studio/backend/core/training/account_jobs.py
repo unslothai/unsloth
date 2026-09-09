@@ -365,6 +365,8 @@ def retire_account_jobs(account: AccountContext) -> None:
         try:
             with service._account_job_lock:
                 if service._result_account.account_id == account.account_id:
+                    if service._account_inflight:
+                        raise RuntimeError("Account job operation is in flight; retry retirement")
                     try:
                         run_as(account, service._account_cancel)
                     finally:

@@ -286,6 +286,9 @@ def credential_generation_guard(username: str, expect_gen: Optional[str]) -> Ite
         conn.close()
 
 
+_auth_schema_ready: set[tuple[str, int, int, int]] = set()
+
+
 def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
@@ -304,6 +307,15 @@ def get_connection() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
     except sqlite3.Error:
         pass
+    file_stat = DB_PATH.stat()
+    schema_key = (
+        str(DB_PATH),
+        file_stat.st_dev,
+        file_stat.st_ino,
+        conn.execute("PRAGMA schema_version").fetchone()[0],
+    )
+    if schema_key in _auth_schema_ready:
+        return conn
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_user (
@@ -368,6 +380,12 @@ def get_connection() -> sqlite3.Connection:
     if "secret_gen" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN secret_gen TEXT")
     conn.commit()
+    _auth_schema_ready.add(
+        (
+            *schema_key[:3],
+            conn.execute("PRAGMA schema_version").fetchone()[0],
+        )
+    )
     return conn
 
 
