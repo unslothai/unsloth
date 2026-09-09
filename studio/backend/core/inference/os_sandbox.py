@@ -238,6 +238,18 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
     mount UNDER it. Backend-agnostic on purpose: the invariant is the boundary
     both profiles claim, not a bubblewrap detail.
 
+    Nothing it raises on can be created from INSIDE the jail, and that is the
+    property that makes it safe rather than an incident: ``auto`` answers a
+    refusal here by running the next call unisolated, so any condition sandboxed
+    code could plant would be a two-line way for a tool call to switch the
+    boundary off for the rest of the session. A unix socket and a FIFO are
+    therefore not refused -- a tool call can make one, and one inside the workdir
+    addresses nothing outside it -- while a device node still is, because the
+    kernel refuses mknod of one in a user namespace. Nor does running out of
+    budget refuse: a tool call can write 50,000 files. The scan stops and the
+    launch proceeds, because "I could not finish looking" is not "I found
+    something".
+
     Raises ``SandboxUnavailableError``. In ``auto`` the caller turns that into a
     software-safeguards launch rather than a refusal.
     """
@@ -259,9 +271,12 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
         for name in (*dirs, *names):
             entries += 1
             if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                raise SandboxUnavailableError(
-                    "the session workdir is too large to check for host channels before a launch"
+                logger.info(
+                    "Stopped the session workdir scan after %d entries; a launch is not "
+                    "refused for a budget a tool call can spend on its own",
+                    entries,
                 )
+                return
             path = os.path.join(base, name)
             try:
                 info = os.lstat(path)
@@ -280,10 +295,13 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                         f"the session workdir contains a nested host mount: {path}"
                     )
                 continue
+            if stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
+                raise SandboxUnavailableError(f"the session workdir contains a device node: {path}")
             if not stat.S_ISREG(info.st_mode):
-                raise SandboxUnavailableError(
-                    f"the session workdir contains a device or IPC node: {path}"
-                )
+                # A socket or a FIFO, which a tool call makes for itself and which
+                # reaches nothing the workdir does not already reach. Not a link
+                # count to account for either.
+                continue
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1

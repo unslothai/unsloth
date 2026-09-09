@@ -217,15 +217,52 @@ def _bwrap_supports(bwrap: str, option: str) -> bool:
     return option in _bwrap_long_options(identity)
 
 
+def _host_mount_points() -> tuple[str, ...]:
+    """Every host mount point. Unreadable is a refusal, not an empty list.
+
+    Read straight out of mountinfo without resolving anything: the kernel already
+    reports mount points canonically, and calling realpath on each one would stat
+    every path component of every mount on the host, on every launch. That blocks
+    uninterruptibly on a stale NFS or sshfs mount and triggers automounts that
+    were not otherwise in anyone's way.
+    """
+    points: list[str] = []
+    try:
+        with open("/proc/self/mountinfo", encoding = "utf-8") as stream:
+            for line in stream:
+                fields = line.split()
+                if len(fields) < 5:
+                    raise SandboxUnavailableError("cannot parse the host mount table")
+                raw = (
+                    fields[4]
+                    .replace("\\040", " ")
+                    .replace("\\011", "\t")
+                    .replace("\\012", "\n")
+                    .replace("\\134", "\\")
+                )
+                points.append(raw)
+    except OSError as exc:
+        raise SandboxUnavailableError("cannot read the host mount table") from exc
+    return tuple(points)
+
+
 def _validate_workdir(workdir: str) -> str:
     """Canonicalise the session workdir, and refuse one that would carry the host in with it.
 
-    Everything it refuses is the boundary both backends claim rather than a
-    bubblewrap detail, so the refusing is in ``os_sandbox``.
+    The shared scan carries what both backends claim. The mount table is asked
+    again here, and not only through the ``os.path.ismount`` that scan uses,
+    because that test compares device numbers and a bind mount whose source is on
+    the SAME filesystem answers it with a false negative -- and that topology is
+    precisely the one the recursive workdir bind would carry in with write access.
     """
     resolved = os.path.realpath(workdir)
     if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
         raise SandboxUnavailableError("the session workdir is not a safe canonical directory")
+    for mount in _host_mount_points():
+        if mount != resolved and _within(mount, resolved):
+            raise SandboxUnavailableError(
+                f"the session workdir contains a nested host mount: {mount}"
+            )
     scan_workdir_for_host_channels(resolved)
     return resolved
 

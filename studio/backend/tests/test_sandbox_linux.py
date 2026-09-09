@@ -23,6 +23,7 @@ import os
 import platform
 import shutil
 import socket
+import stat
 import struct
 import sys
 import sysconfig
@@ -392,23 +393,45 @@ def test_the_backend_declares_the_two_things_it_does_not_confine():
 # ── the workdir a launch will accept ─────────────────────────────────
 
 
-def test_a_unix_socket_under_the_workdir_is_refused():
+def test_a_unix_socket_under_the_workdir_is_allowed():
+    """A tool call can bind one, and auto answers a refusal by running the NEXT
+    call unisolated, so refusing here would be a two-line way for model-authored
+    code to switch the boundary off for the rest of the session. A socket inside
+    the workdir also reaches nothing the workdir does not already reach."""
     # Not tmp_path: the AF_UNIX address is capped at 108 bytes and pytest's
     # per-test directory can exceed it on its own.
     workdir = tempfile.mkdtemp(prefix = "sbx-")
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         listener.bind(os.path.join(workdir, "s"))
-        with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
-            sandbox_linux._validate_workdir(workdir)
+        assert sandbox_linux._validate_workdir(workdir) == os.path.realpath(workdir)
     finally:
         listener.close()
         shutil.rmtree(workdir, ignore_errors = True)
 
 
-def test_a_fifo_under_the_workdir_is_refused(tmp_path):
+def test_a_fifo_under_the_workdir_is_allowed(tmp_path):
+    """Same reason as the socket: mkfifo is available to a tool call."""
     os.mkfifo(str(tmp_path / "pipe"))
-    with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+
+
+def test_a_device_node_under_the_workdir_is_still_refused(tmp_path, monkeypatch):
+    """The one node kind that IS a channel out, and the one a tool call cannot
+    make: the kernel refuses mknod of a device in a user namespace, so a workdir
+    holding one was populated from outside the jail."""
+    device = tmp_path / "sda"
+    device.write_text("")
+    real = os.lstat
+
+    def as_block_device(path, **kwargs):
+        info = real(path, **kwargs)
+        if str(path) == str(device):
+            return os.stat_result((stat.S_IFBLK | 0o600, *tuple(info)[1:10]))
+        return info
+
+    monkeypatch.setattr(os, "lstat", as_block_device)
+    with pytest.raises(SandboxUnavailableError, match = "device node"):
         sandbox_linux._validate_workdir(str(tmp_path))
 
 
@@ -462,12 +485,15 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
     assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
 
-def test_a_workdir_too_large_to_check_is_refused_rather_than_scanned_forever(tmp_path, monkeypatch):
+def test_a_workdir_too_large_to_check_stops_the_scan_rather_than_the_launch(tmp_path, monkeypatch):
+    """A tool call can write 50,000 files, so refusing on the budget would be the
+    same switch-the-boundary-off move as the socket. Running out of budget means
+    the scan could not finish looking, which is not the same as finding
+    something, and the launch is still isolated."""
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
-    with pytest.raises(SandboxUnavailableError, match = "too large"):
-        sandbox_linux._validate_workdir(str(tmp_path))
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
 
 def test_a_workdir_that_is_not_a_directory_is_refused(tmp_path):

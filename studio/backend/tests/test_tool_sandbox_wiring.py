@@ -635,7 +635,7 @@ def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatc
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
-@pytest.mark.parametrize("kind", ["socket", "hardlink"])
+@pytest.mark.parametrize("kind", ["hardlink"])
 def test_a_workdir_the_backend_refuses_does_not_take_the_tools_away(kind):
     """End to end, through the real planner: the conditions the Linux backend
     refuses are ordinary things to find in a project directory, and in auto none
@@ -665,6 +665,31 @@ def test_a_workdir_the_backend_refuses_does_not_take_the_tools_away(kind):
         os.unlink(planted)
         if os.path.exists(outside):
             os.unlink(outside)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
+def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call():
+    """The escalation the fallback opened: auto answers a refusal by running the
+    next call unisolated, so anything sandboxed code can plant in its own workdir
+    would be a two-line way to get the host back. A socket, a FIFO and a tree over
+    the scan budget are all things a tool call can make, and none of them may cost
+    the next call its isolation."""
+    if not os_sandbox.capability_snapshot().available:
+        pytest.skip("this host cannot isolate, so there is no boundary to switch off")
+    workdir = tools._get_workdir(_SESSION)
+    planted = os.path.join(workdir, "planted.sock")
+    fifo = os.path.join(workdir, "planted.fifo")
+    holder = socket.socket(socket.AF_UNIX)
+    holder.bind(planted)
+    os.mkfifo(fifo)
+    try:
+        tools._last_tool_execution_record = None
+        assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
+        assert tools._last_tool_execution_record.os_isolation is True
+    finally:
+        holder.close()
+        os.unlink(planted)
+        os.unlink(fifo)
 
 
 # ── full access has exactly one door ──────────────────────────────────
