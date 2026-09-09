@@ -30589,7 +30589,7 @@ class LlamaCppBackend:
                 self._effective_context_length
             )
 
-        def _continuation_refusal_event() -> "Optional[dict]":
+        def _continuation_refusal_event(fit_max_tokens) -> "Optional[dict]":
             """The `context_truncated` the client needs when a continuation cannot be served.
 
             Both declines below end the turn with "length" and a partial, which is the shape
@@ -30615,8 +30615,9 @@ class LlamaCppBackend:
                 # compacted" for a compaction that never happened.
                 "dropped_messages": 0,
                 "context_length": window,
-                # Same formula the preflight's fit reports, so the client stays on one scale.
-                "prompt_target": prompt_budget(window, max_tokens),
+                # Same formula and the same clamped reserve the pass's fit used, so the
+                # client stays on one scale.
+                "prompt_target": prompt_budget(window, fit_max_tokens),
             }
 
         def _loop_budget_left(spent_this_attempt: int) -> "Optional[int]":
@@ -31939,7 +31940,7 @@ class LlamaCppBackend:
                                     # THIS request, and the client's next one carries its
                                     # own, so its continuation is servable.
                                     if _cap_left_c != 0 and not _continuation_refusal_announced:
-                                        _refusal_c = _continuation_refusal_event()
+                                        _refusal_c = _continuation_refusal_event(_iteration_fit_max_tokens)
                                         if _refusal_c is not None:
                                             _continuation_refusal_announced = True
                                             yield _refusal_c
@@ -32053,7 +32054,7 @@ class LlamaCppBackend:
                                 # a client resuming this walks into the refusal the
                                 # preflight has already promised.
                                 if not _reasoning_cap_spent and not _continuation_refusal_announced:
-                                    _refusal_l = _continuation_refusal_event()
+                                    _refusal_l = _continuation_refusal_event(_iteration_fit_max_tokens)
                                     if _refusal_l is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_l
@@ -33492,7 +33493,7 @@ class LlamaCppBackend:
                         _round_spent = _round_prompt_tokens(conversation)
                         _round_budget = tool_result_budget(
                             self._effective_context_length,
-                            _iteration_max_tokens,
+                            _iteration_fit_max_tokens,
                             _round_spent,
                         ) // max(1, _round_launched[0])
                         if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
@@ -33506,7 +33507,7 @@ class LlamaCppBackend:
                                 _round_spent = _round_prompt_tokens(conversation)
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
-                                    _iteration_max_tokens,
+                                    _iteration_fit_max_tokens,
                                     _round_spent,
                                 ) // max(1, _round_launched[0])
                         # Final before any driver starts: every worker takes this instead of
@@ -34573,7 +34574,7 @@ class LlamaCppBackend:
                             # The final pass's twin of the in-loop decline, cap-spent
                             # excluded for the same reason.
                             if _next_cap != 0 and not _continuation_refusal_announced:
-                                _refusal_f = _continuation_refusal_event()
+                                _refusal_f = _continuation_refusal_event(_final_fit_max_tokens)
                                 if _refusal_f is not None:
                                     _continuation_refusal_announced = True
                                     yield _refusal_f
@@ -34702,7 +34703,7 @@ class LlamaCppBackend:
                                 }
                             else:
                                 if _next_cap_r != 0 and not _continuation_refusal_announced:
-                                    _refusal_r = _continuation_refusal_event()
+                                    _refusal_r = _continuation_refusal_event(_final_fit_max_tokens)
                                     if _refusal_r is not None:
                                         _continuation_refusal_announced = True
                                         yield _refusal_r

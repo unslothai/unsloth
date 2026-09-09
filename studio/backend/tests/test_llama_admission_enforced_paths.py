@@ -1833,14 +1833,30 @@ class TestTheSizingSitesReadTheClampedFigure:
         reach all of them and a new site added against the raw cap is the same defect."""
         import ast
 
+        loop = self._tool_loop()
+        # A nested helper may take the reserve as a parameter, provided every call in the
+        # loop hands it one of the clamped names: the refusal event does, since the loop
+        # and the final pass reserve different figures.
+        threaded: dict[str, set[str]] = {}
+        for call in ast.walk(loop):
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
+                threaded.setdefault(call.func.id, set()).update(
+                    getattr(arg, "id", None) for arg in call.args
+                )
+        clamped_params = set()
+        for node in ast.walk(loop):
+            if isinstance(node, ast.FunctionDef) and node is not loop:
+                passed = threaded.get(node.name)
+                if passed and passed <= set(self._CLAMPED):
+                    clamped_params.update(arg.arg for arg in node.args.args)
         unclamped = []
-        for call in ast.walk(self._tool_loop()):
+        for call in ast.walk(loop):
             if not isinstance(call, ast.Call):
                 continue
             name = getattr(call.func, "id", None)
             if name in self._SIZERS and len(call.args) >= 2:
                 read = getattr(call.args[1], "id", None)
-                if read not in self._CLAMPED:
+                if read not in self._CLAMPED and read not in clamped_params:
                     unclamped.append(f"{name}({read})")
             if name == "_fit_with_instruction_pins":
                 for keyword in call.keywords:
