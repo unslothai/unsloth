@@ -13962,12 +13962,20 @@ async def _run_tracked_load_model_impl(
         from core.inference import spark_serving
 
         _spark_slots = _resolve_parallel_slots(request, fastapi_request)
-        request = await spark_serving.before_load(
-            request,
-            _spark_slots,
-            inherited_extra_args = _spark_inherited_extra_args(request),
-            cancel_event = attempt.cancel_event,
-        )
+        try:
+            request = await spark_serving.before_load(
+                request,
+                _spark_slots,
+                inherited_extra_args = _spark_inherited_extra_args(request),
+                cancel_event = attempt.cancel_event,
+            )
+        except spark_serving.SparkLoadDoesNotFit as exc:
+            # The planner established that neither Spark alone nor both together holds this
+            # model plus its KV. Continuing would spend the whole load to reach an
+            # out-of-memory it had already predicted, so this is a 400 carrying the planner's
+            # own sentence, which names the sizes and what to change.
+            logger.warning("inference.spark_load_does_not_fit: %s", exc)
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
         try:
             response = await _load_model_impl(
                 request,

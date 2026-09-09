@@ -14644,6 +14644,14 @@ class LlamaCppBackend:
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
+                # Cleared, not left: the two are written together at the GGUF commit point and
+                # must never disagree. A stale requested identity paired with THESE extras is
+                # read by _spark_inherited_extra_args as "the same model asked for them", so a
+                # later load of that earlier GGUF would have inherited this launch's arguments.
+                # There is no requested identity to record here -- this path has no
+                # GgufLoadIntent -- and no extras of a non-GGUF load should ever be inherited
+                # into a split, so None is the answer rather than a guess.
+                self._extra_args_requested_source = None
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
             chosen = maxtok

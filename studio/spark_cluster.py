@@ -5615,6 +5615,15 @@ def _cmd_pipeline(
             )
             print("        Use --layer-split with --shard-load for it instead.")
             print("")
+            if run:
+                # A note is not enough once --run is on the command line. Every rank builds the
+                # COMPLETE model before DDP or FSDP wraps it, so this cannot satisfy the
+                # documented requirement that the model fit one Spark, and --fsdp does not
+                # rescue it: sharding happens after construction, not during. Continuing spends
+                # the whole load on both nodes to arrive at an out-of-memory that is already
+                # known here.
+                print("  Not launching: --data-parallel needs the model to fit one Spark.")
+                return 1
     elif size is not None:
         budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
         if size <= budget:

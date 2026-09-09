@@ -2261,3 +2261,33 @@ def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts
     assert has_experts(SimpleNamespace(num_experts = "many")) is False
     # A multimodal wrapper keeps the decoder's config nested, and that is where the key lives.
     assert has_experts(SimpleNamespace(text_config = SimpleNamespace(num_experts = 60))) is True
+
+
+def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
+    """`--data-parallel --run` on a model too big for one Spark printed a NOTE and launched.
+
+    Every rank builds the COMPLETE model before DDP or FSDP wraps it, so this cannot satisfy
+    the command's documented requirement that the model fit one Spark, and `--fsdp` does not
+    rescue it: sharding happens after construction, not during. The run therefore spent the
+    whole load on both nodes to arrive at an out-of-memory already known at plan time.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "studio" / "spark_cluster.py"
+    text = src.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_cmd_pipeline"
+    )
+    body = ast.get_source_segment(text, fn) or ""
+
+    note = body.index("does NOT fit on one Spark")
+    refusal = body.index("Not launching: --data-parallel needs the model to fit one Spark.")
+    launch = body.index("return run_pipeline(plan)")
+    assert note < refusal < launch, "the refusal must sit between the note and the launch"
+
+    # Guarded by --run, so `unsloth spark pipeline` without it still prints the plan and the
+    # note rather than becoming an error.
+    between = body[note:launch]
+    assert "if run:" in between, "the refusal must not fire when nothing is being launched"

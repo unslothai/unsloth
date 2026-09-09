@@ -104,6 +104,26 @@ _SPEC_OWNER_FLAGS = frozenset(
     }
 )
 _SPEC_OWNER_PREFIXES = ("--spec-draft-", "--draft")
+# The env twins of the flags above. llama.cpp's common_arg reads LLAMA_ARG_* itself and the
+# backend supports LLAMA_ARG_SPEC_TYPE as a first-class route, so a caller can configure a
+# drafter without a single one of those flags appearing in argv. Reading argv alone called that
+# setting ours, and on a split reconcile_split_speculation then wrote speculative_type="off"
+# over it -- silently disabling a drafter the caller had explicitly asked for. Same shape as the
+# _GROUPS_REFUSED_ENV twins: one setting, two routes, a guard that knew about one.
+_SPEC_OWNER_ENV = frozenset(
+    {
+        "LLAMA_ARG_SPEC_TYPE",
+        "LLAMA_ARG_SPEC_DRAFT_MODEL",
+        "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+        "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+        "LLAMA_ARG_SPEC_DRAFT_N_MIN",
+        "LLAMA_ARG_SPEC_DRAFT_P_MIN",
+        "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
+        "LLAMA_ARG_DEVICE_DRAFT",
+        "LLAMA_ARG_CACHE_TYPE_K_DRAFT",
+        "LLAMA_ARG_CACHE_TYPE_V_DRAFT",
+    }
+)
 # Still refused with the groups after PR #187 (tools/server validate_pipeline_groups): one
 # projector, one control vector set and one idle timer per server, none of them per group.
 _GROUPS_REFUSED_FLAGS = frozenset(
@@ -947,6 +967,24 @@ def effective_kv_settings(
     )
 
 
+def env_launch_files(env: Optional[Dict[str, str]]) -> List[str]:
+    """The existing local files an environment names through ``_REPLICA_ENV_PATHS``.
+
+    The env twin of ``launch_files``. Only paths that exist here: a value naming nothing local
+    is not evidence about the peer, and demanding it would refuse replicas for a stale setting
+    that llama-server itself would have ignored."""
+    out: List[str] = []
+    for name in sorted(_REPLICA_ENV_PATHS):
+        raw = str((env or {}).get(name) or "").strip()
+        if not raw:
+            continue
+        for piece in sidecar_operand_paths(raw) if name != "LLAMA_ARG_CHAT_TEMPLATE_FILE" else [raw]:
+            path = piece if osp.isabs(piece) else osp.join(os.getcwd(), piece)
+            if osp.isfile(path) and path not in out:
+                out.append(path)
+    return out
+
+
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
     """Every file the launch reads; the replica needs all of them at the same path. argv names
     only the first shard, so expand it: a peer holding just that one passes preflight and then
@@ -1642,11 +1680,28 @@ def _arg_name(arg: Any) -> str:
     return name.replace("_", "-") if name.startswith("--") else name
 
 
-def extra_args_own_speculation(extra_args: Optional[List[str]]) -> Optional[str]:
-    """The first pass-through flag that makes speculative decoding the caller's, or None."""
+def _speculation_owner_reason(owner: str) -> str:
+    """Where the caller's speculation setting came from. The two routes are named apart so an
+    operator reading ``mtp_reason`` knows which one to change."""
+    if owner in _SPEC_OWNER_ENV:
+        return f"{owner} in the environment"
+    return f"{owner} in the pass-through arguments"
+
+
+def extra_args_own_speculation(
+    extra_args: Optional[List[str]], env: Optional[Dict[str, str]] = None
+) -> Optional[str]:
+    """The first setting that makes speculative decoding the caller's, or None.
+
+    Argv and environment both, because llama.cpp reads either. ``env`` defaults to this
+    process's, which is what the child inherits."""
     for arg in extra_args or []:
         name = _arg_name(arg)
         if name in _SPEC_OWNER_FLAGS or name.startswith(_SPEC_OWNER_PREFIXES):
+            return name
+    source = os.environ if env is None else env
+    for name in sorted(_SPEC_OWNER_ENV):
+        if str(source.get(name) or "").strip():
             return name
     return None
 
@@ -1687,7 +1742,7 @@ def mtp_plan(
     out: Dict[str, Any] = {"mtp": "unknown", "reason": None, "request": {}}
     owner = extra_args_own_speculation(extra_args)
     if owner:
-        out.update(mtp = "user override", reason = f"{owner} in the pass-through arguments")
+        out.update(mtp = "user override", reason = _speculation_owner_reason(owner))
         return out
     mode = str(speculative_type or "").strip().lower()
     if mode and mode not in ("auto", "default"):
@@ -2265,12 +2320,27 @@ class PeerProcess:
     async def stop(self, *, timeout: float = 10.0) -> None:
         """Kill the remote process by pid -- only a pid this run printed -- then the ssh
         session carrying it."""
-        if self.remote_pid:
+        # Only while the ssh session that printed the pid is still up. Once it has exited, that
+        # number is no longer ours to signal: the remote wrapper watches $PPID and kills the
+        # child itself when sshd goes, so cleanup has already been handed over -- and if the peer
+        # reused the number in the meantime, this kill/kill -9 lands on somebody else's process
+        # under the same account. ``start()`` clears the field for exactly this reason and says
+        # so, but the relaunch path calls ``stop()`` FIRST, after a backoff of up to 45 seconds,
+        # so clearing it there was always too late to help.
+        if self.remote_pid and self.alive:
             await ssh_run(
                 self.peer,
                 f"kill {self.remote_pid} 2>/dev/null; sleep 1; kill -9 {self.remote_pid} 2>/dev/null; true",
                 timeout = timeout,
             )
+        elif self.remote_pid:
+            logger.info(
+                "spark serving: peer %s already exited; leaving remote pid %s to the remote "
+                "wrapper rather than signalling a number we no longer own",
+                self.name,
+                self.remote_pid,
+            )
+            self.remote_pid = None
         proc = self.proc
         if proc is not None and proc.returncode is None:
             try:
@@ -2355,7 +2425,35 @@ async def wait_for_own_port(
         return False
     if PEER_OWNERSHIP_SETTLE_S > 0:
         await asyncio.sleep(PEER_OWNERSHIP_SETTLE_S)
-    return process.alive
+    if not process.alive:
+        return False
+    # ``process.alive`` is the LOCAL ssh session, and it is not a timely answer about the remote
+    # child. The wrapper re-checks the child only once per PEER_REAP_POLL_S, which is longer than
+    # the settle, so after a failed bind the ssh process can sit in `sleep 5` looking alive well
+    # past this point while the child that could not bind is already gone -- and the stranger
+    # holding the port answers every probe. Adopting that listener is the exact failure this
+    # function exists to prevent: a layer split attached to a foreign rpc-server, or replica
+    # traffic sent to whatever model it happens to hold. So ask the peer about the pid this run
+    # printed. Socket ownership would be stronger, but it needs ss or lsof on the peer and
+    # neither can be assumed; an unanswerable probe reads as not ours, which is the safe
+    # direction here and matches what a missing binary or a busy GPU already do.
+    return await peer_pid_alive(process)
+
+
+async def peer_pid_alive(process: "PeerProcess", *, timeout: float = 10.0) -> bool:
+    """Whether the remote pid this run printed is still running. False when it cannot be asked."""
+    pid = process.remote_pid
+    if not pid:
+        return False
+    try:
+        rc, out, _err = await ssh_run(
+            process.peer,
+            f"kill -0 {int(pid)} 2>/dev/null && echo PIDLIVE || echo PIDGONE",
+            timeout = timeout,
+        )
+    except Exception:
+        return False
+    return rc == 0 and "PIDLIVE" in (out or "")
 
 
 def _log_dir() -> Optional[Path]:
@@ -2364,6 +2462,16 @@ def _log_dir() -> Optional[Path]:
         return studio_root() / "logs" / "spark"
     except Exception:
         return None
+
+
+class SparkLoadDoesNotFit(Exception):
+    """No topology on this pair can hold the requested load.
+
+    Raised out of ``before_load`` rather than returned, because every other outcome there is
+    "serve it somehow" and this one is not: continuing spends the whole load -- minutes of
+    transfer for a model this size -- to arrive at an out-of-memory the planner had already
+    predicted. The route turns it into a 400 carrying the planner's own sentence, which names
+    the sizes and what to change."""
 
 
 class SparkServing:
@@ -2555,6 +2663,19 @@ class SparkServing:
                     or remote_size is not None
                 ),
             )
+            # The planner does not only rank topologies, it can say that NONE of them holds this
+            # load: model plus KV over the two nodes' budget together. It labels that `single`
+            # because it has to answer with a topology, and its own reason says "saying so up
+            # front is the only useful answer" -- but nothing read the flag, so the request went
+            # on to attempt on ONE node what the planner had just established does not fit
+            # across two. The user got a late out-of-memory, or minutes of unified-memory
+            # thrashing, instead of the diagnosis that was already written.
+            if plan.get("fits_any_topology") is False:
+                self.plan = plan
+                self.topology = "single"
+                self.reason = str(plan.get("reason", "")) or "no topology holds this load"
+                logger.warning("spark serving: refusing the load: %s", self.reason)
+                raise SparkLoadDoesNotFit(self.reason)
             # The header read and the --help probe are file and process work: off the loop.
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
@@ -2587,6 +2708,12 @@ class SparkServing:
             if mtp["request"]:
                 logger.info("spark serving: mtp %s (%s)", self.mtp, self.mtp_reason)
             return self._request_with(out, mtp["request"])
+        except SparkLoadDoesNotFit:
+            # Not a pre-load step that failed. Every other exception here means "this module
+            # could not help, serve on one node anyway", and swallowing it is right for those.
+            # This one is a verdict, and swallowing it turns the diagnosis back into the OOM it
+            # was raised to prevent.
+            raise
         except Exception as exc:
             self.last_error = f"before_load: {exc}"[:300]
             logger.warning(
@@ -3034,7 +3161,18 @@ class SparkServing:
             logger.warning("spark serving: %s", self.reason)
             return
         # Same argv, so every file it names has to exist at the same path on the peer.
+        # The environment's file operands too, not just argv's. ``replica_env`` forwards
+        # LLAMA_ARG_MMPROJ, LLAMA_ARG_SPEC_DRAFT_MODEL and LLAMA_ARG_CHAT_TEMPLATE_FILE to the
+        # peer -- that is what _REPLICA_ENV_PATHS exists for -- so a projector, drafter or
+        # template can reach the replica without ever appearing in argv. Preflighting argv alone
+        # meant a missing one cost the full replica startup window before falling back, and a
+        # DIFFERENT file at the same path let the peer come up healthy with another projector or
+        # another prompt template while binary, argv and env parity all still reported a matched
+        # pair. Same one-setting-two-routes shape as the rest of this module.
         needed = launch_files(argv, str(gguf_path))
+        for extra in env_launch_files(getattr(llama_backend, "launched_env", None)):
+            if extra not in needed:
+                needed.append(extra)
         generated = generated_launch_files(needed)
         if generated:
             failed = await replicate_generated_files(peer, generated)

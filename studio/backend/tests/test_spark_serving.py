@@ -40,6 +40,9 @@ class StubCluster:
         self.spark = spark
         self.peer = peer
         self.topology = topology
+        self.fits_any_topology = True
+        self.reason = ""
+
         self.bundle: Optional[Path] = None  # the fixture points this at an empty tmp dir
         self.planner_calls: List[Dict[str, Any]] = []
         self.preflight_result: Dict[str, Any] = {
@@ -96,7 +99,15 @@ class StubCluster:
                 prefill_heavy = prefill_heavy,
             )
         )
-        return {"topology": self.topology, "reason": f"stub says {self.topology}", "speedup": 1.3}
+        out = {
+            "topology": self.topology,
+            "reason": self.reason or f"stub says {self.topology}",
+            "speedup": 1.3,
+        }
+        # The real planner reports this on every answer, and says `single` even when NOTHING
+        # holds the load, so a stub that omitted it could not exercise the refusal.
+        out["fits_any_topology"] = self.fits_any_topology
+        return out
 
 
 @pytest.fixture
@@ -527,6 +538,8 @@ def _patch_remote(
     model_present = True,
     model_stale = False,
     port_opens = True,
+    pid_alive = True,
+    absent_paths = (),
 ):
     calls: List[str] = []
 
@@ -549,6 +562,11 @@ def _patch_remote(
             lines = []
             for raw in paths:
                 path = raw.strip("'\"")
+                if path in set(absent_paths):
+                    # This ONE file is missing on the peer while everything else matches, which
+                    # is what isolates a single launch input rather than a whole absent node.
+                    lines.append("NOSTAT")
+                    continue
                 if not model_present:
                     lines.append("NOSTAT")
                     continue
@@ -564,6 +582,10 @@ def _patch_remote(
                 else:
                     lines.append(f"{st.st_size} {int(st.st_mtime)}")
             return 0, "\n".join(lines) + "\n", ""
+        if remote.startswith("kill -0"):
+            # Ownership: is the child this run started still there? A real start records the
+            # pid the remote wrapper printed, so the double records one too.
+            return (0, "PIDLIVE\n", "") if pid_alive else (0, "PIDGONE\n", "")
         if "echo MISSING" in remote:
             if binary == "MISSING":
                 return 1, "MISSING\n", ""
@@ -576,6 +598,9 @@ def _patch_remote(
         started.append(self)
         self.proc = SimpleNamespace(returncode = None)
         self.started_at = None
+        # The real start reads UNSLOTH_SPARK_PID off the remote wrapper. Ownership is decided
+        # against that pid, so a double without one answers "not ours" to everything.
+        self.remote_pid = 4242
 
     async def fake_stop(self, timeout = 10.0):
         return None
@@ -2567,6 +2592,12 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     monkeypatch.setattr(ss, "wait_for_port", always_open)
 
     class _Child:
+        # remote_pid and peer because ownership is settled against the pid the remote wrapper
+        # printed, not against the local ssh session's state: the wrapper only re-checks its
+        # child once per PEER_REAP_POLL_S, which outlasts the settle.
+        peer = "1.2.3.4"
+        remote_pid = 4242
+
         def __init__(self, dies):
             self._dies = dies
             self.alive = True
@@ -2574,12 +2605,19 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
         async def die_after_the_probe(self):
             self.alive = not self._dies
 
+    async def pid_is_live(peer, remote, timeout = 20.0):
+        return 0, "PIDLIVE\n", ""
+
+    monkeypatch.setattr(ss, "ssh_run", pid_is_live)
+
     ours = _Child(dies = False)
     assert run(ss.wait_for_own_port(ours, "1.2.3.4", 50052, 5.0)) is True
 
     # The same successful probe, but our child exited on its bind error.
     class _Doomed:
         alive = True
+        peer = "1.2.3.4"
+        remote_pid = 4242
 
     doomed = _Doomed()
 
@@ -4060,3 +4098,260 @@ def test_only_generated_templates_are_shipped_to_the_peer_by_value(tmp_path, mon
     huge = tmp_path / "unsloth_chat_template_9999.jinja"
     huge.write_bytes(b"x" * (ss._GENERATED_MAX_BYTES + 1))
     assert ss.generated_launch_files([str(huge)]) == []
+
+
+def test_a_dead_child_behind_a_slow_reaper_does_not_claim_the_port(monkeypatch):
+    # process.alive is the LOCAL ssh session. The remote wrapper re-checks its child only once
+    # per PEER_REAP_POLL_S (5s), which is longer than PEER_OWNERSHIP_SETTLE_S (1.5s), so after a
+    # failed bind the ssh process can still look alive here while the child is already gone and
+    # a stranger owns the port. Adopting that listener attaches a split to a foreign rpc-server,
+    # or routes replica traffic to whatever model it holds.
+    assert ss.PEER_OWNERSHIP_SETTLE_S < ss.PEER_REAP_POLL_S, (
+        "the settle is shorter than the reap interval, which is why the local view is not enough"
+    )
+
+    async def always_open(host, port, timeout, *, cancelled = None):
+        return True
+
+    monkeypatch.setattr(ss, "wait_for_port", always_open)
+    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0)
+
+    class _SlowReaped:
+        # The ssh session has NOT noticed yet: alive is true throughout.
+        alive = True
+        peer = "1.2.3.4"
+        remote_pid = 4242
+
+    asked = []
+
+    async def pid_is_gone(peer, remote, timeout = 20.0):
+        asked.append(remote)
+        return 0, "PIDGONE\n", ""
+
+    monkeypatch.setattr(ss, "ssh_run", pid_is_gone)
+    assert run(ss.wait_for_own_port(_SlowReaped(), "1.2.3.4", 50052, 5.0)) is False
+    assert asked and asked[0].startswith("kill -0 4242")
+
+    # An unanswerable probe reads as not ours, which is the safe direction.
+    async def ssh_broken(peer, remote, timeout = 20.0):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(ss, "ssh_run", ssh_broken)
+    assert run(ss.wait_for_own_port(_SlowReaped(), "1.2.3.4", 50052, 5.0)) is False
+
+
+def test_a_peer_that_already_exited_is_not_signalled_by_pid(monkeypatch):
+    # Once the ssh session is gone the pid is no longer ours: the remote wrapper watches $PPID
+    # and kills the child itself, and if the peer reused the number the kill lands on somebody
+    # else's process under the same account. start() clears the field for this reason, but the
+    # relaunch path calls stop() FIRST, after a backoff of up to 45 seconds.
+    sent = []
+
+    async def record(peer, remote, timeout = 20.0):
+        sent.append(remote)
+        return 0, "", ""
+
+    monkeypatch.setattr(ss, "ssh_run", record)
+
+    process = ss.PeerProcess("llama-server", "1.2.3.4", ["/bin/llama-server"])
+    process.remote_pid = 4242
+    process.proc = SimpleNamespace(returncode = 1)  # the ssh session has exited
+    run(process.stop())
+    assert sent == [], "a pid we no longer own must not be signalled"
+    assert process.remote_pid is None, "and it must not be carried into the next attempt"
+
+    # While the session IS up, the kill still happens: this must not become a leak.
+    sent.clear()
+    live = ss.PeerProcess("llama-server", "1.2.3.4", ["/bin/llama-server"])
+    live.remote_pid = 4343
+    live.proc = SimpleNamespace(returncode = None, terminate = lambda: None)
+
+    async def _wait():
+        return 0
+
+    live.proc.wait = _wait
+    run(live.stop())
+    assert sent and "kill 4343" in sent[0]
+
+
+def test_an_env_configured_drafter_is_the_callers_and_is_not_turned_off(monkeypatch):
+    # LLAMA_ARG_SPEC_TYPE is a first-class backend route -- llama.cpp's common_arg reads it
+    # directly -- so a caller can configure a drafter with nothing in argv. Reading argv alone
+    # called that setting ours, and on a split reconcile_split_speculation then wrote
+    # speculative_type="off" over it: an explicit choice silently disabled.
+    for name in list(os.environ):
+        if name.startswith("LLAMA_ARG_SPEC") or name.endswith("_DRAFT"):
+            monkeypatch.delenv(name, raising = False)
+    assert ss.extra_args_own_speculation([]) is None
+
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
+    assert ss.extra_args_own_speculation([]) == "LLAMA_ARG_SPEC_TYPE"
+    # Blank is not a setting, the same rule the rest of the module applies to LLAMA_ARG_*.
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "   ")
+    assert ss.extra_args_own_speculation([]) is None
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/draft.gguf")
+    assert ss.extra_args_own_speculation([]) == "LLAMA_ARG_SPEC_DRAFT_MODEL"
+
+    # argv still wins the naming, so an operator reading mtp_reason is told which route to change.
+    assert ss.extra_args_own_speculation(["--spec-type", "draft-mtp"]) == "--spec-type"
+    assert (
+        ss._speculation_owner_reason("--spec-type") == "--spec-type in the pass-through arguments"
+    )
+    assert (
+        ss._speculation_owner_reason("LLAMA_ARG_SPEC_TYPE")
+        == "LLAMA_ARG_SPEC_TYPE in the environment"
+    )
+
+    # And the plan defers to it rather than planning MTP over the top.
+    plan = ss.mtp_plan(None, [], users = 64)
+    assert plan["mtp"] == "user override"
+    assert "LLAMA_ARG_SPEC_DRAFT_MODEL" in plan["reason"]
+
+
+def test_a_load_no_topology_can_hold_is_refused_before_the_model_work(
+    cluster, monkeypatch, tmp_path
+):
+    # recommend_topology labels an over-budget load `single` because it has to answer with SOME
+    # topology, and its own reason says saying so up front is the only useful answer. Nothing
+    # read the flag, so the request went on to attempt on ONE node what the planner had just
+    # established does not fit across TWO: a late OOM instead of the diagnosis already written.
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    cluster.topology = "single"
+    cluster.fits_any_topology = False
+    cluster.reason = "needs 400.0 GiB, against 227.4 GiB across both Sparks"
+
+    with pytest.raises(ss.SparkLoadDoesNotFit) as caught:
+        run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert "both Sparks" in str(caught.value), "the planner's own sentence is what is reported"
+    assert ss.state().topology == "single"
+
+    # A load that DOES fit is untouched, so this is a refusal and not a new gate.
+    cluster.fits_any_topology = True
+    assert run(ss.before_load(_FakeRequest(str(model)), 4)) is not None
+
+
+def test_environment_only_launch_files_are_preflighted_on_the_peer(
+    cluster, monkeypatch, tmp_path
+):
+    # replica_env forwards LLAMA_ARG_MMPROJ, LLAMA_ARG_SPEC_DRAFT_MODEL and
+    # LLAMA_ARG_CHAT_TEMPLATE_FILE to the peer, so a projector, drafter or template can reach the
+    # replica without appearing in argv. Preflighting argv alone meant a missing one cost the
+    # whole replica startup window, and a DIFFERENT file at the same path let the peer come up
+    # healthy with another projector while every parity check still said matched pair.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"x" * 8)
+    template = tmp_path / "t.jinja"
+    template.write_text("{{ x }}", encoding = "utf-8")
+
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+    backend = _FakeBackend(12345, str(model))
+    backend.launched_env = {
+        "LLAMA_ARG_MMPROJ": str(projector),
+        "LLAMA_ARG_CHAT_TEMPLATE_FILE": str(template),
+    }
+    run(ss.after_load(backend, 16))
+
+    checks = [c for c in _calls if c.startswith("stat -c")]
+    assert checks, "the peer was asked about the launch files"
+    assert str(projector) in checks[0], "an env-only projector was never checked on the peer"
+    assert str(template) in checks[0], "an env-only chat template was never checked on the peer"
+
+
+def test_an_env_only_file_the_peer_does_not_have_costs_the_replicas_at_once(
+    cluster, monkeypatch, tmp_path
+):
+    # The point of preflighting it: falling back here takes a round trip, not the full replica
+    # startup window.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"x" * 8)
+
+    # The MODEL is present on the peer and matches; only the env-only projector is missing.
+    # Anything less specific would pass before the fix, because an absent model already
+    # refuses on the argv path.
+    _calls, started = _patch_remote(
+        monkeypatch,
+        binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server",
+        absent_paths = (str(projector),),
+    )
+    backend = _FakeBackend(12345, str(model))
+    backend.launched_env = {"LLAMA_ARG_MMPROJ": str(projector)}
+    run(ss.after_load(backend, 16))
+
+    assert ss.state().topology == "single"
+    assert str(projector) in ss.state().reason, "the reason must name the file that is missing"
+    assert not started, "the peer llama-server must not be launched at all"
+
+
+def test_a_value_that_names_no_local_file_is_not_demanded_of_the_peer(tmp_path):
+    # A stale or URL-shaped setting names nothing here, so it is no evidence about the peer, and
+    # demanding it would refuse replicas for something llama-server itself would ignore.
+    real = tmp_path / "mmproj.gguf"
+    real.write_bytes(b"x")
+    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": str(real)}) == [str(real)]
+    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": str(tmp_path / "gone.gguf")}) == []
+    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": ""}) == []
+    assert ss.env_launch_files(None) == []
+    # Not in _REPLICA_ENV_PATHS: a URL and a repo id are not local files.
+    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ_URL": "https://example/x.gguf"}) == []
+
+
+def test_every_branch_that_commits_extra_args_also_records_the_requested_identity():
+    """The two are a pair and must never disagree.
+
+    ``_spark_inherited_extra_args`` compares the REQUESTED identity -- what the caller typed --
+    against the incoming request, because that is the only same-namespace comparison available
+    before the load has resolved anything. If a branch commits ``_extra_args`` and updates
+    ``_extra_args_source`` but leaves ``_extra_args_requested_source`` holding a previous load's
+    identity, those extras are read as belonging to that earlier model: load GGUF A, then a
+    DiffusionGemma model with its own extras, then A again with the field omitted, and A is
+    launched with the diffusion arguments.
+
+    Written as an invariant over every branch rather than as that one scenario, so the next
+    commit point someone adds is covered by construction. That is the whole reason the pair
+    exists; a scenario test would pass again the moment a third branch appeared.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(ss.__file__).resolve().parent / "llama_cpp.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+
+    def _assigns(statements, attribute):
+        for node in statements:
+            for target in getattr(node, "targets", []):
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == attribute
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    return True
+        return False
+
+    resolved = []
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            if not _assigns(block, "_extra_args_source"):
+                continue
+            resolved.append(getattr(block[0], "lineno", "?"))
+            assert _assigns(block, "_extra_args_requested_source"), (
+                f"llama_cpp.py near line {getattr(block[0], 'lineno', '?')} commits "
+                "_extra_args_source without recording or clearing "
+                "_extra_args_requested_source; the pair must be written together"
+            )
+
+    assert len(resolved) >= 2, "the commit points moved; this invariant is no longer being checked"
