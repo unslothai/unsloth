@@ -4663,9 +4663,10 @@ def _refuse_staged_update() -> None:
         backend_version = "unknown"
     shell_version = (os.environ.get("UNSLOTH_TAURI_SHELL_VERSION") or "").strip() or None
     marker = STUDIO_HOME / ".update-failed.json"
-    payload = json.dumps(
-        {"backend_version": backend_version, "shell_version": shell_version}, indent = 2
-    ) + "\n"
+    payload = (
+        json.dumps({"backend_version": backend_version, "shell_version": shell_version}, indent = 2)
+        + "\n"
+    )
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
         temporary = marker.with_name(marker.name + f".{os.getpid()}.tmp")

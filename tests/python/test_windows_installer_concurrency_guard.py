@@ -962,9 +962,7 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     # shell holds its own flock around the child, so a CLI that tried to take the
     # gate itself would refuse the update as busy.
     spawn_fn = update_source.index("fn spawn_update(")
-    spawn_gate_env = update_source.index(
-        "configure_runtime_gate_environment(&mut cmd);", spawn_fn
-    )
+    spawn_gate_env = update_source.index("configure_runtime_gate_environment(&mut cmd);", spawn_fn)
     assert spawn_fn < spawn_gate_env < update_call
     configure_gate = update_source.index("fn configure_runtime_gate_environment(")
     handoff = update_source.index(
