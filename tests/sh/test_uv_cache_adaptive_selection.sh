@@ -136,6 +136,12 @@ _readonly_late="$_TMP/uvrolate"
 mkdir -p "$_readonly_late/archive-v0/torch" "$_readonly_late/sdists-v9"
 : > "$_readonly_late/archive-v0/torch/libtorch.so"
 chmod a-w "$_readonly_late/sdists-v9"
+# A bucket we cannot even enter is not writable either, so a warm bucket beside it must not
+# carry the cache: uv would still have to rename into the one it cannot open.
+_denied_bucket="$_TMP/uvdenied"
+mkdir -p "$_denied_bucket/archive-v0" "$_denied_bucket/builds-v0/pkg"
+: > "$_denied_bucket/builds-v0/pkg/wheel.whl"
+chmod 000 "$_denied_bucket/archive-v0"
 # uv prints a relative cache-dir from uv.toml verbatim and resolves it against UV_WORKING_DIR,
 # so a same-named decoy beside the installer must not be what gets scanned.
 mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
@@ -179,7 +185,10 @@ else
     assert_eq "unwritable bucket -> studio"   "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/j" '' "$_readonly_late")
     assert_eq "a later bucket is probed too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/m" '' "$_denied_bucket")
+    assert_eq "a denied bucket -> studio"     "studio" "$(echo "$_out" | cut -d' ' -f1)"
 fi
+chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9"
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null

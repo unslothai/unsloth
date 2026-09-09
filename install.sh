@@ -761,9 +761,12 @@ _configure_uv_cache() {
             "$_uv_default_cache"/wheels-* \
             "$_uv_default_cache"/sdists-*; do
             [ -d "$_uv_bucket" ] || continue
-            # Unreadable is not empty; remembered so the message below says why.
+            # Unreadable is not empty; remembered so the message below says why. It is also
+            # not writable -- uv cannot rename an extracted distribution into a directory it
+            # cannot enter -- so a warm bucket elsewhere must not carry this cache.
             if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
                 _uv_scan_blocked=true
+                _uv_default_writable=false
                 continue
             fi
             _uv_probe=$(mktemp "$_uv_bucket/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
@@ -799,12 +802,12 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            # Populated and still in studio mode means the probe refused it; nothing else
-            # reaches here with a warm cache.
-            if [ "$_uv_default_populated" = true ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
-            elif [ "$_uv_scan_blocked" = true ]; then
+            if [ "$_uv_scan_blocked" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            # Warm and still in studio mode means the write probe refused it; nothing else
+            # reaches here with a populated cache.
+            elif [ "$_uv_default_populated" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
             fi
