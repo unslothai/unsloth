@@ -1814,8 +1814,13 @@ class SparkServing:
                 await self.detach()
             gguf_path = getattr(llama_backend, "gguf_path", None)
             size = gguf_size_bytes(gguf_path)
+            # Prefer the aggregate. Once --parallel splits the cache, _effective_context_length is
+            # the PER-SLOT window, so pricing that and then dividing by slots below reconstructs
+            # one slot's cache instead of the whole one, short by up to the slot count. Falls back
+            # to the per-slot value when the backend does not publish the aggregate.
             n_ctx = int(
-                getattr(llama_backend, "_effective_context_length", None)
+                getattr(llama_backend, "_kv_cache_context_total", None)
+                or getattr(llama_backend, "_effective_context_length", None)
                 or getattr(llama_backend, "requested_n_ctx", 0)
                 or 0
             )

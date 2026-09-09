@@ -2105,3 +2105,37 @@ def test_estimate_kv_bytes_prices_k_and_v_apart(tmp_path):
     asymmetric = ss.estimate_kv_bytes(str(path), 1024, "q4_0", "f32")
     assert asymmetric == int(cells * (q4 + f32))
     assert asymmetric > 4 * ss.estimate_kv_bytes(str(path), 1024, "q4_0")
+
+
+def test_after_load_prices_the_aggregate_context_not_one_slot():
+    # Once --parallel splits the cache, _effective_context_length is the per-slot window while
+    # the aggregate is published separately. Pricing the per-slot value and then dividing by
+    # slots reconstructs one slot's cache, short by up to the slot count, which is the direction
+    # that puts a model on a node that cannot hold it.
+    class _Backend:
+        _kv_cache_context_total = 32768
+        _effective_context_length = 4096   # 8 slots x 4096
+        requested_n_ctx = 4096
+
+    b = _Backend()
+    picked = int(
+        getattr(b, "_kv_cache_context_total", None)
+        or getattr(b, "_effective_context_length", None)
+        or getattr(b, "requested_n_ctx", 0)
+        or 0
+    )
+    assert picked == 32768
+
+    # An older backend that does not publish the aggregate must still work.
+    class _Old:
+        _effective_context_length = 4096
+        requested_n_ctx = 4096
+
+    o = _Old()
+    picked_old = int(
+        getattr(o, "_kv_cache_context_total", None)
+        or getattr(o, "_effective_context_length", None)
+        or getattr(o, "requested_n_ctx", 0)
+        or 0
+    )
+    assert picked_old == 4096
