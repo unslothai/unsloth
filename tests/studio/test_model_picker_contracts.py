@@ -78,6 +78,55 @@ def _call_arguments(text: str, callee: str) -> list[str]:
     return calls
 
 
+def _blank_literals_and_comments(source: str) -> str:
+    """``source`` with comments and the INSIDE of string literals blanked, length preserved.
+
+    Every earlier version of this scan handled one of these and was defeated by the other.
+    Stripping comments with a regex eats a `//` that lives inside a URL string; tracking
+    quotes without stripping comments lets a commented-out guard count as live; and doing
+    both separately still counts a guard-shaped STRING as a live guard, which masks a real
+    condition being dropped. One pass settles all three: walk the source once, and replace
+    comment bodies and literal contents with spaces so offsets and delimiters still line up.
+
+    Regex literals are left alone. Telling `/` as division from `/` as a regex needs real
+    parsing, and no guard this file inspects contains one; a guard that did would be read
+    with its slashes intact, which is visible rather than silent.
+    """
+    out, i, n = [], 0, len(source)
+    while i < n:
+        char, nxt = source[i], source[i + 1 : i + 2]
+        if char == "/" and nxt == "/":
+            while i < n and source[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if char == "/" and nxt == "*":
+            while i < n and not (source[i] == "*" and source[i + 1 : i + 2] == "/"):
+                out.append("\n" if source[i] == "\n" else " ")
+                i += 1
+            out.append("  ")
+            i += 2
+            continue
+        if char in "\"'`":
+            out.append(char)
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    out.append("  ")
+                    i += 2
+                    continue
+                if source[i] == char:
+                    out.append(char)
+                    i += 1
+                    break
+                out.append("\n" if source[i] == "\n" else " ")
+                i += 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def _assert_guard_holds(
     source: str, keyword: str, operator: str, required: set[str], *, expected: int
 ) -> None:
@@ -113,7 +162,7 @@ def _assert_guard_holds(
 
 def _parenthesised_bodies(source: str, keyword: str):
     """Each `keyword (...)` body in `source`, whitespace collapsed, parentheses balanced."""
-    source = _code_only(source)
+    source = _blank_literals_and_comments(source)
     for match in re.finditer(rf"\b{re.escape(keyword)}\s*\(", source):
         depth, i, quote = 0, match.end() - 1, ""
         while i < len(source):
