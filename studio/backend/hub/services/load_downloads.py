@@ -39,11 +39,13 @@ def claim_load_downloads(
             hub_cache = hub_cache,
             owner = LOAD_OWNER,
         )
-        if not accepted and registry.get_job(key).state in _ACTIVE:
-            registry.mark_load_attached(key, True)
-            accepted = True
         if accepted:
             keys.append(key)
+            continue
+        for ref in registry.active_job_refs(repo_id):
+            registry.mark_load_attached(ref.key, True)
+            if ref.key not in keys:
+                keys.append(ref.key)
     return keys
 
 

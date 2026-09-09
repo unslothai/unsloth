@@ -413,7 +413,12 @@ def _load_download_repos(
                 from unsloth.models import loader
                 from unsloth.models.loader_utils import get_model_name
 
-                mapped = get_model_name(str(base), load_in_4bit = load_in_4bit and audio_type is None)
+                quantized = (
+                    load_in_4bit
+                    and audio_type is None
+                    and getattr(loader, "ALLOW_BITSANDBYTES", True)
+                )
+                mapped = get_model_name(str(base), load_in_4bit = quantized)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:

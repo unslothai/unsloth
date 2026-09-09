@@ -64,6 +64,23 @@ def test_a_load_attaches_to_a_hub_download_of_the_same_repo(registry):
     assert (ref.load_attached, ref.state) == (False, "running")
 
 
+def test_a_load_attaches_to_a_variant_download_of_the_same_repo(registry):
+    assert registry.claim(
+        "owner/base::q4_k_m", "http", repo_type = "model", repo_id = "owner/base", variant = "Q4_K_M"
+    )[0]
+
+    keys = load_downloads.claim_load_downloads(["owner/base"])
+
+    assert keys == ["owner/base::q4_k_m"]
+    ref = download_lifecycle.active_download_refs(registry, None, with_variant = True)[0]
+    assert (ref.repo_id, ref.variant, ref.load_attached) == ("owner/base", "Q4_K_M", True)
+
+    load_downloads.release_load_downloads(keys)
+
+    ref = download_lifecycle.active_download_refs(registry, None, with_variant = True)[0]
+    assert (ref.load_attached, ref.state) == (False, "running")
+
+
 def test_an_explicit_download_of_a_load_placeholder_is_refused(registry, monkeypatch):
     from hub.services.models import downloads
 
@@ -159,6 +176,7 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     )
     loader = types.ModuleType("unsloth.models.loader")
     loader.ALLOW_PREQUANTIZED_MODELS = True
+    loader.ALLOW_BITSANDBYTES = True
     loader._strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-bnb-4bit")
     for name, module in (
         ("unsloth", package),
@@ -195,6 +213,10 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
         "unsloth/base",
     ]
     loader.ALLOW_PREQUANTIZED_MODELS = True
+
+    loader.ALLOW_BITSANDBYTES = False
+    assert worker._load_download_repos(adapter, True, cuda) == ["owner/adapter", "owner/base"]
+    loader.ALLOW_BITSANDBYTES = True
 
     audio = SimpleNamespace(identifier = "owner/tts-lora", base_model = "owner/base", audio_type = "snac")
     assert worker._load_download_repos(audio, True, cuda, ["owner/tts-lora", "owner/codec"]) == [
