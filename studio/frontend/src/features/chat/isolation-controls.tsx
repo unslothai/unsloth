@@ -1,3 +1,4 @@
+import { isolationLimitation } from "./isolation-labels";
 import { useEffect, useState } from "react";
 import { authFetch } from "@/features/auth";
 import { Button } from "@/components/ui/button";
@@ -33,7 +34,7 @@ export function IsolationControls() {
       <details className="mt-2"><summary>Sandbox details</summary>
         <p className="mt-1">{state.capability?.reason}</p><p>{state.capability?.remediation}</p>
         {state.capability?.environment !== "win32" && <p>Network access is unrestricted.</p>}
-        {state.capability?.limitations.map(item => <p key={item}>{item.replaceAll("_", " ")}</p>)}
+        {state.capability?.limitations.map(item => <p key={item}>{isolationLimitation(item)}</p>)}
         {state.capability?.diagnostic && <pre className="whitespace-pre-wrap break-words">{JSON.stringify(state.capability.diagnostic, null, 2)}</pre>}
       </details>
       {state.error && <p role="alert">{state.error}</p>}

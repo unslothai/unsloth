@@ -1,3 +1,4 @@
+import { isolationLimitation } from "./isolation-labels";
 import { create } from "zustand";
 import { useToolOutputFor, useToolPaneScope } from "./tool-output-scope";
 
@@ -23,6 +24,6 @@ export function ToolExecutionDetails({ toolCallId }: { toolCallId: string }) {
   return <details className="mx-4 mb-2 text-xs text-muted-foreground" data-slot="tool-execution-protection">
     <summary>{record.os_isolation ? `Sandbox · ${record.backend}` : record.effective_mode === "full" ? "Full access · No OS isolation" : "No OS isolation"}</summary>
     <p>Network: {record.network_policy === "unrestricted" ? "unrestricted" : "SRT deny policy; system DNS remains available"}</p>
-    {Array.isArray(record.limitations) && record.limitations.map((item: string) => <p key={item}>{item.replaceAll("_", " ")}</p>)}
+    {Array.isArray(record.limitations) && record.limitations.map((item: string) => <p key={item}>{isolationLimitation(item)}</p>)}
   </details>;
 }
