@@ -2192,10 +2192,10 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
     conn.commit()
     # The premise, and it takes both halves: one timestamp for both documents, and more
     # than one chunk each, or the interleave has nothing to interleave.
-    assert {row["created_at"] for row in
-            conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))} == {
-        "2026-01-01T00:00:00+00:00"
-    }
+    assert {
+        row["created_at"]
+        for row in conn.execute("SELECT created_at FROM documents WHERE scope=?", (scope,))
+    } == {"2026-01-01T00:00:00+00:00"}
     per_document = [
         row["n"]
         for row in conn.execute(
@@ -2208,8 +2208,11 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
 
     # Each turn is quoted in one unbroken run, and the run that was archived first leads.
     documents = [source["documentId"] for source in sources]
-    runs = [document for index, document in enumerate(documents)
-            if index == 0 or documents[index - 1] != document]
+    runs = [
+        document
+        for index, document in enumerate(documents)
+        if index == 0 or documents[index - 1] != document
+    ]
     assert len(runs) == len(set(documents)) == 2, documents
     # And inside a run the pieces are still in writing order, which is what `chunk_index`
     # is for once it is asked the question it can answer.
