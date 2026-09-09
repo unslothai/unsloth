@@ -241,15 +241,11 @@ def cached_read_refused(
     """
     if not is_cached():
         return False
-    if cache_reads_authorized(
-        hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline
-    ):
+    if cache_reads_authorized(hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline):
         return False
     return not (
         is_anonymous(hf_token)
-        and public_cache_read_authorized(
-            repo_id = repo_id, repo_type = repo_type, offline = offline
-        )
+        and public_cache_read_authorized(repo_id = repo_id, repo_type = repo_type, offline = offline)
     )
 
 

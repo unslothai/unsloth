@@ -2589,6 +2589,7 @@ async def scan_model_remote_code(
         local_model = is_local_path(model_name)
         if not local_model:
             model_name = resolve_cached_repo_id_case(model_name)
+
         # The scanner's hf_hub_download resolves a cached repo's configs without consulting
         # the credential, so has_remote_code can be answered off the operator's disk; gating
         # only the prefer_local path below left the scan running anyway. Fail closed HERE

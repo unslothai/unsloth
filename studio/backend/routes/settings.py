@@ -2440,6 +2440,7 @@ def _resolve_embedding_model_plan(
         if repo == resolved:
             return cache_ok
         return cache_reads_authorized(token, repo_id = repo)
+
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)
     backend: Literal["llama", "sentence-transformers"] = (

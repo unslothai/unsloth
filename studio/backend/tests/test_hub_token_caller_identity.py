@@ -60,7 +60,12 @@ def _hub_reachable(monkeypatch, *, offline: bool = False) -> None:
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: offline)
 
 
-def _counting_probe(monkeypatch, verdict = True, *, delay: float = 0.0) -> dict:
+def _counting_probe(
+    monkeypatch,
+    verdict = True,
+    *,
+    delay: float = 0.0,
+) -> dict:
     """Stub the access probe and return a live counter, so a test can assert both the
     verdict it produced and how many round trips it cost."""
     calls = {"n": 0}
@@ -77,7 +82,13 @@ def _counting_probe(monkeypatch, verdict = True, *, delay: float = 0.0) -> dict:
     return calls
 
 
-def _router_client(router, prefix: str, *, via_api_key: bool, subject: str = "alice") -> TestClient:
+def _router_client(
+    router,
+    prefix: str,
+    *,
+    via_api_key: bool,
+    subject: str = "alice",
+) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: subject
@@ -186,12 +197,17 @@ def test_trimming_does_not_demote_a_ui_session_to_an_api_key():
         (False, True, False),
     ],
 )
-def test_the_shared_gate_refuses_only_where_a_cache_could_answer(monkeypatch, cached, authorized, refused):
+def test_the_shared_gate_refuses_only_where_a_cache_could_answer(
+    monkeypatch, cached, authorized, refused
+):
     _counting_probe(monkeypatch, authorized)
     _hub_reachable(monkeypatch)
-    assert hf_tokens.cached_read_refused(
-        "hf_explicit", repo_id = "acme/private", is_cached = lambda: cached
-    ) is refused
+    assert (
+        hf_tokens.cached_read_refused(
+            "hf_explicit", repo_id = "acme/private", is_cached = lambda: cached
+        )
+        is refused
+    )
 
 
 def test_the_shared_gate_asks_the_cache_before_the_hub(monkeypatch):
@@ -200,9 +216,12 @@ def test_the_shared_gate_asks_the_cache_before_the_hub(monkeypatch):
     probes = _counting_probe(monkeypatch, False)
     _hub_reachable(monkeypatch)
 
-    assert hf_tokens.cached_read_refused(
-        "hf_explicit", repo_id = "acme/private", is_cached = lambda: False
-    ) is False
+    assert (
+        hf_tokens.cached_read_refused(
+            "hf_explicit", repo_id = "acme/private", is_cached = lambda: False
+        )
+        is False
+    )
     assert probes["n"] == 0, "an uncached repo paid a Hub round trip"
 
 
@@ -332,10 +351,6 @@ def test_could_not_ask_is_told_apart_from_told_no(exc_factory, is_timeout):
     assert hf_tokens._is_probe_timeout(exc_factory()) is is_timeout
 
 
-
-
-
-
 @pytest.mark.parametrize(
     "endpoint, repo_id, expected_url",
     [
@@ -344,8 +359,16 @@ def test_could_not_ask_is_told_apart_from_told_no(exc_factory, is_timeout):
         (None, "unsloth/Llama-3.2-1B", "/api/models/unsloth/Llama-3.2-1B/auth-check"),
         # HfApi().endpoint returns HF_ENDPOINT verbatim, so a scheme-less mirror built a URL
         # both clients reject, denying every explicit-token cache read on that machine.
-        ("hf-mirror.example", "org/repo", "https://hf-mirror.example/api/models/org/repo/auth-check"),
-        ("https://hf-mirror.example/", "org/repo", "https://hf-mirror.example/api/models/org/repo/auth-check"),
+        (
+            "hf-mirror.example",
+            "org/repo",
+            "https://hf-mirror.example/api/models/org/repo/auth-check",
+        ),
+        (
+            "https://hf-mirror.example/",
+            "org/repo",
+            "https://hf-mirror.example/api/models/org/repo/auth-check",
+        ),
     ],
 )
 def test_the_probe_url_is_built_safely(monkeypatch, endpoint, repo_id, expected_url):
@@ -373,10 +396,6 @@ def test_a_dot_segment_repo_id_is_refused_before_the_wire(monkeypatch, repo_id):
 
     assert cache_reads_authorized("hf_dummy", repo_id = repo_id) is False
     assert session.calls == []
-
-
-
-
 
 
 def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(monkeypatch):
@@ -410,8 +429,6 @@ def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(mon
     )
 
 
-
-
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
 def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_type):
     """auth_check 401s; serving the host cache would bypass the gate. This is also why the
@@ -434,8 +451,6 @@ def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_
 
     assert cache_reads_authorized("hf_invalid", repo_id = "org/gated", repo_type = repo_type) is False
     assert seen["args"][0].endswith(f"/api/{repo_type}s/org/gated/auth-check")
-
-
 
 
 @pytest.mark.parametrize("value", [True, 0, 1, 1.5, b"hf_bytes", ["hf"], {"t": 1}, object()])
@@ -574,12 +589,6 @@ def test_the_chat_template_fallback_follows_the_caller(
     assert bool(downloads) is may_download
 
 
-
-
-
-
-
-
 def test_normalizing_a_token_does_not_launder_the_sentinel():
     # `(hf_token or "").strip() or None` turns "stay anonymous" into "use the backend's".
     assert normalize_token(False) is False
@@ -634,6 +643,7 @@ def test_capability_fingerprint_does_not_raise_on_the_sentinel():
     # `if token is None` let False through to `.encode()`: /check-vision and /config 500d.
     assert capability_fingerprint(False) == ANONYMOUS_CACHE_IDENTITY
     assert hashlib.sha256(b"x").hexdigest() != capability_fingerprint(False)
+
 
 def _child_env(hf_token):
     env = {
@@ -972,6 +982,7 @@ def test_resolving_the_hub_token_keeps_the_anonymous_sentinel():
     assert models_routes._resolve_hub_token(None, None) is None
     assert models_routes._resolve_hub_token(False, "hf_query") == "hf_query"
     assert models_routes._resolve_hub_token("hf_header", "hf_query") == "hf_header"
+
 
 def test_resolving_the_hub_token_never_returns_an_unresolved_dependency():
     """Callers that invoke the route function directly leave a ``Depends`` in the slot.
@@ -1508,8 +1519,6 @@ def test_an_unreachable_hub_is_a_404_not_a_500():
     assert hf_error_status(RuntimeError("boom")) is None
 
 
-
-
 def test_a_ui_sessions_marker_survives_the_route_level_token_normalizer():
     """``routes.models._normalize_hf_token`` trimmed with ``str.strip()``, which returns a
     plain ``str``. That silently demoted a UI session to an API key between the dependency
@@ -1569,10 +1578,6 @@ def test_the_format_check_gates_the_streaming_tiers_by_caller(monkeypatch, via_a
         assert probes["n"] == 0, "the UI session paid a round trip for its own token"
 
 
-
-
-
-
 @pytest.mark.parametrize(
     "explicit, memoized",
     [(True, False), (False, True)],
@@ -1609,10 +1614,6 @@ def test_the_offline_config_memo_follows_the_caller(monkeypatch, explicit, memoi
         assert tv._load_config_json("acme/private", token) is None
 
 
-
-
-
-
 def test_the_vision_config_read_refuses_an_unauthorized_cache_fallback(monkeypatch, tmp_path):
     """Measured against the installed huggingface_hub: with a planted cache entry and a dead
     endpoint, ``hf_hub_download(local_files_only=False)`` returns the operator's CACHED
@@ -1639,8 +1640,6 @@ def test_the_vision_config_read_refuses_an_unauthorized_cache_fallback(monkeypat
     api_key = hf_token_arg("hf_cannot_read_this", allow_ambient_token = False)
     assert mc._raw_config_has_vision_config("acme/private-vlm", hf_token = api_key) is None
     assert calls["n"] == 0, "hf_hub_download ran for an unauthorized cached repo"
-
-
 
 
 def test_a_failed_cache_check_does_not_open_the_path_it_guards(monkeypatch):
@@ -1743,8 +1742,6 @@ def test_the_same_token_from_two_caller_classes_takes_two_cache_identities():
     assert inventory_scan.token_fingerprint(None) == ""
 
 
-
-
 def test_the_legacy_query_token_is_classified_like_the_header(monkeypatch):
     """normalize_token can carry a marker through but cannot create one, and ?hf_token= never
     had it: the value arrives as a bare string, not from the dependency. Measured before this,
@@ -1810,8 +1807,6 @@ def test_the_embedding_memo_does_not_cross_caller_classes(monkeypatch):
     assert mc.is_embedding_model("acme/private-emb", api) is False
 
 
-
-
 def test_an_offline_request_is_fail_closed_but_keeps_a_paid_for_answer(monkeypatch):
     """``cache_reads_authorized`` saw only the process-level env, so a request carrying its own
     offline=true still put the caller's token and repo id on the wire and could stall for the
@@ -1831,10 +1826,6 @@ def test_an_offline_request_is_fail_closed_but_keeps_a_paid_for_answer(monkeypat
     # Now memoized, an offline call keeps the yes rather than downgrading it.
     assert cache_reads_authorized("hf_explicit", repo_id = "acme/private", offline = True) is True
     assert probes["n"] == 1
-
-
-
-
 
 
 def test_an_uncached_dataset_is_not_denied_for_an_unavailable_probe(monkeypatch):
@@ -1895,8 +1886,6 @@ def test_the_dataset_cache_predicate_counts_both_caches(monkeypatch):
 
     monkeypatch.setattr(dc, "latest_processed_dataset_cache_path", _boom)
     assert dc.dataset_cache_can_answer("acme/ds") is True, "a failed check must not open the gate"
-
-
 
 
 def test_a_redirected_probe_does_not_authorize_the_repo_it_left(monkeypatch):
@@ -2008,9 +1997,7 @@ def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
     )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
-    monkeypatch.setattr(
-        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
-    )
+    monkeypatch.setattr(settings_routes, "_local_sentence_transformer_is_present", lambda _m: False)
     monkeypatch.setattr(
         settings_routes,
         "_cached_st_source",
@@ -2133,12 +2120,8 @@ def test_the_embedding_resolver_gates_the_base_repo_too(monkeypatch):
     _counting_probe(monkeypatch, False)
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
-    monkeypatch.setattr(
-        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
-    )
-    monkeypatch.setattr(
-        settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap"))
-    )
+    monkeypatch.setattr(settings_routes, "_local_sentence_transformer_is_present", lambda _m: False)
+    monkeypatch.setattr(settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap")))
     monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
 
     plan = settings_routes._resolve_embedding_model_plan("acme/private", "hf_dummy")
@@ -2159,9 +2142,7 @@ def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
     def _must_not_run(*_a, **_k):
         raise AssertionError("target expansion ran for a caller that was already refused")
 
-    monkeypatch.setattr(
-        "core.inference.native_audio.native_audio_security_targets", _must_not_run
-    )
+    monkeypatch.setattr("core.inference.native_audio.native_audio_security_targets", _must_not_run)
 
     with pytest.raises(fastapi.HTTPException) as excinfo:
         asyncio.run(
@@ -2240,9 +2221,7 @@ def test_the_safetensors_fallback_authorizes_the_repo_it_found(monkeypatch):
     monkeypatch.setattr(settings_routes, "_cached_embedding_gguf", lambda *_a, **_k: None)
     monkeypatch.setattr(settings_routes, "_remote_embedding_gguf_plan", lambda *_a, **_k: None)
     monkeypatch.setattr(settings_routes, "_search_hub_for_gguf", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        settings_routes, "_sentence_transformers_fallback_allowed", lambda _m: True
-    )
+    monkeypatch.setattr(settings_routes, "_sentence_transformers_fallback_allowed", lambda _m: True)
     monkeypatch.setattr(
         settings_routes, "_safetensors_plan", lambda *_a, **_k: ("acme/private-st", [])
     )
@@ -2287,9 +2266,7 @@ def test_the_inner_preview_gate_does_not_veto_the_outer_one(monkeypatch):
 
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
     _hub_reachable(monkeypatch)
-    monkeypatch.setattr(
-        formatting, "_load_cached_hf_preview_slice", lambda *_a, **_k: ("ROWS", 3)
-    )
+    monkeypatch.setattr(formatting, "_load_cached_hf_preview_slice", lambda *_a, **_k: ("ROWS", 3))
 
     served = formatting._load_any_cached_hf_preview_slice(
         SimpleNamespace(dataset_name = "acme/public"), 5, False

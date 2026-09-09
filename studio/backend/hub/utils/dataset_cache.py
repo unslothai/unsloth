@@ -620,7 +620,10 @@ def dataset_cache_can_answer(repo_id: str) -> bool:
 
 
 def refuse_unauthorized_dataset_preview(
-    hf_token, dataset_name: str, *, offline: bool = False
+    hf_token,
+    dataset_name: str,
+    *,
+    offline: bool = False,
 ) -> None:
     """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
 
