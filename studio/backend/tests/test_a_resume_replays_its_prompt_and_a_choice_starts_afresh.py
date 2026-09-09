@@ -79,6 +79,8 @@ class TestTheNextChoiceStartsAfresh:
     def test_every_choice_after_the_first_restarts_before_it_generates(self):
         source = " ".join(inspect.getsource(inference).split())
         site = source.index("for _idx in range(_n):")
-        window = source[site : site + 900]
+        # To the loop's first generate rather than a fixed width: a guard added ahead of
+        # the restart pushed `gguf_generate(_idx)` out of an 900-character window.
+        window = source[site : source.index("gguf_generate(_idx)", site) + 40]
         assert "if _idx: " in window
         assert window.index("_plain_preempt_policy.restart()") < window.index("gguf_generate(_idx)")

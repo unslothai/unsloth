@@ -25304,6 +25304,19 @@ async def produce_openai_chat_completions(
                         if cancel_event.is_set():
                             break
                         if _idx:
+                            # A choice that ended on a refused resume gave the slot AND the
+                            # KV commitment back through `lease.preempt()`, and `restart()`
+                            # resets the ledger without reacquiring either. Decoding the
+                            # next choice on that lease runs outside slot admission and
+                            # outside the KV budget, under exactly the pressure that refused
+                            # the resume. The response keeps the choices it has.
+                            if getattr(admission_lease, "is_preempted", False):
+                                logger.info(
+                                    "Not starting choice %d: the lease went back with a "
+                                    "refused resume",
+                                    _idx,
+                                )
+                                break
                             # The same lease and participant serve every choice, and each
                             # starts over from the original prompt: the last one's replayed
                             # partial and resume count are not its own.

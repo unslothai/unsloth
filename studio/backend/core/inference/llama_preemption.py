@@ -1721,7 +1721,12 @@ class ControllerPreemptionPolicy:
             )
             return got
         except Exception as exc:
-            # Includes the future timing out. Either way the room did not come back.
+            # Includes the future timing out. Either way the room did not come back, and
+            # the grant above already moved this holder to RESUMING, raised its charge and
+            # announced a prefill: without the same rollback the `got == False` branch
+            # does, it is a phantom no sweep can choose, holding room nothing will fill
+            # until the outer stream finishes tearing down.
+            self._controller.note_resume_failed(self._gen_id)
             _log.warning(
                 "llama preemption resume-failed: gen_id=%s want=%s error=%s",
                 self._gen_id,

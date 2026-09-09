@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -323,3 +324,61 @@ class TestAStopDuringAPauseIsACancel:
             if len(node.body) == 1 and isinstance(node.body[0], ast.Return):
                 found += 1
         assert found >= 6, f"only {found} bare cancel returns; the pause waits added three"
+
+
+class TestAFailedResumeGivesTheRoomBack:
+    """The grant is taken before the wait; every exit from it has to hand it back."""
+
+    def _granted(self, monkeypatch):
+        from core.inference.llama_preemption import ControllerPreemptionPolicy
+
+        controller = _controller("test://rollback")
+        held = controller.register("gen", tokens = 1000, prompt_tokens = 900)
+        controller.set_state("gen", ParticipantState.PAUSED)
+
+        class _Lease:
+            tokens = 1000
+
+            def resume_async(self, *_a, **_k):
+                raise RuntimeError("the loop is gone")
+
+        held.lease = _Lease()
+        policy = ControllerPreemptionPolicy(controller, "gen", held.preempt_event, loop = object())
+        return controller, held, policy
+
+    def test_a_raising_resume_rolls_the_grant_back(self, monkeypatch):
+        controller, held, policy = self._granted(monkeypatch)
+        assert policy.await_resume(timeout = 0.5) is False
+        # Not RESUMING: that is in `_HOLDS_KV` and out of `_PREEMPTABLE`, so a holder left
+        # there is room nothing will fill and no sweep can choose.
+        assert held.state == ParticipantState.PAUSED
+        assert held.prefill_pending(time.monotonic()) == 0
+
+    def test_the_two_failure_paths_agree(self):
+        """`got == False` and the exception path are the same outcome for the ledger."""
+        source = (
+            pathlib.Path(inference_route.__file__).parent.parent
+            / "core"
+            / "inference"
+            / "llama_preemption.py"
+        )
+        body = source.read_text(encoding = "utf-8")
+        # The concrete policy, not the Protocol stub of the same name above it.
+        body = body[body.index("class ControllerPreemptionPolicy:") :]
+        body = body[body.index("    def await_resume(") :]
+        body = body[: body.index("    def on_resumed(")]
+        assert (
+            body.count("note_resume_failed(") == 2
+        ), "one of the two ways the resume can fail leaves the grant booked"
+
+
+class TestNMoreChoicesNeedTheLeaseBack:
+    def test_a_preempted_lease_stops_the_remaining_choices(self):
+        source = pathlib.Path(inference_route.__file__).read_text(encoding = "utf-8")
+        body = source[source.index("def _drain_gguf_choices():") :]
+        body = body[: body.index("_plain_preempt_policy.restart()")]
+        assert 'getattr(admission_lease, "is_preempted", False)' in body, (
+            "restart() resets the ledger but not the lease, so the next choice would "
+            "decode outside slot admission and outside the KV budget"
+        )
+        assert body.index("if _idx:") < body.index("is_preempted")
