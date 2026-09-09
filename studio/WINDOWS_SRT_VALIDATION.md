@@ -18,23 +18,24 @@ sandbox qualification.
 
 ## Behavior
 
-Auto is the default. A negative capability result permits one execution with
-software safeguards; Required refuses. Preparation, startup, cancellation and
+Auto is the default on every platform. An Auto request with a negative capability
+result permits one execution with software
+safeguards; Required refuses. Preparation, startup, cancellation and
 uncertain planning errors do not replay the command on the host. Trusted
 isolation refusals terminate the model's tool retry loop. Full access remains
 behind the existing permission confirmation and cannot be selected through the
 public isolation-mode field.
 
-Only Windows imports/probes/installs SRT. Setup is a separate optional action,
+Only Windows imports/probes/installs SRT. Windows Studio setup installs SRT,
 uses Studio's selected Python, may request administrator approval, and never
 retries the original command. Native Linux/macOS keep unrestricted networking.
-Windows reports its effective SRT deny policy, remaining system DNS access and
-shared-account read grants. Execution labels come from the backend launch
+Windows execution records retain effective SRT policy and limitations; the UI
+shows a compact execution label. Labels come from the backend launch
 channel, not capability badges or model arguments.
 
 The request boundary reads the current isolation selection after dispatch waits
 and on authentication retry. Chat/session or permission changes refuse the
-pending send. New profiles select Auto; saved Required selections remain
+pending send. New profiles use Auto; saved Required selections remain
 Required; obsolete selections retain Required pending reselection and clear
 legacy stored grants. The API rejects obsolete isolation values.
 

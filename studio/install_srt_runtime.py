@@ -61,6 +61,26 @@ def _select_windows_range(preferred, *, explicit = False):
     raise RuntimeError("No usable Windows proxy port range found; tool isolation remains blocked.")
 
 
+def _existing_windows_ready(root):
+    command = [
+        sys.executable,
+        "-I",
+        "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from core.inference.srt_probe import probe; "
+        "from core.inference.srt_windows_read_lease import shutdown; "
+        "ready = probe(force=True)[0]; shutdown(); sys.exit(0 if ready else 1)",
+        str(root.parents[2]),
+    ]
+    try:
+        # Include the bounded read-grant shutdown and recovery budgets. Returning
+        # success before cleanup would leave setup racing an active grant owner.
+        result = subprocess.run(command, capture_output = True, timeout = 240, check = False)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def install(
     *,
     offline: bool = False,
@@ -84,10 +104,6 @@ def install(
         selected_range = _port_range(settings["windowsProxyPortRange"])
     if windows_proxy_port_range is not None:
         selected_range = _port_range(windows_proxy_port_range)
-    if windows_install:
-        selected_range = _select_windows_range(
-            selected_range, explicit = windows_proxy_port_range is not None
-        )
     node, npm = shutil.which("node"), shutil.which("npm")
     if not node or not npm:
         raise RuntimeError(
@@ -136,6 +152,18 @@ def install(
     )
     if sys.platform == "win32":
         if windows_install:
+            if (
+                not windows_force
+                and windows_proxy_port_range is None
+                and _existing_windows_ready(root)
+            ):
+                print(
+                    "Existing Windows SRT isolation passed its live check; keeping its account and firewall configuration."
+                )
+                return 0
+            selected_range = _select_windows_range(
+                selected_range, explicit = windows_proxy_port_range is not None
+            )
             print(
                 "Installing upstream SRT's local sandbox account, group, registry state and WFP filters; Windows may request elevation.",
                 flush = True,

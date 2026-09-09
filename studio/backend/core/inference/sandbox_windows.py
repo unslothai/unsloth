@@ -53,7 +53,7 @@ def capability_snapshot(
         environment_fingerprint = identity,
         remediation = diagnostic.get(
             "remediation",
-            "Windows setup is optional in Auto. Use Set up Windows sandbox to install or repair isolation; this never retries a Python or Terminal call.",
+            "Windows setup installs SRT isolation by default. Rerun Studio setup to repair it; this never retries a Python or Terminal call.",
         ),
         reason_code = diagnostic.get("reason_code"),
         diagnostic = diagnostic.get("diagnostic"),
