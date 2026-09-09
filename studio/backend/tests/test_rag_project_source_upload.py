@@ -92,6 +92,10 @@ def test_sanitizer_degrades_safely(raw):
         "résumé.docx",
         "My Report.pdf",
         "Q3: Revenue.pdf",
+        # macOS keeps a Finder "/" on disk as ":", so this is how a dropped
+        # "P/L statement.pdf" reaches the sanitizer. Its first component is the name.
+        "P:L statement.pdf",
+        "C:notes.txt",
     ],
 )
 def test_sanitizer_keeps_the_name_the_user_gave(raw):
@@ -106,7 +110,8 @@ def test_sanitizer_keeps_the_name_the_user_gave(raw):
         ("a\u200bb.pdf", "ab.pdf"),
         ("\ufeff报告.pdf", "报告.pdf"),
         ("a\nb.pdf", "a b.pdf"),
-        ("C:notes.txt", "notes.txt"),
+        # What a browser actually sends for a file picked on Windows.
+        ("C:\\fakepath\\notes.txt", "notes.txt"),
     ],
 )
 def test_sanitizer_normalizes_what_a_label_cannot_carry(raw, expected):

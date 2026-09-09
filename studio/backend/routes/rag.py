@@ -19,7 +19,6 @@ import hashlib
 import hmac
 import json
 import logging
-import ntpath
 import os
 import re
 import secrets
@@ -102,7 +101,12 @@ def _sanitize_filename(name: str) -> str:
         " " if ch.isspace() else "" if unicodedata.category(ch) in ("Cc", "Cf") else ch
         for ch in name or ""
     )
-    base = re.sub(r"\s+", " ", ntpath.basename(base)).strip() or "document"
+    # Split on the separators themselves, not ntpath.basename: that reads any single
+    # character before a colon as a drive, and macOS stores a Finder "/" as ":" on disk,
+    # so a dropped "P/L statement.pdf" arrives here as "P:L statement.pdf" and would come
+    # out as "L statement.pdf".
+    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    base = re.sub(r"\s+", " ", base).strip() or "document"
     if len(base) <= 200:
         return base
     # Trim the stem, not the extension: _save_upload gates on the extension, so
