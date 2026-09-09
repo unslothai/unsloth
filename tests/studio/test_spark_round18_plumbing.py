@@ -90,8 +90,11 @@ def test_the_peer_launch_survives_a_staged_path_with_a_space(cluster, monkeypatc
     body = remote.split("bash -c ", 1)[1]
     assert body.startswith("'")
     inner = shlex.split(body)[0]
-    assert "--model /m/large model" in inner or "'/m/large model'" in inner
-    assert shlex.split(inner.split("exec ", 1)[1])[-1] == "/m/large model"
+    assert "'/m/large model'" in inner
+    # The staged path is still ONE word after the remote shell parses the inner script, and
+    # the exit-status write follows the stage rather than being swallowed by it.
+    stage = inner.split("; echo $?", 1)[0]
+    assert shlex.split(stage)[-1] == "/m/large model"
 
 
 def test_rank_zero_of_the_nccl_probe_resolves_torchrun(cluster) -> None:

@@ -1338,8 +1338,11 @@ def stage_module_cls():
                 # train something that is not the checkpoint.
                 raise RuntimeError(
                     f"{type(owner).__name__} carries {sorted(skipped)}, which the pipeline stage "
-                    f"does not run, so a split would train a different model than the checkpoint; "
-                    f"use --pp-backend legacy or a single node for this architecture"
+                    f"does not run, so a split would train a different model than the "
+                    f"checkpoint. Train this architecture on a single node. NOT "
+                    f"`--pp-backend legacy`: that stage hard-codes `embed_tokens`, "
+                    f"`rotary_emb`, `layers` and `norm`, so it raises AttributeError here "
+                    f"rather than supporting these models."
                 )
             self.embed_tokens = embed if is_first else None
             self.norm = norm if is_last else None
@@ -1559,9 +1562,15 @@ def build_torch_schedule(
         zeroes gradients each step, so nothing earlier is divided twice."""
         if upstream_scales_grads or not PP_SCALE_GRADS or microbatches == 1:
             return
+        # By identity, not per module. A V layout puts the first and last stage on ONE rank,
+        # and a tied embedding is then the same Parameter object in both stage modules: it was
+        # divided twice, giving that tensor 1/M**2 while every other parameter got 1/M, so the
+        # tied weights trained at a different effective learning rate and nothing said so.
+        seen = set()
         for mod in mods:
             for p in mod.parameters():
-                if p.grad is not None:
+                if p.grad is not None and id(p) not in seen:
+                    seen.add(id(p))
                     p.grad.div_(microbatches)
 
     where = "upstream" if upstream_scales_grads else "here (this torch has no scale_grads)"
@@ -1992,7 +2001,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     torch.manual_seed(TRAIN_SEED)
     need = args.batch * args.steps
     if args.data:
-        rows = [json.loads(l) for l in open(args.data, encoding = "utf-8")]
+        # `dataset_problem()` accepts a file with a trailing blank line, since it only needs
+        # one nonblank row; this used to hand every raw line to `json.loads`, so the
+        # JSONDecodeError arrived after both ranks had materialised the model.
+        rows = [
+            json.loads(line)
+            for line in open(args.data, encoding = "utf-8")
+            if line.strip()
+        ]
         texts = [
             tok.apply_chat_template(
                 [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],

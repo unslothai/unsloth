@@ -443,7 +443,20 @@ def cluster_config_problems() -> List[str]:
         for entry in (config.get("rails") or [])
         if isinstance(entry, dict)
     }
-    for rail in cabled_rails():
+    current = cabled_rails()
+    # The loop below can only see rails that are still there. A rail that loses carrier or
+    # disappears drops out of `cabled_rails()` entirely, so it was compared against nothing:
+    # the cluster still read as configured while `nccl_env` advertised one HCA and the link
+    # ran at about half its bandwidth. Missing is drift too.
+    live = {rail["netdev"] for rail in current}
+    for netdev, entry in planned.items():
+        if netdev and netdev not in live:
+            problems.append(
+                f"{netdev} is in the saved plan at {entry.get('address') or 'no address'} but "
+                f"is not cabled or has no carrier now; the pair is running on the remaining "
+                f"rails at roughly half the two-rail bandwidth"
+            )
+    for rail in current:
         entry = planned.get(rail["netdev"])
         if entry is None:
             problems.append(
@@ -1503,13 +1516,19 @@ def nccl_bandwidth(
         f"echo $! > {_NCCL_PROBE_PID}"
     )
     try:
-        subprocess.run(
+        started = subprocess.run(
             ["ssh", *ssh_opts, f"{user}@{peer_ip}", peer_cmd],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
             timeout = 30,
         )
     except Exception:
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
+        return None
+    # The result was discarded, and there is no `check = True`, so ssh 255 (auth or routing)
+    # looked like a launch. Rank 0 then waited out the whole rendezvous timeout before doctor
+    # said only "could not measure". `run_pipeline` already checks this for its peer launch.
+    if started.returncode != 0:
         stop_peer_nccl_probe(peer_ip, user, ssh_opts)
         return None
     import time
@@ -4365,7 +4384,11 @@ def _cmd_serve(
         print(f"  2. The peer ({peer_ip}) -- the model must exist there; copy it over the")
         print("     ConnectX link rather than downloading (444 MB/s vs ~20 KB/s internet):")
         print(f"     rsync -a <model.gguf> {peer_ip}:<path>")
-        print(f"     ssh {peer_ip} '{peer_bin_dir}/llama-server -m <path> \\")
+        # Double quotes inside the outer single quotes ssh is given: a custom
+        # UNSLOTH_STUDIO_HOME with a space made the peer shell split the executable path,
+        # and shlex.quote here would end that outer quoting instead.
+        peer_server_cmd = f'"{peer_bin_dir}/llama-server"'
+        print(f"     ssh {peer_ip} '{peer_server_cmd} -m <path> \\")
         print(f"         -ngl 999 --ctx-size {ctx * slots} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {peer_port}'")
         print("")
@@ -4498,12 +4521,15 @@ def train_launch_plan(script: str, port: int = 29500) -> Dict[str, Any]:
     if not peer or not local:
         return {"ok": False, "problems": ["no configured peer rail (run `unsloth spark setup`)"]}
     base = f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} " f"--master_port={port}"
+    # Quoted, as the pipeline launcher next door already does: these are printed to be pasted,
+    # and a script path with a space split into several arguments.
+    qscript = shlex.quote(script)
     return {
         "ok": True,
         "problems": [],
         "env": nccl_env(),
-        "node0": f"{base} --node_rank=0 {script}",
-        "node1": f"{base} --node_rank=1 {script}",
+        "node0": f"{base} --node_rank=0 {qscript}",
+        "node1": f"{base} --node_rank=1 {qscript}",
         "peer_ip": peer,
         "local_ip": local,
     }
@@ -4566,6 +4592,10 @@ def _local_launch(command: str) -> str:
 
 
 _PEER_STAGE_PID = "/tmp/unsloth_pp_stage1.pid"
+# The detached rank's exit status. "The process is gone" is not "the process succeeded": rank 1
+# can fail after the last barrier, `save_pretrained` on the peer being the obvious way, and
+# that looked exactly like a clean finish.
+_PEER_STAGE_RC = "/tmp/unsloth_pp_stage1.rc"
 _SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
 
 
@@ -4675,18 +4705,27 @@ def wait_for_peer_stage(
     user: str,
     pid_file: str,
     timeout: int = 3600,
-) -> bool:
+    rc_file: str = _PEER_STAGE_RC,
+) -> Dict[str, Any]:
     """Block until the detached peer rank has exited, or the timeout.
 
     The local `torchrun` returning says only that RANK 0 finished serialising. Rank 1 is
     detached and `spark_pipeline` has no barrier after `save_pretrained`, so collecting on
     rank 0's exit could rsync a stage that was still being written and report success on a
     truncated checkpoint."""
+    # Exit 0 only when the recorded status is 0. Waiting for the pid to disappear and calling
+    # that success accepted a rank that died after the final barrier, and if the peer's save
+    # directory still held a `stage1` from an earlier run the rsync then reported a complete
+    # checkpoint assembled from a new local stage and stale peer weights. 2 means "gone but
+    # failed", 3 "gone and never said", 1 "still running".
     command = (
         f"p=$(cat {pid_file} 2>/dev/null); "
-        f'if [ -z "$p" ]; then exit 0; fi; '
-        f"for i in $(seq 1 {max(1, timeout)}); do "
-        f'kill -0 "$p" 2>/dev/null || exit 0; sleep 1; done; exit 1'
+        f'if [ -n "$p" ]; then for i in $(seq 1 {max(1, timeout)}); do '
+        f'kill -0 "$p" 2>/dev/null || break; sleep 1; done; '
+        f'kill -0 "$p" 2>/dev/null && exit 1; fi; '
+        f"rc=$(cat {rc_file} 2>/dev/null); "
+        f'if [ -z "$rc" ]; then exit 3; fi; '
+        f'[ "$rc" = "0" ] || exit 2; exit 0'
     )
     try:
         res = subprocess.run(
@@ -4694,9 +4733,15 @@ def wait_for_peer_stage(
             capture_output = True,
             timeout = timeout + 60,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return res.returncode == 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "why": f"could not ask the peer whether its rank finished: {exc}"}
+    why = {
+        0: "",
+        1: "the peer rank has not exited",
+        2: "the peer rank exited NONZERO; its stage is incomplete or was never written",
+        3: "the peer rank is gone but recorded no exit status, so it did not finish normally",
+    }.get(res.returncode, f"the peer status check exited {res.returncode}")
+    return {"ok": res.returncode == 0, "why": why}
 
 
 def collect_stage_outputs(
@@ -4782,9 +4827,35 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     # from `stage_run_inputs` already `shlex.join`ed, so a staged path with a space carries its
     # own quotes, and those closed the outer `bash -c '...'` early. Rank 1 then ran a fragment
     # or nothing, and rank 0 reported only the rendezvous timeout.
-    inner = f"[ -f {activate} ] && . {activate}; {env}; exec {node1}"
+    # The peer's own stage directory from an EARLIER run, removed before this one starts.
+    # Left in place it is indistinguishable from what this run is about to write, and a rank
+    # that dies before writing anything then leaves a `stage1` the collection would bring back
+    # beside a fresh local `stage0`. Only the stage this launch owns, under the run's own
+    # `--save` directory, and never the local one.
+    stale = _save_dir_of(node1)
+    if stale:
+        remote_save = stale if osp.isabs(stale) else f"{home.rstrip('/')}/{stale}"
+        target = f"{remote_save.rstrip('/')}/stage1"
+        cleared = subprocess.run(
+            ["ssh", "-n", *ssh_opts, f"{user}@{plan['peer_ip']}", f"rm -rf {shlex.quote(target)}"],
+            capture_output = True,
+            timeout = 60,
+        )
+        if cleared.returncode == 0:
+            print(f"  cleared any earlier {target} on the peer")
+        else:
+            print(f"  note: could not clear {target} on the peer; a stale stage there would")
+            print("        be collected as if this run had written it")
+    #
+    # Not `exec`: the status has to be recorded after the stage exits, and a group leader is
+    # already what `setsid` gives us, so the negative kill still takes the children.
+    inner = (
+        f"[ -f {activate} ] && . {activate}; {env}; {node1}; "
+        f"echo $? > {_PEER_STAGE_RC}"
+    )
     remote = (
-        f'cd "$HOME" && setsid nohup bash -c {shlex.quote(inner)} '
+        f'cd "$HOME" && rm -f {_PEER_STAGE_RC} {_PEER_STAGE_PID}; '
+        f"setsid nohup bash -c {shlex.quote(inner)} "
         f"> {shlex.quote(log_peer)} 2>&1 < /dev/null & "
         f"echo $! > {_PEER_STAGE_PID}"
     )
@@ -4835,9 +4906,12 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     save_dir = _save_dir_of(plan["node0"])
     if save_dir:
         print("  waiting for the peer stage to finish writing ...")
-        if not wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID):
-            print(f"  the peer rank has not exited; its stage is under {save_dir} on")
-            print(f"  {plan['peer_ip']}. Collect it once it has finished, then merge.")
+        finished = wait_for_peer_stage(plan["peer_ip"], user, _PEER_STAGE_PID)
+        if not finished["ok"]:
+            print(f"  {finished['why']}.")
+            print(f"  Not collecting: its stage is under {save_dir} on {plan['peer_ip']}, and")
+            print("  merging a stale or half-written stage produces a checkpoint that loads")
+            print("  and trains worse. Its log is above; re-run once it is fixed.")
             return 1
         print(f"  collecting the peer's stages into {save_dir} ...")
         error = collect_stage_outputs(save_dir, plan["peer_ip"], user, home)

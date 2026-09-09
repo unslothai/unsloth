@@ -132,6 +132,7 @@ def _plan_deployment(
     model: str = "<model>",
     prompt_tokens: int = 512,
     prefill_heavy: bool = False,
+    kv_gib_per_user: float = 0.0,
 ):
     """Call plan_deployment against whichever signature the module currently has. A CLI that
     raises TypeError after an upgrade is worse than one giving a plainer answer."""
@@ -156,6 +157,8 @@ def _plan_deployment(
                 kwargs["prompt_tokens"] = prompt_tokens
             if "prefill_heavy" in params:
                 kwargs["prefill_heavy"] = prefill_heavy
+            if "kv_gib_per_user" in params:
+                kwargs["kv_gib_per_user"] = kv_gib_per_user
             return fn(size_gib, **kwargs)
         if "nodes" in params:
             return fn(size_gib, nodes = nodes)
@@ -1140,6 +1143,12 @@ def plan(
     prompt_tokens: int = typer.Option(
         512, "--prompt-tokens", help = "Typical prompt length, for the llama.cpp layout."
     ),
+    ctx: int = typer.Option(
+        8192,
+        "--ctx",
+        help = "Context length per user, which is what the KV is priced at. Same default "
+        "as `spark serve`; the context is never divided between users.",
+    ),
     prefill_heavy: bool = typer.Option(
         False,
         "--prefill-heavy",
@@ -1193,6 +1202,15 @@ def plan(
     if resolved == "auto":
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
+    # The planner grew a KV input and this path was still handing it zero, so `plan`
+    # recommended replicas for a model whose weights fit and whose KV for the requested
+    # concurrency does not -- exactly the case the KV term exists to catch. `serve` computed
+    # it and `plan` did not, and they are supposed to give the same answer.
+    kv = {"gib": None, "why": "not computed"}
+    try:
+        kv = sc.serving_kv_gib_per_user(model, ctx)
+    except Exception:
+        pass
     result = _plan_deployment(
         sc,
         size,
@@ -1202,6 +1220,7 @@ def plan(
         model = model,
         prompt_tokens = prompt_tokens,
         prefill_heavy = prefill_heavy,
+        kv_gib_per_user = kv.get("gib") or 0.0,
     )
     if result is None:
         _say("Could not produce a plan (the planner is unavailable in this build).")
@@ -1210,6 +1229,13 @@ def plan(
     _heading("Deployment plan")
     _field("model", model)
     _field("size", f"{size:.1f} GiB" if size else "unknown (not cached locally)")
+    _field(
+        "kv",
+        f"{kv['gib']:.2f} GiB per user at {ctx} tokens, "
+        f"{kv['gib'] * max(1, concurrency):.2f} GiB for {concurrency}"
+        if kv.get("gib")
+        else f"not counted -- {kv.get('why', 'unknown')}",
+    )
     _field(
         "per-Spark",
         f"{budget:.0f} GiB usable for a served model "

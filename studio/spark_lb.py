@@ -18,6 +18,11 @@ import asyncio
 import itertools
 from typing import List, Tuple
 
+# Both engines are on this box or one cable away, so a connect that has not completed in two
+# seconds is not slow, it is gone. Long enough that a loaded engine's accept backlog is not
+# mistaken for a dead one.
+CONNECT_TIMEOUT = 2.0
+
 
 async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
@@ -47,9 +52,15 @@ def _handler(backends: List[Tuple[str, int]], rr):
         for offset in range(len(backends)):
             host, port = backends[(start + offset) % len(backends)]
             try:
-                up_r, up_w = await asyncio.open_connection(host, port)
+                # Bounded. A refused connection returns at once, but a blackholed backend --
+                # the peer powered off behind a route, or a firewall dropping SYNs -- leaves
+                # `open_connection` waiting out the OS TCP timeout, tens of seconds, so the
+                # healthy replica was never reached and the failover did nothing.
+                up_r, up_w = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout = CONNECT_TIMEOUT
+                )
                 break
-            except OSError:
+            except (OSError, asyncio.TimeoutError):
                 continue
         if up_w is None:
             # Every engine is down, so there is nothing to serve and the client is told at once
