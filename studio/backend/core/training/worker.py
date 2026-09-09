@@ -1046,6 +1046,7 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
 # first `import torch` finds amdhip64.dll; handles kept.
 _ROCM_DLL_HANDLES: list = []
 if sys.platform == "win32":
+
     def _add_rocm_dll_dirs_worker() -> None:
         _candidates: list[str] = []
         for _var in ("HIP_PATH", "ROCM_PATH"):
@@ -3008,6 +3009,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
 
     if callable(_orig_build_optimizer):
+
         def _capture_optimizer(total_steps):
             _opt_ref[0] = _orig_build_optimizer(total_steps)
             return _opt_ref[0]

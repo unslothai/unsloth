@@ -911,6 +911,7 @@ class OpenAICodexClient:
                 if response is None:
                     return
                 if cancel_event is not None:
+
                     async def _close_on_cancel() -> None:
                         await _wait_for_cancel(cancel_event)
                         await response.aclose()

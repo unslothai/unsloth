@@ -471,7 +471,6 @@ class SdCppServer:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
 
-
     def img_gen(
         self,
         payload: dict[str, Any],

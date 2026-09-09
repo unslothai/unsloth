@@ -1901,7 +1901,6 @@ class DiffusionBackend:
         # the Hub.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
-
     def begin_load(
         self,
         repo_id: str,
@@ -2437,6 +2436,7 @@ class DiffusionBackend:
 
         try:
             if kind == "pipeline":
+
                 def _pipeline_listing(metadata_repo: str) -> tuple[Any, Any, list[Any]]:
                     info = api.model_info(metadata_repo, files_metadata = True, token = hf_token)
                     components = _pipeline_components_from_index(
@@ -2511,6 +2511,7 @@ class DiffusionBackend:
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
             else:
+
                 def base_filter(rfilename: str) -> bool:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
@@ -3264,7 +3265,6 @@ class DiffusionBackend:
             }
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
-
 
     def load_pipeline(
         self,

@@ -73,7 +73,6 @@ class ExportOrchestrator:
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
-
     def _append_log(self, entry: Dict[str, Any]) -> None:
         line = entry.get("line")
         if not line:
@@ -184,7 +183,6 @@ class ExportOrchestrator:
                 pass
         return True
 
-
     def _spawn_subprocess(self, config: dict) -> None:
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
@@ -291,7 +289,6 @@ class ExportOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-
     def _send_cmd(self, cmd: dict) -> None:
         if self._cmd_queue is None:
             raise RuntimeError("No export subprocess running")
@@ -397,7 +394,6 @@ class ExportOrchestrator:
                 return events
             except (EOFError, OSError, ValueError):
                 return events
-
 
     def load_checkpoint(
         self,

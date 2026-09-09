@@ -5532,7 +5532,6 @@ class LlamaCppBackend:
                 self._last_kill_monotonic = time.monotonic()
             atexit.register(self._cleanup)
 
-
     @property
     def is_loaded(self) -> bool:
         return self._process is not None and self._healthy
@@ -6122,7 +6121,6 @@ class LlamaCppBackend:
     def _runtime_matches_intent(
         self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
-
         if intent.force_reload:
             return False
         if self._requested_n_ctx != int(intent.n_ctx):
@@ -6417,7 +6415,6 @@ class LlamaCppBackend:
         in effect."""
         return self._spec_draft_n_max
 
-
     @staticmethod
     def _resolved_studio_root_and_is_legacy() -> "tuple[Optional[Path], bool]":
         """Resolve the Unsloth install root and classify it as the legacy ~/.unsloth/studio root or
@@ -6568,7 +6565,6 @@ class LlamaCppBackend:
             return str(bin_path)
 
         return None
-
 
     # Prebuilts based on llama.cpp b10259..b10268 advertise draft-dspark but land between the reshape regression
     # (#26531) and its fix (#26577), so a DSpark launch aborts on load. Matched on the base build number; source
@@ -7032,7 +7028,6 @@ class LlamaCppBackend:
         if re.search(r"(?<![A-Za-z0-9_-])mtp(?![A-Za-z0-9_-])", text):
             return "mtp"
         return None
-
 
     @staticmethod
     def _get_gguf_size_bytes(model_path: str) -> int:
@@ -10062,7 +10057,6 @@ class LlamaCppBackend:
         best = (best // 256) * 256  # same alignment _fit_context_to_vram uses
         return best if best >= min_ctx else 0
 
-
     def _can_estimate_kv(self) -> bool:
         """True if we have enough GGUF metadata to estimate KV cache size."""
         if self._n_layers is None:
@@ -11020,7 +11014,6 @@ class LlamaCppBackend:
         best = min(best, requested_ctx)
         return best
 
-
     @staticmethod
     def _find_smallest_fitting_variant(
         hf_repo: str,
@@ -11076,13 +11069,11 @@ class LlamaCppBackend:
         except Exception:
             return None
 
-
     @staticmethod
     def _find_free_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
-
 
     def _drain_stdout(self):
         """Read subprocess stdout lines in a background thread, preventing a pipe-buffer deadlock on
@@ -11765,7 +11756,6 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
-
     def _find_diffusion_assets(self) -> Optional[tuple[list, str, Optional[str]]]:
         """Resolve how to launch the DiffusionGemma runner: (shim argv prefix, visual-server binary,
         optional extra PYTHONPATH dir). Shim is UNSLOTH_DG_SHIM first, else the installed
@@ -12117,7 +12107,6 @@ class LlamaCppBackend:
             else:
                 logger.error("DiffusionGemma runner failed to become healthy")
         return healthy
-
 
     def _download_gguf(
         self,
@@ -13094,7 +13083,6 @@ class LlamaCppBackend:
             logger.warning(f"{drafter_label} drafter file not found: {mtp_draft_path}")
             return None
         return str(mtp_draft_path)
-
 
     # GGUF ``general.architecture`` values for diffusion / image models. llama.cpp has no such architectures, so
     # loading one as a chat model dies with unknown model architecture. Matched exactly, not as a substring, so a chat
@@ -22901,6 +22889,7 @@ class LlamaCppBackend:
                     psutil = None
 
                 if psutil is not None:
+
                     def _make_psutil_killer(psutil_mod, proc):
                         def _kill():
                             try:
@@ -24094,7 +24083,6 @@ class LlamaCppBackend:
                 )
                 self._effective_context_length = confirmed_n_ctx
 
-
     @staticmethod
     def _parse_tool_calls_from_text(
         content: str,
@@ -24136,7 +24124,6 @@ class LlamaCppBackend:
             ]
 
         return result
-
 
     @contextlib.contextmanager
     def _open_stream(self, url: str, payload: dict, cancel_event):
@@ -24972,7 +24959,6 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
-
 
     def generate_chat_completion_with_tools(
         self,
@@ -28641,7 +28627,6 @@ class LlamaCppBackend:
                     return
                 raise
 
-
     def count_chat_tokens(
         self,
         messages,
@@ -28712,6 +28697,7 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+
                 def _tokenize(text: str) -> int:
                     r = client.post(
                         f"{self.base_url}/tokenize",
@@ -28791,7 +28777,6 @@ class LlamaCppBackend:
                 raise
             return 0
 
-
     def detect_audio_type(self) -> Optional[str]:
         """Detect audio/TTS codec; swallows errors (use _strict to distinguish)."""
         try:
@@ -28841,6 +28826,7 @@ class LlamaCppBackend:
         if not self.is_loaded:
             return None
         with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+
             def _detok(tid: int) -> str:
                 # Non-200 means marker not in vocab, so keep probing. Transport / JSON errors still raise.
                 r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
@@ -28992,6 +28978,7 @@ class LlamaCppBackend:
             finished = threading.Event()
             watcher: Optional[threading.Thread] = None
             if cancel_event is not None:
+
                 def _close_when_cancelled() -> None:
                     while not finished.wait(0.05):
                         if cancel_event.is_set():

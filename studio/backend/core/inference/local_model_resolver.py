@@ -997,6 +997,7 @@ def _resolve_from_index(
 ) -> Optional[tuple]:
     """Resolve *requested* against one immutable published index mapping."""
     try:
+
         def _result(entry: _LocalGgufEntry, variant: Optional[str]) -> tuple:
             result = (entry.load_path, variant, entry.loader_id)
             return (*result, entry.repo_level_companions) if include_companion_scope else result

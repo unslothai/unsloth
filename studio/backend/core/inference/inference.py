@@ -108,7 +108,6 @@ class HarmonyTextStreamer:
         self._analysis_emitted: int = 0
         self._final_emitted: int = 0
 
-
     def put(self, value):
         import torch
 
@@ -144,7 +143,6 @@ class HarmonyTextStreamer:
         self._stop = True
         self._queue.put(None)
 
-
     def __iter__(self):
         return self
 
@@ -160,7 +158,6 @@ class HarmonyTextStreamer:
             if val is None:
                 raise StopIteration
             return val
-
 
     def _process_incremental(self, raw: str) -> None:
         """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
@@ -2097,7 +2094,6 @@ class InferenceBackend:
             logger.error(f"Error during generation: {e}")
             raise
 
-
     def generate_audio_response(
         self,
         text: str,
@@ -2888,7 +2884,6 @@ class InferenceBackend:
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
-
             model_name_lower = model_name.lower()
             if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
                 chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]

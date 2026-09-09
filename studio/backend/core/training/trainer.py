@@ -3356,7 +3356,6 @@ class UnslothTrainer:
         tensorboard_dir: str | None = None,
         **kwargs,
     ) -> bool:
-
         if self.is_training:
             logger.warning("Training already in progress")
             return False

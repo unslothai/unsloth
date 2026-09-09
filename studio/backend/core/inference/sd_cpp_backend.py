@@ -1152,7 +1152,6 @@ class SdCppDiffusionBackend:
             logger.warning("sd.cpp accelerator upgrade failed: %s", exc)
             return server_binary
 
-
     def begin_load(
         self,
         repo_id: str,
@@ -2063,7 +2062,6 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
-
     def generate(
         self,
         *,
@@ -2571,7 +2569,6 @@ class SdCppDiffusionBackend:
                 return False
             cancel.set()
             return True
-
 
     def unload(self) -> dict[str, Any]:
         with self._lock:

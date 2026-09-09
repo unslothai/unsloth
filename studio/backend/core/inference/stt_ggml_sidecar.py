@@ -737,7 +737,6 @@ class GgmlSttSidecar:
         process = self._process
         return process is not None and process.poll() is None
 
-
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
         if self._idle_timer is not None:
@@ -760,7 +759,6 @@ class GgmlSttSidecar:
                 return
             logger.info("Unloading idle GGUF STT model %s", self._model_id)
             self._release_locked()
-
 
     def _release_locked(self) -> None:
         self._cancel_idle_unload_locked()
@@ -1053,7 +1051,6 @@ class GgmlSttSidecar:
         if process.poll() is not None:
             return False
         return b"whisper" in body.lower()
-
 
     def transcribe(
         self,

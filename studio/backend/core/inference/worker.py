@@ -113,7 +113,6 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 def _decode_image(image_base64: str):
     from PIL import Image
-
     image_data = base64.b64decode(image_base64)
     return Image.open(BytesIO(image_data))
 

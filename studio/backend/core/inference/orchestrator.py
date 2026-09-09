@@ -2341,7 +2341,6 @@ class InferenceOrchestrator:
         except RuntimeError:
             pass
 
-
     def generate_audio_response(
         self,
         text: str,
@@ -2669,7 +2668,6 @@ class InferenceOrchestrator:
             finally:
                 self._release_worker(cancel_event)
                 release_mailbox()
-
 
     def resize_image(
         self,

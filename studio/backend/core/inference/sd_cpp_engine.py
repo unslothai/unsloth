@@ -785,7 +785,6 @@ class SdCppEngine:
             cancel_event = cancel_event,
         )
 
-
     def _require_binary(self) -> str:
         if not self.is_available():
             raise RuntimeError(

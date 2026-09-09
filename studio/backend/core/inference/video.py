@@ -998,7 +998,6 @@ class VideoBackend:
         pin_cuda_ordinal(state.placed_ordinal)
         return target
 
-
     def validate_load_request(
         self,
         repo_id: str,
@@ -1209,7 +1208,6 @@ class VideoBackend:
         normalize_te_quant(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
-
 
     def begin_load(
         self,
@@ -3162,7 +3160,6 @@ class VideoBackend:
 
         return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
-
     def load_pipeline(
         self,
         repo_id: str,
@@ -4641,7 +4638,6 @@ class VideoBackend:
             )
         )
 
-
     def loaded_family(self) -> Optional[VideoFamily]:
         """The resident pipeline's family, or None when nothing is loaded. The generate route reads
         it to enforce that family's shape rules (resolution presets + frame lattice) at the API
@@ -5730,6 +5726,7 @@ class VideoBackend:
         output_path = Path(tmp.name)
         # Stage in-memory conditioning in sd-cli's temporary disk format.
         with tempfile.TemporaryDirectory(prefix = "unsloth-h3-keyframes-") as scratch:
+
             def stage(image: Any, name: str) -> Optional[str]:
                 if image is None:
                     return None
@@ -5920,7 +5917,6 @@ class VideoBackend:
                 return False
             cancel.set()
             return True
-
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation in flight) AND
