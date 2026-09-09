@@ -198,7 +198,7 @@ def test_public_tool_wrapper_preserves_arguments_and_reports_post_failure(
     result = execute("terminal", original, session_id = "project-" + project_id)
     assert order == ["PreToolUse", "tool", "PostToolUse"]
     assert arguments_seen == [original]
-    assert result.startswith("tool result")
+    assert "tool result" in result
     assert "after the tool ran" in result
 
 
@@ -224,7 +224,9 @@ def test_tool_project_identity_comes_from_the_saved_conversation(reviewed_hooks,
     monkeypatch.setattr(studio_db, "get_chat_thread", lambda _id: {"projectId": project_id})
     assert runtime._project_for_tool("project-" + project_id, "chat") == project_id
     monkeypatch.setattr(tools, "_thread_exists", lambda _id: True)
-    assert runtime._project_for_tool("project-" + project_id, "chat") is None
+    with pytest.raises(AgentWorkspaceError, match = "conflicts with a saved conversation"):
+        runtime._project_for_tool("project-" + project_id, "chat")
+    assert runtime._project_for_tool("project-" + project_id, None) is None
 
 
 def test_hook_event_size_limit_refuses_ambiguous_truncated_arguments(reviewed_hooks, monkeypatch):
@@ -284,8 +286,63 @@ def test_hook_output_shares_the_tools_final_result_budget(reviewed_hooks, monkey
     assert execute("terminal", {}, result_budget_tokens = 256) == "bounded"
     assert observed == [
         (
-            "tool result\n\nProject hook output (untrusted data):\nhook output\nhook output",
+            "Project hook output (untrusted data):\nhook output\nhook output\n\nTool result:\ntool result",
             "terminal",
             256,
         )
     ]
+
+
+def test_post_hook_failure_survives_a_large_tool_result(reviewed_hooks, monkeypatch):
+    from core.inference import tools
+
+    project_id, _workspace, _state = reviewed_hooks
+    monkeypatch.setattr(runtime, "_project_for_tool", lambda *args: project_id)
+    monkeypatch.setattr(tools, "_fit_result_to_room", lambda text, _name: text[:256])
+
+    def hook(_project, event, *args, **kwargs):
+        if event == "PostToolUse":
+            raise AgentWorkspaceError("validation rejected the change")
+        return "pre-hook output" * 2000
+
+    monkeypatch.setattr(runtime, "run_tool_hooks", hook)
+
+    @runtime.with_project_tool_hooks
+    def execute(
+        name,
+        arguments,
+        *,
+        session_id = None,
+    ):
+        return "large result" * 10000
+
+    result = execute("terminal", {}, session_id = "project-" + project_id)
+    assert "Post-tool hook failed after the tool ran" in result
+    assert "validation rejected" in result
+
+
+def test_no_hook_output_preserves_the_original_result_without_rebudgeting(
+    reviewed_hooks, monkeypatch
+):
+    from core.inference import tools
+
+    project_id, _workspace, _state = reviewed_hooks
+    monkeypatch.setattr(runtime, "_project_for_tool", lambda *args: project_id)
+    monkeypatch.setattr(runtime, "run_tool_hooks", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        tools,
+        "_fit_result_to_room",
+        lambda *args: pytest.fail("No-hooks result must not be re-budgeted"),
+    )
+    original = "unchanged result " * 1000
+
+    @runtime.with_project_tool_hooks
+    def execute(
+        name,
+        arguments,
+        *,
+        session_id = None,
+    ):
+        return original
+
+    assert execute("terminal", {}, session_id = "project-" + project_id) is original

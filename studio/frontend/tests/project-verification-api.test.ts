@@ -24,6 +24,31 @@ const check = {
   logLimitBytes: 262144,
 };
 
+test("aggregate profile size counts normalized UTF-8 JSON including escapes", () => {
+  const checks = Array.from({ length: 8 }, (_, index) => ({
+    ...check,
+    name: `check-${index}`,
+    command: "🧪".repeat(4096),
+  }));
+  assert.match(
+    verificationApi.projectVerificationChecksError(checks) ?? "",
+    /128 KiB/,
+  );
+  assert.equal(
+    verificationApi.projectVerificationChecksError(checks.slice(0, 7)),
+    null,
+  );
+  assert.match(
+    verificationApi.projectVerificationChecksError(
+      checks.map((item) => ({
+        ...item,
+        command: '"'.repeat(9000),
+      })),
+    ) ?? "",
+    /128 KiB/,
+  );
+});
+
 const run: ProjectVerificationRun = {
   id: "run-one",
   projectId: "project one",

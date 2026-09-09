@@ -107,6 +107,7 @@ export const PROJECT_VERIFICATION_MAX_CHECKS = 32;
 export const PROJECT_VERIFICATION_MAX_NAME_CHARACTERS = 120;
 export const PROJECT_VERIFICATION_MAX_KIND_BYTES = 64;
 export const PROJECT_VERIFICATION_MAX_COMMAND_BYTES = 16 * 1024;
+export const PROJECT_VERIFICATION_MAX_CONFIG_BYTES = 128 * 1024;
 export const PROJECT_VERIFICATION_MAX_LOG_LIMIT_BYTES = 2 * 1024 * 1024;
 
 const PROJECT_VERIFICATION_TEXT_ENCODER = new TextEncoder();
@@ -394,6 +395,20 @@ export function projectVerificationChecksError(
     if (boundsError) {
       return boundsError;
     }
+  }
+  const normalized = checks.map((check) => ({
+    name: check.name.trim(),
+    kind: check.kind.trim(),
+    command: check.command.trim(),
+    required: check.required,
+    timeoutSeconds: check.timeoutSeconds,
+    logLimitBytes: check.logLimitBytes,
+  }));
+  if (
+    projectVerificationUtf8ByteLength(JSON.stringify(normalized)) >
+    PROJECT_VERIFICATION_MAX_CONFIG_BYTES
+  ) {
+    return "Verification configuration exceeds 128 KiB of UTF-8 JSON.";
   }
   return null;
 }

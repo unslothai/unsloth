@@ -659,3 +659,31 @@ def test_trust_state_read_does_not_open_or_parse_the_workspace(tmp_path, monkeyp
         },
         "revision": trusted["revision"],
     }
+
+
+def test_capability_probe_failure_after_trust_returns_saved_unavailable_state(
+    tmp_path, monkeypatch
+):
+    project_id = _create_project("probe-failure")
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_hooks(root)
+    _bind_project(monkeypatch, project_id, root)
+    current = project_hooks.project_hooks(project_id, _current_subject = "tester")
+
+    def failed_probe():
+        raise RuntimeError("native probe failed")
+
+    monkeypatch.setattr(project_hooks, "execution_status", failed_probe)
+    saved = project_hooks.project_hooks_trust(
+        project_id,
+        project_hooks.TrustProjectHooksRequest(
+            contentHash = current["contentHash"],
+            workspaceRevision = current["workspaceRevision"],
+            revision = current["revision"],
+        ),
+        _current_subject = "tester",
+    )
+    assert saved["trusted"]
+    assert saved["execution"]["available"] is False
+    assert saved["revision"] > current["revision"]

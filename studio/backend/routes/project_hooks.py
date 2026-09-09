@@ -116,7 +116,13 @@ def _stored_trust(record: dict[str, Any]) -> dict[str, Any] | None:
 def _snapshot(project_id: str, config: dict[str, Any], workspace: Any) -> dict[str, Any]:
     state, record = _trust_snapshot_state(project_id, config, workspace)
     disabled = set(state["disabledHandlerIds"])
-    execution = execution_status()
+    try:
+        execution = execution_status()
+    except Exception:
+        execution = {
+            "available": False,
+            "reason": "Hook execution capability could not be checked.",
+        }
     rendered_hooks = {
         event: [
             {

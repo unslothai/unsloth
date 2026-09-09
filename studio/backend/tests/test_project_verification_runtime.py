@@ -1492,3 +1492,23 @@ def test_archived_project_is_rejected_at_begin_and_pre_spawn_transactions(tmp_pa
         ),
         workspace_revision = spawn_workspace.revision,
     )
+
+
+def test_heartbeat_storage_loss_is_persisted_as_failure_not_user_cancellation(monkeypatch):
+    active = verification._ActiveVerification("heartbeat-project", run_id = "run-heartbeat")
+    monkeypatch.setattr(verification_state, "HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    def fail_heartbeat(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(verification_state, "heartbeat_verification_run", fail_heartbeat)
+    verification._heartbeat_run(active)
+    saved = []
+    monkeypatch.setattr(
+        verification_state,
+        "complete_verification_run",
+        lambda *args, **kwargs: saved.append(kwargs),
+    )
+    verification._execute_run(active, {"checks": []}, None, release_active = False)
+    assert saved[0]["terminal_status"] == "failed"
+    assert "heartbeat" in saved[0]["error"]

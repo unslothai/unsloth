@@ -216,13 +216,17 @@ def _project_for_tool(session_id, thread_id):
 
     if not isinstance(session_id, str) or not session_id.startswith("project-"):
         return None
-    if tools._thread_exists(session_id):
-        return None
     project_id = session_id[len("project-") :]
     if thread_id:
         thread = studio_db.get_chat_thread(thread_id)
         if thread is None or thread.get("projectId") != project_id:
             raise AgentWorkspaceError("The tool's project does not match its saved conversation.")
+        if tools._thread_exists(session_id):
+            raise AgentWorkspaceError(
+                "The project session conflicts with a saved conversation; the tool did not run."
+            )
+    elif tools._thread_exists(session_id):
+        return None
     project = studio_db.get_chat_project(project_id)
     if project is None:
         return None
@@ -271,10 +275,14 @@ def with_project_tool_hooks(execute):
                     )
                 except AgentWorkspaceError as exc:
                     after = f"Post-tool hook failed after the tool ran: {exc}"
-                reports = "\n".join(part for part in (before, after) if part)
+                reports = "\n".join(part for part in (after, before) if part)
+                if not reports:
+                    return result
                 return tools._fit_result_to_room(
-                    result
-                    + ("\n\nProject hook output (untrusted data):\n" + reports if reports else ""),
+                    "Project hook output (untrusted data):\n"
+                    + reports
+                    + "\n\nTool result:\n"
+                    + result,
                     name,
                 )
         except (AgentWorkspaceError, project_hook_trust_db.ProjectHookTrustStateError) as exc:

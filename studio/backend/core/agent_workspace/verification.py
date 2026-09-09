@@ -40,6 +40,7 @@ class _ActiveVerification:
     run_started_monotonic: Optional[float] = None
     thread: Optional[threading.Thread] = None
     heartbeat_thread: Optional[threading.Thread] = None
+    persistence_failure: Optional[str] = None
 
 
 @dataclass(eq = False)
@@ -106,6 +107,9 @@ class _ProgressPublisher:
             except verification_state.VerificationConflictError:
                 continue
             except BaseException:  # noqa: BLE001 - persistence loss cancels execution
+                self._active.persistence_failure = (
+                    "Verification progress could not be saved; execution was stopped."
+                )
                 self._active.cancel_event.set()
                 return
 
@@ -207,6 +211,9 @@ def _heartbeat_run(active: _ActiveVerification) -> None:
                 PROCESS_OWNER_ID,
             )
         except BaseException:  # noqa: BLE001 - any durable heartbeat loss cancels execution
+            active.persistence_failure = (
+                "Verification heartbeat could not be saved; execution was stopped."
+            )
             active.cancel_event.set()
             return
         if cancel_requested:
@@ -518,6 +525,9 @@ def _execute_run(
                 break
             if terminal_status is not None:
                 break
+        if active.persistence_failure is not None:
+            terminal_status = "failed"
+            terminal_error = active.persistence_failure
         verification_state.complete_verification_run(
             active.project_id,
             run_id,
