@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -107,5 +108,36 @@ test("a repo id resolves exactly as before", () => {
   assert.equal(
     resolveResidentInitialConfig("unsloth/Other-GGUF", "Q4_K_M").remembered,
     false,
+  );
+});
+
+const composer = readFileSync(
+  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+  "utf8",
+);
+const ensureModelLoaded = composer.slice(
+  composer.indexOf("async function ensureModelLoaded("),
+  composer.indexOf("if (handle1 && model1?.id)"),
+);
+
+test("compare ensureModelLoaded recovers a repo-keyed pin through a snapshot path", () => {
+  store.clear();
+  savePerModelConfig(REPO_ID, "Q4_K_M", {
+    ...config(null),
+    customContextLength: 8192,
+  });
+  assert.equal(resolveInitialConfig(SNAPSHOT_PATH, "Q4_K_M").remembered, false);
+  assert.equal(
+    resolveResidentInitialConfig(SNAPSHOT_PATH, "Q4_K_M").config
+      .customContextLength,
+    8192,
+  );
+  assert.match(
+    ensureModelLoaded,
+    /resolveResidentInitialConfig\(\s*sel\.id,\s*sel\.ggufVariant \?\? null,?\s*\)/,
+  );
+  assert.doesNotMatch(
+    ensureModelLoaded,
+    /resolveInitialConfig\(\s*sel\.id,/,
   );
 });

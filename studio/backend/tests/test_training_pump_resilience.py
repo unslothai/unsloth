@@ -506,6 +506,10 @@ def _stub_spawn(monkeypatch):
 
     pl = _types.ModuleType("utils.process_lifetime")
     pl.adopt_pid = lambda pid: None
+    # The spawn also reads the shutdown latch. These tests are about the pump, not about
+    # quitting, so the double answers "not shutting down" and the spawn proceeds; leaving
+    # it off makes the import fail and every start_training here return False.
+    pl.is_process_shutting_down = lambda: False
     monkeypatch.setitem(sys.modules, "utils.process_lifetime", pl)
 
     worker = _types.ModuleType("core.training.worker")

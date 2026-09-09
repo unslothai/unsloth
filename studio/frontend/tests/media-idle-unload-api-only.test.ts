@@ -9,19 +9,11 @@
 // was unusable without re-enabling chat unloading first.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const SECTION = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/settings/components/model-auto-switch-section.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SECTION = readSrc("features/settings/components/model-auto-switch-section.tsx");
 
 // The JSX guard the given row is rendered under: the nearest conditional above it at the
 // section's own indentation, so a `{settings.foo}` prop inside a neighbouring row is not

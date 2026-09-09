@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   DEFAULT_CONTEXT_POLICY,
@@ -11,6 +10,8 @@ import {
   parseCompactionStyle,
   sanitizeCompactionHeadroomRatio,
 } from "../src/features/chat/utils/auto-compaction.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("the default preserves the server context policy", () => {
   assert.equal(DEFAULT_CONTEXT_POLICY, "inherit");
@@ -111,9 +112,6 @@ test("unsupported headroom ratios snap to an exposed choice", () => {
 });
 
 test("the chat adapter sends compaction fields through the shared helper", () => {
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /ggufCompactionRequestFields\(/);
 });

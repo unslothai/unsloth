@@ -339,8 +339,13 @@ class WhisperWorker:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid
+        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
+        # One flag at every spawn: no _graceful_shutdown step unloads this sidecar and
+        # cancel_pending_loads only reaches the chat /load attempts, so without this a
+        # quit during an STT load starts a worker the step-7 sweep has already passed.
+        if is_process_shutting_down():
+            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
         cache_env = get_hf_cache_paths().child_env({})
         try:
             with (
@@ -365,16 +370,37 @@ class WhisperWorker:
                     },
                     daemon = True,
                 )
-                self._process.start()
+                # Local handle, and started through it: a concurrent teardown can clear
+                # self._process while start() is still returning, and re-reading the
+                # attribute afterwards would lose the only reference to a live child.
+                _spawned_proc = self._process
+                _spawned_proc.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
             self._process = None
             self._close_queues()
             raise SttWorkerSpawnError(
                 f"Could not start the dictation worker process: {exc}"
             ) from exc
-        adopt_pid(self._process.pid)  # terminate_all backstop for graceful exits
+        adopt_pid(_spawned_proc.pid)  # terminate_all backstop for graceful exits
+        # Recheck once the pid is recorded: the latch can be set between the gate above
+        # and this record. Adoption runs first, so a child reaped here is still in the
+        # sweep record.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; reaping the new dictation worker")
+            try:
+                if _spawned_proc.is_alive():
+                    _spawned_proc.terminate()
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    _spawned_proc.kill()
+                    _spawned_proc.join(5)
+            except Exception:  # noqa: BLE001 - the reap is best-effort
+                pass
+            self._process = None
+            self._close_queues()
+            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
         logger.info(
-            "STT worker started (pid=%s) for %s on %s", self._process.pid, snapshot_path, device
+            "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )
         try:
             self._send(
