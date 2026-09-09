@@ -406,6 +406,34 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     return tuple(selected)
 
 
+def runtime_paths_under(workdir: str) -> tuple[str, ...]:
+    """Interpreter directories inside the session workdir. The Linux twin of this.
+
+    runtime_read_paths drops them so a <workdir>/venv/lib symlinked at ~/.ssh is
+    not granted by name, but file-write* covers the workdir subpath, so dropping
+    alone leaves Studio's own venv writable when it sits beneath the workdir. A
+    tool call could then rewrite site-packages or the interpreter and the next
+    server subprocess started from sys.executable would run it with the server's
+    authority. Denied after the write allowance instead; Seatbelt is
+    last-match-wins.
+
+    Only when both spellings stay inside the workdir. One that RESOLVES outside is
+    the symlink case, and denying that path would be denying the user's own home.
+    """
+    inside: list[str] = []
+    for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
+            candidate = posixpath.join(prefix, name)
+            absolute = posixpath.abspath(candidate)
+            if not _within(absolute, workdir) or not os.path.exists(absolute):
+                continue
+            if not _within(os.path.realpath(candidate), workdir):
+                continue
+            if absolute not in inside:
+                inside.append(absolute)
+    return tuple(inside)
+
+
 def build_profile(
     *,
     workdir: str,
@@ -470,6 +498,14 @@ def build_profile(
         _rule("allow file-read* file-test-existence", optional_filters),
         _rule("allow file-map-executable", read_filters),
         _rule("allow file-write*", write_filters),
+        # AFTER the allowance, because Seatbelt is last-match-wins: Studio's own
+        # runtime stays read-only even when it lives under the writable workdir.
+        # See runtime_paths_under.
+        *(
+            [_rule("deny file-write*", _path_filters(runtime_under))]
+            if (runtime_under := runtime_paths_under(workdir))
+            else []
+        ),
         _rule("allow file-read* file-test-existence file-write-data", device_filters),
         # bash process substitution hands the child /dev/fd/63, and opening it dups
         # a descriptor already held.

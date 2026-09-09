@@ -495,3 +495,46 @@ def test_a_framework_build_gets_its_dyld_image(monkeypatch, tmp_path):
     paths = backend.runtime_read_paths()
     assert str(prefix / "Python") in paths
     assert str(prefix) not in paths
+
+
+def test_a_runtime_under_the_workdir_is_denied_write_after_the_allowance(tmp_path, monkeypatch):
+    """The macOS half of the same rule as the Linux backend.
+
+    runtime_read_paths drops a runtime inside the workdir so a <workdir>/venv/lib
+    symlinked at ~/.ssh is not granted by name, but file-write* covers the workdir
+    subpath, so dropping alone left Studio's own venv writable when it sits under
+    the workdir. A tool call could rewrite site-packages or the interpreter and the
+    next server subprocess started from sys.executable would run it with the
+    server's authority. Denied AFTER the allowance, because Seatbelt is
+    last-match-wins and a deny before it would be overridden.
+    """
+    workdir = tmp_path / "session"
+    venv = workdir / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    profile = backend.build_profile(
+        workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ()
+    )
+    lines = profile.splitlines()
+    allow = next(i for i, line in enumerate(lines) if line.startswith("(allow file-write* "))
+    deny = next(i for i, line in enumerate(lines) if line.startswith("(deny file-write* "))
+    assert deny > allow, "a deny before the allowance is overridden by it"
+    denied = _subpaths(lines[deny]) | _literals(lines[deny])
+    assert str(venv / "lib") in denied
+    assert str(venv / "bin") in denied
+
+
+def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_path, monkeypatch):
+    """The negative control: the rule above must not fire for an ordinary layout,
+    where denying anything under the workdir would take away the one writable place."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "exec_prefix", "/usr")
+    profile = backend.build_profile(
+        workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ()
+    )
+    assert not any(line.startswith("(deny file-write* ") for line in profile.splitlines())
