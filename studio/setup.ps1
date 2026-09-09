@@ -5341,6 +5341,20 @@ if ($ROCmIndexUrl) {
     if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
     if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
     if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
+    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe)) {
+        # torch alone names the family. A torchvision or torchaudio that another step
+        # re-resolved from PyPI satisfies its version pin without linking ROCm, and the
+        # pinned-index install below leaves a satisfied companion untouched; a companion
+        # with no local tag, or a +cpu / +cuNNN one, is that case. AMD's indexes tag all
+        # three +rocm and the older community wheels carry a git hash, so both keep the
+        # fast path. Bounded like the torch probe above, and find_spec does not import.
+        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import importlib.util as u, importlib.metadata as m; names = [n for n in ('torchvision', 'torchaudio') if u.find_spec(n)]; tags = [(n, (m.version(n).split('+', 1) + [''])[1].lower()) for n in names]; print(' '.join(n + '==' + m.version(n) for n, t in tags if not t or t.startswith('cpu') or t.startswith('cu')))"
+        $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "" }
+        if ($_companionMismatch) {
+            substep "torchvision/torchaudio are not ROCm builds ($_companionMismatch); reinstalling the trio" "Yellow"
+            $rocmForce = @("--force-reinstall")
+        }
+    }
     while ($true) {
         # Built here, not in the verbose branch (a splat assigned there is unset on the other path).
         $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)

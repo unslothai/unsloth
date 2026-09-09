@@ -615,3 +615,11 @@ def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
     assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
     assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
     assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
+    # torch alone names the family: a companion re-resolved from PyPI satisfies its pin
+    # without linking ROCm, and only a forced reinstall replaces a satisfied package.
+    companion = arm[arm.index("$_companionProbe = Invoke-BoundedPythonProbe") :]
+    companion = companion[: companion.index("while ($true)")]
+    assert "('torchvision', 'torchaudio')" in companion
+    assert "t.startswith('cpu') or t.startswith('cu')" in companion
+    assert '$rocmForce = @("--force-reinstall")' in companion
+    assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]

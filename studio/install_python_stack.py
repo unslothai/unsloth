@@ -1053,6 +1053,10 @@ def _bnb_rocm_prerelease_url() -> str | None:
 # re-resolved -- which is the whole reason the torch repair runs twice. So this records
 # WHAT landed rather than merely THAT something did.
 _BNB_ROCM_PASS_PROVENANCE: "str | None" = None
+# The bytes the release URL served when this pass last looked, as _bnb_asset_identity
+# spells them, or None. Recorded beside the provenance: see _bnb_asset_identity for why
+# the URL alone cannot identify the build.
+_BNB_ROCM_PASS_ASSET: "str | None" = None
 
 
 def _installed_direct_url(dist_name: str) -> "str | None":
@@ -1077,6 +1081,31 @@ def _installed_direct_url(dist_name: str) -> "str | None":
         return None
     url = payload.get("url")
     return str(url) if isinstance(url, str) and url else None
+
+
+def _bnb_asset_identity(url: str) -> "str | None":
+    """What is published at *url* right now, as an opaque string, or None if unreachable.
+
+    The preferred ROCm wheel comes from bitsandbytes' continuous-release_main release,
+    whose asset PATH never changes while its bytes do, so the URL pip recorded cannot
+    stand in for the build: it says where the wheel came from, not which one. One HEAD,
+    following the redirect to the object store, reads the ETag and size of the current
+    bytes; the pass records that beside the provenance and the next one compares.
+    """
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            url, method = "HEAD", headers = {"User-Agent": "unsloth-studio-installer"}
+        )
+        with urllib.request.urlopen(request, timeout = 15) as response:
+            etag = (response.headers.get("ETag") or "").strip()
+            size = (response.headers.get("Content-Length") or "").strip()
+    except Exception:  # noqa: BLE001 - unreachable is "cannot say"; the caller decides
+        return None
+    if not etag and not size:
+        return None
+    return f"{etag}|{size}"
 
 
 def _bnb_wheel_version(url: str) -> "str | None":
@@ -1146,6 +1175,7 @@ def _bnb_rocm_install_is_current(url: "str | None") -> bool:
     already has it, and this decision is reached twice per dependency pass, so an AMD
     host paid the whole wheel twice on every no-op `studio update`.
     """
+    global _BNB_ROCM_PASS_ASSET
     provenance = _installed_bnb_provenance()
     if provenance is None:
         return _refuse_bnb("no usable bitsandbytes on disk")
@@ -1164,13 +1194,40 @@ def _bnb_rocm_install_is_current(url: "str | None") -> bool:
         return _refuse_bnb(f"last run recorded {recorded!r}, on disk {provenance!r}")
     if not _bnb_provenance_matches_request(provenance, url):
         return _refuse_bnb(f"{provenance!r} is not the build this run installs ({url})")
+    if provenance.startswith("url:") and url is not None:
+        # Same URL is not the same wheel: continuous-release_main republishes under a
+        # fixed asset path. The last run recorded what that path served; ask once what
+        # it serves now.
+        recorded_asset = (_PASS_EVIDENCE or {}).get("bnb_rocm_asset")
+        if not isinstance(recorded_asset, str) or not recorded_asset:
+            return _refuse_bnb("the last run did not record which bytes the release URL served")
+        published = _bnb_asset_identity(url)
+        if published is None:
+            # Offline, or the release page is down. The reinstall this would trigger
+            # could not fetch anything either, and the build on disk is one the last
+            # run recorded landing deliberately, so it stays.
+            if VERBOSE:
+                _note("bitsandbytes (ROCm): release page unreachable -- keeping the recorded build")
+            _BNB_ROCM_PASS_ASSET = recorded_asset
+            return True
+        if published != recorded_asset:
+            return _refuse_bnb(
+                f"the wheel at {url} was republished ({recorded_asset} -> {published})"
+            )
+        _BNB_ROCM_PASS_ASSET = published
     return True
 
 
 def _record_bnb_rocm_provenance() -> None:
     """What this pass leaves installed, for its own second call and for the manifest."""
-    global _BNB_ROCM_PASS_PROVENANCE
+    global _BNB_ROCM_PASS_PROVENANCE, _BNB_ROCM_PASS_ASSET
     _BNB_ROCM_PASS_PROVENANCE = _installed_bnb_provenance()
+    if _BNB_ROCM_PASS_ASSET is not None:
+        # The keep decision above already read the asset this pass; a second HEAD would
+        # only repeat it.
+        return
+    url = _installed_direct_url("bitsandbytes")
+    _BNB_ROCM_PASS_ASSET = _bnb_asset_identity(url) if url else None
 
 
 def _versions_are_same_release(installed: str, wheel: str) -> bool:
@@ -7838,15 +7895,21 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
 
     Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
     installed one of those can abort rather than raise. That costs a full torch and
-    mlx import, so when the MLX step itself was skipped and the last run recorded a
-    healthy stack for these exact pins and this exact interpreter, the recorded answer
-    stands. Anything else -- a rebuild, a moved pin, a moved interpreter, a previous
+    mlx import, so when the MLX step itself was skipped, nothing else in this pass
+    installed anything, and the last run recorded a healthy stack for these exact pins
+    and this exact interpreter, the recorded answer stands. Anything else -- a rebuild,
+    a moved pin, a moved interpreter, a dependency another step moved, a previous
     verdict that was not clean -- runs the probe.
     """
     fingerprint = _mlx_health_fingerprint()
     recorded = (_PASS_EVIDENCE or {}).get("mlx_health")
     if (
         skipped
+        # The probe imports mlx_lm and mlx_vlm, which import transformers, tokenizers
+        # and the rest; a later step of this pass that moved any of those can break the
+        # import with every pin in the fingerprint unchanged. A pass that installed
+        # nothing is the only one whose recorded verdict still describes this venv.
+        and _INSTALL_ACTIONS == 0
         and isinstance(recorded, dict)
         and recorded.get("ok") is True
         and recorded.get("pins") == fingerprint["pins"]
@@ -8029,6 +8092,13 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         return _refuse_evidence(
             f"platform moved ({manifest.get('platform')} -> {sys.platform}-{platform.machine()})"
         )
+    # The version string alone cannot tell a GIL 3.14 from a free-threaded one, and the
+    # two cannot load each other's extensions; the tag can, which is why it is recorded.
+    if manifest.get("installer_python_tag") != _installer_python_tag():
+        return _refuse_evidence(
+            f"interpreter ABI moved ({manifest.get('installer_python_tag')} -> "
+            f"{_installer_python_tag()})"
+        )
     # Absent is unknown, not False: an install that never recorded the mode cannot prove
     # it was built the way this run is building.
     if manifest.get("no_torch") is not bool(NO_TORCH):
@@ -8063,6 +8133,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         "mlx_health": manifest.get("mlx_health"),
         "known_unmet": manifest.get("known_unmet"),
         "bnb_rocm": manifest.get("bnb_rocm"),
+        "bnb_rocm_asset": manifest.get("bnb_rocm_asset"),
     }
 
 
@@ -8457,7 +8528,7 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     global _INSTALL_ACTIONS, _PASS_EVIDENCE, _CONSTRAINTS_CACHE, _CLOSURE_INDEX_CACHE
-    global _BNB_ROCM_PASS_PROVENANCE
+    global _BNB_ROCM_PASS_PROVENANCE, _BNB_ROCM_PASS_ASSET
     _STEP = 0
     # Module state, so a second call in one process (the test suites do this) starts
     # from the same place a fresh interpreter would.
@@ -8466,6 +8537,7 @@ def install_python_stack() -> int:
     _CONSTRAINTS_CACHE = None
     _CLOSURE_INDEX_CACHE = None
     _BNB_ROCM_PASS_PROVENANCE = None
+    _BNB_ROCM_PASS_ASSET = None
     _STEP_RESULTS.clear()
     # An aborted earlier run leaves it set, and every _safe_print() consumes it --
     # the first message would get a stray newline.
@@ -9247,6 +9319,7 @@ def install_python_stack() -> int:
                 # What the AMD bitsandbytes repair left installed, so the next pass can
                 # tell a wheel it landed on purpose from one another step pulled in.
                 "bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,
+                "bnb_rocm_asset": _BNB_ROCM_PASS_ASSET,
                 "pip_check_ok": _pip_check_ok,
                 "uv_version": _uv_version(),
                 "installer_python_tag": _installer_python_tag(),

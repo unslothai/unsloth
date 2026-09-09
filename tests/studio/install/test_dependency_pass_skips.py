@@ -71,6 +71,7 @@ def manifest(monkeypatch, tmp_path):
         "platform": f"{sys.platform}-{platform.machine()}",
         "no_torch": False,
         "expected_torch_tag": "cpu",
+        "installer_python_tag": stack._installer_python_tag(),
         "pass_inputs": stack.install_manifest.pass_input_digests(req_root),
         "step_results": {name: "ran" for name in stack.install_manifest.PASS_INPUT_FILES},
     }
@@ -128,6 +129,9 @@ def test_dev_shapes_never_skip(manifest, kwargs) -> None:
         {"step_results": None},
         {"pass_inputs": "not a dict"},
         {"python": "3.0.0"},
+        # A GIL and a free-threaded build share the version string; only the tag differs.
+        {"installer_python_tag": "999t"},
+        {"installer_python_tag": None},
         {"platform": "sunos-vax"},
         {"no_torch": True},
         {"no_torch": None},
@@ -959,6 +963,16 @@ def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
 def test_a_verdict_that_no_longer_describes_this_install_is_re_probed(mlx, mutation) -> None:
     fake, _steps, _written, healthy = mlx
     stack._PASS_EVIDENCE = {"mlx_health": {**healthy, **mutation}}
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 1
+
+
+def test_a_pass_that_installed_anything_re_probes(mlx, monkeypatch) -> None:
+    """The probe imports transformers and tokenizers through mlx_lm; a later step of the
+    same pass can move those with every MLX pin unchanged, so a recorded verdict only
+    stands for a pass that installed nothing at all."""
+    fake, _steps, _written, _ = mlx
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 1)
     stack._report_mlx_stack_health(skipped = True)
     assert fake.calls == 1
 
