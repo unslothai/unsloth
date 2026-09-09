@@ -291,7 +291,7 @@ def test_setup_writes_nothing_without_consent(monkeypatch, tmp_path, capsys) -> 
     monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
     called = []
     monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: called.append("rsync") or {})
-    monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write"))
+    monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write") or True)
     assert sc._cmd_setup() == 0
     assert called == []
     assert "Not applied" in capsys.readouterr().out
@@ -316,7 +316,7 @@ def test_setup_applies_only_with_an_explicit_yes(monkeypatch, tmp_path) -> None:
         lambda *a, **k: called.append("rsync")
         or {"refused": "", "copied": [], "skipped": [], "failed": []},
     )
-    monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write"))
+    monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write") or True)
     assert sc._cmd_setup(assume_yes = True) == 0
     assert called == ["rsync", "write"]
 

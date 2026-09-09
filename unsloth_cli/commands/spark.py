@@ -200,7 +200,9 @@ def _kernel_state() -> dict:
         "pin_wrong": bool(cutlass) and cutlass != CUTLASS_PIN,
         "jit_cache_missing": bool(flashinfer) and not jit_cache,
     }
-    state["ok"] = bool(flashinfer) and not state["pin_wrong"] and bool(jit_cache)
+    # cutlass == pin, not "not pin_wrong": an ABSENT cutlass leaves pin_wrong false, which
+    # reported the prefill kernel ready while the fast path could not run.
+    state["ok"] = bool(flashinfer) and cutlass == CUTLASS_PIN and bool(jit_cache)
     return state
 
 
@@ -259,6 +261,10 @@ def _peer_reachable(
     try:
         with socket.create_connection((host, port), timeout = timeout):
             return True
+    except ConnectionRefusedError:
+        # Something answered to say no, so the host is up and only sshd is down. Reporting this
+        # as unreachable sends the user looking at cables, power and the GPU instead.
+        return True
     except OSError:
         return False
     except Exception:  # pragma: no cover - defensive
@@ -773,6 +779,10 @@ def serve(
         "engine never beats one Spark on decode (0.85x to 1.01x measured).",
     ),
     slots: int = typer.Option(16, "--slots", help = "Server slots per engine."),
+    rpc_port: int = typer.Option(
+        None, "--rpc-port", help = "Port for the peer's RPC server. The preflight names this "
+        "option when the default is taken by something else."
+    ),
 ) -> None:
     """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.
 
@@ -808,6 +818,7 @@ def serve(
                 "--slots",
                 str(slots),
             ]
+            + (["--rpc-port", str(rpc_port)] if rpc_port is not None else [])
         )
     )
 

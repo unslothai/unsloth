@@ -364,7 +364,9 @@ def load_config() -> Dict[str, Any]:
         return {}
 
 
-def save_config(config: Dict[str, Any]) -> None:
+def save_config(config: Dict[str, Any]) -> bool:
+    """False when the plan did not reach disk. Setup must not report success on that: the
+    cluster stays unconfigured and the next invocation has forgotten the plan."""
     path = config_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -373,8 +375,10 @@ def save_config(config: Dict[str, Any]) -> None:
             json.dump(config, handle, indent = 2, sort_keys = True)
         os.replace(tmp, path)
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        print(f"  could not save the cluster plan to {path}: {exc}")
+        return False
+    return True
 
 
 def cluster_state() -> str:
@@ -481,7 +485,7 @@ def link_health(
                 "StrictHostKeyChecking=no",
                 "-o",
                 "ConnectTimeout=8",
-                f"{os.environ.get('USER', 'nvidia')}@{peer_ip}",
+                f"{_ssh_user()}@{peer_ip}",
                 f"ib_write_bw -d {ib_device} -F -x 3 --report_gbits -D {seconds} "
                 f"-s 1048576 -q 4 -p {port} {local_ip}",
             ],
@@ -1192,7 +1196,9 @@ def _print_manual_steps(
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")
         print(netplan_yaml(entries), end = "")
-        print("    EOF")
+        # Column 0: <<'EOF' only ends on an unindented terminator, and an indented one makes the
+        # heredoc swallow the chmod and netplan apply lines into the file it was writing.
+        print("EOF")
         print("    sudo chmod 600 /etc/netplan/40-unsloth-cx7.yaml && sudo netplan apply")
 
     emit("THIS Spark", plan)
@@ -1448,9 +1454,16 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
             code = int((r.stdout or "-1").strip().splitlines()[-1])
         except Exception:
             code = None
-        smi_ok = (
-            subprocess.run(["nvidia-smi", "-L"], capture_output = True, timeout = 30).returncode == 0
-        )
+        # A wedged driver is the case this command exists for, and there nvidia-smi is what hangs
+        # or refuses to run, so an unguarded probe would abort doctor with a traceback.
+        try:
+            smi_ok = (
+                subprocess.run(
+                    ["nvidia-smi", "-L"], capture_output = True, timeout = 30
+                ).returncode == 0
+            )
+        except Exception:
+            smi_ok = False
         out["local"] = {"cuinit": code, "state": _classify(code, smi_ok)}
 
     if peer_ip and shutil.which("ssh"):
@@ -3353,22 +3366,25 @@ def _cmd_setup(
         print("  Re-run with --yes to apply, or --dry-run to see it again.")
         return 0
 
+    provision_failures = False
     if peer_now:
         print(f"\n  Peer {peer_now} -- copying environment and caches over the ConnectX link:")
         res = provision_peer(peer_now)
         if res["refused"]:
             print(f"    REFUSED: {res['refused']}")
             print("    Nothing was copied. Re-run `unsloth spark provision` when it is idle.")
+            provision_failures = True
         for label, _ in res["copied"]:
             print(f"    ok      {label}")
         for label, why in res["failed"]:
             print(f"    FAILED  {label}: {why}")
         if res["failed"]:
             print("    Re-run later with: unsloth spark provision")
+            provision_failures = True
     else:
         print("\n  Once the peer is reachable, run: unsloth spark provision")
 
-    save_config(
+    saved = save_config(
         {
             "enabled": True,
             "planned": True,
@@ -3380,7 +3396,14 @@ def _cmd_setup(
             "nccl_env": nccl_env(rails),
         }
     )
+    if not saved:
+        return 1
     print(f"\nSaved plan to {config_path()}")
+    # A copy that was attempted and failed leaves the peer without the environment, so the
+    # installer and `spark up` must not read this as a finished setup. An unreachable peer is
+    # different: that is the documented "provision it later" path and stays a success.
+    if provision_failures:
+        return 1
     return 0
 
 
