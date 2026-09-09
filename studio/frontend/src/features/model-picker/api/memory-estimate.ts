@@ -18,7 +18,8 @@ export type MemoryEstimateReason =
 export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
-  /** Files that become resident: weights, projector, drafter. */
+  /** Resident weights, projector and drafter: the files themselves for GGUF, and for MLX what
+   *  they go resident AS. */
   weightsBytes: number;
   /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
   kvBytes: number;
@@ -48,6 +49,10 @@ export interface MemoryEstimate {
   kvOnGpu: boolean;
   /** What was actually priced, after overrides and clamps resolve. */
   nCtx: number;
+  /** The window MLX would fit to this machine for a load naming no Context Length, which is
+   *  then what `nCtx` prices. Null wherever the served window was not chosen for the machine:
+   *  a pin, a machine that holds the model's own window, or a load nothing could size. */
+  contextFitted: number | null;
   cacheTypeKv: string | null;
   nParallel: number;
   layerCount: number | null;
@@ -65,6 +70,13 @@ export interface MemoryEstimateRequest {
   nativePathToken?: string | null;
   nCtx?: number | null;
   cacheTypeKv?: string | null;
+  /** The MLX context pin, and only a pin: /load reads this rather than nCtx off the non-GGUF
+   *  path, and 0 is its "name nothing", which the backend answers by fitting the window to
+   *  the machine. Sending a displayed fallback here prices a load that will not happen. */
+  maxSeqLength?: number | null;
+  /** MLX's own KV quantization width, deliberately not cacheTypeKv: llama.cpp's field persists
+   *  in the config of a model that never ran there. */
+  mlxKvBits?: number | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -97,6 +109,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvEstimable: false,
   kvOnGpu: true,
   nCtx: 0,
+  contextFitted: null,
   cacheTypeKv: null,
   nParallel: 1,
   layerCount: null,
@@ -120,6 +133,7 @@ interface ApiEstimateResponse {
   kv_estimable: boolean;
   kv_on_gpu: boolean;
   n_ctx: number;
+  context_fitted?: number | null;
   cache_type_kv: string | null;
   n_parallel: number;
   layer_count: number | null;
@@ -138,6 +152,8 @@ function estimateRequestBody(
     native_path_lease: nativePathLease,
     n_ctx: payload.nCtx ?? null,
     cache_type_kv: payload.cacheTypeKv ?? null,
+    max_seq_length: payload.maxSeqLength ?? null,
+    mlx_kv_bits: payload.mlxKvBits ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
@@ -225,6 +241,9 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),
     nCtx: finiteCount(body.n_ctx, 0),
+    // Absent on a backend predating the fit, and null is the right reading there: that
+    // backend chose no window for this machine, so there is none to show.
+    contextFitted: nullableCount(body.context_fitted),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,
     nParallel: finiteCount(body.n_parallel, 1),
@@ -256,10 +275,11 @@ export function resetMemoryEstimateRouteMemo(): void {
   routeAbsentAt = null;
 }
 
-/** Price a prospective GGUF load from its header. Allocates nothing, loads nothing. Never
- *  throws for a backend answer: an absent route, an auth expiry, a 500, an HTML error page
- *  served as 200 or a truncated body all come back as an unavailable estimate, so the panel
- *  hides the row. The statuses are told apart only to decide whether the miss is memoable. */
+/** Price a prospective load before it runs: a GGUF from its header, an MLX repo from safetensors
+ *  headers and an unevaluated graph. Loads no model, reads no tensor data. Never throws for a
+ *  backend answer: an absent route, an auth expiry, a 500, an HTML error page served as 200 or a
+ *  truncated body all come back as an unavailable estimate, so the panel hides the row. The
+ *  statuses are told apart only to decide whether the miss is memoable. */
 export async function fetchMemoryEstimate(
   payload: MemoryEstimateRequest,
   signal?: AbortSignal,

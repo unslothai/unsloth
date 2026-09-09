@@ -35,6 +35,8 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.nativePathToken ?? null,
     request.nCtx ?? null,
     request.cacheTypeKv ?? null,
+    request.maxSeqLength ?? null,
+    request.mlxKvBits ?? null,
     request.nParallel ?? null,
     request.nBatch ?? null,
     request.nUbatch ?? null,

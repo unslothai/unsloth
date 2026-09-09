@@ -89,6 +89,7 @@ def build_memory_estimate(
     context_is_pinned: bool = True,
     inherited_device_pin: bool = False,
     spec_unpriced: bool = False,
+    context_fitted: Optional[int] = None,
     moe_offload_unmodelled: bool = False,
     gpu_bytes: Any = _UNSET,
     compute_bytes: Any = _UNSET,
@@ -162,6 +163,7 @@ def build_memory_estimate(
             else int(n_ctx or 0)
         ),
         native_context = native_context,
+        context_fitted = context_fitted,
         cache_type_kv = getattr(breakdown, "cache_type_kv", None),
         n_parallel = int(getattr(breakdown, "n_parallel", 1) or 1),
         layer_count = getattr(breakdown, "layer_count", None),
@@ -196,6 +198,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "kv_estimable": estimate.kv_estimable,
         "kv_on_gpu": estimate.kv_on_gpu,
         "n_ctx": estimate.n_ctx,
+        "context_fitted": estimate.context_fitted,
         "cache_type_kv": estimate.cache_type_kv,
         "n_parallel": estimate.n_parallel,
         "layer_count": estimate.layer_count,
