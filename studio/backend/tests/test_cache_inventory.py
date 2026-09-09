@@ -301,19 +301,21 @@ def test_a_refused_root_reports_itself_and_deletes_nothing(tmp_path, monkeypatch
 
 
 @pytest.fixture
-def only_the_configured_compiled_cache(monkeypatch):
+def only_the_configured_compiled_cache(monkeypatch, tmp_path):
     """Keep the compiled-cache clear off any install-tree cache of this checkout.
 
     cache_cleanup's own ownership model stays in force: that is the thing under
     test here, and re-deriving it in cache_inventory is exactly what this
     feature must not do.
+
+    _configured_cache_dirs also offers the CWD, and importing unsloth creates a
+    compiled cache there, so these run from a directory that has none. Skipping
+    on one instead meant they never ran at all.
     """
     from utils import cache_cleanup
 
     monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [])
-    for candidate in (Path.cwd() / "unsloth_compiled_cache",):
-        if candidate.exists():
-            pytest.skip(f"a compiled cache already exists at {candidate}")
+    monkeypatch.chdir(tmp_path)
 
 
 def test_the_compiled_cache_is_cleared_through_the_module_that_owns_it(
@@ -489,3 +491,171 @@ def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
     # ...and the HF home that holds the token is still refused.
     with pytest.raises(CachePurgeRefused):
         assert_purgeable_root(isolated_caches)
+
+
+# --- resolvers ------------------------------------------------------------
+
+
+def test_the_inductor_cache_follows_the_account_name_torch_uses(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """torch derives it from getpass.getuser(), which a bare uid does not match.
+
+    getpass reads LOGNAME/USER/LNAME/USERNAME and then the pwd account name, so
+    a container with none of USER/USERNAME set puts the cache at
+    torchinductor_root while a uid fallback looks at torchinductor_0.
+    """
+    import tempfile
+
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+    monkeypatch.delenv("USER", raising = False)
+    monkeypatch.delenv("USERNAME", raising = False)
+    monkeypatch.setenv("LOGNAME", "root")
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    root = tmp_path / "torchinductor_root"
+    _write(root / "fxgraph" / "entry.bin", "c" * 20)
+
+    entry = describe_cache(definition_for("torch_inductor"))
+    assert entry["paths"] == [str(root)]
+    assert entry["size_bytes"] == 20
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_the_vllm_cache_is_vllms_own_default_on_every_platform(
+    tmp_path, monkeypatch, isolated_caches, platform
+):
+    """vllm/envs.py resolves XDG_CACHE_HOME or ~/.cache, then "vllm", everywhere.
+
+    The platform cache convention agrees on Linux only: it would look under
+    ~/Library/Caches on macOS and LOCALAPPDATA on Windows, where vLLM does not.
+    """
+    import sys as _sys
+
+    monkeypatch.delenv("VLLM_CACHE_ROOT", raising = False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
+    monkeypatch.setattr(_sys, "platform", platform)
+    assert cache_inventory._vllm_dirs() == [tmp_path / ".cache" / "vllm"]
+
+
+def test_the_vllm_cache_honours_xdg_because_vllm_does(tmp_path, monkeypatch, isolated_caches):
+    monkeypatch.delenv("VLLM_CACHE_ROOT", raising = False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert cache_inventory._vllm_dirs() == [tmp_path / "xdg" / "vllm"]
+
+
+# --- what a refusal costs -------------------------------------------------
+
+
+def test_a_refused_root_is_never_walked(tmp_path, monkeypatch, isolated_caches):
+    """The gate runs before the size walk, not after it.
+
+    A root the gate will refuse (UV_CACHE_DIR=/ or the home directory) would
+    otherwise be measured recursively on every open of the Resources tab, before
+    the refusal is ever reached.
+    """
+    outputs = tmp_path / "outputs"
+    monkeypatch.setattr(
+        cache_inventory, "protected_trees", lambda: {Path(os.path.realpath(outputs))}
+    )
+    _write(outputs / "triton" / "kernel.cubin", "compiled" * 100)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(outputs / "triton"))
+
+    walked = []
+    measure = cache_inventory._measure_root
+    monkeypatch.setattr(
+        cache_inventory,
+        "_measure_root",
+        lambda root, **kwargs: (walked.append(root), measure(root, **kwargs))[1],
+    )
+
+    entry = describe_cache(definition_for("triton"))
+    assert entry["purgeable"] is False
+    assert walked == []
+    assert entry["size_bytes"] == 0
+
+
+def test_a_cache_anywhere_under_the_documents_folder_is_refused(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """Documents is a protected TREE, not only a protected path.
+
+    Every other user-data root is in both lists; without this one, an inherited
+    UV_CACHE_DIR=~/Documents/archive is reported purgeable and clearing it takes
+    whatever is in that folder.
+    """
+    from utils.paths import storage_roots
+
+    documents = tmp_path / "Documents"
+    kept = _write(documents / "archive" / "taxes.pdf", "mine")
+    monkeypatch.setattr(storage_roots, "documents_root", lambda: documents)
+    monkeypatch.setenv("UV_CACHE_DIR", str(documents / "archive"))
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["purgeable"] is False
+    assert "protected folder" in (entry["blocked_reason"] or "")
+    purge_caches(["uv"])
+    assert kept.exists()
+
+
+def test_a_junction_inside_a_cache_is_not_walked(tmp_path, monkeypatch, isolated_caches):
+    """A junction is a directory to is_dir() and not a link to is_symlink().
+
+    Descending into one sizes its target instead of the cache, so the row
+    advertises bytes a clear will not free, and a junction back to an ancestor
+    never terminates.
+    """
+    root = tmp_path / "uv"
+    _write(root / "real.bin", "r" * 10)
+    _write(root / "wheels" / "junction" / "elsewhere.bin", "z" * 4096)
+    monkeypatch.setattr(cache_inventory, "_is_junction", lambda path: Path(path).name == "junction")
+
+    entry = describe_cache(definition_for("uv"))
+    assert entry["size_bytes"] == 10
+
+
+# --- reporting ------------------------------------------------------------
+
+
+def test_a_compiled_cache_that_survives_the_clear_says_so(
+    tmp_path, monkeypatch, only_the_configured_compiled_cache
+):
+    """cache_cleanup swallows every unlink and rmtree failure.
+
+    A read-only directory or a locked file therefore looks identical to a clean
+    clear from here, and the UI showed a success toast over a cache still on
+    disk.
+    """
+    from utils import cache_cleanup
+
+    compiled = tmp_path / "compiled_cache"
+    compiled.mkdir()
+    (compiled / cache_cleanup.CACHE_MARKER).touch()
+    survivor = _write(compiled / "unsloth_compiled_module_llama.py", "compiled" * 10)
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(compiled))
+    monkeypatch.setattr(cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: None)
+
+    result = purge_caches(["unsloth_compiled"])["results"][0]
+    assert survivor.exists()
+    assert result["removed_entries"] == 0
+    assert result["errors"]
+
+
+def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolated_caches):
+    """The Hub inventory is invalidated on every app-driven cache mutation.
+
+    Emptying hf_hub or hf_datasets removes the repositories that scan reports,
+    so without this the Hub and the model picker keep listing deleted models for
+    the scan's TTL.
+    """
+    from hub.utils import inventory_scan
+
+    _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
+    before = inventory_scan.hf_cache_scans_epoch()
+    purge_caches(["hf_hub"])
+    assert inventory_scan.hf_cache_scans_epoch() > before
+
+    # ...and a cache that holds no repository does not disturb it.
+    steady = inventory_scan.hf_cache_scans_epoch()
+    _write(tmp_path / "uv" / "wheel.whl", "w" * 10)
+    purge_caches(["uv"])
+    assert inventory_scan.hf_cache_scans_epoch() == steady

@@ -85,6 +85,17 @@ test("a critical disk does not re-warn as low when it recovers a little", () => 
   assert.deepEqual(announce([3, 8, 4]), ["critical"]);
 });
 
+test("recovering out of critical does not disarm the low warning too", () => {
+  // 21 GB clears critical and its 5 GB margin, but not low's own re-arm point of
+  // 25 GB. Storing the instantaneous pressure forgot low there and paid for it
+  // with a second low toast on the next dip.
+  assert.deepEqual(announce([3, 21, 19]), ["critical"]);
+  assert.deepEqual(announce([3, LOW_DISK_FREE_GB + REARM_MARGIN_GB, 19]), [
+    "critical",
+    "low",
+  ]);
+});
+
 test("hovering on the threshold does not toast on every reading", () => {
   const hovering = [
     LOW_DISK_FREE_GB - 0.1,

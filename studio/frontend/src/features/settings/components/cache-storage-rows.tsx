@@ -10,7 +10,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
+import {
+  bumpInventoryVersion,
+  getInventoryVersion,
+  useInventoryVersion,
+} from "@/features/hub/stores/inventory-events";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -69,6 +73,12 @@ const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
   hf_datasets: "settings.resources.storage.caches.datasetsCost",
 };
 
+/** Caches whose contents are the repositories the Hub inventory reports. */
+const HUB_INVENTORY_KEYS: ReadonlySet<CacheKey> = new Set<CacheKey>([
+  "hf_hub",
+  "hf_datasets",
+]);
+
 /** What a confirmation is about: everything reclaimable, or one opt-in cache. */
 type PurgeTarget = { kind: "bulk" } | { kind: "single"; key: CacheKey };
 
@@ -102,20 +112,32 @@ export function CacheStorageRows() {
   const [target, setTarget] = useState<PurgeTarget | null>(null);
   const [clearing, setClearing] = useState(false);
 
+  // A measurement installs itself only while it is still the newest one asked
+  // for. Two can overlap, the mount's load still walking a large hub when a
+  // folder save starts a forced one, and they finish in whichever order the
+  // walks happen to take, so without this the rows can settle on the folder the
+  // user moved off. A purge claims a number too, so a walk that started before
+  // it cannot overwrite the post-purge inventory.
+  const latestRequest = useRef(0);
+
   const refresh = useCallback(
     async (options: { refresh?: boolean } = {}) => {
+      const request = ++latestRequest.current;
       setLoading(true);
       try {
-        setInventory(await loadCacheInventory(options));
+        const next = await loadCacheInventory(options);
+        if (request !== latestRequest.current) return;
+        setInventory(next);
         setLoadError(null);
       } catch (error) {
+        if (request !== latestRequest.current) return;
         setLoadError(
           error instanceof Error
             ? error.message
             : t("settings.resources.storage.caches.measureFailed"),
         );
       } finally {
-        setLoading(false);
+        if (request === latestRequest.current) setLoading(false);
       }
     },
     [t],
@@ -144,9 +166,18 @@ export function CacheStorageRows() {
 
   const runPurge = async (keys: readonly CacheKey[]) => {
     setClearing(true);
+    const request = ++latestRequest.current;
     try {
       const outcome = await purgeCaches(keys);
-      setInventory(outcome.inventory);
+      if (request === latestRequest.current) setInventory(outcome.inventory);
+      if (keys.some((key) => HUB_INVENTORY_KEYS.has(key))) {
+        // Every cached model or dataset just went, so the Hub and the model
+        // picker have to hear about it the way they do for a delete. The mark
+        // takes our own bump: the rows already hold the post-purge inventory,
+        // and reading it as a folder move would buy a cold walk for nothing.
+        bumpInventoryVersion();
+        measuredVersion.current = getInventoryVersion();
+      }
       setTarget(null);
       const failures = outcome.results.flatMap((result) => result.errors);
       if (failures.length > 0) {
@@ -166,6 +197,8 @@ export function CacheStorageRows() {
       });
     } finally {
       setClearing(false);
+      // Whatever measurement this superseded will not clear it.
+      if (request === latestRequest.current) setLoading(false);
     }
   };
 
@@ -275,8 +308,14 @@ export function CacheStorageRows() {
                   <Button
                     variant="ghost"
                     size="xs"
+                    // loading, like the buttons above: while a measurement is in
+                    // flight these rows still show the previous inventory, and a
+                    // clear resolves its key against the current one.
                     disabled={
-                      clearing || !entry.purgeable || entry.sizeBytes === 0
+                      loading ||
+                      clearing ||
+                      !entry.purgeable ||
+                      entry.sizeBytes === 0
                     }
                     onClick={() =>
                       entry.optIn
@@ -309,7 +348,7 @@ export function CacheStorageRows() {
               {t("common.cancel")}
             </Button>
             <Button
-              disabled={clearing}
+              disabled={loading || clearing}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
               onClick={() =>
                 void runPurge(

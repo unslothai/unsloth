@@ -195,13 +195,23 @@ def _torch_inductor_dirs() -> list[Path]:
     configured = _env_dir("TORCHINDUCTOR_CACHE_DIR")
     if configured is not None:
         return [configured]
+    import getpass
+    import re
     import tempfile
 
+    # torch/_inductor/runtime/cache_dir_utils.py, followed exactly: getpass.getuser
+    # reads LOGNAME/USER/LNAME/USERNAME and then the pwd account name, so a
+    # container with none of them set puts the cache at torchinductor_root while
+    # a bare uid would look at torchinductor_0 and find nothing.
     try:
-        user = os.environ.get("USER") or os.environ.get("USERNAME") or str(os.getuid())
-    except AttributeError:
-        user = "nobody"
-    return [Path(tempfile.gettempdir()) / f"torchinductor_{user}"]
+        user = getpass.getuser()
+    except (KeyError, ModuleNotFoundError, OSError):
+        try:
+            user = f"uid_{os.getuid()}"
+        except AttributeError:
+            user = "unknown_user"
+    sanitized = re.sub(r'[\\/:*?"<>|]', "_", user)
+    return [Path(tempfile.gettempdir()) / f"torchinductor_{sanitized}"]
 
 
 def _torch_extensions_dirs() -> list[Path]:
@@ -241,7 +251,11 @@ def _matplotlib_patterns() -> Optional[tuple[str, ...]]:
 
 
 def _vllm_dirs() -> list[Path]:
-    return _first(_env_dir("VLLM_CACHE_ROOT"), _platform_cache_dir("vllm"))
+    # vllm/envs.py: XDG_CACHE_HOME or ~/.cache, then "vllm", on every platform.
+    # The platform helper agrees on Linux and diverges on macOS and Windows.
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    base = Path(xdg).expanduser() if xdg else _home() / ".cache"
+    return _first(_env_dir("VLLM_CACHE_ROOT"), base / "vllm")
 
 
 def _unsloth_compiled_dirs() -> list[Path]:
@@ -309,9 +323,17 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
                 return outcome
         before, entries = _measure_unsloth_compiled()
         clear_unsloth_compiled_cache()
-        after, _ = _measure_unsloth_compiled()
+        after, remaining = _measure_unsloth_compiled()
     outcome.freed_bytes = max(0, before - after)
-    outcome.removed_entries = entries
+    outcome.removed_entries = max(0, entries - remaining)
+    if after > 0:
+        # clear_unsloth_compiled_cache swallows every unlink and rmtree failure,
+        # so a read-only directory or a locked file leaves the cache in place and
+        # reports nothing. Bytes rather than entries: a dedicated cache is
+        # recreated holding an empty marker file, which is not a leftover.
+        outcome.errors.append(
+            "Part of the compiled cache could not be removed and is still in place."
+        )
     return outcome
 
 
@@ -381,7 +403,7 @@ def _safe_resolve(path: Path) -> Optional[Path]:
         return None
 
 
-def _is_junction(path: Path) -> bool:
+def _is_junction(path: Path | str) -> bool:
     """True for a Windows directory junction or volume mount point.
 
     A junction is the same hazard as a symlink and does not answer to the same
@@ -488,6 +510,7 @@ def protected_trees() -> set[Path]:
         assets_root,
         auth_root,
         datasets_root,
+        documents_root,
         exports_root,
         outputs_root,
         project_workspaces_root,
@@ -504,6 +527,9 @@ def protected_trees() -> set[Path]:
         rag_root(),
         tensorboard_root(),
         project_workspaces_root(),
+        # The real Documents folder. No tool keeps a cache under it, and a
+        # variable pointed at ~/Documents/anything would otherwise empty it.
+        documents_root(),
     ]
     configured = _env_dir("DATA_DESIGNER_HOME")
     if configured is not None:
@@ -629,6 +655,17 @@ def _entry_size(entry: os.DirEntry, seen: set) -> int:
     return int(stat.st_size)
 
 
+def _descendable(entry: os.DirEntry) -> bool:
+    """True for a directory entry a size walk may descend into.
+
+    ``is_dir`` is True for a Windows junction while ``is_symlink`` is not, so
+    without this the walk sizes the junction's target instead of the cache, and a
+    junction back to an ancestor never terminates. Free on POSIX, where both
+    ``os.path.isjunction`` and the fallback answer without a syscall.
+    """
+    return not _is_junction(entry.path)
+
+
 def _measure_tree(path: Path, seen: set) -> tuple[int, int]:
     """Bytes and entry count under *path*, never following a symlink out."""
     total = 0
@@ -645,7 +682,8 @@ def _measure_tree(path: Path, seen: set) -> tuple[int, int]:
                         # target lives (HF snapshots link into blobs).
                         continue
                     if entry.is_dir(follow_symlinks = False):
-                        stack.append(Path(entry.path))
+                        if _descendable(entry):
+                            stack.append(Path(entry.path))
                         continue
                     total += _entry_size(entry, seen)
         except OSError:
@@ -672,8 +710,9 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks = False):
-                    size, _ = _measure_tree(Path(entry.path), seen)
-                    total += size
+                    if _descendable(entry):
+                        size, _ = _measure_tree(Path(entry.path), seen)
+                        total += size
                     continue
                 total += _entry_size(entry, seen)
     except OSError as exc:
@@ -712,28 +751,36 @@ def describe_cache(definition: CacheDefinition) -> dict:
     """Size one cache and say whether it may be purged, without deleting."""
     patterns = _patterns_for(definition)
     roots = _resolve_roots(definition)
+    purgeable = True
+    blocked_reason: Optional[str] = None
+    # Gate first, then measure. A root the gate refuses (UV_CACHE_DIR=/ or the
+    # home directory) would otherwise be walked recursively on every open of the
+    # Resources tab before the refusal is reached, and none of those bytes can be
+    # reclaimed anyway.
+    measurable = list(roots)
+    if roots and definition.custom_purge is None:
+        protected = protected_paths()
+        trees = protected_trees()
+        keep = opt_in_roots(definition.key)
+        measurable = []
+        for root in roots:
+            try:
+                assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
+            except CachePurgeRefused as exc:
+                if purgeable:
+                    purgeable = False
+                    blocked_reason = str(exc)
+                continue
+            measurable.append(root)
     if definition.custom_measure is not None:
         total, entries = definition.custom_measure()
     else:
         total = 0
         entries = 0
-        for root in roots:
+        for root in measurable:
             size, count = _measure_root(root, patterns = patterns)
             total += size
             entries += count
-    purgeable = True
-    blocked_reason: Optional[str] = None
-    if roots and definition.custom_purge is None:
-        protected = protected_paths()
-        trees = protected_trees()
-        keep = opt_in_roots(definition.key)
-        for root in roots:
-            try:
-                assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
-            except CachePurgeRefused as exc:
-                purgeable = False
-                blocked_reason = str(exc)
-                break
     return {
         "key": definition.key,
         "group": definition.group,
@@ -912,6 +959,22 @@ def _purge_result(definition: CacheDefinition, outcome: PurgeOutcome) -> dict:
     }
 
 
+# Emptying either of these removes the repositories the Hub inventory reports,
+# so it is one of the app-driven mutations that scan is invalidated on. Without
+# it the Hub and the model picker keep listing deleted models for the scan's TTL,
+# and an immediate refetch is served the pre-purge answer.
+_HF_SCANNED_KEYS = frozenset({"hf_hub", "hf_datasets"})
+
+
+def _invalidate_hf_scans() -> None:
+    try:
+        from hub.utils.inventory_scan import invalidate_hf_cache_scans
+    except ImportError as exc:
+        logger.debug(f"Could not invalidate the Hugging Face scans: {exc}")
+        return
+    invalidate_hf_cache_scans()
+
+
 def purge_caches(keys: Iterable[str]) -> dict:
     """Empty each named cache, then report what the inventory looks like after.
 
@@ -930,6 +993,8 @@ def purge_caches(keys: Iterable[str]) -> dict:
             # Its remembered size is what it held a moment ago, not what it
             # holds now.
             invalidate_cache_size(definition.key)
+    if any(definition.key in _HF_SCANNED_KEYS for definition in definitions):
+        _invalidate_hf_scans()
     return {
         "results": results,
         "freed_bytes": sum(result["freed_bytes"] for result in results),

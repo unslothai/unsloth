@@ -35,6 +35,9 @@ export const INITIAL_LOW_DISK_STATE: LowDiskState = { notified: "ok" };
 
 const RANK: Record<DiskPressure, number> = { ok: 0, low: 1, critical: 2 };
 
+/** By rank, so a level can step down one at a time. */
+const BY_RANK: DiskPressure[] = ["ok", "low", "critical"];
+
 const THRESHOLD_GB: Record<DiskPressure, number> = {
   ok: Number.POSITIVE_INFINITY,
   low: LOW_DISK_FREE_GB,
@@ -80,12 +83,34 @@ export function nextLowDiskNotice(
     return { state: { notified: pressure }, notify: pressure };
   }
   if (RANK[pressure] < RANK[state.notified]) {
-    const free = disk.free_gb as number;
-    if (free >= THRESHOLD_GB[state.notified] + REARM_MARGIN_GB) {
-      return { state: { notified: pressure }, notify: null };
+    const forgotten = forgetRearmedLevels(
+      state.notified,
+      disk.free_gb as number,
+    );
+    if (forgotten !== state.notified) {
+      return { state: { notified: forgotten }, notify: null };
     }
   }
   return { state, notify: null };
+}
+
+/**
+ * The highest level still armed at *free*, stepping down from *notified*.
+ *
+ * Storing the instantaneous pressure instead would drop a level the disk has
+ * not actually cleared: recovering from critical to 21 GB passes critical's
+ * re-arm point but not low's, and forgetting low there earns a second low
+ * warning on the next dip.
+ */
+function forgetRearmedLevels(
+  notified: DiskPressure,
+  free: number,
+): DiskPressure {
+  let level = notified;
+  while (level !== "ok" && free >= THRESHOLD_GB[level] + REARM_MARGIN_GB) {
+    level = BY_RANK[RANK[level] - 1];
+  }
+  return level;
 }
 
 // Session state: the notice is per browser session, not per mount, so
