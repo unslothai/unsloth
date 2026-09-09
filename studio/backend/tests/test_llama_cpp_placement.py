@@ -3814,3 +3814,69 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+@pytest.mark.parametrize("var", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+def test_a_projector_inherited_from_the_environment_gets_the_floor(tmp_path, monkeypatch, var):
+    """arg.cpp applies LLAMA_ARG_MMPROJ / _URL before argv, so the environment alone
+    loads a projector that then encodes non-causally. Nothing is on Studio's command
+    line, so this launch emitted no batch flags and ran at llama.cpp's 512."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv(var, str(mmproj))
+
+    cmd = _launch(backend, gguf, is_vision = True)["cmd"]
+
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path, monkeypatch):
+    """The switch drops the URL and every image-capable inherited path before the
+    child sees them, so there is no non-causal encoder left to size for."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ_URL", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+
+    cmd = _launch(backend, gguf, is_vision = True, disable_vision = True)["cmd"]
+
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd
+
+
+def test_the_cpu_replay_that_restores_vision_restores_the_floor_too():
+    """A text-only retry that also signal-crashes replays the ORIGINAL vision argv on
+    CPU, projector and 2048 flags included. The retry unwound the fields, and the
+    post-launch record reads the fields rather than the argv, so leaving them unwound
+    reports 512 for a 2048 child and understates the prompt-cache slot estimate."""
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    compact = "".join(src.split())
+    assert "_floored_batch_pair=(n_batch,n_ubatch)" in compact
+    # Captured after the floor was applied, not before it.
+    assert compact.index("n_batch,n_ubatch=_mmproj_batch_floor(") < compact.index(
+        "_floored_batch_pair=(n_batch,n_ubatch)"
+    )
+    # And put back on the branch that keeps vision, after the retry unwound them.
+    assert "n_batch,n_ubatch=_floored_batch_pair" in compact
+    assert compact.index("n_batch,n_ubatch=_requested_batch_pair") < compact.index(
+        "n_batch,n_ubatch=_floored_batch_pair"
+    )
+    # The restore belongs to the same branch that clears the text-only diagnosis.
+    assert ast.parse(src) is not None

@@ -11179,19 +11179,33 @@ def _launch_raises_projector_batch(
     an estimator that keeps pricing 512 understates the Load-Model panel and lets the
     coexistence guard admit a chat load over VRAM a running training job needs.
 
-    Mirrors the loader's own condition, which is two things OR'd. Studio's resolved
-    projector, which needs the config's vision flag; and a --mmproj typed into Advanced
+    Mirrors the loader's own condition, which is three things OR'd: Studio's resolved
+    projector, which needs the config's vision flag; a --mmproj typed into Advanced
     Arguments, which does not, because the extras are appended last and hand the child a
-    projector whatever the config says. A projector arriving only through
-    ``LLAMA_ARG_MMPROJ`` is in neither: the loader does not floor that one, and a panel
-    must not quote a raise the launch will not emit.
+    projector whatever the config says; and an inherited LLAMA_ARG_MMPROJ / _URL, which
+    arg.cpp applies before argv.
     """
-    from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
+    from core.inference.llama_cpp import (
+        _extra_args_device,
+        _mmproj_env_is_audio_only,
+        extra_args_disable_mmproj,
+    )
 
     # An explicitly named projector opens even under --no-mmproj, which only stops the
     # resolve and the auto-download; server-context.cpp gates on a non-empty mmproj.path.
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
     if override and Path(override).is_file():
+        return True
+    # The vision switch drops the URL and every image-capable inherited path, keeping
+    # only an audio-only file, which is still a non-causal encoder and still floored.
+    if (
+        _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
+        if disable_vision
+        else (
+            (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+            or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+        )
+    ):
         return True
     if extra_args_disable_mmproj(extras):
         return False

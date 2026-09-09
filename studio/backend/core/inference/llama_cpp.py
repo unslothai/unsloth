@@ -19533,8 +19533,25 @@ class LlamaCppBackend:
                 # decide whether a --mmproj is emitted at all; here the file is already
                 # on the command line and the child will load it.
                 _extras_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-                _launch_opens_projector = bool(effective_is_vision) or bool(
-                    _extras_mmproj and os.path.isfile(_extras_mmproj)
+                # And an inherited one. arg.cpp applies LLAMA_ARG_MMPROJ / _URL before
+                # argv, so the env alone loads a projector the child then encodes
+                # non-causally. It reaches that child unless a later scrub takes it, and
+                # both scrub conditions are already decided here: the paravirtual guard
+                # drops both vars outright, and the vision switch drops the URL and every
+                # image-capable path, keeping only an audio-only file -- which is still a
+                # non-causal encoder, so it still needs the floor.
+                _env_mmproj_survives = not _paravirtual_cpu_forced and (
+                    bool(
+                        (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+                        or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+                    )
+                    if not disable_vision
+                    else _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
+                )
+                _launch_opens_projector = (
+                    bool(effective_is_vision)
+                    or bool(_extras_mmproj and os.path.isfile(_extras_mmproj))
+                    or _env_mmproj_survives
                 )
                 # Before every sizing consumer and after the resolution that decides
                 # whether there is a projector at all, so the fit, the slot search and
@@ -19557,6 +19574,9 @@ class LlamaCppBackend:
                             n_ubatch,
                         )
                     _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # What the vision argv was built with, for the CPU replay far below that
+                # puts that argv back after a text-only retry also crashed.
+                _floored_batch_pair = (n_batch, n_ubatch)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
@@ -25277,6 +25297,14 @@ class LlamaCppBackend:
                                         # vision argv supersedes the text-only diagnosis.
                                         if not _projector_msg:
                                             self._mmproj_fallback_reason = None
+                                            # That argv carries the projector and its
+                                            # floor, so put the fields back with it. The
+                                            # text-only retry above unwound them, and the
+                                            # post-launch record reads these, not the
+                                            # command line: left unwound it reports 512
+                                            # for a child running 2048 and understates
+                                            # the prompt-cache slot estimate.
+                                            n_batch, n_ubatch = _floored_batch_pair
                                     else:
                                         if _finish_cancelled_health_wait(
                                             "Load cancelled during the CPU replay health wait"
