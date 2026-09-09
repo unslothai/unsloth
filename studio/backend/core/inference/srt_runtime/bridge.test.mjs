@@ -9,7 +9,6 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { MAX_REQUEST, connectControl, executeSupported, payloadCommand, quote, supportedArgv, supportedConfig, validateRequest, verifyInstallation } from './bridge.mjs';
 import { applyPatch } from './apply_patch.mjs';
-
 test('macOS native configuration permits host reads and needs a read-authority disclosure', {skip:process.platform === 'win32' && 'policy generator requires POSIX shell lookup'}, async () => {
   const { wrapCommandWithSandboxMacOS } = await import('@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js');
   const config = supportedConfig({readRoots:['/usr'],writeRoots:['/private/work'],denyReadRoots:[]});

@@ -1660,6 +1660,14 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
+    # Release runtime read grants before the backstop kills their owner.
+    runtime_reads = sys.modules.get("core.inference.srt_windows_read_lease")
+    if runtime_reads is not None:
+        try:
+            runtime_reads.shutdown()
+        except Exception as e:
+            logger.warning("Error releasing tool runtime permissions: %s", e)
+
     # 7. Backstop sweep for any adopted child the steps above missed.
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all

@@ -4,6 +4,6 @@
   "version": "1.0.0",
   "type": "module",
   "engines": { "node": ">=20.11.0" },
-  "scripts": { "test": "node --test bridge.test.mjs read-roots.test.mjs diagnostics.test.mjs native.test.mjs nested.test.mjs" },
+  "scripts": { "test": "node --test bridge.test.mjs read-roots.test.mjs diagnostics.test.mjs native.test.mjs nested.test.mjs windows-read-lease.test.mjs" },
   "dependencies": { "@anthropic-ai/sandbox-runtime": "0.0.75" }
 }

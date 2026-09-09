@@ -859,6 +859,13 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    if sys.platform == "win32":
+        from core.inference.srt_windows_read_lease import shutdown as _close_runtime_reads
+        try:
+            await asyncio.to_thread(_close_runtime_reads)
+        except Exception:
+            _lifespan_log.warning("tool runtime permission cleanup failed", exc_info = True)
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         lambda: clear_compiled_cache_unless_shared(app),

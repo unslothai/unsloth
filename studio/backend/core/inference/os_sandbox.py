@@ -326,7 +326,10 @@ def _linux_unavailable_remediation() -> str:
 
 def _runtime_identity() -> str:
     """Consent changes when the selected interpreter or shipped adapter changes."""
+    from . import srt_probe
+
     digest = hashlib.sha256()
+    digest.update(str((srt_probe._cache_epoch, srt_probe.runtime_inputs())).encode())
     shell_candidates = ()
     if sys.platform == "linux":
         # Match the directories used by the safe Terminal PATH. Bind absent

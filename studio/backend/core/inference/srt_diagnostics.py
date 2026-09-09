@@ -9,6 +9,14 @@ import sys
 
 
 REASONS = {
+    "proxy_port_unavailable": (
+        "Windows cannot bind any port in the configured tool isolation proxy range.",
+        "Choose Repair existing setup to select usable proxy ports and replace the matching sandbox firewall rules. Other SRT sessions may need restarting. Studio will verify isolation afterward.",
+    ),
+    "setup_conflict": (
+        "The existing Windows tool isolation setup has conflicting network settings.",
+        "Open Windows tool isolation setup and choose Repair existing setup. This replaces its sandbox network filters; other SRT sessions may need restarting. If repaired externally, choose Check again.",
+    ),
     "runtime_missing": (
         "The pinned SRT runtime is missing.",
         "Run studio/install_srt_runtime.py with Studio's selected Python, then Check again.",

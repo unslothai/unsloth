@@ -291,7 +291,13 @@ export async function executeSupported(request, emit, options = {}) {
   try {
     if (options.signal?.aborted) fail('Controller closed before sandbox setup');
     const api = await loadManager(); manager = api.SandboxManager;
-    await manager.initialize(supportedConfig(request,platform === 'win32' ? api.VENDORED_SRT_WIN_EXE : undefined),undefined,false);
+    const config = supportedConfig(request,platform === 'win32' ? api.VENDORED_SRT_WIN_EXE : undefined);
+    if (options.readLease) {
+      if (platform !== 'win32' || options.readLease.socket.destroyed) fail('Read lease is unavailable');
+      const held = new Set(options.readLease.readRoots.map(root=>fs.realpathSync(root).toLowerCase()));
+      config.filesystem.allowRead = config.filesystem.allowRead.filter(root=>!held.has(fs.realpathSync(root).toLowerCase()));
+    }
+    await manager.initialize(config,undefined,false);
     if (abort.signal.aborted) fail('Sandbox setup was cancelled');
     const wrapped = await supportedArgv(manager,request,platform,abort.signal);
     if (abort.signal.aborted) fail('Sandbox launch was cancelled');
@@ -315,7 +321,12 @@ export async function executeSupported(request, emit, options = {}) {
     try {
       try { if (child && platform === 'darwin') process.kill(-child.pid,'SIGKILL'); }
       catch (error) { if (error.code !== 'ESRCH') throw error; }
-      finally { if (manager) { manager.cleanupAfterCommand(); await manager.reset(); } }
+      finally {
+        if (manager) {
+          try { manager.cleanupAfterCommand(); }
+          finally { await manager.reset(); }
+        }
+      }
     }
     finally { process.stdout.write = originals[0];process.stderr.write = originals[1]; }
   }
@@ -345,7 +356,7 @@ async function main() {
   const socketMode = process.argv[2] === '--control-socket';
   const fd = socketMode ? undefined : Number(process.argv[2] ?? 3);
   if (!socketMode && (!Number.isInteger(fd) || fd < 3 || fd > 1024)) return 2;
-  let connection;
+  let connection, readLease;
   const abort = new AbortController();
   const emit = (record) => {
     const data = JSON.stringify({v:1,...record})+'\n';
@@ -362,17 +373,24 @@ async function main() {
     let value;
     try {value=JSON.parse(Buffer.concat(parts).toString('utf8'));}
     catch {throw diagnosticError('policy_invalid','policy');}
+    const readLeaseTransport = value?.readLeaseTransport;
+    if (value && typeof value === 'object') delete value.readLeaseTransport;
     const request = validateRequest(value);
     if (socketMode) {
       if (!request.controlSocket) fail('Authenticated control socket is required');
       connection = await connectControl(request.controlSocket);
       connection.on('error',() => abort.abort());connection.on('close',() => abort.abort());
     } else if (request.controlSocket || (request.controlFd !== undefined && request.controlFd !== fd)) fail('Control descriptor mismatch');
-    return await execute(request, emit, {signal:abort.signal});
+    if (readLeaseTransport) {
+      const {connectReadLease} = await import('./windows-read-lease.mjs');
+      readLease = await connectReadLease(readLeaseTransport,request,abort);
+    }
+    return await execute(request, emit, {signal:abort.signal,readLease});
   } catch (error) {
     try { emit({ event: 'error', ...errorDiagnostic(error), message: 'SRT setup failed' }); } catch { /* The controller has exited. */ }
     return 125;
   } finally {
+    readLease?.socket.destroy();
     if (connection && !connection.destroyed) await new Promise((resolve) => connection.end(() => { connection.destroy(); resolve(); }));
   }
 }

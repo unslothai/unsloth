@@ -132,6 +132,9 @@ def installation_identity() -> str:
         "integrity.json",
         "package-lock.json",
         "installed-runtime-settings.json",
+        "windows-read-owner.mjs",
+        "windows-read-lease.mjs",
+        "windows-read-recover.mjs",
     ):
         path = RUNTIME / name
         digest.update(name.encode())
@@ -146,6 +149,8 @@ def installation_identity() -> str:
         "srt_network.py",
         "srt_diagnostics.py",
         "srt_nested.py",
+        "srt_windows_owner.py",
+        "srt_windows_read_lease.py",
     ):
         try:
             digest.update(Path(__file__).with_name(name).read_bytes())
@@ -385,13 +390,26 @@ def spawn(
     request: dict,
     *,
     cancel_event = None,
+    launch_deadline = None,
     **kwargs,
 ):
     """Start one helper and require its bounded private control acknowledgement."""
     if not (RUNTIME / "bridge.mjs").is_file():
         raise SrtError("SRT helper is missing", code = "runtime_missing", stage = "installation")
     if sys.platform == "win32":
-        return _spawn_windows(request, cancel_event = cancel_event, **kwargs)
+        if os.environ.get("UNSLOTH_STUDIO_SRT_READ_LEASE", "1") == "1":
+            from .srt_windows_read_lease import acquire
+            read_transport = acquire(request, cancel_event, launch_deadline)
+            return _spawn_windows(
+                request,
+                cancel_event = cancel_event,
+                launch_deadline = launch_deadline,
+                read_transport = read_transport,
+                **kwargs,
+            )
+        return _spawn_windows(
+            request, cancel_event = cancel_event, launch_deadline = launch_deadline, **kwargs
+        )
     if sys.platform not in ("linux", "darwin"):
         raise SrtError(
             "SRT launch is unavailable on this platform",
@@ -432,6 +450,8 @@ def spawn(
         write_fd = -1
         timeout_ms = request.get("timeoutMs")
         deadline = time.monotonic() + (30 if timeout_ms is None else min(30, timeout_ms / 1000))
+        if launch_deadline is not None:
+            deadline = min(deadline, launch_deadline)
         input_fd = proc.stdin.fileno()
         os.set_blocking(input_fd, False)
         offset = 0
@@ -521,6 +541,8 @@ def _spawn_windows(
     request,
     *,
     cancel_event = None,
+    launch_deadline = None,
+    read_transport = None,
     **kwargs,
 ):
     """Authenticate a per-launch helper connection without Windows pass_fds."""
@@ -533,6 +555,8 @@ def _spawn_windows(
         listener.listen(4)
         listener.settimeout(0.1)
         message = dict(request, controlSocket = {"port": listener.getsockname()[1], "token": token})
+        if read_transport is not None:
+            message["readLeaseTransport"] = read_transport
         encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
         if len(encoded) > MAX_REQUEST:
             raise SrtError(
@@ -542,7 +566,7 @@ def _spawn_windows(
             )
         # Upstream Windows session ACL setup can take tens of seconds on a cold
         # host. The payload timeout starts after spawn; cancellation stays live.
-        deadline = time.monotonic() + 120
+        deadline = launch_deadline if launch_deadline is not None else time.monotonic() + 120
 
         def check_wait():
             if cancel_event is not None and cancel_event.is_set():
