@@ -14,6 +14,7 @@
 #   * a relative cache-dir               -> resolved against UV_WORKING_DIR before scanning
 #   * a bucket too big for one pipe read -> still warm, pipefail or not
 #   * a caller's set -f                  -> the scan still expands its own globs
+#   * a dangling bucket link             -> studio; mkdir(2) answers EEXIST on it
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -123,6 +124,12 @@ _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
 : > "$_denied_meta/archive-v0/torch/libtorch.so"
 chmod a-w "$_denied_meta/interpreter-v4"
+# A dangling bucket link is an existing path to mkdir(2), which answers EEXIST, so uv reports
+# `failed to create directory ...: File exists` the first time it needs that bucket.
+_dangling="$_TMP/uvdangling"
+mkdir -p "$_dangling/builds-v0/pkg"
+: > "$_dangling/builds-v0/pkg/wheel.whl"
+ln -s "$_TMP/no-such-target" "$_dangling/archive-v0"
 # A same-named decoy beside the installer must not be what gets scanned.
 mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
 : > "$_TMP/cwd/relcache/archive-v0/decoy/other.so"
@@ -177,6 +184,10 @@ echo "=== a relative cache-dir resolves against UV_WORKING_DIR, not the installe
 _out=$(_run "$_TMP/h" '' "relcache" false "$_TMP/work")
 assert_eq "relative default is still warm" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "resolved against UV_WORKING_DIR" "$_TMP/work/relcache" "$(echo "$_out" | cut -d' ' -f2)"
+
+echo "=== a bucket that is not a directory is not usable either ==="
+_out=$(_run "$_TMP/p" '' "$_dangling")
+assert_eq "dangling bucket link -> studio" "studio" "$(echo "$_out" | cut -d' ' -f1)"
 
 echo "=== a big warm bucket stays warm under pipefail ==="
 assert_eq "big bucket without pipefail" "shared" \

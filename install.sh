@@ -745,7 +745,14 @@ _configure_uv_cache() {
         # too, and a curated list would miss the next one it adds. A real create, since -w
         # reads the mode not the filesystem; mktemp, since a fixed name can be a planted link.
         for _uv_probe_dir in "$_uv_default_cache" "$_uv_default_cache"/*; do
-            [ -d "$_uv_probe_dir" ] || continue
+            if [ ! -d "$_uv_probe_dir" ]; then
+                # A file, or a symlink dangling or not, is still an existing path to mkdir(2),
+                # which answers EEXIST, so uv refuses it (see _dir_has_entries).
+                if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
+                    _uv_default_writable=false
+                fi
+                continue
+            fi
             _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
                 || _uv_default_writable=false
             [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
