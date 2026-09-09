@@ -21,6 +21,7 @@ import {
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
+  resolveReclaimableMemoryCredit,
   worseMemoryFit,
 } from "../src/features/model-picker/model-config/memory-fit.ts";
 
@@ -273,6 +274,19 @@ test("the aggregate verdict is asked before the GPU one", () => {
   // spilling to system RAM as the remedy, which is advice to do something that cannot
   // work.
   const result = fit({ gpuBytes: 20 * GB, totalBytes: 200 * GB }, {});
+  assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
+});
+
+test("both pools overflowing never recommends moving more layers to the GPU", () => {
+  for (const gpuGb of [24, 30]) {
+    const result = fit({ gpuBytes: gpuGb * GB, totalBytes: (gpuGb + 70) * GB }, {});
+    assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
+    assert.doesNotMatch(result.advisory?.text ?? "", /fewer CPU layers/);
+  }
+});
+
+test("host overflow with spare GPU capacity keeps placement advice", () => {
+  const result = fit({ gpuBytes: 8 * GB, totalBytes: 78 * GB }, {});
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.hostShareExceeds);
 });
 
@@ -662,6 +676,59 @@ test("on discrete memory the credit follows the pool each byte came from", () =>
   );
   assert.equal(result.gpuPressured, false);
   assert.equal(result.hostPressured, false);
+});
+
+test("resident GPU credit requires the whole loaded pool to remain available", () => {
+  const resident = { gpuBytes: 20 * GB, totalBytes: 40 * GB };
+  for (const [loaded, requested, credited] of [
+    [[0], [1], false],
+    [[0, 1], [1], false],
+    [[0], [0, 1], true],
+    [[0, 1], [1, 0], true],
+    [null, [0], false],
+    [[0], null, true],
+    [null, null, true],
+  ] as const) {
+    const credit = resolveReclaimableMemoryCredit(
+      resident,
+      { ids: loaded ? [...loaded] : null, indexKind: "physical" },
+      { ids: requested ? [...requested] : null, indexKind: "physical" },
+    );
+    const result = fit(resident, {
+      freeGpuCapacityGb: 4,
+      usableSystemRamGb: 4,
+      reclaimableTotalBytes: credit.totalBytes,
+      reclaimableGpuBytes: credit.gpuBytes,
+    });
+    assert.equal(result.gpuPressured, !credited);
+    assert.equal(result.hostPressured, false);
+    assert.equal(credit.totalBytes - credit.gpuBytes, 20 * GB);
+  }
+});
+
+test("resident GPU IDs from another namespace do not earn VRAM credit", () => {
+  const credit = resolveReclaimableMemoryCredit(
+    { gpuBytes: 20 * GB, totalBytes: 40 * GB },
+    { ids: [0], indexKind: "physical" },
+    { ids: [0], indexKind: "vulkan" },
+  );
+  assert.deepEqual(credit, { gpuBytes: 0, totalBytes: 20 * GB });
+});
+
+test("excluded VRAM credit never becomes extra RAM credit", () => {
+  const credit = resolveReclaimableMemoryCredit(
+    { gpuBytes: 20 * GB, totalBytes: 40 * GB },
+    { ids: [0], indexKind: "physical" },
+    { ids: [1], indexKind: "physical" },
+  );
+  const result = fit({ gpuBytes: 20 * GB, totalBytes: 50 * GB }, {
+    freeGpuCapacityGb: 4,
+    usableSystemRamGb: 4,
+    reclaimableTotalBytes: credit.totalBytes,
+    reclaimableGpuBytes: credit.gpuBytes,
+  });
+  assert.equal(result.gpuPressured, true);
+  assert.equal(result.hostPressured, true);
 });
 
 test("a GPU credit larger than its own total cannot inflate the host share", () => {

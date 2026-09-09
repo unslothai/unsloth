@@ -74,6 +74,7 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { resolveEstimateContext } from "../model-config/estimate-context";
+import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -1754,6 +1755,9 @@ export function ModelConfigPage({
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore((s) => s.loadedLlamaExtraArgs);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -2519,8 +2523,8 @@ export function ModelConfigPage({
               ? loadedConfig.gpuLayers
               : null,
           nCpuMoe: loadedConfig.nCpuMoe ?? null,
-          selectedGpuIds: loadedConfig.selectedGpuIds ?? null,
-          llamaExtraArgs: loadedConfig.llamaExtraArgs ?? null,
+          selectedGpuIds: loadedGpuIds,
+          llamaExtraArgs: loadedLlamaExtraArgs,
         }
       : null;
   const residentEstimate = useMemoryEstimate(residentEstimateRequest);
@@ -2532,6 +2536,14 @@ export function ModelConfigPage({
     !residentEstimate.stale
       ? residentEstimate.estimate
       : null;
+  const reclaimableCredit = resolveReclaimableMemoryCredit(
+    reclaimableEstimate,
+    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+    {
+      ids: runtimeConfig.selectedGpuIds ?? null,
+      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+    },
+  );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
@@ -2892,8 +2904,8 @@ export function ModelConfigPage({
               usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
-              reclaimableTotalBytes={reclaimableEstimate?.totalBytes ?? 0}
-              reclaimableGpuBytes={reclaimableEstimate?.gpuBytes ?? 0}
+              reclaimableTotalBytes={reclaimableCredit.totalBytes}
+              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />

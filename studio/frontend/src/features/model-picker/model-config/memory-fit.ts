@@ -23,6 +23,7 @@ import {
 } from "../../../lib/memory/verdict.ts";
 import type { MemoryFitVerdict } from "../../../lib/memory/verdict.ts";
 import { formatBytesGiB } from "../../../lib/memory/format.ts";
+import type { ReconciledGpuSelection } from "../../../hooks/gpu-selection.ts";
 
 /** A memory figure in bytes, to two decimals. @deprecated Prefer `formatBytesGiB` from
  *  `@/lib/memory/format`, whose name says which unit it takes. This alias exists because a
@@ -92,8 +93,7 @@ export interface MemoryFitCapacity {
   usableSystemRamKnown?: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
-  /** What the resident copy of this model holds and hands back on unload. 0 when nothing is
-   *  loaded. Credited to the free-memory questions only. */
+  /** Resident bytes returned to the requested pools on unload. Free-memory verdicts only. */
   reclaimableTotalBytes?: number;
   /** The GPU share of the above. */
   reclaimableGpuBytes?: number;
@@ -103,6 +103,26 @@ export interface MemoryFitCapacity {
  *  footprint it is subtracted from. */
 function reclaimableBytes(value: number | undefined): number {
   return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 0;
+}
+
+/** Keep host credit; credit aggregate VRAM only when its whole pool remains usable. */
+export function resolveReclaimableMemoryCredit(
+  estimate: Pick<MemoryFitEstimate, "totalBytes" | "gpuBytes"> | null,
+  residentPool: ReconciledGpuSelection,
+  requestedPool: ReconciledGpuSelection,
+): { totalBytes: number; gpuBytes: number } {
+  const total = reclaimableBytes(estimate?.totalBytes);
+  const gpu = Math.min(reclaimableBytes(estimate?.gpuBytes), total);
+  const includesResidentPool =
+    !requestedPool.ids?.length ||
+    (residentPool.ids != null &&
+      residentPool.ids.length > 0 &&
+      residentPool.indexKind != null &&
+      residentPool.indexKind === requestedPool.indexKind &&
+      residentPool.ids.every((id) => requestedPool.ids!.includes(id)));
+  // Partial overlap has no safe per-card estimate.
+  const gpuCredit = includesResidentPool ? gpu : 0;
+  return { totalBytes: total - gpu + gpuCredit, gpuBytes: gpuCredit };
 }
 
 /** Bytes still to find after the credit. A non-finite footprint passes through, so it stays
@@ -196,10 +216,11 @@ export function resolveMemoryFit(
   const hostShareFit: MemoryFitVerdict = singleMemoryPool
     ? "unknown"
     : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
-  const totalFit = worseMemoryFit(
-    classifyMemoryFit(estimate.totalBytes, capacity.totalCapacityGb),
-    hostShareFit,
+  const combinedFit = classifyMemoryFit(
+    estimate.totalBytes,
+    capacity.totalCapacityGb,
   );
+  const totalFit = worseMemoryFit(combinedFit, hostShareFit);
   // Lower bound, not an estimate. Both routes here UNDER-count by a term that grows with
   // context: no attention dims, so the target cache is missing, or a drafter that is a
   // repository rather than a file, so its cache is missing while its weights are counted.
@@ -224,6 +245,7 @@ export function resolveMemoryFit(
       cpuOnly,
       singleMemoryPool,
       totalFit,
+      combinedFit,
       hostShareFit,
       gpuFit,
       rawGpuFit,
@@ -237,6 +259,7 @@ interface AdvisoryVerdicts {
   cpuOnly?: boolean;
   singleMemoryPool: boolean;
   totalFit: MemoryFitVerdict;
+  combinedFit: MemoryFitVerdict;
   hostShareFit: MemoryFitVerdict;
   gpuFit: MemoryFitVerdict;
   rawGpuFit: MemoryFitVerdict;
@@ -319,19 +342,20 @@ export function resolveMemoryAdvisory(
     }
     return null;
   }
-  // Discrete memory, so the two verdicts are separate questions and the aggregate one is asked
-  // FIRST. Reading gpuFit alone offered spilling to system RAM as the remedy for a load that
-  // does not fit in GPU and RAM combined.
+  // Moving layers cannot fix a combined capacity shortfall.
+  if (
+    verdicts.combinedFit === "exceeds" ||
+    (verdicts.hostShareFit === "exceeds" && verdicts.rawGpuFit === "exceeds")
+  ) {
+    return {
+      tone: "warn",
+      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
+    };
+  }
   if (verdicts.hostShareFit === "exceeds") {
     return {
       tone: "warn",
       text: "CPU placement exceeds system RAM. Try fewer CPU layers or a smaller model; paging may be slow.",
-    };
-  }
-  if (verdicts.totalFit === "exceeds") {
-    return {
-      tone: "warn",
-      text: "Exceeds combined GPU and system memory. Try a shorter context or smaller model; paging may be slow.",
     };
   }
   if (verdicts.gpuFit === "exceeds") {
