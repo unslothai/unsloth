@@ -623,27 +623,30 @@ def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatc
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
 def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call():
-    """The escalation the fallback opened: auto answers a refusal by running the
-    next call unisolated, so anything sandboxed code can plant in its own workdir
-    would be a two-line way to get the host back. A socket, a FIFO and a tree over
-    the scan budget are all things a tool call can make, and none of them may cost
-    the next call its isolation."""
+    """The escalation the fallback opened: a refusal used to be answered by
+    running the next call on the host, so anything sandboxed code could plant in
+    its own workdir was a two-line way to get the host back. A refusal now fails
+    the CALL, so the worst a littering tool call achieves is breaking its own next
+    one, visibly, with the path named."""
     if not os_sandbox.capability_snapshot().available:
         pytest.skip("this host cannot isolate, so there is no boundary to switch off")
     workdir = tools._get_workdir(_SESSION)
     planted = os.path.join(workdir, "planted.sock")
-    fifo = os.path.join(workdir, "planted.fifo")
     holder = socket.socket(socket.AF_UNIX)
     holder.bind(planted)
-    os.mkfifo(fifo)
     try:
         tools._last_tool_execution_record = None
-        assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
-        assert tools._last_tool_execution_record.os_isolation is True
+        out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
+        assert "SHOULD_NOT_RUN" not in out
+        assert "device or IPC node" in out
+        # And above all: no unisolated launch happened in its place.
+        assert tools._last_tool_execution_record is None
     finally:
         holder.close()
         os.unlink(planted)
-        os.unlink(fifo)
+    # With the litter gone the session is isolated again, not wedged.
+    assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
+    assert tools._last_tool_execution_record.os_isolation is True
 
 
 # ── full access has exactly one door ──────────────────────────────────

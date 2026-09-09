@@ -300,13 +300,10 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                         f"the session workdir contains a nested host mount: {path}"
                     )
                 continue
-            if stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
-                raise SandboxUnavailableError(f"the session workdir contains a device node: {path}")
             if not stat.S_ISREG(info.st_mode):
-                # A socket or a FIFO, which a tool call makes for itself and which
-                # reaches nothing the workdir does not already reach. Not a link
-                # count to account for either.
-                continue
+                raise SandboxUnavailableError(
+                    f"the session workdir contains a device or IPC node: {path}"
+                )
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1

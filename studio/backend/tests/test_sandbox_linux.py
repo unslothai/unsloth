@@ -259,11 +259,12 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         launch.cleanup()
 
 
-def test_the_cache_mount_points_are_made_here_and_taken_back(tmp_path, monkeypatch):
+def test_the_cache_mount_points_are_made_here_and_left(tmp_path, monkeypatch):
     """bwrap would create a missing bind destination itself, and these sit under
-    the workdir bind, so it would create them ON THE HOST and leave every chat
-    holding a .cache tree the user never made. Made here so cleanup can remove
-    exactly the ones this launch added."""
+    the workdir bind, so it would create them ON THE HOST -- and behind a .cache an
+    earlier call pointed elsewhere. Made here instead, and left: empty directories
+    in a dot directory _holds_no_user_files already ignores, and removing them
+    would let two overlapping calls in one session unlink each other's."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
@@ -271,15 +272,17 @@ def test_the_cache_mount_points_are_made_here_and_taken_back(tmp_path, monkeypat
     workdir.mkdir()
 
     launch = sandbox_linux.prepare(_plan(workdir))
-    assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
     launch.cleanup()
-    assert not (workdir / ".cache").exists()
-    assert sorted(p.name for p in workdir.iterdir()) == []
+    assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
+    # A second, overlapping preparation finds them and does not disturb them.
+    second = sandbox_linux.prepare(_plan(workdir))
+    second.cleanup()
+    assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
 
 
 def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypatch):
-    """Only what this launch created comes back out. A .cache the user's own code
-    put in the workdir is content, and removing it would be data loss."""
+    """Only the mount points are created, and nothing of the user's is removed to
+    make room for them."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
@@ -290,8 +293,6 @@ def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, monkeypat
     launch = sandbox_linux.prepare(_plan(workdir))
     launch.cleanup()
     assert (workdir / ".cache" / "notes.txt").read_text() == "the user's"
-    # The one level this launch did add is gone again.
-    assert not (workdir / ".cache" / "huggingface" / "hub").exists()
 
 
 def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, monkeypatch):
@@ -393,45 +394,27 @@ def test_the_backend_declares_the_two_things_it_does_not_confine():
 # ── the workdir a launch will accept ─────────────────────────────────
 
 
-def test_a_unix_socket_under_the_workdir_is_allowed():
-    """A tool call can bind one, and auto answers a refusal by running the NEXT
-    call unisolated, so refusing here would be a two-line way for model-authored
-    code to switch the boundary off for the rest of the session. A socket inside
-    the workdir also reaches nothing the workdir does not already reach."""
+def test_a_unix_socket_under_the_workdir_is_refused():
+    """The scan cannot tell a socket a tool call left behind from one a host
+    process is serving, and the inode does not record who made it. Refused, which
+    costs a littering tool call its next call and not the boundary."""
     # Not tmp_path: the AF_UNIX address is capped at 108 bytes and pytest's
     # per-test directory can exceed it on its own.
     workdir = tempfile.mkdtemp(prefix = "sbx-")
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         listener.bind(os.path.join(workdir, "s"))
-        assert sandbox_linux._validate_workdir(workdir) == os.path.realpath(workdir)
+        with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
+            sandbox_linux._validate_workdir(workdir)
     finally:
         listener.close()
         shutil.rmtree(workdir, ignore_errors = True)
 
 
-def test_a_fifo_under_the_workdir_is_allowed(tmp_path):
-    """Same reason as the socket: mkfifo is available to a tool call."""
+def test_a_fifo_under_the_workdir_is_refused(tmp_path):
+    """Same rule as the socket, and the same reason: no discriminator exists."""
     os.mkfifo(str(tmp_path / "pipe"))
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
-
-
-def test_a_device_node_under_the_workdir_is_still_refused(tmp_path, monkeypatch):
-    """The one node kind that IS a channel out, and the one a tool call cannot
-    make: the kernel refuses mknod of a device in a user namespace, so a workdir
-    holding one was populated from outside the jail."""
-    device = tmp_path / "sda"
-    device.write_text("")
-    real = os.lstat
-
-    def as_block_device(path, **kwargs):
-        info = real(path, **kwargs)
-        if str(path) == str(device):
-            return os.stat_result((stat.S_IFBLK | 0o600, *tuple(info)[1:10]))
-        return info
-
-    monkeypatch.setattr(os, "lstat", as_block_device)
-    with pytest.raises(SandboxUnavailableError, match = "device node"):
+    with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
         sandbox_linux._validate_workdir(str(tmp_path))
 
 
