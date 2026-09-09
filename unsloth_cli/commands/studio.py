@@ -42,10 +42,10 @@ def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
 
 
-# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
-# sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
-# the installer's env var has expired), then legacy ~/.unsloth/studio.
-# UNSLOTH_STUDIO_HOME wins when both env vars are set.
+# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then UNSLOTH_HOME's studio/
+# child, then sys.prefix inference (so <root>/bin/unsloth resolves after the installer's env var
+# has expired), then legacy ~/.unsloth/studio. Same order as storage_roots.studio_root(), which
+# it must not disagree with.
 # Both halves, and the 8 KB ceiling, are Test-UnslothCmdShimFile's in install.ps1 and
 # _IsUnslothCmdShim's in scripts/uninstall.ps1. Bytes, not text: the shim is written
 # without a BOM but an edited copy may carry one, and a decode error here would be
@@ -105,6 +105,18 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        try:
+            candidate = Path(master).expanduser().resolve() / "studio"
+        except (OSError, ValueError):
+            candidate = Path(master).expanduser() / "studio"
+        try:
+            is_custom = candidate != (Path.home() / ".unsloth" / "studio").resolve()
+        except (OSError, ValueError):
+            is_custom = candidate != (Path.home() / ".unsloth" / "studio")
+        return candidate, is_custom
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
@@ -138,7 +150,15 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    if _is_legacy:
+    # The native runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is
+    # one level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if _master:
+        try:
+            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
+        except (OSError, ValueError):
+            _llama_dir = Path(_master).expanduser() / "llama.cpp"
+    elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"

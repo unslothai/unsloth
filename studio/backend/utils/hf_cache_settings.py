@@ -11,6 +11,7 @@ owns an explicit cache snapshot for each operation instead of trying to refresh
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import tempfile
 import threading
@@ -91,7 +92,11 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
-    xet = _canonical(explicit_xet) if explicit_xet else hf_home / "xet"
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
+    # override would leave the chunk and shard caches in the host home. Same test
+    # _portable_cache_defaults applies to the assets and datasets caches.
+    xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
+    xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
         key
         for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
@@ -109,6 +114,22 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 
 def _stored_cache_home() -> Optional[Path]:
+    # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
+    # machines that had never opened Studio.
+    # os.stat, not Path.exists: only a positively observed absence may skip the read. From 3.14
+    # the predicates answer through os.path, which reports EACCES and EIO as False, so a database
+    # we merely could not inspect would read as "no setting stored" and drop the chosen cache home.
+    # stat, not lstat: sqlite follows symlinks, so a dangling link is absent rather than a file to
+    # open the creating connection against.
+    try:
+        if "storage.studio_db" not in sys.modules:
+            from utils.paths.storage_roots import studio_db_path
+            try:
+                os.stat(studio_db_path())
+            except FileNotFoundError:
+                return None
+    except Exception:  # noqa: BLE001 - fall through to the read on any doubt
+        pass
     try:
         from storage.studio_db import get_app_setting
         value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
@@ -145,6 +166,22 @@ def configured_cache_key() -> str:
     return "default"
 
 
+def _portable_cache_home() -> Optional[Path]:
+    """The HF cache home a portable install uses, else None: a normal install keeps the platform
+    default so models shared with other tools are not re-downloaded. Imported lazily, since
+    storage_roots reaches into this module during startup."""
+    try:
+        from utils.paths.storage_roots import cache_root, portable_mode
+    except ImportError:
+        return None
+    if not portable_mode():
+        return None
+    try:
+        return _canonical(cache_root() / "huggingface")
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:
@@ -158,7 +195,8 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    home = _default_cache_home()
+    # Ranks below env vars and Settings: portable mode is a default, not an override.
+    home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(
         home,

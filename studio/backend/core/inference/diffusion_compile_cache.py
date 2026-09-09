@@ -37,6 +37,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -50,7 +51,7 @@ _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 
-_DEFAULT_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
+_LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
 _MANIFEST_NAME = "manifest.json"
 _BUNDLE_NAME = "cache.bin"
@@ -77,9 +78,49 @@ def _save_enabled(mode: str) -> bool:
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
+def _portable_mode() -> bool:
+    try:
+        from utils.paths.storage_roots import portable_mode
+    except ImportError:
+        return False
+    try:
+        return bool(portable_mode())
+    except Exception:  # noqa: BLE001 - never fail a cache lookup over this
+        return False
+
+
+def _default_root() -> Path:
+    """Resolved per call, not a module constant: this module is imported before startup sets
+    UNSLOTH_STUDIO_HOME, which storage_roots reads."""
+    try:
+        from utils.paths.storage_roots import cache_root as studio_cache_root
+    except ImportError:
+        return _LEGACY_ROOT
+    return studio_cache_root() / "diffusion_compile_cache"
+
+
 def cache_root() -> Path:
+    """The root every bundle, manifest and inductor artifact is WRITTEN under."""
     root = os.environ.get(_ENV_DIR)
-    return Path(root) if root else _DEFAULT_ROOT
+    if root:
+        return Path(root)
+    return _default_root()
+
+
+def legacy_cache_root() -> Optional[Path]:
+    """The pre-relocation root, when it is still worth READING old bundles from.
+
+    Read-only on purpose: returning it as the write root would pin an upgraded install to the home
+    directory forever, since nothing else creates the new default and begin() points
+    TORCHINDUCTOR_CACHE_DIR here too. Skipped under an explicit dir override (which names one
+    exact directory) and in portable mode (the host's home is not part of the install).
+    """
+    if os.environ.get(_ENV_DIR) or _portable_mode():
+        return None
+    # Equal when storage_roots is unavailable and the default IS the legacy root.
+    if _LEGACY_ROOT == _default_root() or not _LEGACY_ROOT.exists():
+        return None
+    return _LEGACY_ROOT
 
 
 # --------------------------------------------------------------------------- fingerprint
@@ -254,13 +295,46 @@ def begin(
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
     if ctx.bundle.exists() and ctx.manifest_path.exists():
         ctx.hit = _try_load(ctx, logger)
-        if ctx.hit and mode != "on":
-            # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape re-dirties via
-            # register_shape; mode "on" keeps saving.
-            ctx.saved = True
-    else:
+    if not ctx.hit:
+        # An install that predates the relocation may still hold this key under the old root.
+        ctx.hit = _load_from_legacy(ctx, logger)
+    if not ctx.hit:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
+    elif mode != "on":
+        # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape
+        # re-dirties via register_shape; mode "on" keeps saving.
+        ctx.saved = True
     return ctx
+
+
+def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
+    """Load the same key's bundle from the pre-relocation root, then migrate it.
+
+    The key already covers every portability dimension, so a legacy bundle under it is the same
+    artifact this run would have written. The copy keeps the read fallback from becoming
+    permanent: the next run finds the pair in the write root and never reaches into the home
+    directory again. Best-effort, and skipped when saving is off, since that mode promises a
+    read-only cache."""
+    root = legacy_cache_root()
+    if root is None:
+        return False
+    ldir = root / ctx.key
+    bundle, manifest_path = ldir / _BUNDLE_NAME, ldir / _MANIFEST_NAME
+    if not (bundle.exists() and manifest_path.exists()):
+        return False
+    if not _try_load(ctx, logger, bundle = bundle, manifest_path = manifest_path):
+        return False
+    if _save_enabled(ctx.mode):
+        try:
+            ctx.dir.mkdir(parents = True, exist_ok = True)
+            shutil.copyfile(bundle, ctx.bundle)
+            # Bundle first: a manifest without its bundle reads as a miss, not a hit the cache
+            # cannot serve.
+            shutil.copyfile(manifest_path, ctx.manifest_path)
+            _info(logger, f"compile-cache: migrated legacy bundle for key {ctx.key}")
+        except OSError as exc:
+            _warn(logger, f"compile-cache: could not migrate legacy bundle: {exc}")
+    return True
 
 
 def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> None:
@@ -281,9 +355,18 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
         pass
 
 
-def _try_load(ctx: CacheContext, logger: Any) -> bool:
+def _try_load(
+    ctx: CacheContext,
+    logger: Any,
+    *,
+    bundle: Optional[Path] = None,
+    manifest_path: Optional[Path] = None,
+) -> bool:
+    """Validate and load a bundle pair, defaulting to the context's own (write-root) one."""
+    bundle = bundle if bundle is not None else ctx.bundle
+    manifest_path = manifest_path if manifest_path is not None else ctx.manifest_path
     try:
-        manifest = json.loads(ctx.manifest_path.read_text(encoding = "utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: unreadable manifest: {exc}")
         return False
@@ -294,7 +377,7 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
         return False
 
     try:
-        data = ctx.bundle.read_bytes()
+        data = bundle.read_bytes()
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: cannot read bundle: {exc}")
         return False

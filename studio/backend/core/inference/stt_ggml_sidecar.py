@@ -124,8 +124,12 @@ def _managed_whisper_cpp_dir() -> Path:
     """
     legacy = Path.home() / ".unsloth" / "whisper.cpp"
     try:
-        from utils.paths.storage_roots import studio_root
+        from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs whisper.cpp at <master root>, beside studio/. No env var bridges it.
+        master = unsloth_home()
+        if master is not None:
+            return master / "whisper.cpp"
         resolved = studio_root()
         legacy_studio = Path.home() / ".unsloth" / "studio"
         try:

@@ -281,6 +281,8 @@ def is_relocatable_invocation(argv, environ):
 # Path overrides written relative to the folder being left: Unsloth resolves them with
 # Path.resolve(), so moving first would silently retarget them.
 _RELATIVE_PATH_ENV = (
+    # Unsloth roots: storage_roots.py.
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -321,6 +323,18 @@ _RELATIVE_PATH_ENV = (
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
+    # storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    # written and would name a different folder after the move.
+    "TORCH_EXTENSIONS_DIR",
+    "TORCH_HOME",
+    "TRITON_HOME",
+    "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
+    "CUDA_CACHE_PATH",
+    "MPLCONFIGDIR",
+    "NUMBA_CACHE_DIR",
+    "DATA_DESIGNER_HOME",
+    "DATA_DESIGNER_MANAGED_ASSETS_PATH",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COND_CACHE_DIR",
     "HF_HOME",
