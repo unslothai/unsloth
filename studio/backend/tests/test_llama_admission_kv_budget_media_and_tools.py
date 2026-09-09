@@ -399,9 +399,7 @@ class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
         big = _openai_llama_admission_tokens(
             self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
         )
-        tiny = _openai_llama_admission_tokens(
-            self._request("AAAA"), budget = 1_000_000, capacity = 4
-        )
+        tiny = _openai_llama_admission_tokens(self._request("AAAA"), budget = 1_000_000, capacity = 4)
         assert abs(big - tiny) <= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
             f"a 1 MiB Anthropic image was charged {big} against {tiny} for a 4-char one: "
             "the base64 transport is being priced as prompt text"
