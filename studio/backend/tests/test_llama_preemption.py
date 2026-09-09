@@ -425,7 +425,7 @@ class TestWhoStops:
         victims = {p.gen_id for p in controller.plan_preemptions(needed = 6000)}
         assert "huge" in victims, "an exempt chat can grow until it fills the window"
         assert "oldest" not in victims, "the last holder standing must survive"
-        assert controller.snapshot().winner is None, "nobody is crowned any more"
+        assert not hasattr(controller.snapshot(), "winner"), "nobody is crowned any more"
 
     def test_a_lone_holder_is_not_preempted_for_a_newcomer(self):
         controller = _controller()
