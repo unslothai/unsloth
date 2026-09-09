@@ -95,7 +95,7 @@ def _parse_json(raw: bytes) -> dict[str, Any]:
     try:
         document = json.loads(
             raw.decode("utf-8"),
-            object_pairs_hook=_reject_duplicate_fields,
+            object_pairs_hook = _reject_duplicate_fields,
         )
     except AgentWorkspaceError:
         raise
@@ -210,8 +210,8 @@ def _parse_matcher(
     matcher: str, *, event: str
 ) -> tuple[tuple[bool, bool, tuple[tuple[str, Optional[str]], ...]], ...]:
     return tuple(
-        _parse_matcher_alternative(alternative, event=event)
-        for alternative in _split_matcher_alternatives(matcher, event=event)
+        _parse_matcher_alternative(alternative, event = event)
+        for alternative in _split_matcher_alternatives(matcher, event = event)
     )
 
 
@@ -250,22 +250,22 @@ def _safe_matcher_matches(matcher: str, value: str, *, event: str) -> bool:
         _match_tokens(
             tokens,
             value,
-            anchored_start=anchored_start,
-            anchored_end=anchored_end,
+            anchored_start = anchored_start,
+            anchored_end = anchored_end,
         )
-        for anchored_start, anchored_end, tokens in _parse_matcher(matcher, event=event)
+        for anchored_start, anchored_end, tokens in _parse_matcher(matcher, event = event)
     )
 
 
 def _validate_matcher(value: Any, *, event: str) -> Optional[str]:
     matcher = _optional_text(
         value,
-        label=f"{event} hook matcher",
-        maximum=MAX_HOOK_MATCHER_CHARACTERS,
+        label = f"{event} hook matcher",
+        maximum = MAX_HOOK_MATCHER_CHARACTERS,
     )
     if matcher in {None, "", "*"}:
         return None
-    _parse_matcher(matcher, event=event)
+    _parse_matcher(matcher, event = event)
     return matcher
 
 
@@ -279,15 +279,15 @@ def _validate_handler(value: Any, *, event: str, handler_id: str) -> dict[str, A
     _unknown_fields(value, _COMMAND_FIELDS, f"{event} hook handler")
     command = _optional_text(
         value.get("command"),
-        label=f"{event} hook command",
-        maximum=MAX_HOOK_COMMAND_BYTES,
-        allow_empty=False,
+        label = f"{event} hook command",
+        maximum = MAX_HOOK_COMMAND_BYTES,
+        allow_empty = False,
     )
     command_windows = _optional_text(
         value.get("commandWindows"),
-        label=f"{event} Windows hook command",
-        maximum=MAX_HOOK_COMMAND_BYTES,
-        allow_empty=False,
+        label = f"{event} Windows hook command",
+        maximum = MAX_HOOK_COMMAND_BYTES,
+        allow_empty = False,
     )
     if command is None:
         raise AgentWorkspaceError(f"{event} hook command is required.")
@@ -295,22 +295,22 @@ def _validate_handler(value: Any, *, event: str, handler_id: str) -> dict[str, A
     timeout_maximum = 3 if event == "SessionEnd" else MAX_HOOK_TIMEOUT_SECONDS
     timeout = _integer(
         value.get("timeout"),
-        label=f"{event} hook timeout",
-        default=timeout_default,
-        minimum=1,
-        maximum=timeout_maximum,
+        label = f"{event} hook timeout",
+        default = timeout_default,
+        minimum = 1,
+        maximum = timeout_maximum,
     )
     status_message = _optional_text(
         value.get("statusMessage"),
-        label=f"{event} hook status message",
-        maximum=512,
+        label = f"{event} hook status message",
+        maximum = 512,
     )
     additional_context_limit = _integer(
         value.get("additionalContextLimit"),
-        label=f"{event} additional context limit",
-        default=2_500,
-        minimum=0,
-        maximum=MAX_ADDITIONAL_CONTEXT_TOKENS,
+        label = f"{event} additional context limit",
+        default = 2_500,
+        minimum = 0,
+        maximum = MAX_ADDITIONAL_CONTEXT_TOKENS,
     )
     asynchronous = value.get("async", False)
     if not isinstance(asynchronous, bool):
@@ -335,8 +335,8 @@ def validate_project_hooks(raw: bytes | str, *, source_path: str = _HOOK_PATH) -
     _unknown_fields(document, _TOP_LEVEL_FIELDS, "Project hooks")
     description = _optional_text(
         document.get("description"),
-        label="Project hook description",
-        maximum=4 * 1024,
+        label = "Project hook description",
+        maximum = 4 * 1024,
     )
     hooks_document = document.get("hooks", {})
     if not isinstance(hooks_document, dict):
@@ -364,7 +364,7 @@ def validate_project_hooks(raw: bytes | str, *, source_path: str = _HOOK_PATH) -
             if not isinstance(group, dict):
                 raise AgentWorkspaceError(f"{event} hook matcher groups must be JSON objects.")
             _unknown_fields(group, _GROUP_FIELDS, f"{event} hook matcher group")
-            matcher = _validate_matcher(group.get("matcher"), event=event)
+            matcher = _validate_matcher(group.get("matcher"), event = event)
             handlers = group.get("hooks")
             if not isinstance(handlers, list) or not handlers:
                 raise AgentWorkspaceError(f"{event} hook matcher groups need at least one hook.")
@@ -376,8 +376,8 @@ def validate_project_hooks(raw: bytes | str, *, source_path: str = _HOOK_PATH) -
                 rendered_handlers.append(
                     _validate_handler(
                         handler,
-                        event=event,
-                        handler_id=f"{event}:{group_index}:{handler_index}",
+                        event = event,
+                        handler_id = f"{event}:{group_index}:{handler_index}",
                     )
                 )
             rendered_groups.append({"matcher": matcher, "hooks": rendered_handlers})
@@ -428,7 +428,7 @@ def discover_project_hooks(
     root: Path | str,
     *,
     expected_identity: Optional[tuple[int, int]] = None,
-    cancel_event=None,
+    cancel_event = None,
     deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Read one identity-bound, non-symlink project ``hooks.json`` file."""
@@ -452,10 +452,10 @@ def discover_project_hooks(
         _check_discovery_budget(cancel_event, deadline)
         if requested_root.is_symlink():
             raise AgentWorkspaceError("Symbolic-link project roots are not supported.")
-        resolved = requested_root.resolve(strict=True)
+        resolved = requested_root.resolve(strict = True)
         _check_discovery_budget(cancel_event, deadline)
         root_fd = os.open(resolved, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        root_path_metadata = resolved.stat(follow_symlinks=False)
+        root_path_metadata = resolved.stat(follow_symlinks = False)
         root_opened_metadata = os.fstat(root_fd)
         actual_identity = (
             int(root_opened_metadata.st_dev),
@@ -473,7 +473,7 @@ def discover_project_hooks(
             codex_fd = os.open(
                 ".codex",
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=root_fd,
+                dir_fd = root_fd,
             )
         except FileNotFoundError:
             return _empty_project_hooks(actual_identity)
@@ -484,7 +484,7 @@ def discover_project_hooks(
             hook_fd = os.open(
                 "hooks.json",
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=codex_fd,
+                dir_fd = codex_fd,
             )
         except FileNotFoundError:
             return _empty_project_hooks(actual_identity)
@@ -506,7 +506,7 @@ def discover_project_hooks(
             before.st_mtime_ns,
         ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
             raise AgentWorkspaceError("Project hooks.json changed while it was being read.")
-        discovered = validate_project_hooks(bytes(raw), source_path=_HOOK_PATH)
+        discovered = validate_project_hooks(bytes(raw), source_path = _HOOK_PATH)
         discovered["rootIdentity"] = actual_identity
         return discovered
     except (AgentWorkspaceError, TimeoutError, InterruptedError):
@@ -580,7 +580,7 @@ def matching_project_hooks(
         matcher = group.get("matcher")
         matches = matcher is None or _MATCH_FIELD[event] is None
         if not matches:
-            matches = any(_safe_matcher_matches(matcher, value, event=event) for value in values)
+            matches = any(_safe_matcher_matches(matcher, value, event = event) for value in values)
         if matches:
             handlers.extend(dict(handler) for handler in group["hooks"])
     return handlers

@@ -858,7 +858,9 @@ async def lifespan(app: FastAPI):
         from core.agent_workspace.verification import shutdown_project_verifications
         unfinished_verifications = await asyncio.to_thread(shutdown_project_verifications)
         if unfinished_verifications:
-            _lifespan_log.warning("project verification cleanup remains pending: %s", unfinished_verifications)
+            _lifespan_log.warning(
+                "project verification cleanup remains pending: %s", unfinished_verifications
+            )
     except Exception as exc:
         _lifespan_log.warning("project verification cleanup failed at shutdown: %s", exc)
 

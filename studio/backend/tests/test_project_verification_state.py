@@ -793,9 +793,7 @@ def test_config_and_result_inputs_are_strict_and_bounded(monkeypatch):
         profile["checks"][0],
         run,
         "passed",
-        output = (
-            f"{'x' * 100}\n[Process output was truncated. The capture limit was 1 bytes.]\n"
-        ),
+        output = (f"{'x' * 100}\n[Process output was truncated. The capture limit was 1 bytes.]\n"),
         output_bytes = 100,
         output_truncated = True,
     )

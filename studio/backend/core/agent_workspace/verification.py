@@ -30,11 +30,11 @@ _ACTIVE_BY_RUN: dict[str, "_ActiveVerification"] = {}
 _DELETING_PROJECTS: dict[str, "_ActiveDeletion"] = {}
 
 
-@dataclass(eq=False)
+@dataclass(eq = False)
 class _ActiveVerification:
     project_id: str
-    cancel_event: threading.Event = field(default_factory=threading.Event)
-    completed: threading.Event = field(default_factory=threading.Event)
+    cancel_event: threading.Event = field(default_factory = threading.Event)
+    completed: threading.Event = field(default_factory = threading.Event)
     run_id: Optional[str] = None
     run_started_at: Optional[int] = None
     run_started_monotonic: Optional[float] = None
@@ -42,13 +42,13 @@ class _ActiveVerification:
     heartbeat_thread: Optional[threading.Thread] = None
 
 
-@dataclass(eq=False)
+@dataclass(eq = False)
 class _ActiveDeletion:
     project_id: str
-    fence_id: str = field(default_factory=lambda: secrets.token_hex(16))
+    fence_id: str = field(default_factory = lambda: secrets.token_hex(16))
     revision: Optional[int] = None
-    stopped: threading.Event = field(default_factory=threading.Event)
-    fence_lost: threading.Event = field(default_factory=threading.Event)
+    stopped: threading.Event = field(default_factory = threading.Event)
+    fence_lost: threading.Event = field(default_factory = threading.Event)
     heartbeat_thread: Optional[threading.Thread] = None
     execution_fence_fd: Optional[int] = None
 
@@ -64,9 +64,9 @@ class _ProgressPublisher:
         self._stopped = threading.Event()
         self._latest: Optional[list[dict]] = None
         self._thread = threading.Thread(
-            target=self._run,
-            name=f"project-verification-progress-{run_id[:8]}",
-            daemon=True,
+            target = self._run,
+            name = f"project-verification-progress-{run_id[:8]}",
+            daemon = True,
         )
 
     def start(self) -> None:
@@ -101,7 +101,7 @@ class _ProgressPublisher:
                     self._active.project_id,
                     self._run_id,
                     latest,
-                    owner_id=PROCESS_OWNER_ID,
+                    owner_id = PROCESS_OWNER_ID,
                 )
             except verification_state.VerificationConflictError:
                 continue
@@ -110,7 +110,7 @@ class _ProgressPublisher:
                 return
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _VerificationProcessCapability:
     project_id: str
     run_id: str
@@ -120,7 +120,7 @@ class _VerificationProcessCapability:
     workspace_identity: tuple[int, int]
     workspace_revision: int
     argv: tuple[str, ...]
-    _seal: object = field(repr=False, compare=False)
+    _seal: object = field(repr = False, compare = False)
 
 
 def _workspace_identity(workspace: ProjectWorkspace) -> tuple[int, int]:
@@ -145,7 +145,7 @@ def _bounded_utf8(value: str, limit: int) -> str:
     encoded = value.encode("utf-8")
     if len(encoded) <= limit:
         return value
-    return encoded[:limit].decode("utf-8", errors="ignore")
+    return encoded[:limit].decode("utf-8", errors = "ignore")
 
 
 def _check_output_limit(check: dict, results: list[dict], future_checks: int) -> int:
@@ -160,7 +160,7 @@ def _check_output_limit(check: dict, results: list[dict], future_checks: int) ->
 
 
 def _reserve_project(project_id: str) -> _ActiveVerification:
-    active = _ActiveVerification(project_id=project_id)
+    active = _ActiveVerification(project_id = project_id)
     with _ACTIVE_LOCK:
         if project_id in _DELETING_PROJECTS:
             raise AgentWorkspaceError("Project deletion is in progress.")
@@ -277,15 +277,15 @@ def _profile_matches_workspace(profile: dict, workspace: ProjectWorkspace) -> bo
 
 def _capability(profile: dict, workspace: ProjectWorkspace, check: dict, run_id: str):
     return _VerificationProcessCapability(
-        project_id=workspace.project_id,
-        run_id=run_id,
-        owner_id=PROCESS_OWNER_ID,
-        config_revision=int(profile["revision"]),
-        config_hash=str(profile["configHash"]),
-        workspace_identity=_workspace_identity(workspace),
-        workspace_revision=int(workspace.revision),
-        argv=_shell_argv(check["command"]),
-        _seal=_CAPABILITY_SEAL,
+        project_id = workspace.project_id,
+        run_id = run_id,
+        owner_id = PROCESS_OWNER_ID,
+        config_revision = int(profile["revision"]),
+        config_hash = str(profile["configHash"]),
+        workspace_identity = _workspace_identity(workspace),
+        workspace_revision = int(workspace.revision),
+        argv = _shell_argv(check["command"]),
+        _seal = _CAPABILITY_SEAL,
     )
 
 
@@ -305,10 +305,10 @@ def _revalidate_verification_capability(
         capability.project_id,
         capability.run_id,
         capability.owner_id,
-        revision=capability.config_revision,
-        config_hash=capability.config_hash,
-        workspace_identity=capability.workspace_identity,
-        workspace_revision=capability.workspace_revision,
+        revision = capability.config_revision,
+        config_hash = capability.config_hash,
+        workspace_identity = capability.workspace_identity,
+        workspace_revision = capability.workspace_revision,
     ):
         raise AgentWorkspaceError("Project verification settings changed before execution.")
 
@@ -336,9 +336,7 @@ def _running_result(
 
 
 def _completion_timing(
-    started_at: int,
-    *,
-    started_monotonic: float | None = None,
+    started_at: int, *, started_monotonic: float | None = None
 ) -> tuple[int, int]:
     if started_monotonic is None:
         completed_at = max(started_at, int(time.time() * 1000))
@@ -356,7 +354,7 @@ def _terminal_result(
 ) -> dict:
     completed_at, duration_ms = _completion_timing(
         started_at,
-        started_monotonic=started_monotonic,
+        started_monotonic = started_monotonic,
     )
     return {
         "name": check["name"],
@@ -385,7 +383,7 @@ def _error_result(
 ) -> dict:
     completed_at, duration_ms = _completion_timing(
         started_at,
-        started_monotonic=started_monotonic,
+        started_monotonic = started_monotonic,
     )
     return {
         "name": check["name"],
@@ -406,8 +404,7 @@ def _error_result(
 
 
 def _check_start_timing(
-    active: _ActiveVerification,
-    completed_results: list[dict],
+    active: _ActiveVerification, completed_results: list[dict]
 ) -> tuple[int, float]:
     monotonic_now = time.monotonic()
     wall_now = int(time.time() * 1000)
@@ -473,21 +470,21 @@ def _execute_run(
                 active.project_id,
                 run_id,
                 [*results, _running_result(check, started_at)],
-                owner_id=PROCESS_OWNER_ID,
+                owner_id = PROCESS_OWNER_ID,
             )
             try:
                 process_result = supervisor._run_project_verification_process(
                     _capability(profile, workspace, check, run_id),
-                    timeout_seconds=check["timeoutSeconds"],
-                    output_limit_bytes=output_limit,
-                    cancel_event=active.cancel_event,
-                    output_callback=publish_output,
+                    timeout_seconds = check["timeoutSeconds"],
+                    output_limit_bytes = output_limit,
+                    cancel_event = active.cancel_event,
+                    output_callback = publish_output,
                 )
                 result = _terminal_result(
                     check,
                     process_result,
                     started_at,
-                    started_monotonic=started_monotonic,
+                    started_monotonic = started_monotonic,
                 )
             except AgentWorkspaceError as exc:
                 result = _error_result(
@@ -495,7 +492,7 @@ def _execute_run(
                     started_at,
                     "blocked",
                     exc,
-                    started_monotonic=started_monotonic,
+                    started_monotonic = started_monotonic,
                 )
                 terminal_status = "blocked"
                 terminal_error = _safe_error(exc)
@@ -505,7 +502,7 @@ def _execute_run(
                     started_at,
                     "failed",
                     exc,
-                    started_monotonic=started_monotonic,
+                    started_monotonic = started_monotonic,
                 )
                 terminal_status = "failed"
                 terminal_error = _safe_error(exc)
@@ -514,7 +511,7 @@ def _execute_run(
                 active.project_id,
                 run_id,
                 results,
-                owner_id=PROCESS_OWNER_ID,
+                owner_id = PROCESS_OWNER_ID,
             )
             if result["status"] in {"cancelled", "blocked"}:
                 terminal_status = result["status"]
@@ -525,9 +522,9 @@ def _execute_run(
             active.project_id,
             run_id,
             results,
-            owner_id=PROCESS_OWNER_ID,
-            terminal_status=terminal_status,
-            error=terminal_error,
+            owner_id = PROCESS_OWNER_ID,
+            terminal_status = terminal_status,
+            error = terminal_error,
         )
     except BaseException as exc:  # noqa: BLE001 - startup recovery owns a failed DB write
         try:
@@ -535,9 +532,9 @@ def _execute_run(
                 active.project_id,
                 run_id,
                 results,
-                owner_id=PROCESS_OWNER_ID,
-                terminal_status="failed",
-                error=_safe_error(exc),
+                owner_id = PROCESS_OWNER_ID,
+                terminal_status = "failed",
+                error = _safe_error(exc),
             )
         except BaseException:
             pass
@@ -569,8 +566,8 @@ def _execute_run_with_workspace_lease(
     try:
         with common.project_workspace_access(
             active.project_id,
-            cancel_event=active.cancel_event,
-            deadline=deadline,
+            cancel_event = active.cancel_event,
+            deadline = deadline,
         ) as current_workspace:
             if not _workspace_matches(current_workspace, prepared_workspace):
                 raise AgentWorkspaceError(
@@ -583,7 +580,7 @@ def _execute_run_with_workspace_lease(
                 active,
                 profile,
                 current_workspace,
-                release_active=False,
+                release_active = False,
             )
     except BaseException as exc:  # noqa: BLE001 - worker owns durable startup failure
         if not lease_ready.is_set():
@@ -595,11 +592,11 @@ def _execute_run_with_workspace_lease(
                     active.project_id,
                     run_id,
                     [],
-                    owner_id=PROCESS_OWNER_ID,
-                    terminal_status=(
+                    owner_id = PROCESS_OWNER_ID,
+                    terminal_status = (
                         "blocked" if isinstance(exc, AgentWorkspaceError) else "failed"
                     ),
-                    error=_safe_error(exc),
+                    error = _safe_error(exc),
                 )
             except BaseException:
                 pass
@@ -627,8 +624,8 @@ def start_project_verification(
     try:
         with common.project_workspace_access(
             project_id,
-            cancel_event=active.cancel_event,
-            deadline=deadline,
+            cancel_event = active.cancel_event,
+            deadline = deadline,
         ) as workspace:
             if int(workspace.revision) != workspace_revision:
                 raise AgentWorkspaceError(
@@ -647,27 +644,27 @@ def start_project_verification(
                 raise AgentWorkspaceError("No verification checks are configured.")
             run = verification_state.begin_verification_run(
                 project_id,
-                config_revision=profile["revision"],
-                config_hash=profile["configHash"],
-                checks=profile["checks"],
-                workspace_identity=_workspace_identity(workspace),
-                workspace_revision=int(workspace.revision),
-                owner_id=PROCESS_OWNER_ID,
+                config_revision = profile["revision"],
+                config_hash = profile["configHash"],
+                checks = profile["checks"],
+                workspace_identity = _workspace_identity(workspace),
+                workspace_revision = int(workspace.revision),
+                owner_id = PROCESS_OWNER_ID,
             )
             _publish_run(active, run)
             if active.cancel_event.is_set():
                 verification_state.request_verification_cancel(project_id, run["id"])
             heartbeat_thread = threading.Thread(
-                target=_heartbeat_run,
-                args=(active,),
-                name=f"project-verification-heartbeat-{run['id'][:8]}",
-                daemon=True,
+                target = _heartbeat_run,
+                args = (active,),
+                name = f"project-verification-heartbeat-{run['id'][:8]}",
+                daemon = True,
             )
             lease_ready = threading.Event()
             startup_errors: list[BaseException] = []
             thread = threading.Thread(
-                target=_execute_run_with_workspace_lease,
-                args=(
+                target = _execute_run_with_workspace_lease,
+                args = (
                     active,
                     profile,
                     workspace,
@@ -675,8 +672,8 @@ def start_project_verification(
                     startup_errors,
                     deadline,
                 ),
-                name=f"project-verification-{run['id'][:8]}",
-                daemon=True,
+                name = f"project-verification-{run['id'][:8]}",
+                daemon = True,
             )
             active.heartbeat_thread = heartbeat_thread
             active.thread = thread
@@ -703,9 +700,9 @@ def start_project_verification(
                     project_id,
                     run["id"],
                     [],
-                    owner_id=PROCESS_OWNER_ID,
-                    terminal_status="blocked",
-                    error="Verification could not start.",
+                    owner_id = PROCESS_OWNER_ID,
+                    terminal_status = "blocked",
+                    error = "Verification could not start.",
                 )
             except BaseException:
                 pass
@@ -725,7 +722,7 @@ def cancel_verification(project_id: str, run_id: str) -> tuple[dict, bool]:
 
 
 def begin_project_deletion(project_id: str) -> None:
-    active = _ActiveDeletion(project_id=project_id)
+    active = _ActiveDeletion(project_id = project_id)
     durable_fence_started = False
     with _ACTIVE_LOCK:
         if project_id in _DELETING_PROJECTS:
@@ -742,10 +739,10 @@ def begin_project_deletion(project_id: str) -> None:
         active.revision = revision
         durable_fence_started = True
         heartbeat_thread = threading.Thread(
-            target=_heartbeat_deletion,
-            args=(active,),
-            name=f"project-verification-delete-{active.fence_id[:8]}",
-            daemon=True,
+            target = _heartbeat_deletion,
+            args = (active,),
+            name = f"project-verification-delete-{active.fence_id[:8]}",
+            daemon = True,
         )
         active.heartbeat_thread = heartbeat_thread
         heartbeat_thread.start()

@@ -171,9 +171,7 @@ class VerificationStateError(AgentWorkspaceError):
 
 
 def _is_code_point_in_ranges(
-    character: str,
-    ranges: tuple[tuple[int, int], ...],
-    starts: tuple[int, ...],
+    character: str, ranges: tuple[tuple[int, int], ...], starts: tuple[int, ...]
 ) -> bool:
     code_point = ord(character)
     index = bisect_right(starts, code_point) - 1
@@ -222,11 +220,7 @@ def _next_deletion_fence_revision(previous: int) -> int:
 
 
 def _next_lease_times(
-    now: int,
-    *,
-    previous_heartbeat: int,
-    previous_expiry: int,
-    duration_ms: int,
+    now: int, *, previous_heartbeat: int, previous_expiry: int, duration_ms: int
 ) -> tuple[int, int]:
     heartbeat_at = max(now, previous_heartbeat)
     extended_expiry = min(MAX_REVISION, heartbeat_at + duration_ms)
@@ -251,7 +245,7 @@ def _prepare_database_identity(path: str) -> _DatabaseIdentity:
         if not isinstance(exc.__cause__, FileNotFoundError):
             raise
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok = True)
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -270,9 +264,7 @@ def _prepare_database_identity(path: str) -> _DatabaseIdentity:
 
 
 def _database_key(
-    connection: sqlite3.Connection,
-    *,
-    expected_identity: Optional[_DatabaseIdentity] = None,
+    connection: sqlite3.Connection, *, expected_identity: Optional[_DatabaseIdentity] = None
 ) -> _DatabaseKey:
     row = connection.execute("SELECT file FROM pragma_database_list WHERE name = 'main'").fetchone()
     if row is None or not isinstance(row[0], str) or not row[0]:
@@ -906,14 +898,14 @@ def _attest_connection(
         raise VerificationStateError(
             "Persisted verification authority was inspected without a held transaction."
         )
-    before = _database_key(connection, expected_identity=expected_identity)
+    before = _database_key(connection, expected_identity = expected_identity)
     expected_path = os.path.realpath(str(studio_db.studio_db_path()))
     if before[0] != expected_path:
         raise VerificationStateError(
             "Persisted verification database path changed during authority inspection."
         )
     _verify_schema_objects(connection)
-    after = _database_key(connection, expected_identity=before[1:3])
+    after = _database_key(connection, expected_identity = before[1:3])
     if after != before:
         raise VerificationStateError(
             "Persisted verification database changed during authority inspection."
@@ -926,7 +918,7 @@ def _connection() -> _VerificationConnection:
     expected_identity = _prepare_database_identity(expected_path)
     connection = studio_db.get_connection(30.0)
     try:
-        key = _database_key(connection, expected_identity=expected_identity)
+        key = _database_key(connection, expected_identity = expected_identity)
         if key[0] != expected_path:
             raise VerificationStateError(
                 "Persisted verification database path changed while it was being opened."
@@ -934,20 +926,20 @@ def _connection() -> _VerificationConnection:
         _reject_cached_identity_change(key)
         if key not in _ready_databases:
             with _schema_lock:
-                key = _database_key(connection, expected_identity=key[1:3])
+                key = _database_key(connection, expected_identity = key[1:3])
                 _reject_cached_identity_change(key)
                 if key not in _ready_databases:
                     connection.execute("BEGIN IMMEDIATE")
-                    key = _database_key(connection, expected_identity=key[1:3])
+                    key = _database_key(connection, expected_identity = key[1:3])
                     if key not in _ready_databases:
                         _ensure_schema(connection)
-                        key = _database_key(connection, expected_identity=key[1:3])
+                        key = _database_key(connection, expected_identity = key[1:3])
                     connection.commit()
                     stale_keys = {ready for ready in _ready_databases if ready[0] == key[0]}
                     _ready_databases.difference_update(stale_keys)
                     _ready_databases.add(key)
         connection.execute("BEGIN")
-        key = _attest_connection(connection, expected_identity=key[1:3])
+        key = _attest_connection(connection, expected_identity = key[1:3])
         return _VerificationConnection(connection, key)
     except Exception:
         connection.close()
@@ -967,7 +959,7 @@ def _validate_text(
     if not isinstance(value, str):
         raise AgentWorkspaceError(f"{label} must be a string.")
     try:
-        encoded = value.encode("utf-8", errors="strict")
+        encoded = value.encode("utf-8", errors = "strict")
     except UnicodeEncodeError as exc:
         raise AgentWorkspaceError(f"{label} must be valid UTF-8 text.") from exc
     if (not allow_empty and not encoded) or len(encoded) > maximum_bytes:
@@ -981,7 +973,7 @@ def _validate_text(
         for character in value
     ):
         raise AgentWorkspaceError(
-            f"{label} contains invalid Unicode format controls or " "default-ignorable code points."
+            f"{label} contains invalid Unicode format controls or default-ignorable code points."
         )
     return value
 
@@ -989,27 +981,27 @@ def _validate_text(
 def _validate_project_id(project_id: object) -> str:
     return _validate_text(
         project_id,
-        label="Project id",
-        maximum_bytes=MAX_PROJECT_ID_BYTES,
-        forbid_controls=True,
+        label = "Project id",
+        maximum_bytes = MAX_PROJECT_ID_BYTES,
+        forbid_controls = True,
     )
 
 
 def _validate_owner_id(owner_id: object) -> str:
     return _validate_text(
         owner_id,
-        label="Verification owner id",
-        maximum_bytes=MAX_OWNER_ID_BYTES,
-        forbid_controls=True,
+        label = "Verification owner id",
+        maximum_bytes = MAX_OWNER_ID_BYTES,
+        forbid_controls = True,
     )
 
 
 def _validate_fence_id(fence_id: object) -> str:
     return _validate_text(
         fence_id,
-        label="Verification deletion fence id",
-        maximum_bytes=MAX_FENCE_ID_BYTES,
-        forbid_controls=True,
+        label = "Verification deletion fence id",
+        maximum_bytes = MAX_FENCE_ID_BYTES,
+        forbid_controls = True,
     )
 
 
@@ -1030,8 +1022,8 @@ def _validate_integer(
 def _validate_revision(value: object, *, allow_zero: bool) -> int:
     return _validate_integer(
         value,
-        label="Verification revision",
-        minimum=0 if allow_zero else 1,
+        label = "Verification revision",
+        minimum = 0 if allow_zero else 1,
     )
 
 
@@ -1039,8 +1031,8 @@ def _validate_workspace_identity(identity: object) -> tuple[int, int]:
     if not isinstance(identity, tuple) or len(identity) != 2:
         raise AgentWorkspaceError("Verification workspace identity is invalid.")
     return (
-        _validate_integer(identity[0], label="Workspace device id"),
-        _validate_integer(identity[1], label="Workspace file id"),
+        _validate_integer(identity[0], label = "Workspace device id"),
+        _validate_integer(identity[1], label = "Workspace file id"),
     )
 
 
@@ -1069,8 +1061,8 @@ def _strict_json_loads(raw: object, *, label: str) -> Any:
     try:
         return json.loads(
             raw,
-            object_pairs_hook=_strict_object,
-            parse_constant=_reject_json_constant,
+            object_pairs_hook = _strict_object,
+            parse_constant = _reject_json_constant,
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise VerificationStateError(f"Persisted {label} is invalid JSON.") from exc
@@ -1080,12 +1072,12 @@ def _canonical_json(value: Any, *, limit: int, label: str) -> str:
     try:
         rendered = json.dumps(
             value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
+            ensure_ascii = False,
+            allow_nan = False,
+            sort_keys = True,
+            separators = (",", ":"),
         )
-        encoded = rendered.encode("utf-8", errors="strict")
+        encoded = rendered.encode("utf-8", errors = "strict")
     except (TypeError, UnicodeError, ValueError) as exc:
         raise AgentWorkspaceError(f"{label} must be bounded JSON data.") from exc
     if len(encoded) > limit:
@@ -1103,9 +1095,9 @@ def _normalize_check_integer(
     value = check[key] if key in check else default
     return _validate_integer(
         value,
-        label="Verification check limit",
-        minimum=minimum,
-        maximum=maximum,
+        label = "Verification check limit",
+        minimum = minimum,
+        maximum = maximum,
     )
 
 
@@ -1129,16 +1121,16 @@ def normalize_verification_checks(checks: list[dict]) -> list[dict]:
             raise AgentWorkspaceError("Verification check required must be a boolean.")
         name = _validate_text(
             check["name"],
-            label="Verification check name",
-            maximum_bytes=MAX_CHECK_NAME_CHARACTERS * 4,
-            forbid_controls=True,
-            forbid_format_controls=True,
+            label = "Verification check name",
+            maximum_bytes = MAX_CHECK_NAME_CHARACTERS * 4,
+            forbid_controls = True,
+            forbid_format_controls = True,
         ).strip()
         command_text = _validate_text(
             check["command"],
-            label="Verification command",
-            maximum_bytes=MAX_CHECK_COMMAND_BYTES,
-            forbid_format_controls=True,
+            label = "Verification command",
+            maximum_bytes = MAX_CHECK_COMMAND_BYTES,
+            forbid_format_controls = True,
         )
         if any(
             (ord(character) < 32 and character not in {"\t", "\n"}) or 127 <= ord(character) <= 159
@@ -1160,10 +1152,10 @@ def normalize_verification_checks(checks: list[dict]) -> list[dict]:
         raw_kind = check.get("kind", "custom")
         kind = _validate_text(
             raw_kind,
-            label="Verification check kind",
-            maximum_bytes=MAX_CHECK_KIND_BYTES,
-            forbid_controls=True,
-            forbid_format_controls=True,
+            label = "Verification check kind",
+            maximum_bytes = MAX_CHECK_KIND_BYTES,
+            forbid_controls = True,
+            forbid_format_controls = True,
         ).strip()
         if not kind:
             raise AgentWorkspaceError("Verification check kind cannot be blank.")
@@ -1176,23 +1168,23 @@ def normalize_verification_checks(checks: list[dict]) -> list[dict]:
                 "timeoutSeconds": _normalize_check_integer(
                     check,
                     "timeoutSeconds",
-                    default=300,
-                    minimum=1,
-                    maximum=MAX_TIMEOUT_SECONDS,
+                    default = 300,
+                    minimum = 1,
+                    maximum = MAX_TIMEOUT_SECONDS,
                 ),
                 "logLimitBytes": _normalize_check_integer(
                     check,
                     "logLimitBytes",
-                    default=256 * 1024,
-                    minimum=1024,
-                    maximum=MAX_LOG_LIMIT_BYTES,
+                    default = 256 * 1024,
+                    minimum = 1024,
+                    maximum = MAX_LOG_LIMIT_BYTES,
                 ),
             }
         )
     _canonical_json(
         normalized,
-        limit=MAX_CONFIG_BYTES,
-        label="Verification configuration",
+        limit = MAX_CONFIG_BYTES,
+        label = "Verification configuration",
     )
     return normalized
 
@@ -1201,14 +1193,14 @@ def _encode_checks(checks: list[dict]) -> tuple[list[dict], str, str]:
     normalized = normalize_verification_checks(checks)
     encoded = _canonical_json(
         normalized,
-        limit=MAX_CONFIG_BYTES,
-        label="Verification configuration",
+        limit = MAX_CONFIG_BYTES,
+        label = "Verification configuration",
     )
     return normalized, encoded, _hash_json(encoded)
 
 
 def _decode_checks(raw: object, *, label: str) -> tuple[list[dict], str, str]:
-    value = _strict_json_loads(raw, label=label)
+    value = _strict_json_loads(raw, label = label)
     try:
         normalized, encoded, content_hash = _encode_checks(value)
     except AgentWorkspaceError as exc:
@@ -1224,10 +1216,10 @@ def _validate_error(error: object, *, persisted: bool = False) -> Optional[str]:
     try:
         return _validate_text(
             error,
-            label="Verification error",
-            maximum_bytes=MAX_ERROR_BYTES,
-            allow_empty=False,
-            forbid_nul=True,
+            label = "Verification error",
+            maximum_bytes = MAX_ERROR_BYTES,
+            allow_empty = False,
+            forbid_nul = True,
         )
     except AgentWorkspaceError as exc:
         if persisted:
@@ -1252,16 +1244,16 @@ def _validate_result(result: object, check: dict, *, run_started_at: int) -> dic
     if exit_code is not None:
         _validate_integer(
             exit_code,
-            label="Verification result exit code",
-            minimum=-(1 << 31),
-            maximum=(1 << 31) - 1,
+            label = "Verification result exit code",
+            minimum = -(1 << 31),
+            maximum = (1 << 31) - 1,
         )
     output = _validate_text(
         result["output"],
-        label="Verification result output",
-        maximum_bytes=MAX_LOG_LIMIT_BYTES + MAX_TRUNCATION_DECORATION_BYTES,
-        allow_empty=True,
-        forbid_nul=False,
+        label = "Verification result output",
+        maximum_bytes = MAX_LOG_LIMIT_BYTES + MAX_TRUNCATION_DECORATION_BYTES,
+        allow_empty = True,
+        forbid_nul = False,
     )
     output_size = len(output.encode("utf-8"))
     output_truncated = result["outputTruncated"]
@@ -1274,7 +1266,7 @@ def _validate_result(result: object, check: dict, *, run_started_at: int) -> dic
         raise AgentWorkspaceError("Verification result output exceeds its per-check limit.")
     output_bytes = _validate_integer(
         result["outputBytes"],
-        label="Verification result output byte count",
+        label = "Verification result output byte count",
     )
     if status == "running":
         if output_truncated or output_bytes != output_size:
@@ -1289,9 +1281,9 @@ def _validate_result(result: object, check: dict, *, run_started_at: int) -> dic
                 )
             capture_limit = _validate_integer(
                 int(truncation.group(1)),
-                label="Verification result capture limit",
-                minimum=1,
-                maximum=check["logLimitBytes"],
+                label = "Verification result capture limit",
+                minimum = 1,
+                maximum = check["logLimitBytes"],
             )
             if capture_limit > check["logLimitBytes"] or output_bytes == 0:
                 raise AgentWorkspaceError(
@@ -1310,7 +1302,7 @@ def _validate_result(result: object, check: dict, *, run_started_at: int) -> dic
             raise AgentWorkspaceError("Verification output byte metadata is inconsistent.")
     started_at = _validate_integer(
         result["startedAt"],
-        label="Verification result start time",
+        label = "Verification result start time",
     )
     if started_at < run_started_at:
         raise AgentWorkspaceError("Verification result predates its run.")
@@ -1326,11 +1318,11 @@ def _validate_result(result: object, check: dict, *, run_started_at: int) -> dic
     else:
         completed_at = _validate_integer(
             completed_at,
-            label="Verification result completion time",
+            label = "Verification result completion time",
         )
         duration_ms = _validate_integer(
             duration_ms,
-            label="Verification result duration",
+            label = "Verification result duration",
         )
         if completed_at < started_at or duration_ms != completed_at - started_at:
             raise AgentWorkspaceError("Verification result timing is inconsistent.")
@@ -1373,7 +1365,7 @@ def _validate_results(
     normalized: list[dict] = []
     retained_output_bytes = 0
     for index, result in enumerate(results):
-        item = _validate_result(result, checks[index], run_started_at=run_started_at)
+        item = _validate_result(result, checks[index], run_started_at = run_started_at)
         if normalized:
             previous_completed_at = normalized[-1]["completedAt"]
             if previous_completed_at is None or item["startedAt"] < previous_completed_at:
@@ -1388,8 +1380,8 @@ def _validate_results(
         normalized.append(item)
     _canonical_json(
         normalized,
-        limit=MAX_RUN_RESULTS_JSON_BYTES,
-        label="Verification results",
+        limit = MAX_RUN_RESULTS_JSON_BYTES,
+        label = "Verification results",
     )
     return normalized
 
@@ -1397,21 +1389,21 @@ def _validate_results(
 def _encode_results(results: list[dict]) -> str:
     return _canonical_json(
         results,
-        limit=MAX_RUN_RESULTS_JSON_BYTES,
-        label="Verification results",
+        limit = MAX_RUN_RESULTS_JSON_BYTES,
+        label = "Verification results",
     )
 
 
 def _decode_results(
     raw: object, checks: list[dict], *, run_started_at: int, allow_running_tail: bool
 ) -> tuple[list[dict], str]:
-    value = _strict_json_loads(raw, label="verification results")
+    value = _strict_json_loads(raw, label = "verification results")
     try:
         normalized = _validate_results(
             value,
             checks,
-            run_started_at=run_started_at,
-            allow_running_tail=allow_running_tail,
+            run_started_at = run_started_at,
+            allow_running_tail = allow_running_tail,
         )
         encoded = _encode_results(normalized)
     except AgentWorkspaceError as exc:
@@ -1467,12 +1459,12 @@ def _config_from_row(row: sqlite3.Row, project_id: str) -> dict:
         identity = _validate_workspace_identity(
             (row["workspace_device_id"], row["workspace_file_id"])
         )
-        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero=True)
-        revision = _validate_revision(row["revision"], allow_zero=False)
-        updated_at = _validate_integer(row["updated_at"], label="Verification update time")
+        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero = True)
+        revision = _validate_revision(row["revision"], allow_zero = False)
+        updated_at = _validate_integer(row["updated_at"], label = "Verification update time")
         checks, _encoded, computed_hash = _decode_checks(
             row["checks_json"],
-            label="verification configuration",
+            label = "verification configuration",
         )
         config_hash = _validate_hash(row["config_hash"])
     except (AgentWorkspaceError, TypeError) as exc:
@@ -1542,32 +1534,32 @@ def _run_from_row(row: sqlite3.Row) -> dict:
         terminal_hint = row["terminal_hint"]
         if terminal_hint is not None and terminal_hint not in _TERMINAL_HINTS:
             raise AgentWorkspaceError("Verification terminal status hint is invalid.")
-        config_revision = _validate_revision(row["config_revision"], allow_zero=False)
+        config_revision = _validate_revision(row["config_revision"], allow_zero = False)
         config_hash = _validate_hash(row["config_hash"])
         identity = _validate_workspace_identity(
             (row["workspace_device_id"], row["workspace_file_id"])
         )
-        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero=True)
+        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero = True)
         config_checks, _config_json, computed_config_hash = _decode_checks(
             row["config_checks_json"],
-            label="verification run configuration",
+            label = "verification run configuration",
         )
         checks, _checks_json, computed_checks_hash = _decode_checks(
             row["checks_json"],
-            label="verification run checks",
+            label = "verification run checks",
         )
-        checks_hash = _validate_hash(row["checks_hash"], label="Verification checks hash")
-        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero=False)
+        checks_hash = _validate_hash(row["checks_hash"], label = "Verification checks hash")
+        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero = False)
         _validate_selected_checks(checks, config_checks)
-        started_at = _validate_integer(row["started_at"], label="Verification start time")
+        started_at = _validate_integer(row["started_at"], label = "Verification start time")
         heartbeat_at = _validate_integer(
             row["heartbeat_at"],
-            label="Verification heartbeat time",
+            label = "Verification heartbeat time",
         )
-        updated_at = _validate_integer(row["updated_at"], label="Verification update time")
+        updated_at = _validate_integer(row["updated_at"], label = "Verification update time")
         lease_expires_at = _validate_integer(
             row["lease_expires_at"],
-            label="Verification lease expiry",
+            label = "Verification lease expiry",
         )
         cancel_requested = row["cancel_requested"]
         recovered = row["recovered_after_restart"]
@@ -1577,22 +1569,22 @@ def _run_from_row(row: sqlite3.Row) -> dict:
         if completed_at is not None:
             completed_at = _validate_integer(
                 completed_at,
-                label="Verification completion time",
+                label = "Verification completion time",
             )
         history_sequence = row["history_sequence"]
         if history_sequence is not None:
             history_sequence = _validate_integer(
                 history_sequence,
-                label="Verification history sequence",
-                minimum=1,
-                maximum=MAX_HISTORY_SEQUENCE,
+                label = "Verification history sequence",
+                minimum = 1,
+                maximum = MAX_HISTORY_SEQUENCE,
             )
-        error = _validate_error(row["error"], persisted=True)
+        error = _validate_error(row["error"], persisted = True)
         results, _results_json = _decode_results(
             row["results_json"],
             checks,
-            run_started_at=started_at,
-            allow_running_tail=status == "running" or bool(recovered),
+            run_started_at = started_at,
+            allow_running_tail = status == "running" or bool(recovered),
         )
     except (AgentWorkspaceError, TypeError, ValueError) as exc:
         if isinstance(exc, VerificationStateError):
@@ -1617,8 +1609,8 @@ def _run_from_row(row: sqlite3.Row) -> dict:
         derived = _derive_terminal_status(
             checks,
             results,
-            cancel_requested=bool(cancel_requested),
-            terminal_hint=terminal_hint,
+            cancel_requested = bool(cancel_requested),
+            terminal_hint = terminal_hint,
         )
         if derived != status:
             raise VerificationStateError("Persisted verification terminal status is inconsistent.")
@@ -1678,28 +1670,28 @@ def _run_summary_from_row(row: sqlite3.Row) -> dict:
         status = row["status"]
         if not isinstance(status, str) or status not in _RUN_STATUSES:
             raise AgentWorkspaceError("Verification run status is invalid.")
-        config_revision = _validate_revision(row["config_revision"], allow_zero=False)
-        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero=True)
-        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero=False)
+        config_revision = _validate_revision(row["config_revision"], allow_zero = False)
+        workspace_revision = _validate_revision(row["workspace_revision"], allow_zero = True)
+        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero = False)
         cancel_requested = row["cancel_requested"]
         if cancel_requested not in (0, 1):
             raise AgentWorkspaceError("Verification cancellation state is invalid.")
-        error = _validate_error(row["error"], persisted=True)
-        started_at = _validate_integer(row["started_at"], label="Verification start time")
-        updated_at = _validate_integer(row["updated_at"], label="Verification update time")
+        error = _validate_error(row["error"], persisted = True)
+        started_at = _validate_integer(row["started_at"], label = "Verification start time")
+        updated_at = _validate_integer(row["updated_at"], label = "Verification update time")
         completed_at = row["completed_at"]
         if completed_at is not None:
             completed_at = _validate_integer(
                 completed_at,
-                label="Verification completion time",
+                label = "Verification completion time",
             )
         history_sequence = row["history_sequence"]
         if history_sequence is not None:
             history_sequence = _validate_integer(
                 history_sequence,
-                label="Verification history sequence",
-                minimum=1,
-                maximum=MAX_HISTORY_SEQUENCE,
+                label = "Verification history sequence",
+                minimum = 1,
+                maximum = MAX_HISTORY_SEQUENCE,
             )
     except (AgentWorkspaceError, TypeError, ValueError) as exc:
         if isinstance(exc, VerificationStateError):
@@ -1776,9 +1768,9 @@ def _next_history_sequence_locked(connection: sqlite3.Connection) -> int:
         try:
             previous = _validate_integer(
                 row["seq"],
-                label="Verification history sequence",
-                minimum=1,
-                maximum=MAX_HISTORY_SEQUENCE,
+                label = "Verification history sequence",
+                minimum = 1,
+                maximum = MAX_HISTORY_SEQUENCE,
             )
         except AgentWorkspaceError as exc:
             raise VerificationStateError(
@@ -1790,9 +1782,9 @@ def _next_history_sequence_locked(connection: sqlite3.Connection) -> int:
     try:
         sequence = _validate_integer(
             cursor.lastrowid,
-            label="Verification history sequence",
-            minimum=1,
-            maximum=MAX_HISTORY_SEQUENCE,
+            label = "Verification history sequence",
+            minimum = 1,
+            maximum = MAX_HISTORY_SEQUENCE,
         )
     except AgentWorkspaceError as exc:
         raise VerificationStateError("Persisted verification history sequence is invalid.") from exc
@@ -1806,8 +1798,7 @@ def _next_history_sequence_locked(connection: sqlite3.Connection) -> int:
 
 
 def _delete_prune_candidates_locked(
-    connection: sqlite3.Connection,
-    candidate_rows: list[sqlite3.Row],
+    connection: sqlite3.Connection, candidate_rows: list[sqlite3.Row]
 ) -> None:
     candidate_ids: list[str] = []
     seen_ids: set[str] = set()
@@ -1909,16 +1900,16 @@ def _expired_run_metadata_from_row(row: sqlite3.Row) -> dict:
         cancel_requested = row["cancel_requested"]
         if cancel_requested not in (0, 1):
             raise AgentWorkspaceError("Verification cancellation state is invalid.")
-        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero=False)
-        started_at = _validate_integer(row["started_at"], label="Verification start time")
+        evidence_revision = _validate_revision(row["evidence_revision"], allow_zero = False)
+        started_at = _validate_integer(row["started_at"], label = "Verification start time")
         heartbeat_at = _validate_integer(
             row["heartbeat_at"],
-            label="Verification heartbeat time",
+            label = "Verification heartbeat time",
         )
-        updated_at = _validate_integer(row["updated_at"], label="Verification update time")
+        updated_at = _validate_integer(row["updated_at"], label = "Verification update time")
         lease_expires_at = _validate_integer(
             row["lease_expires_at"],
-            label="Verification lease expiry",
+            label = "Verification lease expiry",
         )
     except (AgentWorkspaceError, TypeError, ValueError) as exc:
         if isinstance(exc, VerificationStateError):
@@ -2038,18 +2029,18 @@ def _deletion_fence_from_row(row: sqlite3.Row) -> dict:
         active = row["active"]
         if active not in (0, 1):
             raise AgentWorkspaceError("Verification deletion fence state is invalid.")
-        revision = _validate_revision(row["revision"], allow_zero=False)
+        revision = _validate_revision(row["revision"], allow_zero = False)
         created_at = _validate_integer(
             row["created_at"],
-            label="Verification deletion fence creation time",
+            label = "Verification deletion fence creation time",
         )
         heartbeat_at = _validate_integer(
             row["heartbeat_at"],
-            label="Verification deletion fence heartbeat time",
+            label = "Verification deletion fence heartbeat time",
         )
         lease_expires_at = _validate_integer(
             row["lease_expires_at"],
-            label="Verification deletion fence lease expiry",
+            label = "Verification deletion fence lease expiry",
         )
     except (AgentWorkspaceError, TypeError) as exc:
         raise VerificationStateError("Persisted verification deletion fence is invalid.") from exc
@@ -2136,13 +2127,13 @@ def _reconcile_expired_locked(
 def _begin_write(connection: _VerificationConnection) -> None:
     read_key = _attest_connection(
         connection,
-        expected_identity=connection.authority_key[1:3],
+        expected_identity = connection.authority_key[1:3],
     )
     connection.commit()
     connection.execute("BEGIN IMMEDIATE")
     connection.authority_key = _attest_connection(
         connection,
-        expected_identity=read_key[1:3],
+        expected_identity = read_key[1:3],
     )
 
 
@@ -2170,7 +2161,7 @@ def _reconcile_project_if_needed(project_id: str, now: int) -> int:
         changed = _reconcile_expired_locked(
             connection,
             locked_now,
-            project_id=project_id,
+            project_id = project_id,
         )
         connection.commit()
         return changed
@@ -2202,8 +2193,8 @@ def set_verification_config(
     project_id = _validate_project_id(project_id)
     normalized, encoded, config_hash = _encode_checks(checks)
     identity = _validate_workspace_identity(workspace_identity)
-    workspace_revision = _validate_revision(workspace_revision, allow_zero=True)
-    expected_revision = _validate_revision(expected_revision, allow_zero=True)
+    workspace_revision = _validate_revision(workspace_revision, allow_zero = True)
+    expected_revision = _validate_revision(expected_revision, allow_zero = True)
     connection = _connection()
     try:
         _begin_write(connection)
@@ -2211,9 +2202,9 @@ def set_verification_config(
         _reconcile_expired_deletion_fences_locked(
             connection,
             now,
-            project_id=project_id,
+            project_id = project_id,
         )
-        _reconcile_expired_locked(connection, now, project_id=project_id)
+        _reconcile_expired_locked(connection, now, project_id = project_id)
         archived = _project_archived_locked(connection, project_id)
         if archived is None:
             raise AgentWorkspaceError("Project does not exist.")
@@ -2321,10 +2312,10 @@ def verification_config_matches(
     workspace_revision: int,
 ) -> bool:
     project_id = _validate_project_id(project_id)
-    revision = _validate_revision(revision, allow_zero=False)
+    revision = _validate_revision(revision, allow_zero = False)
     config_hash = _validate_hash(config_hash)
     identity = _validate_workspace_identity(workspace_identity)
-    workspace_revision = _validate_revision(workspace_revision, allow_zero=True)
+    workspace_revision = _validate_revision(workspace_revision, allow_zero = True)
     connection = _connection()
     try:
         row = _read_config_row(connection, project_id)
@@ -2353,7 +2344,7 @@ def begin_verification_project_deletion(project_id: str, fence_id: str) -> dict:
         _reconcile_expired_deletion_fences_locked(
             connection,
             now,
-            project_id=project_id,
+            project_id = project_id,
         )
         current = _active_deletion_fence_locked(connection, project_id)
         if current is not None and current["fenceId"] != fence_id:
@@ -2394,9 +2385,9 @@ def begin_verification_project_deletion(project_id: str, fence_id: str) -> dict:
         else:
             heartbeat_at, lease_expires_at = _next_lease_times(
                 now,
-                previous_heartbeat=current["heartbeatAt"],
-                previous_expiry=current["leaseExpiresAt"],
-                duration_ms=DELETION_FENCE_LEASE_DURATION_MS,
+                previous_heartbeat = current["heartbeatAt"],
+                previous_expiry = current["leaseExpiresAt"],
+                duration_ms = DELETION_FENCE_LEASE_DURATION_MS,
             )
             cursor = connection.execute(
                 """
@@ -2429,14 +2420,10 @@ def begin_verification_project_deletion(project_id: str, fence_id: str) -> dict:
         connection.close()
 
 
-def heartbeat_verification_project_deletion(
-    project_id: str,
-    fence_id: str,
-    revision: int,
-) -> dict:
+def heartbeat_verification_project_deletion(project_id: str, fence_id: str, revision: int) -> dict:
     project_id = _validate_project_id(project_id)
     fence_id = _validate_fence_id(fence_id)
-    revision = _validate_revision(revision, allow_zero=False)
+    revision = _validate_revision(revision, allow_zero = False)
     connection = _connection()
     try:
         _begin_write(connection)
@@ -2444,16 +2431,16 @@ def heartbeat_verification_project_deletion(
         _reconcile_expired_deletion_fences_locked(
             connection,
             now,
-            project_id=project_id,
+            project_id = project_id,
         )
         current = _active_deletion_fence_locked(connection, project_id)
         if current is None or current["fenceId"] != fence_id or current["revision"] != revision:
             raise VerificationConflictError("Project deletion fence ownership expired or changed.")
         heartbeat_at, lease_expires_at = _next_lease_times(
             now,
-            previous_heartbeat=current["heartbeatAt"],
-            previous_expiry=current["leaseExpiresAt"],
-            duration_ms=DELETION_FENCE_LEASE_DURATION_MS,
+            previous_heartbeat = current["heartbeatAt"],
+            previous_expiry = current["leaseExpiresAt"],
+            duration_ms = DELETION_FENCE_LEASE_DURATION_MS,
         )
         cursor = connection.execute(
             """
@@ -2483,15 +2470,11 @@ def heartbeat_verification_project_deletion(
         connection.close()
 
 
-def finish_verification_project_deletion(
-    project_id: str,
-    fence_id: str,
-    revision: int,
-) -> bool:
+def finish_verification_project_deletion(project_id: str, fence_id: str, revision: int) -> bool:
     """Release an exact deletion fence, succeeding if project deletion cascaded it."""
     project_id = _validate_project_id(project_id)
     fence_id = _validate_fence_id(fence_id)
-    revision = _validate_revision(revision, allow_zero=False)
+    revision = _validate_revision(revision, allow_zero = False)
     connection = _connection()
     try:
         _begin_write(connection)
@@ -2532,11 +2515,11 @@ def begin_verification_run(
 ) -> dict:
     project_id = _validate_project_id(project_id)
     owner_id = _validate_owner_id(owner_id)
-    config_revision = _validate_revision(config_revision, allow_zero=False)
+    config_revision = _validate_revision(config_revision, allow_zero = False)
     config_hash = _validate_hash(config_hash)
     selected, selected_json, checks_hash = _encode_checks(checks)
     identity = _validate_workspace_identity(workspace_identity)
-    workspace_revision = _validate_revision(workspace_revision, allow_zero=True)
+    workspace_revision = _validate_revision(workspace_revision, allow_zero = True)
     run_id = str(uuid.uuid4())
     connection = _connection()
     try:
@@ -2546,9 +2529,9 @@ def begin_verification_run(
         _reconcile_expired_deletion_fences_locked(
             connection,
             started_at,
-            project_id=project_id,
+            project_id = project_id,
         )
-        _reconcile_expired_locked(connection, started_at, project_id=project_id)
+        _reconcile_expired_locked(connection, started_at, project_id = project_id)
         archived = _project_archived_locked(connection, project_id)
         if archived is None:
             raise AgentWorkspaceError("Project does not exist.")
@@ -2584,8 +2567,8 @@ def begin_verification_run(
         _validate_selected_checks(selected, config["checks"])
         config_json = _canonical_json(
             config["checks"],
-            limit=MAX_CONFIG_BYTES,
-            label="Verification configuration",
+            limit = MAX_CONFIG_BYTES,
+            label = "Verification configuration",
         )
         connection.execute(
             """
@@ -2644,7 +2627,7 @@ def project_execution_may_start(project_id: str) -> bool:
     connection = _connection()
     try:
         _begin_write(connection)
-        _reconcile_expired_deletion_fences_locked(connection, _now_ms(), project_id=project_id)
+        _reconcile_expired_deletion_fences_locked(connection, _now_ms(), project_id = project_id)
         allowed = (
             _project_archived_locked(connection, project_id) is False
             and _active_deletion_fence_locked(connection, project_id) is None
@@ -2668,10 +2651,10 @@ def verification_run_may_spawn(
     """Revalidate every durable run capability immediately before process creation."""
     project_id = _validate_project_id(project_id)
     owner_id = _validate_owner_id(owner_id)
-    revision = _validate_revision(revision, allow_zero=False)
+    revision = _validate_revision(revision, allow_zero = False)
     config_hash = _validate_hash(config_hash)
     identity = _validate_workspace_identity(workspace_identity)
-    workspace_revision = _validate_revision(workspace_revision, allow_zero=True)
+    workspace_revision = _validate_revision(workspace_revision, allow_zero = True)
     connection = _connection()
     try:
         _begin_write(connection)
@@ -2679,9 +2662,9 @@ def verification_run_may_spawn(
         _reconcile_expired_deletion_fences_locked(
             connection,
             now,
-            project_id=project_id,
+            project_id = project_id,
         )
-        _reconcile_expired_locked(connection, now, project_id=project_id)
+        _reconcile_expired_locked(connection, now, project_id = project_id)
         archived = _project_archived_locked(connection, project_id)
         if archived is None or archived:
             connection.commit()
@@ -2722,9 +2705,9 @@ def verification_run_may_spawn(
             return False
         heartbeat_at, lease_expires_at = _next_lease_times(
             now,
-            previous_heartbeat=run["heartbeatAt"],
-            previous_expiry=run["leaseExpiresAt"],
-            duration_ms=LEASE_DURATION_MS,
+            previous_heartbeat = run["heartbeatAt"],
+            previous_expiry = run["leaseExpiresAt"],
+            duration_ms = LEASE_DURATION_MS,
         )
         cursor = connection.execute(
             """
@@ -2750,7 +2733,7 @@ def verification_run_may_spawn(
 def _owned_running_row(
     connection: sqlite3.Connection, project_id: str, run_id: str, owner_id: str, now: int
 ) -> sqlite3.Row:
-    _reconcile_expired_locked(connection, now, project_id=project_id)
+    _reconcile_expired_locked(connection, now, project_id = project_id)
     row = _read_run_row(connection, project_id, run_id)
     if row is None:
         raise VerificationConflictError("Verification run was not found.")
@@ -2776,16 +2759,16 @@ def update_verification_run_progress(
         normalized = _validate_results(
             results,
             current["checks"],
-            run_started_at=current["startedAt"],
-            allow_running_tail=True,
+            run_started_at = current["startedAt"],
+            allow_running_tail = True,
         )
         _validate_progress_transition(current["results"], normalized)
         encoded = _encode_results(normalized)
         heartbeat_at, lease_expires_at = _next_lease_times(
             now,
-            previous_heartbeat=current["heartbeatAt"],
-            previous_expiry=current["leaseExpiresAt"],
-            duration_ms=LEASE_DURATION_MS,
+            previous_heartbeat = current["heartbeatAt"],
+            previous_expiry = current["leaseExpiresAt"],
+            duration_ms = LEASE_DURATION_MS,
         )
         updated_at = _next_updated_at(current["updatedAt"], now)
         updated_at = max(
@@ -2796,7 +2779,7 @@ def update_verification_run_progress(
                     for result in normalized
                     if result["completedAt"] is not None
                 ),
-                default=updated_at,
+                default = updated_at,
             ),
         )
         evidence_revision = _next_evidence_revision(current["evidenceRevision"])
@@ -2840,7 +2823,7 @@ def heartbeat_verification_run(project_id: str, run_id: str, owner_id: str) -> b
     try:
         _begin_write(connection)
         now = _now_ms()
-        _reconcile_expired_locked(connection, now, project_id=project_id)
+        _reconcile_expired_locked(connection, now, project_id = project_id)
         row = connection.execute(
             """
             SELECT id, project_id, owner_id, status, cancel_requested,
@@ -2858,9 +2841,9 @@ def heartbeat_verification_run(project_id: str, run_id: str, owner_id: str) -> b
             raise VerificationConflictError("Verification run belongs to another owner.")
         heartbeat_at, lease_expires_at = _next_lease_times(
             now,
-            previous_heartbeat=record["heartbeatAt"],
-            previous_expiry=record["leaseExpiresAt"],
-            duration_ms=LEASE_DURATION_MS,
+            previous_heartbeat = record["heartbeatAt"],
+            previous_expiry = record["leaseExpiresAt"],
+            duration_ms = LEASE_DURATION_MS,
         )
         cursor = connection.execute(
             """
@@ -2887,7 +2870,7 @@ def request_verification_cancel(project_id: str, run_id: str) -> tuple[dict, boo
     try:
         _begin_write(connection)
         now = _now_ms()
-        _reconcile_expired_locked(connection, now, project_id=project_id)
+        _reconcile_expired_locked(connection, now, project_id = project_id)
         row = _read_run_row(connection, project_id, run_id)
         if row is None:
             raise VerificationConflictError("Verification run was not found.")
@@ -2924,7 +2907,7 @@ def request_project_verification_cancel(project_id: str) -> tuple[Optional[dict]
     try:
         _begin_write(connection)
         now = _now_ms()
-        _reconcile_expired_locked(connection, now, project_id=project_id)
+        _reconcile_expired_locked(connection, now, project_id = project_id)
         row = connection.execute(
             """
             SELECT id, project_id, status, cancel_requested, evidence_revision,
@@ -2996,15 +2979,15 @@ def complete_verification_run(
         normalized = _validate_results(
             results,
             current["checks"],
-            run_started_at=current["startedAt"],
-            allow_running_tail=False,
+            run_started_at = current["startedAt"],
+            allow_running_tail = False,
         )
         _validate_progress_transition(current["results"], normalized)
         status = _derive_terminal_status(
             current["checks"],
             normalized,
-            cancel_requested=current["cancelRequested"],
-            terminal_hint=terminal_status,
+            cancel_requested = current["cancelRequested"],
+            terminal_hint = terminal_status,
         )
         cancel_requested = current["cancelRequested"] or status == "cancelled"
         if status in {"passed", "cancelled"}:
@@ -3019,7 +3002,7 @@ def complete_verification_run(
                     for result in normalized
                     if result["completedAt"] is not None
                 ),
-                default=updated_at,
+                default = updated_at,
             ),
         )
         evidence_revision = _next_evidence_revision(current["evidenceRevision"])
@@ -3107,7 +3090,7 @@ def get_verification_run_evidence_revision(project_id: str, run_id: str) -> Opti
     try:
         if _validate_project_id(row["project_id"]) != project_id:
             raise VerificationStateError("Persisted verification evidence marker is invalid.")
-        return _validate_revision(row["evidence_revision"], allow_zero=False)
+        return _validate_revision(row["evidence_revision"], allow_zero = False)
     except AgentWorkspaceError as exc:
         if isinstance(exc, VerificationStateError):
             raise
@@ -3116,7 +3099,7 @@ def get_verification_run_evidence_revision(project_id: str, run_id: str) -> Opti
 
 def list_verification_runs(project_id: str, limit: int = 20) -> list[dict]:
     project_id = _validate_project_id(project_id)
-    limit = _validate_integer(limit, label="Verification history limit", minimum=1)
+    limit = _validate_integer(limit, label = "Verification history limit", minimum = 1)
     bounded_limit = min(limit, MAX_RUN_HISTORY)
     return _read_after_reconciliation(
         project_id,
@@ -3133,7 +3116,7 @@ def list_verification_runs(project_id: str, limit: int = 20) -> list[dict]:
 def list_verification_run_summaries(project_id: str, limit: int = 20) -> list[dict]:
     """Read bounded history metadata without loading checks or output evidence."""
     project_id = _validate_project_id(project_id)
-    limit = _validate_integer(limit, label="Verification history limit", minimum=1)
+    limit = _validate_integer(limit, label = "Verification history limit", minimum = 1)
     bounded_limit = min(limit, MAX_RUN_HISTORY)
     now = _now_ms()
     _reconcile_project_if_needed(project_id, now)

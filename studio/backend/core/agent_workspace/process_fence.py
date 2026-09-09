@@ -16,13 +16,13 @@ def _project_execution_fence_path(fence_id: str) -> str:
     if (
         not isinstance(fence_id, str)
         or not fence_id
-        or len(fence_id.encode("utf-8", errors="strict")) > 1024
+        or len(fence_id.encode("utf-8", errors = "strict")) > 1024
     ):
         raise ValueError("Project execution fence identity is invalid.")
     from utils.paths.storage_roots import studio_root  # noqa: PLC0415
 
     directory = os.path.join(str(studio_root()), "project-execution-fences")
-    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
     directory_metadata = os.lstat(directory)
     if not stat.S_ISDIR(directory_metadata.st_mode) or stat.S_ISLNK(directory_metadata.st_mode):
         raise RuntimeError("Project execution fence directory is unsafe.")
@@ -71,7 +71,6 @@ def _acquire_project_execution_fence(
 def _release_project_execution_fence(descriptor: int) -> None:
     try:
         import fcntl  # noqa: PLC0415
-
         with contextlib.suppress(OSError):
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:

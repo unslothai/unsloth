@@ -21,7 +21,7 @@ except ModuleNotFoundError as exc:
         """A safe, user-readable verification or hook failure."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ProjectWorkspace:
     project_id: str
     root: Path
@@ -53,9 +53,9 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
     try:
         if root.is_symlink():
             raise AgentWorkspaceError("Symbolic-link project roots are not supported.")
-        metadata = root.stat(follow_symlinks=False)
-        resolved = root.resolve(strict=True)
-        resolved_metadata = resolved.stat(follow_symlinks=False)
+        metadata = root.stat(follow_symlinks = False)
+        resolved = root.resolve(strict = True)
+        resolved_metadata = resolved.stat(follow_symlinks = False)
     except AgentWorkspaceError:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
@@ -70,22 +70,26 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
     expected_file = int(metadata.st_ino)
 
     return ProjectWorkspace(
-        project_id=project_id,
-        root=resolved,
-        kind=kind,
-        device_id=expected_device,
-        file_id=expected_file,
+        project_id = project_id,
+        root = resolved,
+        kind = kind,
+        device_id = expected_device,
+        file_id = expected_file,
     )
 
 
 @contextmanager
-def project_workspace_access(project_id: str, *, cancel_event=None, deadline=None):
+def project_workspace_access(
+    project_id: str,
+    *,
+    cancel_event = None,
+    deadline = None,
+):
     """Resolve and hold a project workspace against concurrent folder changes."""
     from core.inference.tools import _session_in_flight, project_session_id
-
     try:
         with _session_in_flight(
-            project_session_id(project_id), cancel_event=cancel_event, deadline=deadline
+            project_session_id(project_id), cancel_event = cancel_event, deadline = deadline
         ):
             if cancel_event is not None and cancel_event.is_set():
                 raise AgentWorkspaceError("Project workspace wait was cancelled.")

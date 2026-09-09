@@ -7351,7 +7351,12 @@ def _session_key(session_id: "str | None") -> str:
 
 
 @contextlib.contextmanager
-def _session_in_flight(session_id: "str | None", *, cancel_event = None, deadline = None):
+def _session_in_flight(
+    session_id: "str | None",
+    *,
+    cancel_event = None,
+    deadline = None,
+):
     key = _session_key(session_id)
     with _sessions_free:
         # A removal for this session runs with the lock released, so a call
@@ -7362,7 +7367,9 @@ def _session_in_flight(session_id: "str | None", *, cancel_event = None, deadlin
                 raise InterruptedError("Project workspace wait was cancelled.")
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("Project workspace wait exceeded its preparation limit.")
-            _sessions_free.wait(timeout = 0.05 if cancel_event is not None or deadline is not None else None)
+            _sessions_free.wait(
+                timeout = 0.05 if cancel_event is not None or deadline is not None else None
+            )
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield

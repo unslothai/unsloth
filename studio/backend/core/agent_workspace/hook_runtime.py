@@ -48,12 +48,12 @@ def _identity(workspace):
 
 def _snapshot(project_id):
     workspace = common.project_workspace(project_id)
-    config = hooks.discover_project_hooks(workspace.root, expected_identity=_identity(workspace))
+    config = hooks.discover_project_hooks(workspace.root, expected_identity = _identity(workspace))
     trust = project_hook_trust_db.get_project_hook_trust_state(
         project_id,
         config.get("contentHash"),
-        workspace_identity=_identity(workspace),
-        workspace_revision=workspace.revision,
+        workspace_identity = _identity(workspace),
+        workspace_revision = workspace.revision,
     )
     return workspace, config, trust
 
@@ -81,7 +81,7 @@ def _event_payload(event, project_id, name, arguments, result):
         payload["tool_response"] = result[:4096]
         payload["tool_response_truncated"] = len(result) > 4096
     try:
-        encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        encoded = json.dumps(payload, ensure_ascii = True, separators = (",", ":"))
     except (ValueError, TypeError, RecursionError) as exc:
         raise AgentWorkspaceError("Project hook input could not be represented safely.") from exc
     if len(encoded.encode("utf-8")) > MAX_EVENT_BYTES:
@@ -107,7 +107,15 @@ def _blocks_tool(output):
     )
 
 
-def run_tool_hooks(project_id, event, name, arguments, *, result=None, cancel_event=None):
+def run_tool_hooks(
+    project_id,
+    event,
+    name,
+    arguments,
+    *,
+    result = None,
+    cancel_event = None,
+):
     if event not in ACTIVE_HOOK_EVENTS or name not in HOOKED_TOOLS:
         return ""
     if not project_hook_trust_db.get_project_hook_trust_record(project_id)["hasStoredTrust"]:
@@ -131,10 +139,14 @@ def run_tool_hooks(project_id, event, name, arguments, *, result=None, cancel_ev
             cancelled = threading.Event()
             stopped = threading.Event()
 
-            def authority_current(handler_id=handler["id"]):
+            def authority_current(handler_id = handler["id"]):
                 return _same_authority(project_id, workspace, config, trust, handler_id)
 
-            def monitor(stop_signal=stopped, cancel_signal=cancelled, check=authority_current):
+            def monitor(
+                stop_signal = stopped,
+                cancel_signal = cancelled,
+                check = authority_current,
+            ):
                 while not stop_signal.wait(0.1):
                     try:
                         valid = check()
@@ -161,20 +173,20 @@ def run_tool_hooks(project_id, event, name, arguments, *, result=None, cancel_ev
             remaining = event_deadline - time.monotonic()
             if remaining <= 0:
                 raise AgentWorkspaceError("Project hooks exceeded their combined 60 second limit.")
-            watcher = threading.Thread(target=monitor, name="project-hook-authority", daemon=True)
+            watcher = threading.Thread(target = monitor, name = "project-hook-authority", daemon = True)
             watcher.start()
             try:
                 process = processes.run_project_process(
                     project_id,
                     [sys.executable, "-I", "-c", _STDIN_ADAPTER, handler["command"], payload],
-                    timeout_seconds=min(handler["timeout"], remaining),
-                    output_limit_bytes=MAX_HOOK_OUTPUT_BYTES,
-                    cancel_event=cancelled,
-                    before_start=before_start,
+                    timeout_seconds = min(handler["timeout"], remaining),
+                    output_limit_bytes = MAX_HOOK_OUTPUT_BYTES,
+                    cancel_event = cancelled,
+                    before_start = before_start,
                 )
             finally:
                 stopped.set()
-                watcher.join(timeout=1)
+                watcher.join(timeout = 1)
             if process.status != "passed" or process.output_truncated:
                 raise AgentWorkspaceError(
                     f"Project {event} hook {handler['id']} did not complete successfully "
@@ -226,7 +238,7 @@ def with_project_tool_hooks(execute):
             cancel_event = call.get("cancel_event")
             with common.project_workspace_access(project_id):
                 before = run_tool_hooks(
-                    project_id, "PreToolUse", name, arguments, cancel_event=cancel_event
+                    project_id, "PreToolUse", name, arguments, cancel_event = cancel_event
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     return "Error: Tool call cancelled before execution."
@@ -238,8 +250,8 @@ def with_project_tool_hooks(execute):
                         "PostToolUse",
                         name,
                         arguments,
-                        result=result,
-                        cancel_event=cancel_event,
+                        result = result,
+                        cancel_event = cancel_event,
                     )
                 except AgentWorkspaceError as exc:
                     after = f"Post-tool hook failed after the tool ran: {exc}"

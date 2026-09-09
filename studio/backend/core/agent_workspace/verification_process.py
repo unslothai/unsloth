@@ -23,14 +23,14 @@ class ProjectExecutionUnavailable(AgentWorkspaceError):
     """The secure command prerequisite or native boundary is unavailable."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ExecutionBoundaryStatus:
     available: bool
     backend: Optional[str] = None
     reason: Optional[str] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ProjectProcessResult:
     status: str
     exit_code: Optional[int]
@@ -62,7 +62,7 @@ def supervised_process_status():
     try:
         return _native_runner().supervised_process_status()
     except ProjectExecutionUnavailable as exc:
-        return ExecutionBoundaryStatus(False, reason=str(exc))
+        return ExecutionBoundaryStatus(False, reason = str(exc))
 
 
 def run_project_process(project_id, argv, **options):
@@ -90,7 +90,7 @@ def _run_project_verification_process(capability, **options):
         verification._revalidate_verification_capability(capability, workspace)
 
     return run_project_process(
-        capability.project_id, capability.argv, before_start=revalidate, **options
+        capability.project_id, capability.argv, before_start = revalidate, **options
     )
 
 
