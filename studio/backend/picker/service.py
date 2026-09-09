@@ -399,7 +399,16 @@ def read_default_chat_template(
             """
             try:
                 from huggingface_hub import try_to_load_from_cache
-                return isinstance(try_to_load_from_cache(repo_id = resolved, filename = rel), str)
+
+                # The same cache the download below names: without it this asks the library
+                # default while the read it guards happens in the operator's chosen root, so
+                # a template living only there reported a miss and opened the gate.
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
             except Exception:
                 return True
 

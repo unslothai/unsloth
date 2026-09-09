@@ -2597,10 +2597,11 @@ async def scan_model_remote_code(
         def _repo_maybe_cached(repo: str) -> bool:
             """Whether the scan could be answered off disk for this repo.
 
-            config.json, not the repo directory: has_remote_code is read from its auto_map
-            and the Python files are reached through it, so a snapshot holding only weights
-            can answer nothing and refusing it costs a valid token the scan a mirror would
-            have served. Fails closed on any error.
+            The scanner's own inputs, not the repo directory and not config.json alone:
+            auto_map is declared in any of REMOTE_CODE_CONFIG_FILES, and every download the
+            scanner makes passes cache_dir = active_hf_hub_cache(), so asking the library
+            default about one filename both missed four of the five and looked in the wrong
+            root. A snapshot holding only weights still answers nothing. Fails closed.
             """
             try:
                 if not _repo_in_any_hf_cache(repo):
@@ -2609,7 +2610,19 @@ async def scan_model_remote_code(
                 return True
             try:
                 from huggingface_hub import try_to_load_from_cache
-                return isinstance(try_to_load_from_cache(repo_id = repo, filename = "config.json"), str)
+                from utils.hf_cache_settings import active_hf_hub_cache
+                from utils.security.remote_code_scan import remote_code_config_paths
+
+                cache_dir = active_hf_hub_cache()
+                return any(
+                    isinstance(
+                        try_to_load_from_cache(
+                            repo_id = repo, filename = name, cache_dir = cache_dir
+                        ),
+                        str,
+                    )
+                    for name in remote_code_config_paths()
+                )
             except Exception:
                 return True
 

@@ -28,7 +28,7 @@ from auth.authentication import (
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
-from hub.utils.hf_tokens import cache_reads_authorized, hf_token_arg
+from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -2431,15 +2431,20 @@ def _resolve_embedding_model_plan(
     ``sentence-transformers/`` alias or a derived ``-GGUF`` conversion rather than
     ``resolved``, and /auth-check answers 200 for any string on a public base.
     """
-    cache_ok = cache_reads_authorized(token, repo_id = resolved)
-
     def _authorized(repo: Optional[str]) -> bool:
-        """The repo a cache lookup actually matched, asked about in its own right."""
+        """The repo a cache lookup actually matched, asked about in its own right.
+
+        Through the shared gate, so the forced-anonymous sentinel keeps a cached PUBLIC
+        embedder instead of being told to download one it already has: the raw check
+        refuses that caller whatever the repo is, which the template, dataset and GGUF
+        paths all stopped doing. is_cached is True because the lookup that produced this
+        repo already found it on disk.
+        """
         if not repo:
             return False
-        if repo == resolved:
-            return cache_ok
-        return cache_reads_authorized(token, repo_id = repo)
+        return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
+
+    cache_ok = _authorized(resolved)
 
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)

@@ -584,6 +584,10 @@ def load_model_config(
             token,
             repo_id = model_name,
             is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, forwarded: without it a
+            # local_files_only read still dialled /auth-check and could stall for the
+            # probe timeout, which is the one thing that kind of read promises not to do.
+            offline = bool(local_files_only),
         )
     ):
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")

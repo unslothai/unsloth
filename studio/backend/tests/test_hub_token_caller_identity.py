@@ -2568,3 +2568,116 @@ def test_a_recorded_redirect_is_refused_whatever_the_final_url(monkeypatch):
     )
 
     assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
+
+
+@pytest.mark.parametrize(
+    "cached_name", ["config.json", "tokenizer_config.json", "video_preprocessor_config.json"]
+)
+def test_the_scan_predicate_covers_every_config_the_scanner_reads(monkeypatch, cached_name):
+    """auto_map is declared in any of REMOTE_CODE_CONFIG_FILES, so asking about config.json
+    alone let four of the five open the gate. The lookup also has to name the cache the
+    scanner's own downloads pass, or it asks the library default about a read that happens
+    in the operator's chosen root."""
+    import fastapi
+
+    seen: list = []
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache", lambda: Path("/studio/cache")
+    )
+
+    def _lookup(*, repo_id, filename, cache_dir = None, **_k):
+        seen.append((filename, str(cache_dir)))
+        return "/studio/cache/hit" if filename == cached_name else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _lookup)
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            models_routes.scan_model_remote_code(
+                model_name = "acme/private",
+                hf_token = "hf_dummy",
+                allow_ambient_token = False,
+                current_subject = "alice",
+            )
+        )
+
+    assert excinfo.value.status_code == 404
+    assert all(root == "/studio/cache" for _n, root in seen), "asked the wrong cache root"
+
+
+def test_the_template_predicate_asks_the_active_cache(monkeypatch):
+    """The download names active_hf_hub_cache(), so a predicate that omits it reports a miss
+    for a template living only in the operator's chosen root and opens the gate on it."""
+    roots: list = []
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(picker_service, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(picker_service, "resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr(
+        picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: iter(())
+    )
+    monkeypatch.setattr(picker_service, "active_hf_hub_cache", lambda: Path("/studio/cache"))
+
+    def _lookup(*, repo_id, filename, cache_dir = None, **_k):
+        roots.append(str(cache_dir))
+        return "/studio/cache/template.jinja"
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _lookup)
+    downloads: list = []
+
+    class _Api:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def get_paths_info(self, _repo, paths, *_a, **_k):
+            return [SimpleNamespace(path = paths[0], size = 1024)]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download", lambda *a, **k: downloads.append(a) or "/x"
+    )
+
+    assert picker_service.read_default_chat_template("org/private", "hf_dummy") is None
+    assert roots and all(r == "/studio/cache" for r in roots), "asked the wrong cache root"
+    assert not downloads, "a template cached in the active root was served to a denied caller"
+
+
+def test_a_tokenless_api_caller_keeps_a_public_cached_embedder(monkeypatch):
+    """The sentinel cannot authorize itself, so the raw check refused it whatever the repo
+    was: an online resolve offered a multi-gigabyte download of something already on disk."""
+    from routes import settings as settings_routes
+
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
+    monkeypatch.setattr(
+        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
+    )
+    monkeypatch.setattr(
+        settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap"))
+    )
+    monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/public-embed", False)
+
+    assert plan.cached is True, "a public cached embedder was offered as a download"
+
+
+def test_a_local_only_config_read_stays_off_the_wire(monkeypatch):
+    """local_files_only is a contract. The guard tested the caller's flag and did not
+    forward it, so the read it protects dialled /auth-check anyway."""
+    from utils.models import model_config
+
+    probes = _counting_probe(monkeypatch, True)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(model_config, "_config_json_already_cached", lambda *_a, **_k: True)
+
+    with pytest.raises(OSError):
+        model_config.load_model_config(
+            "acme/private", token = "hf_dummy", local_files_only = True
+        )
+
+    assert probes["n"] == 0
