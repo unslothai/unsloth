@@ -97,28 +97,77 @@ function recoveredToolResult(
 export function createGenerationToolRecovery(
   carried: CarriedPart[],
   runId: string,
-): (payload: unknown, at: number, seq: number, sessionId?: string) => void {
+  snapshotSeq = 0,
+) {
   const pending = new Map<string, CarriedPart>();
-  for (const entry of carried) {
+  const savedPending = carried.filter((entry) => {
     const part = record(entry.part);
-    if (part?.type !== "tool-call" || part.result !== undefined) {
-      continue;
-    }
-    const id = part.backendToolCallId ?? part.toolCallId;
-    if (typeof id === "string") {
-      pending.set(id.split(":")[0], entry);
-    }
+    return part?.type === "tool-call" && part.result === undefined;
+  });
+  for (const entry of savedPending) {
+    const id = record(entry.part)?.backendToolCallId;
+    if (typeof id === "string") pending.set(id, entry);
   }
-  return (payload, at, seq, sessionId = "_default") => {
+  const replayFrom = savedPending.some(
+    (entry) => typeof record(entry.part)?.backendToolCallId !== "string",
+  )
+    ? 0
+    : snapshotSeq;
+  const findSavedEntry = (backendId: string, approvalId: unknown) => {
+    const matches = savedPending.filter((entry) => {
+      const part = record(entry.part);
+      const id = part?.toolCallId;
+      if (!part || typeof id !== "string" || part.result !== undefined)
+        return false;
+      if (typeof approvalId === "string" && approvalId) {
+        return (
+          part.toolApprovalId === approvalId ||
+          id === approvalId ||
+          id.endsWith(`:${approvalId}`)
+        );
+      }
+      return (
+        Boolean(backendId) &&
+        (id === backendId || id.startsWith(`${backendId}:`))
+      );
+    });
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  let appliedSeq = 0;
+  const apply = (
+    payload: unknown,
+    at: number,
+    seq: number,
+    sessionId = "_default",
+  ) => {
     const chunk = record(payload);
     const event = record(chunk?._toolEvent) ?? chunk;
     if (event?.type !== "tool_start" && event?.type !== "tool_end") {
       return;
     }
+    if (seq <= appliedSeq) return;
+    appliedSeq = seq;
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
+    // Older approval cards need their original start event to recover the backend id.
+    if (seq <= snapshotSeq) {
+      const entry =
+        event.type === "tool_start"
+          ? findSavedEntry(backendId, event.approval_id)
+          : undefined;
+      if (entry) {
+        entry.part = {
+          ...record(entry.part),
+          backendToolCallId: backendId,
+          generationToolCallId: `${runId}:${seq}`,
+        };
+        pending.set(backendId, entry);
+      }
+      return;
+    }
     const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
-    let entry = pending.get(backendId);
+    let entry =
+      pending.get(backendId) ?? findSavedEntry(backendId, event.approval_id);
     if (
       event.type === "tool_end" &&
       !(entry || backendId) &&
@@ -136,7 +185,6 @@ export function createGenerationToolRecovery(
           part: {
             type: "tool-call",
             toolCallId: `${backendId || "tool"}:${runId}:${seq}`,
-            backendToolCallId: backendId,
           },
         };
         carried.push(entry);
@@ -144,6 +192,11 @@ export function createGenerationToolRecovery(
       const args = record(event.arguments) ?? {};
       entry.part = {
         ...record(entry.part),
+        backendToolCallId: backendId,
+        generationToolCallId: `${runId}:${seq}`,
+        ...(typeof event.approval_id === "string" && event.approval_id
+          ? { toolApprovalId: event.approval_id }
+          : {}),
         toolName,
         args,
         argsText: toolCallArgumentsText(event.arguments_text, args),
@@ -185,4 +238,5 @@ export function createGenerationToolRecovery(
       }
     }
   };
+  return { replayFrom, apply };
 }

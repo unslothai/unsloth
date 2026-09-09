@@ -35,7 +35,7 @@ const end = (id = "call_0") => ({
 
 test("replay adds new cards and applies their results", () => {
   const carried: Carried[] = [];
-  const replay = createGenerationToolRecovery(carried, "run");
+  const replay = createGenerationToolRecovery(carried, "run").apply;
   replay(start(), 12, 1);
   const pending = carried[0].part as Record<string, unknown>;
   assert.equal(pending.result, undefined);
@@ -59,17 +59,17 @@ test("replay resumes an existing card without duplicating it", () => {
     argsText: '{"path":"scene.glsl"}',
   };
   const carried = [{ at: 12, part: saved }];
-  createGenerationToolRecovery(carried, "run")(end(), 20, 2);
+  createGenerationToolRecovery(carried, "run").apply(end(), 20, 2);
   assert.deepEqual(carried, [{ at: 12, part: { ...saved, result: "ok" } }]);
 });
 
 test("reused backend ids get separate cards across rounds and reloads", () => {
   const carried: Carried[] = [];
-  let replay = createGenerationToolRecovery(carried, "run");
+  let replay = createGenerationToolRecovery(carried, "run").apply;
   replay(start(), 0, 1);
   replay(end(), 0, 2);
   replay(start(), 10, 3);
-  replay = createGenerationToolRecovery(carried, "run");
+  replay = createGenerationToolRecovery(carried, "run").apply;
   replay({ ...end(), result: "second" }, 10, 4);
   assert.equal(carried.length, 2);
   const parts = carried.map((entry) => entry.part as Record<string, unknown>);
@@ -82,7 +82,7 @@ test("reused backend ids get separate cards across rounds and reloads", () => {
 
 test("wrapped events preserve exact arguments and completion argument updates", () => {
   const carried: Carried[] = [];
-  const replay = createGenerationToolRecovery(carried, "run");
+  const replay = createGenerationToolRecovery(carried, "run").apply;
   replay(
     {
       _toolEvent: {
@@ -103,7 +103,7 @@ test("wrapped events preserve exact arguments and completion argument updates", 
 
 test("sandbox results retain files, images and the run's session", () => {
   const carried: Carried[] = [];
-  const replay = createGenerationToolRecovery(carried, "run");
+  const replay = createGenerationToolRecovery(carried, "run").apply;
   replay({ ...start(), tool_name: "python" }, 0, 1);
   replay(
     {
@@ -132,7 +132,7 @@ test("MCP image results remain structured and malformed envelopes remain readabl
     ["done\n__MCP_IMAGES__:invalid", "done\n__MCP_IMAGES__:invalid"],
   ]) {
     const carried: Carried[] = [];
-    const replay = createGenerationToolRecovery(carried, "run");
+    const replay = createGenerationToolRecovery(carried, "run").apply;
     replay(start(), 0, 1);
     replay({ ...end(), result }, 0, 2);
     assert.deepEqual(
@@ -144,11 +144,162 @@ test("MCP image results remain structured and malformed envelopes remain readabl
 
 test("unrelated events and unmatched completions cannot alter saved cards", () => {
   const carried: Carried[] = [];
-  const replay = createGenerationToolRecovery(carried, "run");
+  const replay = createGenerationToolRecovery(carried, "run").apply;
   replay(end(), 0, 1);
   replay({ type: "tool_start" }, 0, 2);
   replay(null, 0, 3);
   assert.deepEqual(carried, []);
+});
+
+test("explicit backend ids retain colons when a saved card completes", () => {
+  const carried = [
+    {
+      at: 0,
+      part: {
+        type: "tool-call",
+        toolCallId: "session:thread:approval",
+        backendToolCallId: "provider:call_0",
+        toolName: "edit_file",
+        args: {},
+      },
+    },
+  ];
+  const replay = createGenerationToolRecovery(carried, "run", 3);
+  assert.equal(replay.replayFrom, 3);
+  replay.apply(end("provider:call_0"), 0, 4);
+  assert.equal((carried[0].part as Record<string, unknown>).result, "ok");
+});
+
+test("approval history distinguishes pending calls with the same tool name", () => {
+  const carried: Carried[] = ["one", "two"].map((id) => ({
+    at: 0,
+    part: {
+      type: "tool-call",
+      toolCallId: `session:thread:${id}`,
+      toolName: "edit_file",
+      args: {},
+    },
+  }));
+  const replay = createGenerationToolRecovery(carried, "run", 2);
+  assert.equal(replay.replayFrom, 0);
+  replay.apply({ ...start("call_0"), approval_id: "one" }, 0, 1);
+  replay.apply({ ...start("call_1"), approval_id: "two" }, 0, 2);
+  replay.apply({ ...end("call_1"), result: "second" }, 0, 3);
+  replay.apply({ ...end("call_0"), result: "first" }, 0, 4);
+  assert.deepEqual(
+    carried.map(({ part }) => (part as Record<string, unknown>).result),
+    ["first", "second"],
+  );
+});
+
+test("an unmatched completion cannot guess an approval card by tool name", () => {
+  const saved = {
+    type: "tool-call",
+    toolCallId: "session:thread:approval",
+    toolName: "edit_file",
+  };
+  const carried = [{ at: 0, part: saved }];
+  createGenerationToolRecovery(carried, "run").apply(
+    { ...end(), tool_name: "edit_file" },
+    0,
+    1,
+  );
+  assert.equal(carried[0].part, saved);
+});
+
+test("the live adapter saves identities for ordinary, approval and provider cards", () => {
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const startAt = adapter.indexOf('if (toolEvent.type === "tool_start") {');
+  const endAt = adapter.indexOf(
+    '} else if (toolEvent.type === "tool_end") {',
+    startAt,
+  );
+  assert.ok(startAt >= 0 && endAt > startAt);
+  const source = `function receive(toolEvent) { ${adapter.slice(startAt, endAt)} } }`;
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  for (const generationRunId of [null, "run"]) {
+    for (const kind of ["ordinary", "approval", "provider"]) {
+      const parts: Record<string, unknown>[] =
+        kind === "provider"
+          ? [
+              {
+                type: "tool-call",
+                toolCallId: "provider-id",
+                toolName: "edit_file",
+                args: {},
+              },
+            ]
+          : [];
+      const confirmed: string[] = [];
+      const context = vm.createContext({
+        toolCallParts: parts,
+        toolPartIdByBackendId: new Map(
+          kind === "provider" ? [["call_0", "provider-id"]] : [],
+        ),
+        toolConfirmationIdsByBackendId: new Map(),
+        toolConfirmationScopeId: "session:thread",
+        sandboxSessionId: "session",
+        generationRunId,
+        generationSeq: 7,
+        cumulativeText: "",
+        toolProvenance: undefined,
+        resolveToolPartId: () =>
+          kind === "provider" ? "provider-id" : "call_0:live-id",
+        scopedToolOutputKey: (id: string) => id,
+        toolCallArgumentsText: (_text: unknown, args: unknown) =>
+          JSON.stringify(args),
+        mergeToolProvenance: () => undefined,
+        useChatRuntimeStore: {
+          getState: () => ({
+            clearToolLiveOutput() {},
+            clearToolFullOutput() {},
+            setToolConfirmation: (id: string) => confirmed.push(id),
+          }),
+        },
+      });
+      vm.runInContext(compiled, context);
+      const event = {
+        ...start(),
+        ...(kind === "approval"
+          ? { awaiting_confirmation: true, approval_id: "approval-1" }
+          : {}),
+      };
+      context.receive(event);
+      assert.equal(parts.length, 1);
+      const saved = parts[0];
+      assert.equal(saved.backendToolCallId, "call_0");
+      assert.equal(
+        saved.generationToolCallId,
+        generationRunId ? "run:7" : undefined,
+      );
+      assert.equal(
+        saved.toolCallId,
+        kind === "approval"
+          ? "session:thread:approval-1"
+          : kind === "provider"
+            ? "provider-id"
+            : "call_0:live-id",
+      );
+      assert.equal(
+        saved.toolApprovalId,
+        kind === "approval" ? "approval-1" : undefined,
+      );
+      assert.deepEqual(
+        confirmed,
+        kind === "approval" ? [saved.toolCallId] : [],
+      );
+      const carried = [{ at: 0, part: saved }];
+      const replay = createGenerationToolRecovery(carried, "run", 7);
+      assert.equal(replay.replayFrom, 7);
+      replay.apply(end(), 0, 8);
+      assert.equal(carried[0].part.result, "ok");
+    }
+  }
 });
 
 const provider = readFileSync(
@@ -166,7 +317,18 @@ const executable = ts.transpileModule(scheduler, {
   },
 }).outputText;
 
-async function recoverRun(content: unknown[], payloads: unknown[]) {
+async function recoverRun(
+  content: unknown[],
+  payloads: unknown[],
+  options: { cursor?: number; viewContent?: unknown[] } = {},
+) {
+  let shown = {
+    messages: [
+      { message: { id: "msg", content: options.viewContent ?? content } },
+    ],
+  };
+  const imports: unknown[][] = [];
+  let replayFrom: number | undefined;
   const snapshots: Array<{
     content: Record<string, unknown>[];
     metadata: Record<string, unknown>;
@@ -200,8 +362,12 @@ async function recoverRun(content: unknown[], payloads: unknown[]) {
     saveStoredChatMessage: async (message: (typeof snapshots)[number]) => {
       snapshots.push(structuredClone(message));
     },
-    followChatGenerationRun: async function* () {
-      for (let i = 0; i < payloads.length; i++) {
+    followChatGenerationRun: async function* (
+      _id: string,
+      followOptions: { replayFrom: number },
+    ) {
+      replayFrom = followOptions.replayFrom;
+      for (let i = followOptions.replayFrom; i < payloads.length; i++) {
         const update = {
           run,
           event: {
@@ -215,6 +381,7 @@ async function recoverRun(content: unknown[], payloads: unknown[]) {
         yield update;
       }
     },
+    restoredAssistantStatus: () => ({ type: "complete", reason: "stop" }),
     isTerminalChatGenerationRun: () => true,
     forgetServerActiveGenerationRun() {},
     ChatGenerationStalledError: class extends Error {},
@@ -228,13 +395,20 @@ async function recoverRun(content: unknown[], payloads: unknown[]) {
       createdAt: 1,
       metadata: {
         generationRunId: "run",
-        generationSeq: 0,
+        generationSeq: options.cursor ?? 0,
         generationStatus: "running",
         generationSettled: false,
       },
     },
     {
-      threadListItem: () => ({ getState: () => ({ remoteId: "other-view" }) }),
+      threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+      thread: () => ({
+        export: () => shown,
+        import: (value: typeof shown) => {
+          shown = value;
+          imports.push(value.messages[0].message.content);
+        },
+      }),
     },
   );
   await generationRecoveries.get("run").promise;
@@ -242,11 +416,16 @@ async function recoverRun(content: unknown[], payloads: unknown[]) {
   assert.ok(final);
   assert.equal(final.metadata.generationSettled, true);
   assert.equal(final.metadata.generationSeq, payloads.length);
-  return final.content;
+  return {
+    content: final.content,
+    shown: shown.messages[0].message.content,
+    imports,
+    replayFrom,
+  };
 }
 
 test("the recovery scheduler persists later tool events between reasoning groups", async () => {
-  const content = await recoverRun(
+  const { content } = await recoverRun(
     [],
     [
       { choices: [{ delta: { reasoning_content: "before" } }] },
@@ -270,7 +449,7 @@ test("the recovery scheduler persists later tool events between reasoning groups
 });
 
 test("the recovery scheduler completes a saved pending card", async () => {
-  const content = await recoverRun(
+  const { content } = await recoverRun(
     [
       {
         type: "tool-call",
@@ -292,7 +471,7 @@ test("the recovery scheduler completes a saved pending card", async () => {
 });
 
 test("explicit think tags do not shift replayed tool offsets", async () => {
-  const content = await recoverRun(
+  const { content } = await recoverRun(
     [],
     [
       { choices: [{ delta: { content: "<think>before</think>" } }] },
@@ -311,4 +490,60 @@ test("explicit think tags do not shift replayed tool offsets", async () => {
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("the scheduler recovers old approval identities without replaying saved text", async () => {
+  const saved = {
+    type: "tool-call",
+    toolCallId: "session:thread:approval-1",
+    toolName: "edit_file",
+    args: { path: "scene.glsl" },
+  };
+  const result = await recoverRun(
+    [{ type: "text", text: "Working:" }, saved],
+    [
+      { choices: [{ delta: { content: "Working:" } }] },
+      { ...start(), approval_id: "approval-1", awaiting_confirmation: true },
+      end(),
+    ],
+    { cursor: 2 },
+  );
+  assert.equal(result.replayFrom, 0);
+  assert.equal(recovery.generationRawContent(result.content).raw, "Working:");
+  assert.equal(result.content.length, 2);
+  assert.equal(result.content[1].toolCallId, saved.toolCallId);
+  assert.equal(result.content[1].result, "ok");
+  assert.deepEqual(result.shown, result.content);
+});
+
+test("the scheduler imports each live call once across reused backend ids", async () => {
+  for (const approval of [false, true]) {
+    const viewContent = [0, 1].map((i) => ({
+      type: "tool-call",
+      toolCallId: approval
+        ? `session:thread:approval-${i}`
+        : `call_0:live-${i}`,
+      toolName: "edit_file",
+      args: { path: "scene.glsl" },
+      result: `result-${i}`,
+    }));
+    const result = await recoverRun(
+      [],
+      [
+        { ...start(), ...(approval ? { approval_id: "approval-0" } : {}) },
+        { ...end(), result: "result-0" },
+        { ...start(), ...(approval ? { approval_id: "approval-1" } : {}) },
+        { ...end(), result: "result-1" },
+      ],
+      { viewContent },
+    );
+    assert.equal(result.content.length, 2);
+    assert.deepEqual(result.shown, result.content);
+    assert.deepEqual(
+      result.content.map((part) => part.result),
+      ["result-0", "result-1"],
+    );
+    assert.ok(result.imports.length > 0);
+    assert.ok(result.imports.every((parts) => parts.length === 2));
+  }
 });

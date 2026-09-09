@@ -348,6 +348,119 @@ function carriedPartKey({ at, part }: CarriedPart): string {
     : JSON.stringify([record.type, id]);
 }
 
+type ToolIdentity = {
+  type?: string;
+  toolCallId?: string;
+  toolName?: string;
+  backendToolCallId?: string;
+  generationToolCallId?: string;
+  toolApprovalId?: string;
+};
+
+function followingCarriedMatches(matches: (number | undefined)[]) {
+  let next: number | undefined;
+  const following = matches.map(() => undefined as number | undefined);
+  for (let i = matches.length - 1; i >= 0; i--) {
+    following[i] = next;
+    next = matches[i] ?? next;
+  }
+  return following;
+}
+
+function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
+  const byId = new Map(recovered.map((entry, i) => [carriedPartKey(entry), i]));
+  const byGeneration = new Map<string, number>();
+  recovered.forEach(({ part }, i) => {
+    const id = (part as ToolIdentity).generationToolCallId;
+    if (id) byGeneration.set(id, i);
+  });
+  const used = new Set<number>();
+  const matches = view.map((entry) => {
+    const id = (entry.part as ToolIdentity).generationToolCallId;
+    const index =
+      byId.get(carriedPartKey(entry)) ??
+      (id ? byGeneration.get(id) : undefined);
+    if (index === undefined || used.has(index)) return undefined;
+    used.add(index);
+    return index;
+  });
+  // Legacy cards lack replay ids. Pair occurrences at the same position one to one.
+  const following = followingCarriedMatches(matches);
+  let previous: number | undefined;
+  view.forEach((entry, i) => {
+    const live = entry.part as ToolIdentity;
+    if (matches[i] !== undefined) {
+      previous = matches[i];
+      return;
+    }
+    if (live.type !== "tool-call" || live.generationToolCallId) return;
+    const next = following[i];
+    const index = recovered.findIndex((candidate, j) => {
+      const saved = candidate.part as ToolIdentity;
+      if (
+        used.has(j) ||
+        (previous !== undefined && j <= previous) ||
+        (next !== undefined && j >= next) ||
+        candidate.at !== entry.at ||
+        saved.type !== "tool-call" ||
+        !saved.generationToolCallId ||
+        saved.toolName !== live.toolName
+      )
+        return false;
+      if (
+        saved.toolApprovalId &&
+        (live.toolApprovalId === saved.toolApprovalId ||
+          live.toolCallId === saved.toolApprovalId ||
+          live.toolCallId?.endsWith(`:${saved.toolApprovalId}`))
+      )
+        return true;
+      if (saved.toolApprovalId && live.toolApprovalId) return false;
+      const backendId = saved.backendToolCallId;
+      return (
+        Boolean(backendId) &&
+        (live.backendToolCallId !== undefined
+          ? live.backendToolCallId === backendId
+          : live.toolCallId === backendId ||
+            live.toolCallId?.startsWith(`${backendId}:`))
+      );
+    });
+    if (index < 0) return;
+    matches[i] = index;
+    previous = index;
+    used.add(index);
+  });
+  return matches;
+}
+
+function mergeCarriedParts(
+  view: CarriedPart[],
+  recovered: CarriedPart[],
+  matches: (number | undefined)[],
+): CarriedPart[] {
+  const before = new Map<number, CarriedPart[]>();
+  const after = new Map<number, CarriedPart[]>();
+  let previous: number | undefined;
+  const following = followingCarriedMatches(matches);
+  view.forEach((entry, i) => {
+    const match = matches[i];
+    if (match !== undefined) {
+      previous = match;
+      return;
+    }
+    const buckets = previous === undefined ? before : after;
+    const anchor = previous ?? following[i] ?? 0;
+    const bucket = buckets.get(anchor) ?? [];
+    bucket.push(entry);
+    buckets.set(anchor, bucket);
+  });
+  if (recovered.length === 0) return view;
+  return recovered.flatMap((entry, i) => [
+    ...(before.get(i) ?? []),
+    entry,
+    ...(after.get(i) ?? []),
+  ]);
+}
+
 /** Refuse lagging prefixes; restore missing cards only onto compatible replies. */
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
@@ -366,22 +479,19 @@ export function recoveredContentToImport<TContent>(
     recovered.raw.startsWith(view.raw) &&
     Array.isArray(recoveredContent)
   ) {
-    const recoveredKeys = new Set(recovered.carried.map(carriedPartKey));
-    if (view.carried.every((entry) => recoveredKeys.has(carriedPartKey(entry)))) {
+    const matches = carriedPartMatches(view.carried, recovered.carried);
+    if (matches.every((index) => index !== undefined)) {
       return recoveredContent;
-    }
-    const carried = new Map(
-      view.carried.map((entry) => [carriedPartKey(entry), entry]),
-    );
-    for (const entry of recovered.carried) {
-      carried.set(carriedPartKey(entry), entry);
     }
     const spoken = recoveredContent.filter(
       (part) =>
         (part as { type?: string })?.type === "text" ||
         (part as { type?: string })?.type === "reasoning",
     );
-    return restoreCarriedParts(spoken, [...carried.values()]) as TContent;
+    return restoreCarriedParts(
+      spoken,
+      mergeCarriedParts(view.carried, recovered.carried, matches),
+    ) as TContent;
   }
   return recoveredContent;
 }

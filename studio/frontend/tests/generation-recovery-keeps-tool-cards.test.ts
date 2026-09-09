@@ -187,3 +187,116 @@ test("compatible replies retain recovered cards and their authoritative results"
     { type: "text", text: "B" },
   ]);
 });
+
+test("missing cards stay beside shared anchors without reordering recovered cards", () => {
+  const card = (toolCallId: string) => ({ type: "tool-call", toolCallId });
+  for (const [liveIds, recoveredIds, expected] of [
+    [
+      ["b", "c"],
+      ["a", "b"],
+      ["a", "b", "c"],
+    ],
+    [["a", "b"], ["b"], ["a", "b"]],
+    [
+      ["b", "c", "d"],
+      ["a", "b", "e"],
+      ["a", "b", "c", "d", "e"],
+    ],
+    [
+      ["b", "c", "a"],
+      ["a", "b"],
+      ["a", "b", "c"],
+    ],
+    [
+      ["a", "b", "c"],
+      ["c", "a"],
+      ["c", "a", "b"],
+    ],
+  ]) {
+    const view = [{ type: "text", text: "Working:" }, ...liveIds.map(card)];
+    const recovered = [
+      { type: "text", text: "Working:" },
+      ...recoveredIds.map(card),
+      { type: "text", text: "Done" },
+    ];
+    const merged = recoveredContentToImport(view, recovered);
+    assert.equal(generationRawContent(merged).raw, "Working:Done");
+    assert.deepEqual(
+      merged
+        .filter((part) => part.type === "tool-call")
+        .map((part) => (part as Part).toolCallId),
+      expected,
+    );
+  }
+});
+
+test("replay identities match provider cards without merging different rounds", () => {
+  const card = {
+    type: "tool-call",
+    toolName: "edit_file",
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:1",
+    toolCallId: "provider-id",
+  };
+  const recovered = [{ ...card, toolCallId: "call_0:run:1", result: "ok" }];
+  assert.equal(recoveredContentToImport([card], recovered), recovered);
+  const next = {
+    ...card,
+    toolCallId: "next-id",
+    generationToolCallId: "run:3",
+  };
+  assert.equal(recoveredContentToImport([next], recovered).length, 2);
+});
+
+test("legacy calls at different positions remain separate", () => {
+  const card = {
+    type: "tool-call",
+    toolName: "edit_file",
+    toolCallId: "call_0:live",
+  };
+  const recovered = [
+    {
+      ...card,
+      toolCallId: "call_0:run:1",
+      backendToolCallId: "call_0",
+      generationToolCallId: "run:1",
+    },
+    { type: "text", text: "Done" },
+  ];
+  const merged = recoveredContentToImport(
+    [{ type: "text", text: "Done" }, card],
+    recovered,
+  );
+  assert.equal(merged.filter((part) => part.type === "tool-call").length, 2);
+});
+
+test("legacy matching cannot cross a shared card into another round", () => {
+  const card = (toolCallId: string) => ({
+    type: "tool-call",
+    toolName: "edit_file",
+    toolCallId,
+  });
+  const first = card("call_0:live-0");
+  const shared = card("call_0:live-1");
+  const last = {
+    ...card("call_0:run:5"),
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:5",
+  };
+  assert.deepEqual(recoveredContentToImport([first, shared], [shared, last]), [
+    first,
+    shared,
+    last,
+  ]);
+  const replayedFirst = {
+    ...first,
+    toolCallId: "call_0:run:1",
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:1",
+  };
+  const liveLast = card("call_0:live-2");
+  assert.deepEqual(
+    recoveredContentToImport([shared, liveLast], [replayedFirst, shared]),
+    [replayedFirst, shared, liveLast],
+  );
+});

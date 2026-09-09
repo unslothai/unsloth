@@ -869,7 +869,7 @@ function scheduleGenerationRecovery(
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
     const stored = generationRawContent(storedMessage.content);
     const carried = stored.carried;
-    const recoverToolEvent = createGenerationToolRecovery(carried, runId);
+    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
     let { raw, reasoningOpen } = stored;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1007,7 +1007,7 @@ function scheduleGenerationRecovery(
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {
-          replayFrom: cursor,
+          replayFrom: toolRecovery.replayFrom,
         })) {
           if (!identityValidated) {
             if (
@@ -1033,15 +1033,17 @@ function scheduleGenerationRecovery(
             }
             identityValidated = true;
           }
+          if (update.event?.type === "chunk") {
+            toolRecovery.apply(
+              update.event.payload,
+              raw.length,
+              update.event.seq,
+              update.run.requestPayload.session_id,
+            );
+          }
           if (update.event && update.event.seq > cursor) {
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
-              recoverToolEvent(
-                update.event.payload,
-                raw.length,
-                update.event.seq,
-                update.run.requestPayload.session_id,
-              );
               const chunk = update.event.payload as {
                 _reasoningDurationMs?: unknown;
                 usage?: {

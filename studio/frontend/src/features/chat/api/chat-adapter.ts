@@ -5182,6 +5182,9 @@ export function createOpenAIStreamAdapter(
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {
+        backendToolCallId?: string;
+        generationToolCallId?: string;
+        toolApprovalId?: string;
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
@@ -6597,6 +6600,15 @@ export function createOpenAIStreamAdapter(
                     toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const toolIdentity = {
+                    backendToolCallId,
+                    ...(generationRunId
+                      ? {
+                          generationToolCallId: `${generationRunId}:${generationSeq}`,
+                        }
+                      : {}),
+                    ...(approvalId ? { toolApprovalId: approvalId } : {}),
+                  };
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6606,6 +6618,7 @@ export function createOpenAIStreamAdapter(
                     ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
                       ...existing,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6618,6 +6631,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
