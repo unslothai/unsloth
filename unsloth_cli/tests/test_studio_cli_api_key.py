@@ -130,8 +130,7 @@ def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first
 
     first_path = studio_mod._cli_api_key_secret_path(first_name)
     second_path = studio_mod._cli_api_key_secret_path(second_name)
-    # .lower() also covers case-insensitive filesystems, where the two names
-    # would otherwise resolve to one file.
+    # .lower(): on a case-insensitive filesystem the two would be one file.
     assert first_path.name.lower() != second_path.name.lower()
 
     first = studio_mod._create_api_key_inprocess(first_name)
@@ -150,9 +149,8 @@ def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first
         "..",
         "-",
         "x/y",
-        # str.isalnum() is true for these, and each is 4 UTF-8 bytes: slicing to 64
-        # CHARACTERS gave a 282-byte basename, over the 255-BYTE NAME_MAX. The cache
-        # then missed with ENAMETOOLONG on every launch and minted a key each time.
+        # isalnum() but multibyte: 64 chars was 282 bytes, over the 255-BYTE
+        # NAME_MAX, so the cache missed with ENAMETOOLONG and re-minted every launch.
         "\U0001d7d8" * 64,
         "中文" * 100,
         "\U0001f600" * 80,
@@ -177,9 +175,8 @@ def test_cache_path_is_a_safe_filename_inside_auth(studio_home, name):
     ],
 )
 def test_cache_write_failure_does_not_abort_the_launch(studio_home, monkeypatch, capsys, exc):
-    """create_api_key has already committed by the time the cache is written, and
-    the caller shuts the server down on any exception. A failed cache write must
-    cost a re-mint next launch, not this launch."""
+    """The key is committed before the cache write, and the caller shuts the server
+    down on any exception, so a failed write must cost the NEXT launch, not this one."""
     studio_mod, _tmp_path = studio_home
     storage = _FakeStorage()
     monkeypatch.setattr(studio_mod, "_load_backend_auth_storage", lambda: storage)
