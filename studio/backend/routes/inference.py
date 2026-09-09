@@ -2654,13 +2654,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
-def _openai_llama_count_raw_holder(
-    *,
-    llama_backend,
-    lease,
-    gen_id: str,
-    measured: bool = False,
-) -> None:
+def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
     """Register a surface that occupies the cache but cannot be paused.
 
     The raw passthrough and the Responses surface stream upstream bytes with no Studio-side
@@ -2670,9 +2664,10 @@ def _openai_llama_count_raw_holder(
 
     So: counted, and never chosen. `STREAMING_RAW` is in `_HOLDS_KV`, out of `_PREEMPTABLE`.
 
-    `measured` is for a non-streaming request, which has no first data line to mark it at:
-    left unmeasured, its charge was added on top of the residency `/slots` reported for it
-    for the whole answer.
+    Unmeasured until its stream's first data line. A non-streaming request has no data line
+    and stays unmeasured for its whole answer: counted on top of the residency once `/slots`
+    carries it, which can pause a chat early. Measured at registration instead, a residency
+    sample from before its prefill swallowed the charge, and a missed pause overran the cache.
     """
     try:
         if not _openai_llama_preemption_will_apply(
@@ -2688,8 +2683,6 @@ def _openai_llama_count_raw_holder(
             tokens = int(getattr(lease, "tokens", 0) or 0),
             state = ParticipantState.STREAMING_RAW,
         )
-        if measured:
-            controller.note_measured(gen_id)
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
@@ -32108,12 +32101,7 @@ async def anthropic_messages(
         )
     )
 
-    def _arm_anthropic(
-        reservation,
-        *,
-        raw: bool = False,
-        measured: bool = False,
-    ) -> None:
+    def _arm_anthropic(reservation, *, raw: bool = False) -> None:
         """Probe first, then arm. Both are no-ops when preemption cannot apply.
 
         ``raw`` for the client-tool passthrough, which has no Studio generator holding the
@@ -32122,9 +32110,8 @@ async def anthropic_messages(
         out of ``_PREEMPTABLE``, still filling the cache the planner counted as freed.
         Counted and never chosen instead, as ``_openai_llama_count_raw_holder`` does.
 
-        ``measured`` only for the non-streaming passthrough, which has no data line to mark
-        itself at. The streaming body marks itself at its first data line; measured before
-        that, its prompt was swallowed by the residency sample for the whole prefill.
+        Unmeasured: the streaming body marks itself at its first data line, the non-streaming
+        call has none and stays counted on top of the residency for its answer, the safer side.
         """
         try:
             get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
@@ -32140,7 +32127,6 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
-                measured = measured,
             )
             return
         _anthropic_preempt_policy.bind(
@@ -32368,7 +32354,7 @@ async def anthropic_messages(
             # With the lease in hand, as the streaming wrapper does: only that wrapper
             # called this, so a non-streaming /v1/messages request ran with an unbound
             # policy and no participant while admission priced it optimistically.
-            _arm_anthropic(reservation, raw = raw, measured = raw)
+            _arm_anthropic(reservation, raw = raw)
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
@@ -35982,7 +35968,6 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
             lease = lease,
             gen_id = _raw_gen_id,
-            measured = True,  # non-streaming: no data line to mark it at
         )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
