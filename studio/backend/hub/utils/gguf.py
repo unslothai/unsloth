@@ -1406,7 +1406,11 @@ def iter_snapshots_preferring_whole(
     whole, torn = [], []
     for snapshot in ordered:
         try:
-            is_whole = gguf_variant in complete_snapshot_variants(str(snapshot))
+            complete = complete_snapshot_variants(str(snapshot))
+            # The alias has to be reconciled HERE, not only when the file is picked: a lone tagged
+            # build is stored under its qualified key, so a legacy bare pin matched no snapshot's
+            # complete set, every revision sorted as torn, and the newest half download won.
+            is_whole = resolve_variant_alias(complete, gguf_variant) is not None
         except Exception:
             is_whole = True
         (whole if is_whole else torn).append(snapshot)

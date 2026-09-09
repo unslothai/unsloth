@@ -3786,7 +3786,7 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
             # would otherwise report double the weights the loader opens, which /kv-cache-estimate
             # turns into a false exceeds-memory warning and which can make a snapshot look
             # "more complete" purely for holding a redundant copy.
-            chosen = _one_shard_family_of(ranked[0] or ranked[1])
+            chosen = _one_shard_family_of(ranked[0] or _unambiguous_label_matches(ranked[1]))
             matches = [(rel, f) for rel, f, _size in chosen]
             total = sum(size for _rel, _f, size in chosen)
             # Prefer the most complete snapshot so a partial older revision can't underestimate bytes.
@@ -4782,6 +4782,22 @@ def _one_shard_family_of(entries: list) -> list:
     return min(families.values(), key = lambda group: min(e[0] for e in group))
 
 
+def _unambiguous_label_matches(labelled: list) -> list:
+    """Rank-1 entries, but only when they are ONE build's.
+
+    Rank 1 is the legacy bare spelling of a qualified key. It stands in for exactly one build;
+    across two builds of a single quant (``-mtp`` beside ``-fp16``) it names neither, and taking
+    the lexicographically first would price and reveal a checkpoint nobody asked for.
+    ``plan_for_variant`` refuses the same request, so this agrees with it. Shards of one build
+    share a key and are unaffected.
+    """
+    from utils.models.model_config import _gguf_variant_key
+
+    if len({_gguf_variant_key(entry[0]).lower() for entry in labelled}) > 1:
+        return []
+    return labelled
+
+
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
     quant-label spelling, None for neither.
@@ -5454,7 +5470,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                 if p.exists() or p.is_symlink():
                     ranked[rank].append((rel, p))
             # Exact keys alone when any exist, else the legacy label spelling.
-            matches = ranked[0] or ranked[1]
+            matches = ranked[0] or _unambiguous_label_matches(ranked[1])
             if matches:
                 # Path-sorted so a sharded quant deterministically yields its first split.
                 return sorted(matches, key = lambda m: m[0].lower())[0][1]

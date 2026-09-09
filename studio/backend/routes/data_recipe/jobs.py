@@ -174,7 +174,15 @@ def _ensure_selected_local_model_loaded(
         return
 
     target, gguf_variant = selection
-    variant_matches = not gguf_variant or active_variant == gguf_variant
+    # A recipe saved before the same-quant split holds the legacy bare spelling, while loading
+    # the build from its newly advertised row records the qualified key. Compared literally, the
+    # recipe rejected the checkpoint that WAS loaded and asked the user to reload it -- which the
+    # picker can no longer offer under the old spelling.
+    from hub.utils.gguf import variant_spellings_may_name_one_build
+
+    variant_matches = not gguf_variant or variant_spellings_may_name_one_build(
+        active_variant, gguf_variant
+    )
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model

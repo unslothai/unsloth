@@ -8741,8 +8741,13 @@ async def _maybe_auto_switch_model(
             if bare:
                 return True
             if variant:
-                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-                return loaded_variant == variant.lower()
+                from hub.utils.gguf import variant_spellings_may_name_one_build
+
+                # Either side may hold the bare or the qualified spelling of one build, and
+                # comparing them literally tore down a model that was already serving the
+                # request in order to reload the very same checkpoint.
+                loaded_variant = getattr(backend, "hf_variant", None) or ""
+                return variant_spellings_may_name_one_build(loaded_variant, variant)
             return True
 
         def _record_serving_alias() -> None:
@@ -10528,7 +10533,12 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            selected = next((v for v in variants if v.quant.lower() == variant.lower()), None)
+            from hub.utils.gguf import resolve_variant_alias
+
+            # The stored pin may be the legacy bare spelling of a qualified row; exact equality
+            # left the estimate with no size at all for a lone tagged build.
+            wanted = resolve_variant_alias([v.quant for v in variants], variant)
+            selected = next((v for v in variants if v.quant == wanted), None)
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None

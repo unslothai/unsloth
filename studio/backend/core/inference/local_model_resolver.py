@@ -232,6 +232,20 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
                 continue
             # None = ambiguous: a second file claimed it, so it names neither.
             seen[key] = None if key in seen else str(quant)
+        # A lone tagged build is now advertised under its qualified key, and
+        # ``_qualified_variant_name`` returns that same key, so the loop above records no legacy
+        # spelling for it. The download and loader paths both still accept the bare quant for an
+        # unambiguous build, so a persisted ``repo:q4_0`` has to reach the index too.
+        from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias
+
+        for variant in variants:
+            quant = getattr(variant, "quant", None)
+            if not quant or not accepts_bare_quant_alias(str(quant)):
+                continue
+            key = bare_quant_alias(str(quant)).lower()
+            if not key or key in current:
+                continue
+            seen[key] = None if key in seen else str(quant)
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
         return ()

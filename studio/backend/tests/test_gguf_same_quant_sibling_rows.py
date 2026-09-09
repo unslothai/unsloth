@@ -430,3 +430,84 @@ def test_a_foreign_provider_tag_is_not_one_of_our_rows():
     for shape in ("Q4_K_M", "distilled/model-Q6_K"):
         assert looks_like_quant(shape) is True
         assert looks_like_quant(shape, allow_root_stem = False) is True
+
+
+def test_route_side_resolution_refuses_an_ambiguous_bare_alias(tmp_path):
+    """``_resolve_quant_gguf`` feeds the KV-cache estimate and the cached-path/reveal endpoints.
+    Ranking both tagged builds as the legacy label and taking the first by name priced and
+    revealed a checkpoint the caller never asked for, while ``plan_for_variant`` refused it."""
+    from routes.models import _resolve_quant_gguf
+
+    both = _materialize(tmp_path / "both", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)])
+    assert _resolve_quant_gguf(str(both), "Q4_K_M", True) == (None, 0)
+
+    # The unambiguous cases keep working: a lone tagged build, and a build's own shards.
+    lone = _materialize(tmp_path / "lone", [("gemma-4-31B_q4_0-it.gguf", 17)])
+    path, _ = _resolve_quant_gguf(str(lone), "q4_0", True)
+    assert path == str(lone / "gemma-4-31B_q4_0-it.gguf")
+
+    sharded = _materialize(
+        tmp_path / "sharded",
+        [("m-Q4_K_M-00001-of-00002.gguf", 1), ("m-Q4_K_M-00002-of-00002.gguf", 2)],
+    )
+    path, total = _resolve_quant_gguf(str(sharded), "Q4_K_M", True)
+    assert path == str(sharded / "m-Q4_K_M-00001-of-00002.gguf")
+    assert total == 1024
+
+
+def test_snapshot_ordering_reconciles_the_alias(monkeypatch, tmp_path):
+    """A lone tagged build is stored under its qualified key, so a legacy bare pin matched no
+    snapshot's complete set: every revision sorted as torn and the newest HALF download won,
+    handing metadata a shard the loader would never open."""
+    from hub.utils import gguf as gguf_module
+    from hub.utils import inventory_scan
+
+    torn, whole = tmp_path / "newer", tmp_path / "older"
+    torn.mkdir()
+    whole.mkdir()
+    monkeypatch.setattr(gguf_module, "iter_hf_cache_snapshots", lambda *a, **k: [torn, whole])
+    monkeypatch.setattr(
+        inventory_scan,
+        "complete_snapshot_variants",
+        lambda p: set() if str(p) == str(torn) else {"gemma-4-31B_q4_0-it"},
+    )
+    assert gguf_module.iter_snapshots_preferring_whole("repo", "q4_0") == [whole, torn]
+
+
+def test_the_local_index_keeps_the_bare_alias_for_a_lone_tagged_build():
+    """A persisted ``repo:q4_0`` reaches the auto-switch index through the legacy-alias table.
+    ``_qualified_variant_name`` now returns the qualified key itself, so the table recorded no
+    bare spelling and the pin could no longer switch to the checkpoint on disk."""
+    import types
+
+    from core.inference.local_model_resolver import _legacy_variant_aliases
+
+    def row(quant, filename):
+        return types.SimpleNamespace(quant = quant, filename = filename)
+
+    lone = dict(_legacy_variant_aliases([row("gemma-4-31B_q4_0-it", "gemma-4-31B_q4_0-it.gguf")]))
+    assert lone["q4_0"] == "gemma-4-31B_q4_0-it"
+
+    # Ambiguous, and already-owned, both stay unaliased.
+    two = dict(
+        _legacy_variant_aliases(
+            [row("m-Q4_K_M-mtp", "m-Q4_K_M-mtp.gguf"), row("m-Q4_K_M-fp16", "m-Q4_K_M-fp16.gguf")]
+        )
+    )
+    assert "q4_k_m" not in two
+    plain = dict(
+        _legacy_variant_aliases(
+            [row("Q4_K_M", "m-Q4_K_M.gguf"), row("m-Q4_K_M-mtp", "m-Q4_K_M-mtp.gguf")]
+        )
+    )
+    assert "q4_k_m" not in plain
+
+
+def test_a_saved_recipe_still_recognises_the_loaded_build():
+    """A recipe saved with the legacy bare variant, against a build now loaded under its
+    qualified key: compared literally the recipe refused the checkpoint that was loaded."""
+    from hub.utils.gguf import variant_spellings_may_name_one_build
+
+    assert variant_spellings_may_name_one_build("q4_0", "gemma-4-31B_q4_0-it") is True
+    assert variant_spellings_may_name_one_build("gemma-4-31B_q4_0-it", "q4_0") is True
+    assert variant_spellings_may_name_one_build("Q8_0", "gemma-4-31B_q4_0-it") is False
