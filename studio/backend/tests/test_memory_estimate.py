@@ -3247,3 +3247,18 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
             llama_extra_args = ["--no-mmproj"],
         )
         assert suppressed.compute_bytes < floored.compute_bytes
+
+    def test_the_resident_files_figure_does_not_absorb_the_raised_buffers(self, vision):
+        """_gguf_resident_file_gb subtracts a context term from the required-GB total,
+        so both halves have to be priced at the same batch. Floored on one side only,
+        the difference between a 512 and a 2048 compute buffer stays behind and is
+        reported to the panel as FILES, which do not move with the batch at all."""
+        weight, config = vision
+        files_gb = ri._gguf_resident_file_gb(config)
+        on_disk = (
+            Path(weight).stat().st_size
+            + Path(config.gguf_mmproj_file).stat().st_size
+        ) / 1024**3
+        # Whatever the projector's runtime allowance adds, it is nothing like the
+        # ~1.8 GB an unpaired subtraction leaked here.
+        assert files_gb == pytest.approx(on_disk, abs = 0.2)

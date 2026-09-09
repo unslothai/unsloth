@@ -11009,6 +11009,14 @@ def _gguf_resident_file_gb(
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
         return None  # deliberately not cached: usually a download still in flight
+    # The batch the required-GB arm priced with. It applies the projector floor
+    # internally, so a subtraction taken at llama.cpp's 512 default leaves the
+    # difference between the two compute buffers behind and reports it as FILES.
+    _term_batch, _term_ubatch = (None, None)
+    if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
+        from core.inference.llama_cpp import _mmproj_batch_floor
+
+        _term_batch, _term_ubatch = _mmproj_batch_floor(None, None)
     if local_arm:
         # Same identifier the required-GB arm classifies with, or the two halves of the
         # subtraction below stop being paired and the weights figure moves with context.
@@ -11016,12 +11024,16 @@ def _gguf_resident_file_gb(
             str(main),
             0,
             llama_extra_args,
+            n_batch = _term_batch,
+            n_ubatch = _term_ubatch,
             model_identifier = getattr(config, "identifier", None),
         )
     else:
         context_term_gb = _remote_gguf_compute_reserve_gb(
             llama_extra_args = llama_extra_args,
             max_seq_length = 0,
+            n_batch = _term_batch,
+            n_ubatch = _term_ubatch,
         )
     files_gb = max(0.0, required_gb - context_term_gb)
     # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
@@ -11168,23 +11180,23 @@ def _launch_raises_projector_batch(
     an estimator that keeps pricing 512 understates the Load-Model panel and lets the
     coexistence guard admit a chat load over VRAM a running training job needs.
 
-    Same condition ``effective_is_vision`` is: the config's vision flag AND a projector
-    that actually resolves. A projector arriving only through ``LLAMA_ARG_MMPROJ`` is
-    excluded, because the loader does not floor that one either and a panel must not
-    quote a raise the launch will not emit.
+    Mirrors the loader's own condition, which is two things OR'd. Studio's resolved
+    projector, which needs the config's vision flag; and a --mmproj typed into Advanced
+    Arguments, which does not, because the extras are appended last and hand the child a
+    projector whatever the config says. A projector arriving only through
+    ``LLAMA_ARG_MMPROJ`` is in neither: the loader does not floor that one, and a panel
+    must not quote a raise the launch will not emit.
     """
     from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
 
-    if not getattr(config, "is_vision", False):
-        return False
     if extra_args_disable_mmproj(extras):
         return False
     override = _extra_args_device(extras, {"--mmproj", "-mm"})
-    resolved = (
-        override
-        if (override and Path(override).is_file())
-        else getattr(config, "gguf_mmproj_file", None)
-    )
+    if override and Path(override).is_file():
+        return True
+    if not getattr(config, "is_vision", False):
+        return False
+    resolved = getattr(config, "gguf_mmproj_file", None)
     if not resolved or not Path(str(resolved)).is_file():
         return False
     if disable_vision:

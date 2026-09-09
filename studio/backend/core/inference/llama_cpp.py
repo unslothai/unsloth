@@ -17870,6 +17870,40 @@ class LlamaCppBackend:
         return env.pop("LLAMA_ARG_N_PARALLEL", None) is not None or dropped
 
     @staticmethod
+    def _restore_batch_args(
+        cmd: list[str], n_batch: Optional[int], n_ubatch: Optional[int], n_parallel: int
+    ) -> list[str]:
+        """Put the REQUESTED --batch-size / --ubatch-size back on a retry argv.
+
+        The projector floor is bought with compute buffers four times the size, and the
+        text-only retry has just dropped the projector, so nothing on that child encodes
+        non-causally and the raise buys nothing. Leaving it costs 1.8-2.3 GB on a
+        12B-class VLM in exactly the recovery meant to rescue a load that ran out of
+        memory with the projector attached.
+
+        ``None`` means the request named no batch at all, so the flag is removed rather
+        than pinned: emitting nothing is what lets llama.cpp apply its own defaults.
+        """
+        emitted = {
+            "--batch-size": _emitted_n_batch(n_batch, n_parallel),
+            "--ubatch-size": n_ubatch,
+        }
+        out: list[str] = []
+        skip_value = False
+        for tok in cmd:
+            if skip_value:
+                skip_value = False
+                continue
+            if tok in emitted:
+                skip_value = True
+                continue
+            out.append(tok)
+        for flag, value in emitted.items():
+            if value is not None:
+                out.extend([flag, str(value)])
+        return out
+
+    @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
         Every other flag is preserved; a no-op when --mmproj is absent.
@@ -19470,17 +19504,32 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 # A projector is about to launch, so raise past the non-causal
-                # micro-batch assert (#10559). Gated on effective_is_vision because that
-                # is the same condition --mmproj is emitted on below: no projector in the
-                # child, nothing non-causal to size for. Deliberately NOT narrowed to
+                # micro-batch assert (#10559). Deliberately NOT narrowed to
                 # image-capable projectors -- an audio tower is non-causal too and trips
                 # the identical assert (ggml-org/llama.cpp#21816), so excluding it would
                 # leave speech models crashing on the bug this fixes.
                 #
+                # Studio's own projector is not the only one that reaches the child.
+                # _resolve_launch_mmproj_path only ever looks at intent.mmproj_path, so a
+                # --mmproj typed into Advanced Arguments leaves effective_is_vision False
+                # while the extras, appended last, still hand the child a projector to
+                # load. That launch hit the assert with no flags emitted at all, which is
+                # #10559 reached through the settings box instead of the model picker.
+                _extras_mmproj = (
+                    None
+                    if extra_args_disable_mmproj(extra_args)
+                    else _extra_args_device(extra_args, {"--mmproj", "-mm"})
+                )
+                _launch_opens_projector = bool(effective_is_vision) or bool(
+                    _extras_mmproj and os.path.isfile(_extras_mmproj)
+                )
                 # Before every sizing consumer and after the resolution that decides
                 # whether there is a projector at all, so the fit, the slot search and
                 # every compute-buffer reserve are priced from the batch that launches.
-                if effective_is_vision:
+                # Kept for the text-only retry far below, which drops the projector and
+                # so has nothing non-causal left to hold: see _restore_batch_args.
+                _requested_batch_pair = (n_batch, n_ubatch)
+                if _launch_opens_projector:
                     _floor_from = (n_batch, n_ubatch)
                     n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
                     if _floor_from != (n_batch, n_ubatch):
@@ -25146,7 +25195,11 @@ class LlamaCppBackend:
                                     "session; check memory, GPU/driver logs, or update Unsloth."
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
-                            cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            cmd = self._restore_batch_args(
+                                self._strip_mmproj_args(_vision_gpu_cmd),
+                                *_requested_batch_pair,
+                                n_parallel,
+                            )
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the
                             # launched-argv snapshot itself -- the zero-offload

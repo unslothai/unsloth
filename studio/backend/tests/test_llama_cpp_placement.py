@@ -204,6 +204,106 @@ def test_vision_mmproj_defaults_batch_and_ubatch_above_image_tokens(tmp_path):
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
+def test_a_projector_named_only_in_advanced_arguments_still_gets_the_floor(tmp_path):
+    """_resolve_launch_mmproj_path reads intent.mmproj_path and nothing else, so a
+    --mmproj typed into Advanced Arguments leaves effective_is_vision False while the
+    extras, appended last, still hand the child a projector. That launch emitted no
+    batch flags at all and hit the same non-causal assert #10559 is about."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    # Studio's own resolution finds nothing: the projector exists only in the extras.
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        extra_args = ["--mmproj", str(mmproj)],
+    )["cmd"]
+
+    assert cmd[cmd.index("--mmproj") + 1] == str(mmproj)
+    assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+
+
+def test_no_mmproj_in_the_extras_beats_an_extras_projector(tmp_path):
+    """--no-mmproj is the opt-out, so nothing loads and nothing is floored."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = True,
+        extra_args = ["--mmproj", str(mmproj), "--no-mmproj"],
+    )["cmd"]
+
+    assert "--batch-size" not in cmd
+    assert "--ubatch-size" not in cmd
+
+
+@pytest.mark.parametrize(
+    "requested,expected",
+    [
+        # Nothing was asked for, so nothing is emitted and llama.cpp keeps its own
+        # defaults -- pinning 2048 here is the 4x compute buffer the retry is trying
+        # to give back.
+        ((None, None), None),
+        ((1024, 1024), ("1024", "1024")),
+    ],
+)
+def test_the_text_only_retry_gives_back_the_projector_batch_floor(requested, expected):
+    """The retry has just dropped the projector, so nothing on that child encodes
+    non-causally. Carrying the floor into it keeps 1.8-2.3 GB of compute buffers in
+    precisely the recovery meant to rescue a load that ran out of memory."""
+    vision_cmd = [
+        "/fake/llama-server",
+        "-m", "model.gguf",
+        "--batch-size", "2048",
+        "--mmproj", "mmproj-F16.gguf",
+        "--ubatch-size", "2048",
+        "--jinja",
+    ]
+
+    retried = LlamaCppBackend._restore_batch_args(
+        LlamaCppBackend._strip_mmproj_args(vision_cmd), *requested, 1
+    )
+
+    assert "--mmproj" not in retried
+    # Everything the retry is not about survives the rewrite.
+    assert retried[:3] == ["/fake/llama-server", "-m", "model.gguf"]
+    assert "--jinja" in retried
+    if expected is None:
+        assert "--batch-size" not in retried
+        assert "--ubatch-size" not in retried
+    else:
+        assert retried[retried.index("--batch-size") + 1] == expected[0]
+        assert retried[retried.index("--ubatch-size") + 1] == expected[1]
+
+
+def test_the_text_only_retry_keeps_the_slot_floor_on_the_batch():
+    """--batch-size below the slot count aborts llama-server, so the restored value
+    goes back through the same emitted-batch floor the launch used."""
+    retried = LlamaCppBackend._restore_batch_args(
+        ["/fake/llama-server", "--batch-size", "2048", "--ubatch-size", "2048"],
+        4,
+        None,
+        8,
+    )
+
+    assert retried[retried.index("--batch-size") + 1] == "8"
+    assert "--ubatch-size" not in retried
+
+
 def test_a_text_only_load_keeps_the_llama_cpp_batch_defaults(tmp_path):
     """The floor is bought with compute buffers four times the size, so it has to stop
     at the launches that need it. No projector, no non-causal encode, no flags."""
