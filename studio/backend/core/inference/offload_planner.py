@@ -585,6 +585,12 @@ class Plan:
     # device) and from "does not fit": a declined load is feasible as planned and
     # a smaller context may make it worth taking, which is what FIT_ONLY tries.
     declined_by_gate: bool = False
+    # The decline is a MEASUREMENT rather than a comparison, and it does not move
+    # with the context. A plain gate decline invites FIT_ONLY to try a smaller one;
+    # a veto does not, because the same spill at 31744 tokens per slot is the same
+    # trade that measured worse at 32768. The fall-through is llama.cpp's own fit at
+    # the context the caller asked for, not a shorter context the planner picked.
+    veto: bool = False
     # The planner priced this launch at ``n_ctx`` and it fits as described. False
     # on every abstain, which also carries a reason and may carry an n_ctx, so a
     # caller cannot otherwise tell "fits at 32768, nothing to move" from "could
@@ -1788,10 +1794,13 @@ def plan_placement(
         )
         if plan is None:
             continue
-        if not (plan.declined_by_gate and may_shrink):
+        if not (plan.declined_by_gate and may_shrink and not plan.veto):
             return plan
         # The gate refused a FEASIBLE plan. Context is the last thing to give up,
-        # but it is the only lever left, so keep the refusal and try below.
+        # but it is the only lever left, so keep the refusal and try below. A veto
+        # is not that: it is a measurement the context does not move, and shrinking
+        # under it walked down to the first per-slot context below the long-prompt
+        # point and took the SAME spill there.
         declined = declined or plan
 
     # Nothing fit at the requested context, or the gate refused it. Only now may
@@ -2735,10 +2744,11 @@ def _cost_gate(
             Plan(
                 n_ctx = n_ctx,
                 declined_by_gate = True,
+                veto = True,
                 reason = (
                     f"MoE at {per_slot_ctx} tokens per slot: -ot measured 0.94 to 0.97x of "
                     "llama.cpp's own layerwise fit at a 32K prompt (5 cells, 2 models, 3 "
-                    "hosts), so it is left to --fit on"
+                    "hosts), so it is left to --fit on at the context asked for"
                 ),
             ),
             0.0,

@@ -470,12 +470,16 @@ def test_the_moe_gate_boundary_is_inclusive():
 
 
 def test_a_declined_moe_keeps_its_first_refusal_when_no_context_is_accepted():
-    """FIT_ONLY treats a gate decline as the last lever and walks down from the
-    requested context. Below the long-prompt point this MoE is an exact tie with
-    the fitter at every context, so nothing is ever accepted, and what comes back
-    is the ORIGINAL refusal at the requested context, not the last one tried."""
+    """What comes back is the refusal at the REQUESTED context, not the last one tried.
+
+    Re-anchored: this cell is now refused by the long-prompt veto, which is a
+    measurement the context does not move, so FIT_ONLY never walks down at all and
+    the answer is the requested context by construction. It used to reach the same
+    answer the long way -- the ladder ran, every context below the long-prompt point
+    was an exact tie with the fitter, nothing was accepted, and the original refusal
+    was kept -- and both routes have to end here."""
     got = _moe_cell(context_policy = ContextPolicy.FIT_ONLY)
-    assert got.declined_by_gate and got.n_ctx == 32768
+    assert got.declined_by_gate and got.veto and got.n_ctx == 32768
     assert "tokens per slot" in got.reason, got.reason
 
 
@@ -878,3 +882,21 @@ def test_the_fallbacks_live_cache_is_capped_at_the_slot_window():
     assert one is not None and four is not None and unified is not None
     assert abs(live_per_moved_layer(one) / live_per_moved_layer(four) - 4) < 0.05
     assert abs(live_per_moved_layer(unified) / live_per_moved_layer(one) - 1) < 0.05
+
+
+def test_the_moe_long_prompt_veto_falls_through_at_the_context_asked_for():
+    """A veto is a measurement, and a smaller context does not change it.
+
+    ``declined_by_gate`` invites FIT_ONLY to try a shorter context, so the ladder
+    walked this cell down to the first per-slot context below the long-prompt
+    point and accepted the SAME spill at 31744. Nothing measured says the spill
+    is better there: the 5 cells behind the veto say -ot loses to llama.cpp's own
+    layerwise fit on MoE at a long prompt, so the fall-through is that fit, at the
+    context the caller asked for and not at one the planner picked instead.
+    """
+    opts = gated(host = HostProfile(threads = 12), context_policy = ContextPolicy.FIT_ONLY)
+    got = plan_placement(graded_moe_layout(), [20 * GIB], 200 * GIB, 65536, opts = opts)
+    assert got.declined_by_gate and got.veto
+    assert not got.spills_anything and not got.changed, got.reason
+    assert got.n_ctx == 65536, got.reason
+    assert "tokens per slot" in got.reason and "--fit on" in got.reason, got.reason
