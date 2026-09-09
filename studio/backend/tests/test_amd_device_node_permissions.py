@@ -5230,3 +5230,106 @@ def test_that_check_sees_a_helper_the_harnesses_would_not_have():
         and any(re.search(rf"(^|[\s;&|(]){re.escape(name)}($|[\s;&|)])", l) for l in body)
     }
     assert called == {"_ensure_rocm_probe_env", "_amd_rocm_gpu_visible"}
+
+
+def _multilib_soname(tmp_path, *, bitnesses):
+    """Two loader search directories carrying one soname, and the manifest naming it.
+
+    Named the way a Debian multilib host names them, because the ORDER is the subject:
+    sorted(glob) puts i386-linux-gnu ahead of x86_64-linux-gnu, so a search that stops at
+    the first hit reads the wrong copy on the commonest multilib layout there is.
+    """
+    import json
+
+    dirs = []
+    for _arch, _bits in (("i386-linux-gnu", 32), ("x86_64-linux-gnu", 64)):
+        _dir = tmp_path / _arch
+        _dir.mkdir()
+        dirs.append(str(_dir))
+        if _bits in bitnesses:
+            (_dir / "libvk.so").write_bytes(
+                b"\x7fELF" + bytes([1 if _bits == 32 else 2]) + b"\x00" * 11
+            )
+    path = tmp_path / "nvidia_icd.json"
+    path.write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.0.0",
+                "ICD": {"library_path": "libvk.so", "api_version": "1.3.0"},
+            }
+        ),
+        encoding = "utf-8",
+    )
+    return str(path), dirs
+
+
+def test_a_bare_soname_resolves_to_the_copy_this_process_could_load(monkeypatch, tmp_path):
+    """Both bitnesses of one soname, which is what a multilib driver install looks like.
+    ld.so picks the copy matching the process; the reconstructed search order does not, and
+    i386 sorts first, so the first hit was the 32-bit one. _an_icd_is_32_bit then read that
+    object and discarded a manifest whose driver the loader loads -- which either withholds
+    the whole no-driver repair or reports the loader as AMD-only when it is not.
+
+    Fails before the fix, which returned the first match."""
+    manifest, dirs = _multilib_soname(tmp_path, bitnesses = {32, 64})
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: dirs)
+    assert amd._icd_library_path(manifest).startswith(dirs[1])
+    assert amd._an_icd_is_32_bit(manifest) is False
+
+
+def test_a_soname_only_the_wrong_bitness_answers_is_still_32_bit(monkeypatch, tmp_path):
+    """The control. Without it the rule could be "never 32-bit", which puts back every
+    unloadable 32-bit registration the bitness filter exists to drop."""
+    manifest, dirs = _multilib_soname(tmp_path, bitnesses = {32})
+    monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: dirs)
+    assert amd._icd_library_path(manifest).startswith(dirs[0])
+    assert amd._an_icd_is_32_bit(manifest) is True
+
+
+def _manifest_missing(tmp_path, name, *, drop):
+    """A manifest with one loader-required field removed, and its library on disk."""
+    import json
+
+    lib = tmp_path / f"{name}.so"
+    lib.write_bytes(b"\x7fELF\x02" + b"\x00" * 11)
+    icd = {"library_path": str(lib), "api_version": "1.3.0"}
+    body = {"file_format_version": "1.0.0", "ICD": icd}
+    if drop in icd:
+        del icd[drop]
+    else:
+        del body[drop]
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(body), encoding = "utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("field", ["file_format_version", "api_version"])
+def test_a_manifest_the_loader_skips_is_not_a_driver(tmp_path, field):
+    """loader_parse_icd_manifest returns VK_ERROR_INCOMPATIBLE_DRIVER on a missing
+    file_format_version and on a missing api_version, exactly as it does on a missing
+    library_path. Reading library_path alone counted a registration the loader refuses,
+    which suppresses the no-driver repair or calls the loader AMD-only when it is neither.
+
+    Fails before the fix for both fields."""
+    assert amd._icd_manifest_is_usable(_manifest_missing(tmp_path, field, drop = field)) is False
+
+
+def test_a_version_the_loader_does_not_recognise_is_still_a_driver(tmp_path):
+    """The control, and the line between the two. An unknown file_format_version major is
+    the one thing here the loader does NOT skip for: it logs "may cause errors" and carries
+    on, so refusing it would drop a driver that loads. Only absence decides."""
+    import json
+
+    lib = tmp_path / "libvk.so"
+    lib.write_bytes(b"\x7fELF\x02" + b"\x00" * 11)
+    path = tmp_path / "future_icd.json"
+    path.write_text(
+        json.dumps(
+            {
+                "file_format_version": "9.0.0",
+                "ICD": {"library_path": str(lib), "api_version": "1.3.0"},
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert amd._icd_manifest_is_usable(str(path)) is True

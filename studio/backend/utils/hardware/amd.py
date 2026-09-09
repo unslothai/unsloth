@@ -939,11 +939,25 @@ def _icd_manifest_is_usable(path: str) -> bool:
     is resolved rather than assumed: it is the form NVIDIA registers under, and a removed
     package leaves the manifest behind, so trusting the name counted a driver that is not
     there and withheld the reinstall half of the repair.
+
+    The three fields checked are the three loader_parse_icd_manifest skips the file for:
+    a missing or non-string file_format_version, a missing ICD.library_path, and a missing
+    or non-string ICD.api_version. An UNRECOGNISED file_format_version is deliberately not
+    one of them -- the loader only logs "may cause errors" there and carries on, so
+    refusing it would drop a driver the loader loads.
     """
     try:
         with open(path, "r", encoding = "utf-8") as handle:
-            library = (json.load(handle).get("ICD") or {}).get("library_path")
+            manifest = json.load(handle)
+        icd = manifest.get("ICD") or {}
+        version = manifest.get("file_format_version")
+        library = icd.get("library_path")
+        api = icd.get("api_version")
     except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(version, str) or not version.strip():
+        return False
+    if not isinstance(api, str) or not api.strip():
         return False
     if not isinstance(library, str) or not library.strip():
         return False
@@ -997,14 +1011,25 @@ def _icd_library_path(path: str) -> "str | None":
             return library if os.path.isfile(library) else None
         except OSError:
             return None
+    # Every match, not the first: a multilib host carries the same soname in both
+    # bitnesses, ld.so picks the one matching the process, and the search order does not.
+    # sorted(glob) puts /usr/lib/i386-linux-gnu ahead of x86_64, so taking the first hit
+    # handed the 32-bit copy to _an_icd_is_32_bit and discarded a driver the loader loads.
+    _first: "str | None" = None
     for _directory in _dynamic_loader_search_dirs():
         _candidate = os.path.join(_directory, library)
         try:
-            if os.path.isfile(_candidate):
-                return _candidate
+            if not os.path.isfile(_candidate):
+                continue
         except OSError:
             continue
-    return None
+        if _library_file_is_32_bit(_candidate) is False:
+            return _candidate
+        if _first is None:
+            _first = _candidate
+    # No 64-bit copy: hand back whatever is there, so a genuinely 32-bit-only
+    # registration is still read from the object rather than from its filename.
+    return _first
 
 
 def _icd_manifest_declares_32_bit(path: str) -> "bool | None":
