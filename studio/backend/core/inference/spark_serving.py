@@ -2279,6 +2279,24 @@ async def load_failed() -> None:
     await _STATE.load_failed()
 
 
+async def reconcile_internal_load() -> None:
+    """Drop a two-node topology before a load that did not come through ``before_load``.
+
+    The auto-switch and preview paths call the loader directly, so nothing here plans or
+    re-attaches for them. With replicas up that is not a missed optimisation but wrong answers:
+    the peer keeps serving the model it was given, the supervisor repoints only the local
+    backend, and the router then alternates requests between two sets of weights. A layer split
+    is worse still, since the local server's RPC device is about to be pulled out from under it.
+
+    Falling back to this node alone is the correct answer for both, and the next load through
+    ``/load`` re-attaches. A no-op with nothing attached, so it costs an untopologied Spark and
+    every other machine nothing."""
+    if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
+        return
+    logger.info("spark serving: serving on this node only for a load that bypassed the planner")
+    await _STATE.detach()
+
+
 async def shutdown() -> None:
     if _STATE is None:
         return

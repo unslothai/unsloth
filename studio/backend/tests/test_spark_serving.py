@@ -2280,3 +2280,35 @@ def test_an_undecided_mtp_verdict_is_left_to_the_backend(cluster, monkeypatch):
     mtp = {"mtp": "unknown", "reason": "GGUF not on disk before the load", "request": {}}
     ss.reconcile_split_speculation(groups, mtp)
     assert mtp["request"]["speculative_type"] == "off"
+
+
+def test_a_load_that_bypassed_the_planner_stops_using_the_peer(cluster):
+    # The auto-switch and preview paths call the loader directly, so nothing plans or
+    # re-attaches for them. Leaving the peer up means the router alternates requests between
+    # the model this load replaces and the new one.
+    st = ss.state()
+    stopped = []
+
+    class _Peer:
+        async def stop(self):
+            stopped.append("peer")
+
+    class _Router:
+        async def stop(self):
+            stopped.append("router")
+
+    st.topology = "replicas"
+    st.attached_backend = object()
+    st.peer_process = _Peer()
+    st.router = _Router()
+
+    run(ss.reconcile_internal_load())
+    assert stopped == ["router", "peer"]
+    assert st.topology == "single"
+    assert st.attached_backend is None
+
+    # Nothing attached: no work, on a Spark or anywhere else.
+    stopped.clear()
+    run(ss.reconcile_internal_load())
+    assert stopped == []
+    assert st.topology == "single"

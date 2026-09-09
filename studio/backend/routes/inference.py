@@ -13225,6 +13225,7 @@ async def _run_tracked_load_model_impl(
                 current_request_counted = current_request_counted,
                 on_reload_confirmed = on_reload_confirmed,
                 load_cancel_event = attempt.cancel_event,
+                spark_planned = True,
             )
         except BaseException:
             # A failed or cancelled load leaves nothing for the peer to serve.
@@ -13369,8 +13370,17 @@ async def _load_model_impl(
     on_reload_confirmed = None,
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
+    spark_planned: bool = False,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
+
+    if not spark_planned:
+        # Paired DGX Spark only, and a no-op with nothing attached. Every caller that reaches
+        # here without going through _run_tracked_load_model_impl skipped the topology
+        # planning, so an attached peer would be left serving the model this load replaces.
+        from core.inference import spark_serving
+
+        await spark_serving.reconcile_internal_load()
 
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
