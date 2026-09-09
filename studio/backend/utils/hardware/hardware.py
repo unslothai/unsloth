@@ -5716,7 +5716,7 @@ def _indexed_archive(directories: list, base: str, ext: str, siblings: dict) -> 
         if not index.is_file():
             continue
         try:
-            weight_map = json.loads(index.read_text()).get("weight_map") or {}
+            weight_map = json.loads(index.read_text(encoding = "utf-8")).get("weight_map") or {}
             named = {directory / name for name in weight_map.values()}
         except (OSError, ValueError, AttributeError, TypeError):
             continue
