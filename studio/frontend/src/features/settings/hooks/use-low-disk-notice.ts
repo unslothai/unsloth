@@ -14,38 +14,19 @@ function formatGb(value: number | null | undefined): string {
   return value >= 100 ? value.toFixed(0) : value.toFixed(1);
 }
 
-/**
- * How often the notice asks for a disk reading. Slow on purpose: a disk fills
- * over hours, and the two screens that show live system figures poll at 3 s and
- * 5 s only while they are open.
- */
+/** Slow on purpose: a disk fills over hours. */
 const LOW_DISK_POLL_MS = 60_000;
 
 /**
  * Warn once when free disk crosses a low or critical threshold, and offer the
  * caches as the thing to trim.
  *
- * Mounted in the app shell, not in Settings. Two earlier placements were wrong
- * and both failed the same way, by warning only people who were already looking
- * at the disk figure:
- *
- *   1. In the resources tab, where it hung off that tab's own poll.
- *   2. In StudioPage, which is the /studio training route rather than a shell,
- *      so anyone sitting in Chat, Images or Audio never subscribed at all.
- *
- * It also has to do its own fetching, which the second version did not.
- * subscribeSystemInfo only adds a callback to a Set: it never requests
- * /api/system and never replays the cached reading to a new subscriber, so a
- * subscriber alone is notified only if some other caller happens to make an
- * uncached request. The only two callers are the floating monitor and the
- * resources tab, both lazily mounted and both gated on being open, which left
- * this notice silent for exactly the user it exists for. useSystemInfo owns a
- * real interval, so the reading arrives whether or not anything else is on
- * screen.
- *
- * observeDiskPressure holds the notified level in module scope for the browser
- * session, so a threshold is announced when it is CROSSED, not once per poll
- * while the disk sits below it.
+ * Mounted in the app shell, and owning a real poll, because both of those are
+ * what reach the person who has not opened Settings: subscribeSystemInfo only
+ * adds a callback to a Set, and its only two callers are the floating monitor
+ * and the resources tab, both gated on being open. observeDiskPressure holds
+ * the notified level for the browser session, so a threshold is announced when
+ * it is CROSSED rather than once per poll.
  */
 export function useLowDiskNotice(): void {
   const t = useT();

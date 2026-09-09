@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The low-disk toast rides the System tab's existing 3s poll, so the property that
-// matters is not "does it fire" but "how often": once per crossing, and never again
-// until free space climbs clear of the level that was announced.
+// The property that matters is not "does it fire" but "how often": once per
+// crossing, and never again until free space climbs clear of that level.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -21,7 +20,6 @@ import {
   resetLowDiskNotices,
 } from "../src/features/settings/low-disk.ts";
 
-/** Every .ts/.tsx file under a directory, so "mounted once" can be checked. */
 function sourceFiles(directory: URL): URL[] {
   const found: URL[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -69,7 +67,7 @@ test("a disk the host could not read is not a warning", () => {
 });
 
 test("crossing the low threshold warns exactly once", () => {
-  // 3s poll: the same reading arrives twenty times a minute.
+  // The same reading arrives on every poll.
   const readings = [100, 30, 19, 18, 18, 17, 18, 19];
   assert.deepEqual(announce(readings), ["low"]);
 });
@@ -79,16 +77,14 @@ test("falling from low to critical is worth saying again", () => {
 });
 
 test("a critical disk does not re-warn as low when it recovers a little", () => {
-  // Freeing 6 GB clears critical but is still below the low threshold, so the
-  // toast that is owed has already been given.
+  // 6 GB clears critical and is still below low, which was already said.
   assert.deepEqual(announce([3, 11, 4]), ["critical", "critical"]);
   assert.deepEqual(announce([3, 8, 4]), ["critical"]);
 });
 
 test("recovering out of critical does not disarm the low warning too", () => {
-  // 21 GB clears critical and its 5 GB margin, but not low's own re-arm point of
-  // 25 GB. Storing the instantaneous pressure forgot low there and paid for it
-  // with a second low toast on the next dip.
+  // 21 GB clears critical's margin but not low's own re-arm point of 25 GB, and
+  // the instantaneous pressure forgot low there and re-toasted on the next dip.
   assert.deepEqual(announce([3, 21, 19]), ["critical"]);
   assert.deepEqual(announce([3, LOW_DISK_FREE_GB + REARM_MARGIN_GB, 19]), [
     "critical",
@@ -140,29 +136,21 @@ test("the notice fetches its own readings rather than waiting to be told", () =>
     ),
     "utf8",
   );
-  // This assertion used to be its own inverse: it required subscribeSystemInfo
-  // and BANNED useSystemInfo, on the belief that the app runs a system poll to
-  // attach to. It does not. subscribeSystemInfo only adds a callback to a Set;
-  // it never requests /api/system and never replays the cached reading, so a
-  // bare subscriber hears something only when the floating monitor or the
-  // resources tab happens to be open and fetching. Both are lazily mounted and
-  // gated on being open, which left this notice silent for precisely the user
-  // who never opens Settings. The test passed the whole time.
+  // subscribeSystemInfo only adds a callback to a Set: it never requests
+  // /api/system, so a bare subscriber hears nothing unless the floating monitor
+  // or the resources tab happens to be open, which is not this notice's user.
   assert.match(hook, /useSystemInfo\(\{ pollMs: LOW_DISK_POLL_MS \}\)/);
   assert.match(hook, /observeDiskPressure\(systemInfo\.disk\)/);
   assert.match(hook, /toast\.warning\(/);
-  // Slow on purpose: a disk fills over hours, and this one runs on every route.
+  // Slow on purpose: a disk fills over hours and this runs on every route.
   assert.match(hook, /LOW_DISK_POLL_MS = 60_000/);
   // The toast has to lead somewhere: the Storage section it is about.
   assert.match(hook, /scrollTarget: "resources-caches"/);
 });
 
 test("the notice is mounted in the app shell, not on one route", () => {
-  // It lived in the resources tab first, which warned only the people already
-  // looking at the disk figure, and then on /studio, which warned only the
-  // people who were training. A full disk belongs to whichever route the user
-  // is on. The root layout wraps every signed-in route and, unlike a page,
-  // stays mounted across navigation.
+  // A full disk belongs to whichever route the user is on, and the root layout
+  // is the only thing that stays mounted across navigation.
   const root = readFileSync(
     new URL("../src/app/routes/__root.tsx", import.meta.url),
     "utf8",

@@ -221,8 +221,7 @@ const inventory = (path: string) => ({
       group: "models",
       optIn: true,
       paths: [path],
-      // Zero bytes with entries in it: a clear is offered on what is there to
-      // remove, not on what it will free.
+      // Zero bytes with entries in it: a clear is offered on what is there.
       sizeBytes: 0,
       entryCount: 3,
       present: true,
@@ -241,10 +240,8 @@ const settle = async () => {
 };
 
 test("the newest measurement wins, whatever order the walks finish in", async () => {
-  // A cold walk of a large hub takes tens of seconds, so the load a mount starts
-  // can still be running when a folder save starts a forced one. Without a
-  // generation guard the slower FIRST request installs last and the rows settle
-  // on the folder the user moved off, while a clear resolves the new one.
+  // Without a generation guard the slower FIRST request installs last, so the
+  // rows settle on the folder the user moved off while a clear resolves the new.
   const pending: ((value: unknown) => void)[] = [];
   let version = 0;
   const render = driveRows({
@@ -272,10 +269,8 @@ test("the newest measurement wins, whatever order the walks finish in", async ()
 });
 
 test("a clear waits for the measurement that is replacing the rows", async () => {
-  // The three section buttons already honour loading. While a forced re-measure
-  // is running the rows still show the PREVIOUS inventory, and purgeCaches
-  // resolves its key against the current one on the backend, so a per-row clear
-  // left enabled there is the destructive mismatch again.
+  // While a re-measure runs the rows still show the PREVIOUS inventory, and
+  // purgeCaches resolves its key against the current folder on the backend.
   const pending: ((value: unknown) => void)[] = [];
   let version = 0;
   const render = driveRows({
@@ -308,10 +303,8 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
 });
 
 test("a measurement that failed leaves the clears disabled", async () => {
-  // The rows keep the last inventory that arrived, which is the folder the user
-  // moved off, while purgeCaches resolves each key against the new one. A
-  // failure is the same hazard as a walk still running, so it holds the same
-  // controls.
+  // The same hazard as a walk still running: the rows keep the last inventory
+  // that arrived while purgeCaches resolves each key against the new folder.
   const pending: {
     resolve: (value: unknown) => void;
     reject: (reason: unknown) => void;

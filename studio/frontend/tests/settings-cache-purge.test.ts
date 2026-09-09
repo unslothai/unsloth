@@ -177,9 +177,8 @@ test("a bulk clear leaves out the model cache, the blocked and the empty", () =>
 });
 
 test("a cache that measures zero bytes but holds entries is still cleared", () => {
-  // A tree of empty directories or dangling symlinks costs inodes and directory
-  // blocks and the backend can empty it, so a size test would hide the one
-  // cache a user cannot easily clear by hand.
+  // An empty-directory tree costs inodes, the backend can empty it, and it is
+  // the one cache a user cannot easily clear by hand.
   const { api } = loadApi(() => json({}));
   const inventory = api.inventoryFromApi(
     // biome-ignore lint/style/useNamingConvention: API schema

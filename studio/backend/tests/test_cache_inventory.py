@@ -387,17 +387,8 @@ def test_a_purge_forgets_the_size_it_measured_before_it(tmp_path, isolated_cache
 
 
 def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
-    """A bulk purge may cost a recompile or a re-download. It may not cost a
-    running job.
-
-    Every other cache here is rebuilt by work the user has not started yet. The
-    unsloth compiled cache is different: a training or inference worker imports
-    generated modules from it lazily, long after the job began, and
-    compiled_cache_lock only serialises against a sibling backend, never against
-    a spawned worker that holds no lock. So clearing it mid-run forfeits hours of
-    compute, and a button labelled "free up space" must not be able to do that
-    without the user choosing it specifically.
-    """
+    """A bulk purge may cost a recompile or a re-download, not a running job: a
+    worker imports generated modules from here long after it started."""
     definition = definition_for("unsloth_compiled")
     assert definition.opt_in is True
 
@@ -415,13 +406,8 @@ def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
 
 
 def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch):
-    """A junction is the same hazard as a symlink and fails the same test.
-
-    Since 3.8 only IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so ``is_symlink()`` is
-    False for a Windows directory junction while ``realpath()`` follows it to
-    its target. Without a tag check, UV_CACHE_DIR pointed at a junction would
-    empty whatever the junction names.
-    """
+    """Only IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so is_symlink() is False for a
+    junction while realpath() follows it and the TARGET would be emptied."""
     target = tmp_path / "somewhere" / "deep"
     target.mkdir(parents = True)
     kept = _write(target / "not-a-cache.txt", "mine")
@@ -442,12 +428,7 @@ def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch
 def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """An opt-in cache is only ever cleared when it is asked for by name.
-
-    Nothing stops a variable from putting one inside another cache, and emptying
-    the outer root would then delete it anyway: HF_DATASETS_CACHE below
-    UV_CACHE_DIR costs the re-download the opt-in exists to prevent.
-    """
+    """HF_DATASETS_CACHE below UV_CACHE_DIR would otherwise go with the outer root."""
     uv = tmp_path / "uv"
     datasets = uv / "hf-datasets"
     _write(uv / "wheels" / "wheel.whl", "w" * 10)
@@ -470,12 +451,8 @@ def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
 def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """HF_HUB_CACHE=/mnt/hf-cache makes the DISPLAY home the hub itself.
-
-    Protecting the display home there would mark the model cache permanently
-    unclearable and say so in the row, while protecting no credential: the token
-    lives in the HF home, which is protected on its own.
-    """
+    """HF_HUB_CACHE=/mnt/hf-cache makes the DISPLAY home the hub itself, and
+    protecting it there guards no credential: the token lives in the HF home."""
     from utils import hf_cache_settings
 
     hub = tmp_path / "hf-cache"
@@ -500,12 +477,7 @@ def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
 def test_the_inductor_cache_follows_the_account_name_torch_uses(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """torch derives it from getpass.getuser(), which a bare uid does not match.
-
-    getpass reads LOGNAME/USER/LNAME/USERNAME and then the pwd account name, so
-    a container with none of USER/USERNAME set puts the cache at
-    torchinductor_root while a uid fallback looks at torchinductor_0.
-    """
+    """A container with no USER puts torch's cache at torchinductor_root, not _0."""
     import tempfile
 
     monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
@@ -525,11 +497,8 @@ def test_the_inductor_cache_follows_the_account_name_torch_uses(
 def test_the_vllm_cache_is_vllms_own_default_on_every_platform(
     tmp_path, monkeypatch, isolated_caches, platform
 ):
-    """vllm/envs.py resolves XDG_CACHE_HOME or ~/.cache, then "vllm", everywhere.
-
-    The platform cache convention agrees on Linux only: it would look under
-    ~/Library/Caches on macOS and LOCALAPPDATA on Windows, where vLLM does not.
-    """
+    """vllm/envs.py is XDG_CACHE_HOME or ~/.cache then "vllm", which the platform
+    convention matches on Linux only."""
     import sys as _sys
 
     monkeypatch.delenv("VLLM_CACHE_ROOT", raising = False)
@@ -548,12 +517,7 @@ def test_the_vllm_cache_honours_xdg_because_vllm_does(tmp_path, monkeypatch, iso
 
 
 def test_a_refused_root_is_never_walked(tmp_path, monkeypatch, isolated_caches):
-    """The gate runs before the size walk, not after it.
-
-    A root the gate will refuse (UV_CACHE_DIR=/ or the home directory) would
-    otherwise be measured recursively on every open of the Resources tab, before
-    the refusal is ever reached.
-    """
+    """Or the Resources tab measures it recursively on every open."""
     outputs = tmp_path / "outputs"
     monkeypatch.setattr(
         cache_inventory, "protected_trees", lambda: {Path(os.path.realpath(outputs))}
@@ -578,12 +542,8 @@ def test_a_refused_root_is_never_walked(tmp_path, monkeypatch, isolated_caches):
 def test_a_cache_anywhere_under_the_documents_folder_is_refused(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """Documents is a protected TREE, not only a protected path.
-
-    Every other user-data root is in both lists; without this one, an inherited
-    UV_CACHE_DIR=~/Documents/archive is reported purgeable and clearing it takes
-    whatever is in that folder.
-    """
+    """A protected TREE, not only a protected path: an inherited
+    UV_CACHE_DIR=~/Documents/archive would otherwise be reported purgeable."""
     from utils.paths import storage_roots
 
     documents = tmp_path / "Documents"
@@ -599,12 +559,8 @@ def test_a_cache_anywhere_under_the_documents_folder_is_refused(
 
 
 def test_a_junction_inside_a_cache_is_not_walked(tmp_path, monkeypatch, isolated_caches):
-    """A junction is a directory to is_dir() and not a link to is_symlink().
-
-    Descending into one sizes its target instead of the cache, so the row
-    advertises bytes a clear will not free, and a junction back to an ancestor
-    never terminates.
-    """
+    """is_dir() sees a directory and is_symlink() no link, so descending sizes the
+    junction's target, and one pointing at an ancestor never terminates."""
     root = tmp_path / "uv"
     _write(root / "real.bin", "r" * 10)
     _write(root / "wheels" / "junction" / "elsewhere.bin", "z" * 4096)
@@ -620,12 +576,8 @@ def test_a_junction_inside_a_cache_is_not_walked(tmp_path, monkeypatch, isolated
 def test_a_compiled_cache_that_survives_the_clear_says_so(
     tmp_path, monkeypatch, only_the_configured_compiled_cache
 ):
-    """cache_cleanup swallows every unlink and rmtree failure.
-
-    A read-only directory or a locked file therefore looks identical to a clean
-    clear from here, and the UI showed a success toast over a cache still on
-    disk.
-    """
+    """cache_cleanup swallows every failure, so a read-only directory looked
+    identical to a clean clear and the UI said so."""
     from utils import cache_cleanup
 
     compiled = tmp_path / "compiled_cache"
@@ -642,12 +594,7 @@ def test_a_compiled_cache_that_survives_the_clear_says_so(
 
 
 def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolated_caches):
-    """The Hub inventory is invalidated on every app-driven cache mutation.
-
-    Emptying hf_hub or hf_datasets removes the repositories that scan reports,
-    so without this the Hub and the model picker keep listing deleted models for
-    the scan's TTL.
-    """
+    """Or the picker keeps listing deleted models for the scan's TTL."""
     from hub.utils import inventory_scan
 
     _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
@@ -665,12 +612,8 @@ def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolat
 def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """MPLCONFIGDIR keeps matplotlibrc, so a broader clear must not take it.
-
-    Its own clear is pattern-limited for exactly that reason. Nothing stops a
-    variable from putting it inside another cache, and emptying the outer root
-    would delete the configuration the narrower clear was written to keep.
-    """
+    """MPLCONFIGDIR keeps matplotlibrc, which is why its own clear is
+    pattern-limited, so an outer root must not take it whole."""
     uv = tmp_path / "uv"
     config = uv / "matplotlib"
     _write(uv / "wheels" / "wheel.whl", "w" * 10)
@@ -694,13 +637,8 @@ def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
 def test_a_cache_home_left_behind_is_protected_but_never_purged(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """Only the ACTIVE Hugging Face home is a purge root.
-
-    The history the other homes come from is appended to by an endpoint an API
-    key may call, while the purge endpoint refuses one, so resolving purge roots
-    through it would let a caller that cannot delete pick what a later clear
-    deletes.
-    """
+    """An API key may append to that history through an endpoint the purge route
+    itself refuses, so only the ACTIVE home is a purge root."""
     from utils import hf_cache_settings
 
     previous = tmp_path / "old-home"
@@ -734,11 +672,7 @@ def test_a_cache_home_left_behind_is_protected_but_never_purged(
 
 
 def test_the_pip_cache_is_the_one_pip_reports(tmp_path, monkeypatch, isolated_caches):
-    """pip.conf can move the cache and Studio's fallback pip calls honour it.
-
-    They do not pass --isolated, so the platform default is the wrong answer
-    whenever cache-dir is configured. pip is asked for its own.
-    """
+    """pip.conf moves the cache and Studio's pip calls do not pass --isolated."""
     import subprocess as real_subprocess
 
     from utils import cache_inventory as module
@@ -781,12 +715,8 @@ def test_the_pip_probe_runs_once_and_survives_a_failure(tmp_path, monkeypatch, i
 def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """An explicit HF_HUB_CACHE makes cache_home the hub's PARENT, for display.
-
-    Hugging Face still keeps assets and datasets under the real home, so reading
-    the display home both misses the caches that exist and offers a directory of
-    somebody else's next to the hub.
-    """
+    """An explicit HF_HUB_CACHE makes cache_home the hub's PARENT, so the display
+    home misses the real assets and datasets and offers somebody else's."""
     from utils import hf_cache_settings
 
     project = tmp_path / "project"
@@ -814,11 +744,7 @@ def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
 def test_a_measurement_that_began_before_a_purge_is_not_remembered(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A forced scan in one tab can finish after a purge in another.
-
-    It read the cache before the deletion, so storing its answer would go on
-    offering space that is already gone for the rest of the memo window.
-    """
+    """Or it offers space already gone for the rest of the memo window."""
     root = tmp_path / "uv"
     _write(root / "wheel.whl", "w" * 100)
     definition = definition_for("uv")
@@ -840,11 +766,8 @@ def test_a_measurement_that_began_before_a_purge_is_not_remembered(
 
 
 def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_caches):
-    """A redirected child picks its stdout encoding from the locale.
-
-    That is the ANSI codepage on Windows and ASCII under a C locale, so a cache
-    path with non-ASCII in it comes back mangled and resolves to nothing.
-    """
+    """A redirected child takes the locale encoding, so a non-ASCII cache path
+    comes back mangled and resolves to nothing."""
     import subprocess as real_subprocess
 
     from utils import cache_inventory as module
@@ -870,12 +793,8 @@ def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_c
 def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """cache_safe points HF_DATASETS_CACHE at the Studio cache mid-load.
-
-    load_dataset is writing Arrow files and lock state there for the length of
-    that load, in this process, so a clear that followed the override would
-    delete under a load that is still running.
-    """
+    """cache_safe points HF_DATASETS_CACHE there mid-load, in this process, while
+    load_dataset writes Arrow files and lock state into it."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -905,11 +824,8 @@ def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
 def test_the_matplotlib_cache_is_where_matplotlib_puts_it(
     tmp_path, monkeypatch, isolated_caches, platform, name, expected, patterned
 ):
-    """get_cachedir takes the XDG branch for linux and freebsd only.
-
-    Everywhere else it is ~/.matplotlib, which is get_configdir() as well, so
-    matplotlibrc sits beside the font list and only cache entries may go.
-    """
+    """get_cachedir takes the XDG branch for linux and freebsd only; elsewhere it
+    is ~/.matplotlib, which is get_configdir() too, so only cache entries go."""
     import sys as _sys
 
     from utils import cache_inventory as module
@@ -944,12 +860,8 @@ def test_the_cuda_cache_is_roaming_appdata_on_windows(tmp_path, monkeypatch, iso
 
 
 def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
-    """__pycache__ next to the source is not ours, but the user-wide dir is.
-
-    UserWideCacheLocator takes over whenever the in-tree one cannot write, which
-    is any install owned by another account, and it uses AppDirs(appname =
-    "numba", appauthor = False).user_cache_dir.
-    """
+    """__pycache__ next to the source is not ours, but UserWideCacheLocator's
+    AppDirs("numba", appauthor = False).user_cache_dir is."""
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising = False)
     root = tmp_path / "xdg" / "numba"
     _write(root / "somemodule.nbi", "n" * 30)
@@ -960,12 +872,8 @@ def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isol
 
 
 def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isolated_caches):
-    """<studio>/bin holds the shim and the managed executables.
-
-    Descendants of the studio home are deliberately allowed, because the caches
-    live there, so this one needs naming on its own or a variable pointed at it
-    empties the install.
-    """
+    """Descendants of the studio home are deliberately allowed, since the caches
+    live there, so the shim and the managed executables need naming."""
     from utils.paths import storage_roots
 
     studio = tmp_path / "studio"
@@ -987,11 +895,7 @@ def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isol
 
 
 def test_the_npm_cache_follows_npmrc(tmp_path, monkeypatch, isolated_caches):
-    """npm's cache moves through .npmrc, which no environment variable carries.
-
-    Studio launches stdio MCP servers with npm, so it writes wherever the user's
-    config says.
-    """
+    """No environment variable carries it, and the backend launches npm for MCP."""
     import shutil as real_shutil
     import subprocess as real_subprocess
 
@@ -1030,12 +934,8 @@ def test_a_probe_that_answers_with_a_relative_path_is_ignored(monkeypatch, isola
 
 
 def test_the_recorded_install_uv_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
-    """The backend's seeded UV_CACHE_DIR is not always the one updates fill.
-
-    _setup_cache_env seeds <studio>/cache/uv, while an install whose installer
-    used a warm cache elsewhere records it and unsloth_cli's
-    _with_studio_uv_cache keeps sending updates there.
-    """
+    """The seeded UV_CACHE_DIR is not always the one updates fill: an installer
+    that used a warm cache elsewhere records it, and the CLI obeys the record."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -1085,12 +985,8 @@ def test_the_studio_temporary_workspace_is_refused(tmp_path, monkeypatch, isolat
 
 
 def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, isolated_caches):
-    """Recording the miss before the probe finished was itself the bug.
-
-    A second cold request read it as a finished failure, showed the platform
-    fallback, and then had its Clear resolve the configured path it never
-    displayed.
-    """
+    """Recording the miss before the probe finished had the second cold request
+    read it as a finished failure and show the fallback path."""
     import subprocess as real_subprocess
     import threading
 
@@ -1123,12 +1019,8 @@ def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, is
 
 
 def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, isolated_caches):
-    """begin() repoints TORCHINDUCTOR_CACHE_DIR while an image model is resident.
-
-    restore() puts it back on unload, so a row that followed it would name a
-    directory that stops existing under the user, and the Clear afterwards would
-    take the default cache nobody was shown.
-    """
+    """begin() repoints TORCHINDUCTOR_CACHE_DIR while a model is resident and
+    restore() puts it back, so a row that followed it and the clear disagree."""
     import getpass
     import tempfile
 
@@ -1158,10 +1050,8 @@ def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, 
 
 
 def test_a_configured_token_path_is_protected(tmp_path, monkeypatch, isolated_caches):
-    """HF reads the credential from HF_TOKEN_PATH instead of <home>/token.
-
-    Nothing stops that file from sitting inside a cache the row calls clearable.
-    """
+    """HF_TOKEN_PATH is read instead of <home>/token and can name a file inside a
+    clearable cache."""
     assets = tmp_path / "mnt-hf"
     token = _write(assets / "token", "hf_secret")
     _write(assets / "blob", "a" * 10)
@@ -1177,11 +1067,8 @@ def test_a_configured_token_path_is_protected(tmp_path, monkeypatch, isolated_ca
 def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """The per-repository deletes already refuse for this reason.
-
-    A download writes blobs, locks and partials straight into the hub cache, so
-    emptying the whole of it under one leaves it half written.
-    """
+    """A download writes blobs, locks and partials straight into the hub cache,
+    which is why the per-repository deletes refuse for this reason too."""
     from utils import cache_inventory as module
 
     blob = _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
@@ -1197,11 +1084,8 @@ def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
 
 
 def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
-    """A dataset download snapshot_downloads into the same hub root.
-
-    Its datasets-- entries sit beside the models-- ones, so a job in either
-    registry is writing there and either has to hold the purge off.
-    """
+    """A dataset download snapshot_downloads its datasets-- entries into the same
+    hub root, so a job in either registry has to hold the purge off."""
     from hub.utils import download_registry
     from utils import cache_inventory as module
 
@@ -1243,11 +1127,7 @@ def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
 def test_one_blocked_root_does_not_put_the_others_out_of_reach(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """purge_cache skips a refused root and carries on with the rest.
-
-    The row has to say what the clear will do, or a recorded install cache under
-    a protected folder disables clearing a large valid one beside it.
-    """
+    """purge_cache skips a refused root and carries on, so the row has to say so."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -1311,12 +1191,8 @@ def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolate
 def test_the_child_caches_ignore_a_studio_selected_models_folder(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A selected Models Folder moves the hub and xet caches, not HF_HOME.
-
-    initialize_hf_cache_environment says so in as many words, so the token,
-    assets and datasets stay at the platform default while cache_home is the
-    folder Settings displays.
-    """
+    """It moves the hub and xet caches, not HF_HOME, so the token, assets and
+    datasets stay at the platform default."""
     from utils import hf_cache_settings
 
     chosen = tmp_path / "MyModels"
@@ -1340,11 +1216,7 @@ def test_the_child_caches_ignore_a_studio_selected_models_folder(
 
 
 def test_the_npx_cache_is_cleared_with_the_package_cache(tmp_path, monkeypatch, isolated_caches):
-    """npx installs MCP server executables under <cache>/_npx.
-
-    Studio launches them that way, so those trees are npm's cache as much as
-    _cacache is, and the logs beside them are still nobody's to drop.
-    """
+    """<cache>/_npx is npm's cache as much as _cacache is; the logs are not."""
     npm = tmp_path / "npm"
     package = _write(npm / "_cacache" / "index-v5" / "entry", "c" * 20)
     executable = _write(npm / "_npx" / "abc123" / "node_modules" / "server.js", "x" * 30)
@@ -1361,12 +1233,8 @@ def test_the_npx_cache_is_cleared_with_the_package_cache(tmp_path, monkeypatch, 
 
 
 def test_a_purge_holds_the_registry_against_a_download_claimed_after_the_check(tmp_path):
-    """The reservation is what closes the check-then-delete race.
-
-    A worker claiming between a point-in-time look and the rmtree would write
-    into a tree that is already going, which is why begin_delete exists for the
-    per-repository path.
-    """
+    """The reservation closes the check-then-delete race, which is why
+    begin_delete exists for the per-repository path."""
     from hub.utils.download_registry import DownloadRegistry
 
     registry = DownloadRegistry()

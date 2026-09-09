@@ -151,8 +151,8 @@ export function purgeOutcomeFromApi(
 export async function loadCacheInventory(
   options: { refresh?: boolean } = {},
 ): Promise<CacheInventory> {
-  // refresh re-walks the caches instead of reusing a size measured a moment
-  // ago, which is what the Recheck action is for.
+  // refresh re-walks instead of reusing a size measured a moment ago, which is
+  // what Recheck is for. UI sessions only; see the route.
   const response = await authFetch(
     options.refresh
       ? "/api/settings/caches?refresh=true"
@@ -184,10 +184,8 @@ export async function purgeCaches(
 
 /** The caches a bulk clear covers: present, allowed, and free to rebuild.
  *
- * Entries rather than bytes. A tree of empty directories or dangling symlinks
- * measures zero and still costs inodes, and the backend can empty it, so a size
- * test would leave the one cache nobody can clear by hand as the one the UI
- * refuses to.
+ * Entries and not bytes: a tree of empty directories measures zero, still
+ * costs inodes, and the backend can empty it.
  */
 export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
   return inventory.caches
