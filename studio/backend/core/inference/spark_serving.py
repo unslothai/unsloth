@@ -1718,7 +1718,15 @@ class SparkServing:
             "ggml-rpc-server", peer, argv, log_dir / "rpc-server.log" if log_dir else None
         )
         await process.start()
-        if not await wait_for_port(peer, port, PEER_START_TIMEOUT_S):
+        try:
+            ready = await wait_for_port(peer, port, PEER_START_TIMEOUT_S)
+        except BaseException:
+            # Readiness is the long wait here, so it is where a cancelled load lands. Without
+            # this the rpc-server survives the cancellation holding the port, and the next
+            # attempt finds it occupied.
+            await process.stop()
+            raise
+        if not ready:
             tail = list(process.tail)[-3:]
             await process.stop()
             return _fall_back(
