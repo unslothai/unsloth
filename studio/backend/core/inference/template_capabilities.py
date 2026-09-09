@@ -60,9 +60,10 @@ class _State:
     # Names bound straight to a field of something else, so `{% set role =
     # message.role %}` still reads as a role check when the comparison uses `role`.
     origins: dict = field(default_factory = dict)
-    # Keys holding a mapping the template built, so `{% for name in by_name %}` is
-    # known to walk its keys rather than its values.
-    mappings: set = field(default_factory = set)
+    # Keys holding a mapping the template built, mapped to the field names that
+    # mapping was written with. Answers both `{% for name in by_name %}` walking keys
+    # and whether a get/pop default can be reached.
+    mappings: dict = field(default_factory = dict)
     # Set when the path hit break, so a literal loop stops simulating further items
     # for it. `continue` only ends the current iteration, so it is tracked apart:
     # the path skips the rest of the body but still sees the next item.
@@ -250,7 +251,7 @@ def _signature(state):
         frozenset(state.constructed),
         frozenset((name, repr(value)) for name, value in state.consts.items()),
         frozenset(state.origins.items()),
-        frozenset(state.mappings),
+        frozenset((name, members) for name, members in state.mappings.items()),
         state.terminated,
         state.continued,
     )
@@ -450,7 +451,7 @@ def _known_empty(node, state):
     return _constant_truth(inner, state) is False
 
 
-def _raises(node):
+def _raises(node, state = None):
     """Whether evaluating this expression always reaches `raise_exception`.
 
     Only the positions certain to be evaluated: the left operand that `and` and `or`
@@ -465,17 +466,34 @@ def _raises(node):
     ):
         return True
     if isinstance(node, (nodes.And, nodes.Or)):
-        return _raises(node.left)
+        return _raises(node.left, state)
     if isinstance(node, (nodes.Filter, nodes.Not)) and node.node is not None:
-        return _raises(node.node)
+        return _raises(node.node, state)
     if isinstance(node, nodes.Concat):
-        return any(_raises(item) for item in node.nodes)
+        return any(_raises(item, state) for item in node.nodes)
     if isinstance(node, nodes.Call):
         # Arguments are evaluated before the call, so one that raises aborts it.
-        return any(_raises(argument) for argument in node.args) or any(
-            _raises(keyword.value) for keyword in node.kwargs
-        )
+        if any(_raises(argument, state) for argument in node.args) or any(
+            _raises(keyword.value, state) for keyword in node.kwargs
+        ):
+            return True
+        # A macro whose body raises unconditionally aborts wherever it is invoked.
+        if state is not None and isinstance(node.node, nodes.Name):
+            return any(
+                _always_raises(macro.body, state)
+                for macro in _macro_group(state.macros.get(node.node.name))
+            )
     return False
+
+
+def _always_raises(body, state):
+    """Whether every render of this body reaches a raise. Only statements that always
+    run count, so a raise inside an `{% if %}` does not."""
+    return any(
+        isinstance(statement, nodes.Output)
+        and any(_raises(value, state) for value in statement.nodes)
+        for statement in body
+    )
 
 
 def _is_payload(node):
@@ -582,7 +600,24 @@ def _value_aliases(value, state, active):
             for keyword in value.kwargs:
                 _replace(result, (keyword.key,), _value_aliases(keyword.value, state, active))
             return result
-        macro = state.macros.get(value.node.name)
+        group = _macro_group(state.macros.get(value.node.name))
+        if len(group) > 1:
+            # `{% set render = plain if flag else show %}` could be either, so the
+            # catalog counts if ANY of them renders it.
+            return set().union(
+                *(
+                    _value_aliases(
+                        nodes.Call(
+                            nodes.Name(candidate.name, "load"), value.args, value.kwargs, None, None
+                        ),
+                        _with_macro(state, value.node.name, candidate),
+                        active,
+                    )
+                    for candidate in group
+                ),
+                set(),
+            )
+        macro = group[0] if group else None
         if macro is not None:
             if active.count(macro.name) >= _RECURSION_LIMIT:
                 # Deep enough. A macro that recurses without bound renders nothing
@@ -654,10 +689,13 @@ def _value_aliases(value, state, active):
                 exported = _export_scope(state, child)
                 merged |= exported.aliases
                 state.mutated.update(exported.mutated)
-                state.facts = exported.facts
             if children:
                 state.aliases.clear()
                 state.aliases.update(merged)
+                # The macro's own facts are deliberately NOT carried out. Keeping one
+                # child's facts alongside every child's aliases pairs a mutation made
+                # under one condition with a different condition, which no render
+                # takes. The caller's facts already describe what holds out here.
             return {()} if emits else set()
     # Other expressions serialize or transform their inputs.
     return (
@@ -702,10 +740,11 @@ def _bind(
             if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
             else None
         )
-        if isinstance(value, nodes.Dict):
-            state.mappings.add(key)
+        members = _mapping_keys(value)
+        if members is None:
+            state.mappings.pop(key, None)
         else:
-            state.mappings.discard(key)
+            state.mappings[key] = members
         if isinstance(value, nodes.Const):
             # `{% set ns.role = 'tool' %}` writes a literal, so the field is the
             # template's own and a role check on it means nothing.
@@ -746,14 +785,31 @@ def _bind(
         # `{% set render = show %}` hands the name the macro, so calling it runs the
         # same body. _bind_paths has already dropped any macro under this name.
         # A conditional picks one of its arms, and either may be a macro.
-        for candidate in _macro_sources(value):
-            macro = state.macros.get(candidate)
-            if macro is not None:
-                state.macros[target.name] = macro
-                break
+        selected = tuple(
+            macro
+            for candidate in _macro_sources(value)
+            for macro in _macro_group(state.macros.get(candidate))
+        )
+        if selected:
+            state.macros[target.name] = selected if len(selected) > 1 else selected[0]
     truth = _constant_truth(value, source) if value is not None else None
     if isinstance(target, nodes.Name) and truth is not None:
         state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
+
+
+def _with_macro(state, name, macro):
+    """The same state with one macro table entry narrowed to a single candidate."""
+    narrowed = state.copy()
+    narrowed.macros[name] = macro
+    narrowed.macros[macro.name] = macro
+    return narrowed
+
+
+def _macro_group(entry):
+    """A macro table entry as a tuple: an expression may have selected several."""
+    if entry is None:
+        return ()
+    return entry if isinstance(entry, tuple) else (entry,)
 
 
 def _macro_sources(value):
@@ -840,6 +896,9 @@ def _mutate(call, state, active):
     if key is None:
         return
     method = call.node.attr
+    if method in _SCALAR_RETURNING_METHODS:
+        # `catalog.count(x)` reads the receiver and answers a number: nothing moves.
+        return
     positional = {suffix for arg in call.args for suffix in _value_aliases(arg, state, active)}
     if method == "update":
         # An update REPLACES the fields it names, so whatever they held before is
@@ -940,6 +999,25 @@ def _unknown_callee(call, state):
     return not (isinstance(call.node, nodes.Name) and call.node.name in state.macros)
 
 
+def _mapping_keys(value):
+    """The field names a mapping literal was written with, or None if this is not one.
+
+    Every written key counts, including one whose value came from outside: what makes
+    a `get`/`pop` default unreachable is the key being THERE, not what it holds.
+    """
+    if isinstance(value, nodes.Dict):
+        return frozenset(
+            pair.key.value for pair in value.items if isinstance(pair.key, nodes.Const)
+        )
+    if (
+        isinstance(value, nodes.Call)
+        and isinstance(value.node, nodes.Name)
+        and value.node.name == "dict"
+    ):
+        return frozenset(keyword.key for keyword in value.kwargs)
+    return None
+
+
 def _definitely_has(node, member, state):
     """Whether the receiver is a literal this template built that visibly holds
     `member`, so a `get`/`pop` default can never be reached."""
@@ -950,7 +1028,11 @@ def _definitely_has(node, member, state):
             isinstance(pair.key, nodes.Const) and pair.key.value == member for pair in node.items
         )
     key = _reference_key(node)
-    return key is not None and key in state.constructed and (*key, member) in state.constructed
+    if key is None:
+        return False
+    if member in state.mappings.get(key, ()):
+        return True
+    return key in state.constructed and (*key, member) in state.constructed
 
 
 def _removed_key(method, call):
@@ -1137,7 +1219,7 @@ def _scan(
                 # does not, and a mutating call lands before the next statement.
                 aborted = False
                 for value in node.nodes:
-                    if _raises(value):
+                    if _raises(value, current):
                         # Checked first: the raise happens before this expression's
                         # own payload would be rendered, not after it.
                         _mutate(value, current, active)
@@ -1200,7 +1282,15 @@ def _scan(
                 # cannot execute does not drag the block in with it.
                 invoked = current.copy()
                 invoked.macros["caller"] = nodes.Macro("caller", [], [], node.body)
-                if _value_aliases(node.call, invoked, active):
+                emitted = _value_aliases(node.call, invoked, active)
+                # The macro ran, so whatever it wrote to an outer namespace escapes,
+                # exactly as it does for a plain call.
+                if invoked.mutated - current.mutated:
+                    carried = _export_scope(current, invoked)
+                    current.aliases.clear()
+                    current.aliases.update(carried.aliases)
+                    current.mutated.update(carried.mutated)
+                if emitted:
                     return True, []
                 if _unknown_callee(node.call, current):
                     emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
@@ -1214,6 +1304,8 @@ def _scan(
                     if emits:
                         return True, []
             elif isinstance(node, nodes.AssignBlock):
+                # `{% set catalog|length %}` binds the filtered result, so a filter
+                # that keeps nothing of the catalog leaves nothing to find.
                 emits, captured = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
                 # Jinja keeps a namespace write made inside the capture, so the
                 # escaping mutations are exported before the target is bound.
@@ -1225,7 +1317,8 @@ def _scan(
                 if captured:
                     current.aliases.clear()
                     current.aliases.update(escaped)
-                _bind_paths(node.target, {()} if emits else set(), current)
+                kept = emits and _keeps_content(node.filter)
+                _bind_paths(node.target, {()} if kept else set(), current)
             elif isinstance(node, nodes.With):
                 local = current.copy(scoped = True)
                 for target, value in zip(node.targets, node.values):

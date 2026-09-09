@@ -1216,3 +1216,94 @@ def test_round_fifteen_paths(template, expected):
 )
 def test_round_sixteen_paths(template, expected):
     assert template_supports_tools(template) is expected
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3972114169: an expression may select any of several macros.
+        (
+            "{% macro plain() %}text{% endmacro %}{% macro show() %}{{ tools|tojson }}"
+            "{% endmacro %}{% set render = plain if flag else show %}{{ render() }}",
+            True,
+        ),
+        (
+            "{% macro plain() %}text{% endmacro %}{% macro other() %}more{% endmacro %}"
+            "{% set render = plain if flag else other %}{{ render() }}",
+            False,
+        ),
+        # 3972114174: a filtered capture binds the filtered result.
+        ("{% set catalog|length %}{{ tools|tojson }}{% endset %}{{ catalog }}", False),
+        ("{% set catalog %}{{ tools|tojson }}{% endset %}{{ catalog }}", True),
+        # 3972114183: a macro reached through {% call %} exports its namespace writes.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% macro load(caller=None) %}"
+            "{% set ns.catalog=tools %}{% endmacro %}{% call load() %}{% endcall %}"
+            "{{ ns.catalog|tojson }}",
+            True,
+        ),
+        # 3972114192: dict() builds a mapping too.
+        (
+            "{% set by_name=dict(weather=tools) %}{% for name in by_name %}{{ name }}"
+            "{% endfor %}",
+            False,
+        ),
+        (
+            "{% set by_name=dict(weather=tools) %}{% for n in by_name %}"
+            "{{ by_name[n]|tojson }}{% endfor %}",
+            True,
+        ),
+        # 3972114200: a macro whose body always raises aborts its caller.
+        (
+            "{% macro fail() %}{{ raise_exception('unsupported') }}{% endmacro %}{{ fail() }}"
+            "{{ tools|tojson }}",
+            False,
+        ),
+        (
+            "{% macro maybe() %}{% if flag %}{{ raise_exception('x') }}{% endif %}{% endmacro %}"
+            "{{ maybe() }}{{ tools|tojson }}",
+            True,
+        ),
+        # 3972114211: a scalar-returning method does not mutate its receiver.
+        ("{% set catalog=[] %}{% do catalog.count(tools) %}{{ catalog|tojson }}", False),
+        ("{% set catalog=[] %}{% do catalog.append(tools) %}{{ catalog|tojson }}", True),
+        # 3972114215: a key holding external data is still a key that is present.
+        ("{% set w={'label': payload} %}{{ w.get('label', tools)|tojson }}", False),
+        ("{% set w={'other': payload} %}{{ w.get('label', tools)|tojson }}", True),
+    ],
+)
+def test_round_seventeen_paths(template, expected):
+    assert template_supports_tools(template) is expected
+
+
+def test_jinja_renders_the_loop_else_arm_after_a_break():
+    """Jinja does NOT follow Python here: with the loopcontrols extension a loop that
+    breaks still renders its else arm. Asserted against a real render because the
+    claim has been made in both directions during review, and the render settles it."""
+    render = Environment(extensions = ["jinja2.ext.loopcontrols"]).from_string(
+        "{% for x in [1] %}A{% break %}{% else %}B{% endfor %}"
+    )
+    assert render.render() == "AB"
+    assert (
+        template_supports_tools(
+            "{% for x in [1] %}{% break %}{% else %}{{ tools|tojson }}{% endfor %}"
+        )
+        is True
+    )
+
+
+def test_a_macro_branching_internally_over_approximates_for_its_caller():
+    """A macro that writes different things on different internal branches has those
+    outcomes unioned into the caller, because value evaluation returns a set of
+    provenance paths with no room for the assumption each came under. The caller can
+    therefore pair one branch's write with another branch's condition.
+
+    Deliberate: the alternative is intersecting, which would drop a write the render
+    does make. Same root cause as the conditional-expression case, and the error runs
+    towards showing a tools pill rather than hiding one."""
+    template = (
+        "{% set ns=namespace(catalog=[]) %}{% macro load() %}{% if flag %}"
+        "{% set ns.catalog=tools %}{% else %}{% set ns.catalog=[] %}{% endif %}{% endmacro %}"
+        "{{ load() }}{% if not flag %}{{ ns.catalog|tojson }}{% endif %}"
+    )
+    assert template_supports_tools(template) is True
