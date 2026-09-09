@@ -951,8 +951,7 @@ STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 
-# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
-# block there, including the write probe and the unwind on failure.
+# Same uv cache install.sh chose, for the same reasons.
 #
 # This script is also the standalone entry point: `unsloth studio update` runs it
 # directly, without install.sh, so an export made only there covers the first install and
@@ -964,22 +963,119 @@ VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 #
 # STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
 # two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
-if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
-    export UV_CACHE_DIR
-    # mktemp, not a $$-derived name: this branch exists for a cache directory another
-    # account can write, and there a predictable path can be pre-created as a symlink,
-    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
-    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
-    # to create IS the writability answer this probe wanted.
+# Under a stage root it is deliberately the LIVE marker that is read: the CLI parks its
+# own choice inside the stage and the old CLI promotes it on acceptance, so a stage that
+# is never activated must not be able to move the live install's cache.
+#
+# setup.sh NEVER writes the marker. Only an installer's own choice becomes one; this
+# script infers, and an inference recorded as a decision is how a stale marker outlives
+# the install that justified it.
+_uv_no_cache_requested() {
+    # uv --no-cache caches into a temporary directory and discards it on exit, and
+    # --no-cache outranks --cache-dir, so naming one changes nothing. Same boolish
+    # spelling unsloth_cli/commands/studio.py's _uv_no_cache_requested accepts.
+    _unc=${UV_NO_CACHE:-}
+    _unc=${_unc#"${_unc%%[![:space:]]*}"}
+    _unc=${_unc%"${_unc##*[![:space:]]}"}
+    case "$_unc" in
+        1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) unset _unc; return 0 ;;
+    esac
+    unset _unc
+    return 1
+}
+
+_uv_cache_probe_writable() {
+    # mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather
+    # than the filesystem, so probe with a real create. Mirrors install.sh's
+    # _probe_uv_cache_writable.
+    #
+    # mktemp, not a $$-derived name: this runs for a cache directory another account can
+    # write, and there a predictable path can be pre-created as a symlink, which `: >`
+    # would follow and truncate -- as root, any file on the box. mktemp creates O_EXCL
+    # with an unpredictable suffix, so it cannot follow one, and failing to create IS the
+    # writability answer this probe wanted.
     _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
-        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
-        unset UV_CACHE_DIR
+    if ! mkdir -p "$1" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+        unset _uv_cache_probe
+        return 1
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    rm -f "$_uv_cache_probe" 2>/dev/null || true
     unset _uv_cache_probe
+    return 0
+}
+
+_uv_cache_warm() {
+    # Package BYTES, not metadata: wheels-* holds only .msgpack/.http on uv 0.10, so
+    # counting any file would read a cache that was merely resolved against as warm.
+    # Mirror of install.sh's bucket scan in _configure_uv_cache and of
+    # unsloth_cli/commands/studio.py's _uv_cache_has_packages; keep the three in step.
+    [ -n "${1:-}" ] && [ -d "$1" ] && [ -r "$1" ] || return 1
+    for _uvw_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
+        "$1"/wheels-* "$1"/sdists-*; do
+        [ -d "$_uvw_bucket" ] || continue
+        # Unreadable is not empty, but it is also not proof of warmth.
+        [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
+        # -L: a bucket can be a symlink to another disk, as Get-ChildItem -Recurse follows.
+        _uvw_hit=$(find -L "$_uvw_bucket" -type f \
+            ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+            ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+            -print 2>/dev/null | head -n 1) || _uvw_hit=""
+        if [ -n "$_uvw_hit" ]; then
+            unset _uvw_bucket _uvw_hit
+            return 0
+        fi
+    done
+    unset _uvw_bucket _uvw_hit
+    return 1
+}
+
+_recorded_uv_cache() {
+    # The cache the installer recorded, exactly as unsloth_cli writes it: one absolute
+    # path and one trailing newline. Tolerates a UTF-8 BOM (Windows PowerShell 5.1
+    # `-Encoding utf8` writes one) and a CR, and is otherwise byte-for-byte -- a POSIX
+    # path may hold anything but NUL, including spaces at either end.
+    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || return 1
+    _ruc_raw=${_ruc_raw#"$_UV_MARKER_BOM"}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_CR"}
+    case "$_ruc_raw" in
+        # Absolute only. install.sh records absolute (_absolutize_uv_cache_dir) precisely
+        # because a relative one names a different directory in each phase, and there is
+        # nothing here to resolve it against: setup.sh has already changed directory.
+        # No [:print:] filter -- in the C locale that rejects every non-ASCII home.
+        "") unset _ruc_raw; return 1 ;;
+        /*) ;;
+        *) unset _ruc_raw; return 1 ;;
+    esac
+    printf '%s' "$_ruc_raw"
+    unset _ruc_raw
+    return 0
+}
+_UV_MARKER_BOM=$(printf '\357\273\277')
+_UV_MARKER_CR=$(printf '\r')
+
+if [ -n "${UV_CACHE_DIR:-}" ]; then
+    # A caller value wins outright, here as in install.sh and in the CLI.
+    :
+elif _uv_no_cache_requested; then
+    :
+else
+    _uv_recorded=$(_recorded_uv_cache) || _uv_recorded=""
+    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded"; then
+        # Only while it still holds packages: a marker for an emptied cache would point
+        # this run at nothing and refetch everything the Studio cache already has.
+        UV_CACHE_DIR="$_uv_recorded"
+        export UV_CACHE_DIR
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+        export UV_CACHE_DIR
+        if ! _uv_cache_probe_writable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            unset UV_CACHE_DIR
+        fi
+    fi
+    unset _uv_recorded
 fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
