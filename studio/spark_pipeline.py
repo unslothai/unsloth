@@ -992,6 +992,14 @@ def stage_module_cls():
             self.grad_checkpoint = bool(grad_checkpoint)
             self.layers = torch.nn.ModuleList([owner.layers[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
+            # sdpa and flash derive causality from is_causal when attention_mask is None, but
+            # eager only masks what it is given: transformers' eager_attention_forward adds the
+            # mask under `if attention_mask is not None`, so passing None there trains the model
+            # bidirectionally, at a flattering loss, and the checkpoint is not a causal LM.
+            impl = getattr(getattr(top, "config", None), "_attn_implementation", "sdpa")
+            self.needs_causal_mask = impl not in (
+                "sdpa", "flash_attention_2", "flash_attention_3",
+            )
             self.embed_tokens = getattr(owner, "embed_tokens", None) if is_first else None
             self.norm = getattr(owner, "norm", None) if is_last else None
             self.lm_head = getattr(top, "lm_head", None) if is_last else None
@@ -1001,8 +1009,8 @@ def stage_module_cls():
                 raise RuntimeError("the last pipeline stage has no lm_head to run")
 
         @staticmethod
-        def _call_layer(layer, h, pos):
-            out = layer(h, position_embeddings = pos)
+        def _call_layer(layer, h, pos, mask):
+            out = layer(h, position_embeddings = pos, attention_mask = mask)
             return out[0] if isinstance(out, tuple) else out
 
         def forward(self, x):
@@ -1011,16 +1019,25 @@ def stage_module_cls():
             if self.rotary_emb is not None:
                 ids = torch.arange(h.shape[1], device = h.device)
                 pos = self.rotary_emb(h, ids.unsqueeze(0).expand(h.shape[0], -1))
+            mask = None
+            if self.needs_causal_mask:
+                # Additive, upper triangle excluding the diagonal, broadcast over batch and heads.
+                # Left as None for sdpa and flash, where None is what selects the fused causal
+                # kernel and an explicit mask would only be slower.
+                length = h.shape[1]
+                mask = torch.full(
+                    (length, length), torch.finfo(h.dtype).min, device = h.device, dtype = h.dtype
+                ).triu(1)[None, None]
             ckpt = self.grad_checkpoint and self.training and torch.is_grad_enabled()
             for layer in self.layers:
                 if ckpt:
                     # use_reentrant=False: the reentrant path drops the grad_fn the stage's
                     # activation-gradient handoff needs.
                     h = torch.utils.checkpoint.checkpoint(
-                        self._call_layer, layer, h, pos, use_reentrant = False
+                        self._call_layer, layer, h, pos, mask, use_reentrant = False
                     )
                 else:
-                    h = self._call_layer(layer, h, pos)
+                    h = self._call_layer(layer, h, pos, mask)
             if self.is_last:
                 h = self.lm_head(self.norm(h) if self.norm is not None else h)
             return h
@@ -1037,6 +1054,7 @@ def pp_loss_fn(logits, target):
     return F.cross_entropy(
         logits[:, :-1].reshape(-1, logits.size(-1)).float(),
         target[:, 1:].reshape(-1),
+        ignore_index = -100,
     )
 
 
@@ -1277,6 +1295,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.virtual_stages < 1:
         raise SystemExit(f"--virtual-stages must be >= 1 (got {args.virtual_stages})")
     use_torch_pp = args.pp_backend == "torch"
+    if args.data and not use_torch_pp:
+        # The legacy stages take the loss from their own input ids, so there is nowhere to
+        # put -100 for the padding and a short example would train on pad targets.
+        raise SystemExit("--data needs --pp-backend torch; legacy cannot mask padded labels")
     # Fail before the tokenizer and model load, so the reason appears in a second instead of
     # a silent process. The refusals apply to the LEGACY backend only: the same schedule
     # names work under the torch backend, so refusing them outright would refuse a working
@@ -1328,6 +1350,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
+    if tok.pad_token is None:
+        # Base decoder-only checkpoints ship without one, and padding then raises before
+        # the first step. EOS is the usual stand-in; the labels below mask it out anyway.
+        tok.pad_token = tok.eos_token
+    # Right padding keeps every real token preceded only by real tokens, so a causal model
+    # needs no padding mask for the representations; only the labels have to exclude pads.
+    tok.padding_side = "right"
 
     plan = my_plan = None
     if use_torch_pp:
@@ -1508,10 +1537,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ]
         enc = tok(
             texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
-        ).input_ids
-        ids_all = enc.repeat((need + len(enc) - 1) // len(enc), 1)[:need].to(device)
+        )
+        ids = enc.input_ids
+        # Padded positions are not text. Without this the target is the padded input, so a short
+        # example trains the model to emit pad for most of its length and the reported loss is
+        # dominated by them.
+        labels = ids.masked_fill(enc.attention_mask == 0, -100)
+        reps = (need + len(ids) - 1) // len(ids)
+        ids_all = ids.repeat(reps, 1)[:need].to(device)
+        labels_all = labels.repeat(reps, 1)[:need].to(device)
     else:
         ids_all = torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
+        labels_all = ids_all
 
     posid = torch.arange(args.seq, device = device).unsqueeze(0).expand(mb_rows, -1)
     schedule = SCHEDULES[args.schedule] if not use_torch_pp else None
@@ -1524,12 +1561,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # Upstream chunks the whole batch; that chunking must agree with `target`'s, and
             # one implementation owning both is how they stay agreed.
             whole = ids_all[step * args.batch : (step + 1) * args.batch]
+            whole_labels = labels_all[step * args.batch : (step + 1) * args.batch]
             losses = [] if is_loss_rank else None
             # Only the rank holding stage 0 may supply positional inputs; every other stage's
             # input is the wire. `target` goes to every rank but is read only by the one
             # computing the loss, which under a V layout is rank 0, not the last rank.
             step_args = (whole,) if rank == plan["first_rank"] else ()
-            pp_schedule.step(*step_args, target = whole, losses = losses, **pp_step_kw)
+            pp_schedule.step(*step_args, target = whole_labels, losses = losses, **pp_step_kw)
             # One mean-reduced loss per microbatch, so the step loss is their mean. That
             # equals what the legacy schedules return, keeping the two backends comparable.
             loss = (sum(losses) / len(losses)) if losses else None
