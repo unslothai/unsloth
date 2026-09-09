@@ -6195,14 +6195,26 @@ class TestTheInlineIndexSpellingIsRead:
     @pytest.mark.parametrize(
         "value, want_default, want_extras",
         [
-            ('[{ url = "https://pypi.corp.test/simple", default = true }]',
-             "https://pypi.corp.test/simple", []),
-            ('[{ url = "https://pypi.org/simple", default = true }]',
-             "https://pypi.org/simple", []),
-            ('[{ url = "https://a/simple" }, { url = "https://b/simple", default = true }]',
-             "https://b/simple", ["https://a/simple"]),
-            ('[{ name = "corp", url = "https://c/simple", default = true }]',
-             "https://c/simple", []),
+            (
+                '[{ url = "https://pypi.corp.test/simple", default = true }]',
+                "https://pypi.corp.test/simple",
+                [],
+            ),
+            (
+                '[{ url = "https://pypi.org/simple", default = true }]',
+                "https://pypi.org/simple",
+                [],
+            ),
+            (
+                '[{ url = "https://a/simple" }, { url = "https://b/simple", default = true }]',
+                "https://b/simple",
+                ["https://a/simple"],
+            ),
+            (
+                '[{ name = "corp", url = "https://c/simple", default = true }]',
+                "https://c/simple",
+                [],
+            ),
             ("[]", None, []),
         ],
     )
@@ -6226,12 +6238,12 @@ class TestTheInlineIndexSpellingIsRead:
         "value",
         [
             # Ambiguity that must stay Unreadable rather than be guessed at.
-            '[{ url = "https://a/simple", explicit = true }]',   # serves only pinned packages
-            '[{ default = true }]',                              # no url at all
-            '[{ url = "https://a/simple", default = "yes" }]',   # not a bool
-            '[{ url = { host = "a" } }]',                        # nested table
-            '[{ url = "https://a/simple" }, "https://b"]',       # a bare entry beside a table
-            '[{ url = "https://a/simple" }',                     # unbalanced / continues next line
+            '[{ url = "https://a/simple", explicit = true }]',  # serves only pinned packages
+            "[{ default = true }]",  # no url at all
+            '[{ url = "https://a/simple", default = "yes" }]',  # not a bool
+            '[{ url = { host = "a" } }]',  # nested table
+            '[{ url = "https://a/simple" }, "https://b"]',  # a bare entry beside a table
+            '[{ url = "https://a/simple" }',  # unbalanced / continues next line
         ],
     )
     @requires_pwsh
