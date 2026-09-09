@@ -2007,3 +2007,29 @@ def test_training_planner_refuses_to_guess_and_handles_one_node() -> None:
     one = sc.plan_training(budget * 0.5, n_nodes = 1, model = "m")
     assert one["axis"] == "single" and "unsloth train" in one["commands"][0]
     assert sc.plan_training(budget * 2, n_nodes = 1)["axis"] == "none"
+
+
+def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
+    """Both are refused before the run, not after it.
+
+    --save with --fsdp is skipped for sharded parameters, so finding out at the end costs the
+    whole training; --microbatches 0 used to reach a modulo and raise ZeroDivisionError.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "studio" / "spark_pipeline.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_main_data_parallel"
+    )
+    body = ast.get_source_segment(src.read_text(encoding="utf-8"), fn) or ""
+
+    guard = body.index("--microbatches must be at least 1")
+    modulo = body.index("args.batch % args.microbatches")
+    assert guard < modulo, "the zero guard must precede the modulo that would raise"
+
+    save_guard = body.index("--save is not implemented for --fsdp")
+    train_loop = body.index("for step in range(args.steps)")
+    assert save_guard < train_loop, "the fsdp save refusal must precede the training loop"

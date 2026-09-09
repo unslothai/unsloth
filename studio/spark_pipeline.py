@@ -1811,8 +1811,16 @@ def _main_data_parallel(args) -> int:
             "--shard-load is a layer-split option; a data-parallel replica holds the "
             "whole model on every rank."
         )
+    if args.microbatches < 1:
+        raise SystemExit(f"--microbatches must be at least 1, got {args.microbatches}")
     if args.batch % args.microbatches:
         raise SystemExit("--batch must be divisible by --microbatches")
+    if args.save and args.fsdp and world > 1:
+        # Refuse up front. The save is skipped for sharded parameters, and learning that only
+        # after the run costs the whole training.
+        raise SystemExit(
+            "--save is not implemented for --fsdp (sharded parameters); drop one of them."
+        )
     if args.batch % world or args.microbatches % world:
         raise SystemExit(
             f"--batch ({args.batch}) and --microbatches ({args.microbatches}) must both "
