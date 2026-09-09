@@ -2151,7 +2151,10 @@ _sidecar_top_up_tiktoken() {
         fi
     done
     unset _stt_meta
-    if ! fast_install_sidecar --target "$_stt_dir" --no-deps "tiktoken" >/dev/null 2>&1; then
+    # --upgrade: a --target install without it does not replace existing files, so a
+    # damaged tiktoken/ directory an interrupted install left would be kept under fresh
+    # metadata and read as present on the next run.
+    if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
         substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
     fi
     return 0

@@ -5881,7 +5881,10 @@ function Repair-SidecarTiktoken {
     $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
-    $output = Fast-Install --target $TargetDir --no-deps tiktoken 2>&1 | Out-String
+    # --upgrade: a --target install without it does not replace existing files, so a
+    # damaged tiktoken\ directory an interrupted install left would be kept under fresh
+    # metadata and read as present on the next run.
+    $output = Fast-Install --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
     }
