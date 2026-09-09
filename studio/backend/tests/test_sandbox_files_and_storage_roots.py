@@ -7385,6 +7385,8 @@ def test_a_project_created_inside_the_record_write_itself_keeps_its_files(tmp_pa
         "get_chat_project",
         lambda pid: {"id": pid} if recreated["yet"] else None,
     )
+    # The route reads ownership through storage, before the record and again after
+    # it under the session fence; the second read is the one this window tests.
     monkeypatch.setattr(
         studio_db,
         "get_chat_project",
@@ -7392,12 +7394,16 @@ def test_a_project_created_inside_the_record_write_itself_keeps_its_files(tmp_pa
             "id": pid,
             "rootPath": str(workspace),
             "sandboxPath": str(workspace / "sandbox"),
-        },
+        }
+        if recreated["yet"]
+        else None,
     )
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
 
     assert recreated["yet"], "the record was never written, so this proves nothing"
+    assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
+    assert tools.list_orphaned_projects() == [], "a live project was left recorded"
     assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
     assert tools.list_orphaned_projects() == [], "a live project was left recorded"
 
