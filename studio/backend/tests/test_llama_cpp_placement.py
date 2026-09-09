@@ -281,11 +281,16 @@ def test_the_retry_leaves_a_pass_through_batch_last_wins(tmp_path):
     appending ours at the end puts it after their -b and quietly wins."""
     vision_cmd = [
         "/fake/llama-server",
-        "--batch-size", "2048",          # managed
-        "--ubatch-size", "2048",         # managed
-        "--mmproj", "mmproj-F16.gguf",
-        "-b", "4096",                    # user extras, appended last
-        "--batch-size", "4096",          # the same thing spelled long
+        "--batch-size",
+        "2048",  # managed
+        "--ubatch-size",
+        "2048",  # managed
+        "--mmproj",
+        "mmproj-F16.gguf",
+        "-b",
+        "4096",  # user extras, appended last
+        "--batch-size",
+        "4096",  # the same thing spelled long
     ]
 
     retried = LlamaCppBackend._restore_batch_args(

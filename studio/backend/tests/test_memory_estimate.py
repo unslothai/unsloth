@@ -3267,15 +3267,9 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         different model-family token and launches text-only, so pricing 2048 for that
         child overstates the panel by the same amount the missing floor understated it
         by, just in the other direction."""
-        weight = _write_gguf(
-            tmp_path, "qwen3", _GQA_FIELDS, name = "gemma-3-12b-Q4_K_M.gguf"
-        )
-        matching = _write_gguf(
-            tmp_path, "clip", {"block_count": 2}, name = "mmproj-gemma-3-F16.gguf"
-        )
-        stranger = _write_gguf(
-            tmp_path, "clip", {"block_count": 2}, name = "mmproj-qwen3vl-F16.gguf"
-        )
+        weight = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "gemma-3-12b-Q4_K_M.gguf")
+        matching = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-gemma-3-F16.gguf")
+        stranger = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-qwen3vl-F16.gguf")
         base = dict(
             identifier = "local/vision",
             gguf_file = weight,
