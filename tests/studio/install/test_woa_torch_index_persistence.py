@@ -6044,40 +6044,47 @@ class TestAnInlineCommentSurvivesTheRebase:
     as a comment. The rebase read the comment as part of the path and quoted a file that does
     not exist, so a folded caller override failed the very resolve it was kept for."""
 
-    BASE = "/base/sub"
+    # GetFullPath and os.path.abspath apply the same rule on every host (drive-rooted on Windows).
+    BASE = "/opt/corp/ov"
 
-    @requires_pwsh
-    @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1], ids = ["install", "setup"])
-    @pytest.mark.parametrize(
-        "line, expected, why",
-        [
+    @classmethod
+    def _abs(cls, relative: str) -> str:
+        return os.path.abspath(os.path.join(cls.BASE, relative))
+
+    @classmethod
+    def cases(cls):
+        return [
             (
                 "-c constraints.txt # shared pins",
-                "-c /base/sub/constraints.txt # shared pins",
+                f"-c {cls._abs('constraints.txt')} # shared pins",
                 "-c",
             ),
             (
                 "-f wheels  # local builds",
-                "-f /base/sub/wheels  # local builds",
+                f"-f {cls._abs('wheels')}  # local builds",
                 "-f, spacing kept",
             ),
-            ("-e ./pkg[dev] # editable", "-e /base/sub/pkg[dev] # editable", "-e with extras"),
+            ("-e ./pkg[dev] # editable", f"-e {cls._abs('pkg')}[dev] # editable", "-e with extras"),
             (
                 'pkg @ file:../x.whl ; python_version < "3.12" # note',
-                'pkg @ file:///base/x.whl ; python_version < "3.12" # note',
+                f'pkg @ {pathlib.Path(cls._abs("../x.whl")).as_uri()} ; python_version < "3.12" # note',
                 "a direct file reference keeps its marker AND its comment",
             ),
-            ("./w/p.whl # local", "/base/sub/w/p.whl # local", "a bare wheel path"),
-            ("./pkg # local dir", "/base/sub/pkg # local dir", "a bare directory"),
+            ("./w/p.whl # local", f"{cls._abs('w/p.whl')} # local", "a bare wheel path"),
+            ("./pkg # local dir", f"{cls._abs('pkg')} # local dir", "a bare directory"),
             (
                 "pkg @ https://h/x.whl#sha256=ab",
                 "pkg @ https://h/x.whl#sha256=ab",
                 "a fragment has no whitespace before it and is not a comment",
             ),
             ("rich>=13 # why", "rich>=13 # why", "a plain requirement is untouched"),
-        ],
-    )
-    def test_the_comment_is_kept_and_the_path_is_not_polluted(self, path, line, expected, why):
+        ]
+
+    @requires_pwsh
+    @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1], ids = ["install", "setup"])
+    @pytest.mark.parametrize("case", range(8))
+    def test_the_comment_is_kept_and_the_path_is_not_polluted(self, path, case):
+        line, expected, why = self.cases()[case]
         script = _script(
             _ps_function(path, "Resolve-WoaOverrideLine"),
             "Write-Output ('[' + (Resolve-WoaOverrideLine -Line '%s' -BaseDir '%s') + ']')"

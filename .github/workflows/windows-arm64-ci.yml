@@ -128,7 +128,7 @@ jobs:
         env:
           UNSLOTH_NO_TORCH: '1'
         run: |
-          $out = & python -m pytest `
+          & python -m pytest `
             tests/studio/install/test_woa_wheelhouse_prefers_pypi.py `
             tests/studio/install/test_woa_wheelhouse_guard_behaviour.py `
             tests/studio/install/test_woa_torch_index_persistence.py `
