@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariants for Studio's copy of the torchao ``safe_int_mm`` fix, none of which raise on their
-own: an entrypoint stops installing the patch, the two copies drift apart, or the structural gate
-stops refusing bodies it does not recognise."""
+"""Invariants for Studio's copy of the torchao ``safe_int_mm`` fix, none of which raise on their own."""
 
 from __future__ import annotations
 
@@ -21,12 +19,12 @@ from core.inference.diffusion_torchao_patches import (
     install_torchao_int_mm_patch,
 )
 
-_BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND = Path(__file__).resolve().parent.parent
 _CORE = _BACKEND / "core"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _IMPORT_FIXES = _REPO_ROOT / "unsloth" / "import_fixes.py"
 _PATCH_MODULE = _CORE / "inference" / "diffusion_torchao_patches.py"
-_INSTALL = install_torchao_int_mm_patch.__name__  # a rename breaks the import loudly
+_INSTALL = install_torchao_int_mm_patch.__name__
 
 # Every module that can be the first thing in its process to reach torchao.
 _ENTRYPOINTS = [
@@ -36,7 +34,6 @@ _ENTRYPOINTS = [
     _CORE / "training" / "diffusion_train_common.py",
 ]
 
-# One implementation living in two files.
 _SHARED_FUNCTIONS = ("_is_fake_tensor", "_make_safe_int_mm", "_patch_torchao_intmm_module")
 
 

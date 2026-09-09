@@ -82,7 +82,6 @@ def _stub_casters(monkeypatch, recorder):
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
         lambda module, fqn = "": True
     )
-    # The stub configs here take no kwargs, so a pass-through is the faithful stand-in.
     dtq._quiet_config = lambda cls, **kw: cls(**kw)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
@@ -556,8 +555,7 @@ def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
 
 
 def test_no_torchao_config_is_constructed_outside_quiet_config():
-    """AST guard: every torchao ``*WeightConfig(...)`` / ``*WeightOnlyConfig(...)`` call under core/inference and
-    the DiT trainer must be the first argument of ``_quiet_config``, whose default makes renders differ."""
+    """Every torchao config must be built through ``_quiet_config``, whose default makes renders differ."""
     import ast
     from pathlib import Path
 

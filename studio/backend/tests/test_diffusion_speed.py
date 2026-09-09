@@ -912,7 +912,6 @@ def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
 
 
 def test_snapshot_restores_float32_matmul_precision(monkeypatch):
-    # The same setter calls set_float32_matmul_precision("high"), reaching every fp32 op (VAE, norms) too.
     torch = _stub_torch(monkeypatch)
     calls: list = []
     cell = _stub_matmul_precision(torch, calls, initial = "highest")
@@ -951,7 +950,6 @@ def test_matmul_precision_is_restored_before_tf32(monkeypatch):
 
 
 def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
-    # An older inductor with only emulate_precision_casts and no `triton` namespace.
     torch = _stub_torch(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
     snap = snapshot_backend_flags()
@@ -966,8 +964,7 @@ def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
 
 
 def test_video_snapshot_precedes_transformer_quant():
-    """video.py must snapshot the backend flags BEFORE the torchao transformer quant, so a failed load and an
-    unload both restore the pre-quant state."""
+    """A failed load and an unload must both restore the pre-quant backend flags."""
     import ast
     from pathlib import Path
 

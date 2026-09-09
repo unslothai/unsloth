@@ -3795,8 +3795,8 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
-        # BEFORE the torchao transformer quant below, the first thing that can mutate them, and registered for
-        # _rollback_precommit_globals right away: until the state commit, a failure must restore them itself.
+        # Before the transformer quant, the first mutator, and registered at once: until the state commit a
+        # failure has to restore them itself.
         backend_flags = snapshot_backend_flags()
         self._precommit_globals = (_load_token, backend_flags)
 

@@ -970,10 +970,10 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
     return True if fast_accum is None else bool(fast_accum)
 
 
-# torchao's config handlers call ``recommended_inductor_config_setter()`` when ``set_inductor_config`` keeps its
-# default of True. That setter is PROCESS-WIDE, and two of its flags change results rather than only speed:
-# coordinate-descent tuning makes the winning kernel, and so the render, differ between processes on one seed,
-# and set_float32_matmul_precision("high") reaches every fp32 op in the pipeline (VAE, norms).
+# torchao's config handlers call the PROCESS-WIDE ``recommended_inductor_config_setter()`` unless
+# ``set_inductor_config`` is False, and two of its flags change results rather than only speed: coordinate-descent
+# tuning makes the winning kernel, and so the render, differ between processes on one seed, and
+# set_float32_matmul_precision("high") reaches every fp32 op in the pipeline (VAE, norms).
 # UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores the upstream behaviour, for A/B benchmarking only.
 _TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
 
@@ -988,9 +988,8 @@ def _torchao_may_set_inductor_config() -> bool:
 
 
 def _quiet_config(cls: Any, **kwargs: Any) -> Any:
-    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it. Signature-guarded
-    rather than version-guarded: the kwarg is on every ``torchao.quantization`` config class and on none of the
-    ``prototype.mx_formats`` ones, which never call the setter either, so a rename degrades to today's behaviour."""
+    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it. Guarded by
+    signature, not version: the mx_formats configs lack the kwarg and never call the setter anyway."""
     if not _torchao_may_set_inductor_config():
         try:
             if "set_inductor_config" in _inspect.signature(cls).parameters:

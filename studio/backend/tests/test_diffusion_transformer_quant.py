@@ -1588,7 +1588,6 @@ def test_quiet_config_tolerates_an_unintrospectable_class(monkeypatch):
 
 
 def test_real_torchao_configs_carry_set_inductor_config_false():
-    """Against the installed torchao: both dynamic-activation configs come back quiet."""
     pytest.importorskip("torchao.quantization")
     torch = pytest.importorskip("torch")
     ic = getattr(getattr(torch, "_inductor", None), "config", None)

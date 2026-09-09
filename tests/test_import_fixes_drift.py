@@ -758,7 +758,6 @@ def test_psutil_cpu_freq_shape_and_wiring():
 
 
 def _import_torchao_intmm_home():
-    """Releases up to 0.18.0 keep ``safe_int_mm`` in ``torchao.kernel.intmm``; main moved it."""
     from unsloth.import_fixes import _TORCHAO_INTMM_MODULES
 
     for name in _TORCHAO_INTMM_MODULES:
@@ -794,7 +793,6 @@ def test_torchao_safe_int_mm_still_uses_the_repr_probe():
 
 
 def test_torchao_safe_int_mm_body_matches_the_verified_shape():
-    """The replacement is a FULL copy of torchao 0.17.0's body, so every landmark must still be there."""
     from unsloth.import_fixes import _TORCHAO_SAFE_INT_MM_MARKERS
 
     source = _torchao_intmm_original_source()
@@ -833,7 +831,6 @@ def _patched_torchao_safe_int_mm():
 
 
 def test_torchao_intmm_patch_is_bit_identical_on_cpu():
-    """The whole argument for shipping a copied body: same inputs, same bytes out."""
     torch = pytest.importorskip("torch")
     intmm, patched = _patched_torchao_safe_int_mm()
     # int_scaled_matmul resolves the name through module globals, so the rebind must reach it
@@ -859,7 +856,6 @@ def test_torchao_intmm_patch_is_bit_identical_on_cpu():
 
 
 def test_torchao_intmm_patch_is_idempotent():
-    """Two runs of the fix, or Studio's copy in the same process, must not stack replacements."""
     import types
 
     from unsloth.import_fixes import (
@@ -884,7 +880,6 @@ def test_torchao_intmm_patch_is_idempotent():
 
 
 def test_torchao_intmm_patch_refuses_an_unrecognised_body():
-    """A torchao whose GEMM has been rewritten is left alone rather than impersonated."""
     import types
 
     from unsloth.import_fixes import _patch_torchao_intmm_module

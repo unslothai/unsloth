@@ -363,8 +363,7 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     )
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
-    # Int8WeightOnlyConfig defaults to set_inductor_config=True, which flips coordinate-descent tuning and the
-    # fp32 matmul precision for the whole process, and the trainer compiles right after this.
+    # Int8WeightOnlyConfig defaults to set_inductor_config=True, process-wide, and the trainer compiles next.
     quantize_(
         transformer,
         _quiet_config(Int8WeightOnlyConfig),

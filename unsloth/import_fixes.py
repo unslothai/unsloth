@@ -5763,8 +5763,7 @@ _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
 
-# ALL must be in the installed source before the copy below, which hard-codes torchao's cuBLAS guards, its
-# contiguity fixes and its fp32 fallback, may stand in for it.
+# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
     "input.__repr__()",
     "dynamo_is_compiling()",
@@ -5776,8 +5775,7 @@ _TORCHAO_SAFE_INT_MM_MARKERS = (
 
 
 def _is_fake_tensor(x):
-    """``is_fake`` unwraps FunctionalTensor and the wrapper subclasses whose repr also said "FakeTensor", so it
-    covers exactly the set the substring probe did."""
+    """Covers exactly the set the substring repr probe did: ``is_fake`` unwraps FunctionalTensor too."""
     try:
         from torch._subclasses.fake_tensor import is_fake
         return bool(is_fake(x))
@@ -5791,11 +5789,9 @@ def _is_fake_tensor(x):
 
 
 def _make_safe_int_mm(mod, original):
-    """torchao 0.17.0's ``safe_int_mm`` body with only the probe replaced. A FULL copy on purpose: the original's
-    very first statement IS the probe, so a wrapper delegating the eager branch would sync exactly as before."""
+    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
-    # torchao's own bindings: the copy must run the operators the module it replaces would have run.
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
 
@@ -5847,7 +5843,7 @@ def _patch_torchao_intmm_module(mod):
     if original is None or not callable(original):
         return False
     if getattr(original, "__unsloth_patched__", False):
-        return False  # the other copy of this fix got there first
+        return False
     # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
     if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
         return False
@@ -5858,7 +5854,6 @@ def _patch_torchao_intmm_module(mod):
     missing = [marker for marker in _TORCHAO_SAFE_INT_MM_MARKERS if marker not in source]
     if missing:
         if "input.__repr__()" not in missing:
-            # The sync is still there but the body moved, so the copy no longer copies what runs.
             logger.warning(
                 "Unsloth: torchao's safe_int_mm still probes input.__repr__() but its body "
                 "changed (%s missing), so the capture-safe replacement was not installed. "
@@ -5884,8 +5879,7 @@ def _patch_torchao_intmm_module(mod):
 
 
 class _TorchaoIntmmLoader(importlib.abc.Loader):
-    """The real loader, plus the patch the moment the module body finishes. Every failure here
-    degrades to "torchao is unpatched", never to a broken import."""
+    """The real loader, plus the patch once the module body finishes. Failures here leave torchao unpatched."""
 
     __slots__ = ("_loader",)
 
@@ -5910,8 +5904,7 @@ class _TorchaoIntmmLoader(importlib.abc.Loader):
 
 
 class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
-    """Patches the module defining ``safe_int_mm`` the instant something imports it. At the FRONT of sys.meta_path,
-    unlike the appended alias finders next to it: this module really exists, so PathFinder would answer first."""
+    """Inserted at the FRONT of sys.meta_path: the module really exists, so PathFinder would answer first."""
 
     __slots__ = (_TORCHAO_INTMM_SENTINEL, "_finding")
 
@@ -5946,18 +5939,14 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def fix_torchao_safe_int_mm_repr_probe():
-    """Stop torchao's int8 GEMM from syncing the device to ask a question.
+    """Stop torchao's int8 GEMM from syncing the device to ask whether it is being traced.
 
-    ``safe_int_mm`` branches on ``"FakeTensor" in input.__repr__()``, and the repr of a real CUDA
-    tensor formats its element values, which calls ``.item()``: a device sync on every eager int8
-    linear, and ``cudaErrorStreamCaptureUnsupported`` inside ``torch.cuda.graph``. The gate is
-    structural, not version-based (the same body ships from torchao 0.10.0 through v0.18.0 and on
-    main under the moved int8 workflow module), and the finder covers a torchao imported after this
-    call, which the int8 prequant path needs since it never calls ``quantize_``.
-
+    ``safe_int_mm`` branches on ``"FakeTensor" in input.__repr__()``; a real CUDA tensor's repr calls
+    ``.item()``, so eager int8 syncs per linear and ``torch.cuda.graph`` capture fails outright. The
+    gate is structural, not version-based, and the meta path finder covers a torchao imported after
+    this call, which the int8 prequant path needs since it never calls ``quantize_``.
     ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
-    installed, False when there is nothing to do, None when torchao is absent or the fix is off.
-    """
+    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
     if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
         return None
     try:
@@ -5973,7 +5962,6 @@ def fix_torchao_safe_int_mm_repr_probe():
         try:
             patched_now = _patch_torchao_intmm_module(module) or patched_now
         except Exception:
-            # A stubbed or half-built torchao is not worth an import error in the caller.
             pass
     if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
         return patched_now  # nothing left for a finder to catch
