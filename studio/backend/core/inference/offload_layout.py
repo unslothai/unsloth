@@ -350,6 +350,13 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 }
 
 
+# Architectures whose zero-KV-head rows are recurrent only when their FFN width is 0 as well
+# (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516). Nemotron-H's other zero-head rows are
+# MLP-only and carry no SSM state, so charging them one over-counts the state by a row apiece. Every other zero-head
+# hybrid -- jamba, granite-hybrid, lfm2, plamo2, kimi-linear, bailingmoe3 -- keys on the heads alone.
+_RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
+
+
 def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
@@ -428,6 +435,17 @@ def _layout_from_readers(readers) -> ModelLayout:
                 n_recurrent = n_layers - n_attention
                 n_kv_head = [h for h in _padded if h > 0]
                 recurrent_known = True
+                # ...except on nemotron_h, where a zero-head row is recurrent only if its FFN is 0 too. The MLP-only
+                # rows are neither attention nor recurrent, so the two counts stop summing to n_layers here.
+                if arch in _RECURRENT_NEEDS_ZERO_FFN:
+                    _ff = _field(reader, f"{arch}.feed_forward_length")
+                    if isinstance(_ff, (list, tuple)) and len(_ff) > 0:
+                        _ffs = [int(f) for f in _ff]
+                        n_recurrent = sum(
+                            1
+                            for i in range(n_layers)
+                            if _padded[i] <= 0 and (_ffs[i] if i < len(_ffs) else _ffs[-1]) <= 0
+                        )
 
     kv_heads_total = _kv_heads_total(n_kv_head, int(n_attention))
     if not kv_heads_total:

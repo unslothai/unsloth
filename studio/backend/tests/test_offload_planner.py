@@ -1150,6 +1150,39 @@ def test_ssm_keys_with_no_recurrent_map_abstain_instead_of_reading_all_attention
     assert _layout_from_reader(_StubReader(plain, _hybrid_tensors())).complete is True
 
 
+def test_nemotron_h_mlp_only_rows_are_not_charged_a_recurrent_state():
+    """A row is recurrent on nemotron_h only when its KV heads AND its FFN width
+    are both 0 (models/nemotron-h.cpp:17). Its MLP-only rows have zero heads and a
+    real FFN, so counting every zero-head row charged 6 states where 4 exist."""
+    heads = [0, 0, 0, 8, 0, 0, 0, 8]
+    fields = {
+        "general.architecture": "nemotron_h",
+        "nemotron_h.block_count": 8,
+        "nemotron_h.attention.head_count_kv": heads,
+        "nemotron_h.attention.head_count": 32,
+        "nemotron_h.feed_forward_length": [0, 0, 4096, 0, 0, 0, 4096, 0],
+        "nemotron_h.embedding_length": 4096,
+        "nemotron_h.attention.key_length": 128,
+        "nemotron_h.attention.value_length": 128,
+        "nemotron_h.ssm.inner_size": 4096,
+        "nemotron_h.ssm.state_size": 128,
+        "nemotron_h.ssm.conv_kernel": 4,
+        "nemotron_h.ssm.group_count": 8,
+    }
+    layout = _layout_from_reader(_StubReader(fields, _hybrid_tensors(8)))
+    one_state = (3 * (4096 + 2 * 8 * 128) + 128 * 4096) * 4
+    assert layout.complete
+    assert layout.n_attention_layers == 2
+    assert layout.recurrent_bytes == 4 * one_state
+
+    # An architecture llama.cpp keys on the heads alone keeps all six.
+    other = {k.replace("nemotron_h", "jamba"): v for k, v in fields.items()}
+    other["general.architecture"] = "jamba"
+    assert _layout_from_reader(_StubReader(other, _hybrid_tensors(8))).recurrent_bytes == (
+        6 * one_state
+    )
+
+
 # ------------------------------------------------- host profile and cost integration
 
 
