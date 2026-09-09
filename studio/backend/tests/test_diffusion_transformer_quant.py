@@ -1379,6 +1379,125 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
 
 
+# ── the nvfp4 zero-row guard ──────────────────────────────────────────────────
+
+
+def test_the_zero_row_guard_is_nvfp4_only():
+    """Every other scheme reduces its activation scale along the FEATURE axis, which is well
+    defined for zero rows: fp8 takes a per-row amax, mxfp8 blocks along the same axis, and int8
+    has its own answer to a small or empty batch (``pad_tokens_for_scheme``). nvfp4 is the
+    exception because it reduces over the whole input."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for scheme in (TQ_FP8, TQ_INT8, TQ_MXFP8, "auto"):
+        for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+            assert zero_row_tokens_for_scheme(scheme, family) == (), (scheme, family)
+
+
+def test_both_hunyuan_tiers_guard_their_trimmable_streams():
+    """The trim in diffusion_attention.py hands ``image_embeds[:, :0]`` to the image embedder on
+    every t2v render and can trim the optional byt5 stream to zero, so both tiers carry the same
+    two tokens: they are the same DiT at two resolutions."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        tokens = zero_row_tokens_for_scheme(TQ_NVFP4, family)
+        assert "image_embedder" in tokens
+        assert "context_embedder_2" in tokens
+
+
+def test_an_unlisted_family_has_no_zero_row_guard():
+    """Scoped to the families whose attention path is measured to produce an empty activation.
+    Nothing else pays for a wrapper, and an unknown family is not guessed at."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for family in ("z-image", "qwen-image", "wan2.2-ti2v-5b", "minimax-h3", None):
+        assert zero_row_tokens_for_scheme(TQ_NVFP4, family) == ()
+
+
+def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
+    """The three tables answer the same question for different schemes, so a name may appear in
+    more than one -- but never for the SAME scheme, where one of them would be dead."""
+    from core.inference.diffusion_transformer_quant import (
+        _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+        pad_tokens_for_scheme,
+        zero_row_tokens_for_scheme,
+    )
+    for family in _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS:
+        guarded = zero_row_tokens_for_scheme(TQ_NVFP4, family)
+        assert guarded
+        assert exclude_tokens_for_scheme(TQ_NVFP4, family) == ()
+        assert pad_tokens_for_scheme(TQ_NVFP4, family) == ()
+
+
+def test_quantize_transformer_guards_after_padding(monkeypatch):
+    """The guard runs on the runtime dense-quantise path, with the family, and AFTER quantize_
+    (it reparents Linears that must already hold quantized weights) and after the padding."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4})
+    order = []
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    monkeypatch.setattr(
+        tq,
+        "apply_small_m_padding",
+        lambda transformer, scheme, family = None, logger = None: (order.append("pad") or ()),
+    )
+    monkeypatch.setattr(
+        tq,
+        "apply_zero_row_guard",
+        lambda transformer, scheme, family = None, logger = None: (
+            order.append(("guard", scheme, family)) or ()
+        ),
+    )
+    transformer = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(transformer = transformer)
+    assert (
+        quantize_transformer(pipe, _target(), mode = "nvfp4", family = "hunyuanvideo-1.5") == TQ_NVFP4
+    )
+    assert order == ["quantize_", "pad", ("guard", TQ_NVFP4, "hunyuanvideo-1.5")]
+    assert transformer._unsloth_runtime_quant == TQ_NVFP4
+
+
+def test_a_guard_failure_fails_the_whole_quantise(monkeypatch):
+    """Same contract as the padding: a transformer that is quantized but crashes on its first
+    t2v render is worse than a dense one, so the caller must be sent to GGUF."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4})
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
+        raise RuntimeError("cannot resolve the guard list")
+
+    monkeypatch.setattr(tq, "apply_zero_row_guard", _boom)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "nvfp4", family = "hunyuanvideo-1.5") is None
+    assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
+
+
+def test_apply_zero_row_guard_is_inert_without_a_guard_list(monkeypatch):
+    """No guard list means the wrapper module is never even IMPORTED, which is what keeps torch
+    out of this module's own import path (the smoke-probe child imports it and nothing else)."""
+    from core.inference.diffusion_transformer_quant import apply_zero_row_guard
+
+    stub = types.ModuleType("core.inference.diffusion_quant_pad")  # no names to import
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_quant_pad", stub)
+
+    assert apply_zero_row_guard(object(), TQ_NVFP4, "z-image") == ()
+    assert apply_zero_row_guard(object(), TQ_FP8, "hunyuanvideo-1.5") == ()
+    assert apply_zero_row_guard(object(), TQ_NVFP4, None) == ()
+    with pytest.raises(ImportError):
+        apply_zero_row_guard(object(), TQ_NVFP4, "hunyuanvideo-1.5")
+
+
 def test_the_training_deny_is_a_superset_of_the_inference_deny():
     # The two tables are separate because rendering evidence is not training evidence, but the
     # relationship must only ever go one way: anything inference refuses, training refuses too.

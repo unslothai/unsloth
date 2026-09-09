@@ -704,9 +704,12 @@ def load_prequantized_transformer(
         # the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would raise
         # inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping reparents the
         # Linears; after.to() so the granularity probe reads the device tensors the GEMM will see.
-        from .diffusion_transformer_quant import apply_small_m_padding
+        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
+        # And the guard for the other end of the range: an nvfp4 family whose attention trim can hand a quantized
+        # Linear an EMPTY activation, which torchao's whole-input activation scale cannot reduce over.
+        apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
         # train/eval-sensitive layers cannot make prequant inference diverge.
         try:

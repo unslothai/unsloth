@@ -197,6 +197,64 @@ def apply_small_m_padding(
     return wrapped
 
 
+# NVFP4 PER-FAMILY zero-row guard list. torchao's NVFP4 dynamic-activation path takes its global scale from
+# ``torch.max(torch.abs(x))`` over the WHOLE input, and max() over an empty tensor raises "Expected reduction dim to be
+# specified for input.numel() == 0" (measured on B200 / torch 2.12.1 / torchao 0.17.0 on a quantized Linear(1152,
+# 3072)). HunyuanVideo-1.5 reaches that state on every default t2v render: the attention trim in diffusion_attention.py
+# replaces the all-zero image stream with ``image_embeds[:, :0]``, which the image_embedder's two admitted linears
+# (1152 -> 1152 and 1152 -> 2048) then receive, and it can trim the optional byt5 stream to zero the same way, which
+# reaches context_embedder_2's three (1472 -> 2048, 2048 -> 2048, 2048 -> 2048). Small M is NOT a problem for this
+# scheme -- ``to_blocked`` pads the scale rows, and M = 1 and M = 7 both run finite -- so this is a shape guard at
+# exactly one point and not a policy: every admitted linear stays quantized.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+}
+
+
+def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Name tokens whose quantized Linears need the empty-activation guard, per family.
+
+    nvfp4 only. fp8 reduces its per-ROW amax over dim=-1, which is well defined for zero rows and
+    returns the empty result; mxfp8 blocks along the same axis; int8 has its own answer to a
+    zero-row input (``pad_tokens_for_scheme`` and ``PadToMinM``). The whole-input reduction is
+    what makes nvfp4 the exception."""
+    if scheme != TQ_NVFP4:
+        return ()
+    return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def apply_zero_row_guard(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Wrap this family's zero-row-reachable quantized Linears so an empty activation never
+    reaches the GEMM. Returns the fqns wrapped, empty for a family with no list.
+
+    Call AFTER the weights are quantized and in place, next to ``apply_small_m_padding``, for the
+    same reason: it reparents the Linears. Not best-effort -- a raise here means the transformer
+    is quantized but crashes on the first t2v render, so the caller must treat it as a failed
+    quantise."""
+    tokens = zero_row_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return ()
+    from .diffusion_quant_pad import matching_linear_fqns, wrap_zero_row_linears
+
+    wrapped = wrap_zero_row_linears(transformer, matching_linear_fqns(transformer, tokens))
+    if wrapped and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: zero-row guarded %d %s linears on %s",
+            len(wrapped),
+            scheme,
+            family,
+        )
+    return wrapped
+
+
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific).
     int8 (M>16) skips the M=1 modulation / conditioning-embedder projections
@@ -1225,6 +1283,7 @@ def quantize_transformer(
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
         # caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
+        apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort

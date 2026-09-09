@@ -23,11 +23,13 @@ from core.inference.diffusion_quant_pad import (  # noqa: E402
     DEFAULT_PAD_TO,
     INT_MM_MIN_M,
     PadToMinM,
+    ZeroRowSafeLinear,
     activation_granularity_is_per_row,
     is_quantized_linear,
     matching_linear_fqns,
     padding_is_bitwise_exact,
     wrap_small_m_linears,
+    wrap_zero_row_linears,
 )
 
 
@@ -306,6 +308,106 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
     assert is_quantized_linear(nn.LayerNorm(8)) is False
 
 
+# ── the zero-row guard ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("shape", [(1, 0, 8), (0, 8), (2, 0, 8)])
+def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
+    """torchao's nvfp4 path reduces over the whole input and RAISES on an empty one, so the
+    wrapper has to answer it. The answer is not an approximation: F.linear at these shapes is
+    empty too, so the two are equal element for element (there are none) at the same shape and
+    dtype."""
+    inner = _RecordingLinear(8, 6, bias = bias).to(torch.bfloat16)
+    wrapped = ZeroRowSafeLinear(inner)
+    x = torch.zeros(*shape, dtype = torch.bfloat16)
+    with torch.no_grad():
+        got, want = wrapped(x), torch.nn.functional.linear(x, inner.weight, inner.bias)
+    assert got.shape == (*shape[:-1], 6) == want.shape
+    assert got.dtype == want.dtype == torch.bfloat16
+    assert torch.equal(got, want)
+    assert not hasattr(inner, "seen"), "the inner GEMM must not be called with an empty input"
+
+
+def test_the_guard_is_inert_on_a_non_empty_activation():
+    """It is a shape guard at one point, not a policy: every real call goes straight through to
+    the quantized Linear, so the layer keeps its coverage."""
+    torch.manual_seed(0)
+    inner = _RecordingLinear(8, 6)
+    wrapped = ZeroRowSafeLinear(inner)
+    for shape in ((1, 8), (5, 8), (2, 7, 8)):
+        x = torch.randn(*shape)
+        with torch.no_grad():
+            assert torch.equal(wrapped(x), inner(x))
+        assert inner.seen.shape == x.shape
+
+
+def test_the_guard_passes_attributes_and_keys_through():
+    """Same transparency contract as PadToMinM: the DiT reads ``image_embedder.linear_1.weight``,
+    and a checkpoint must not gain an ``inner.`` level."""
+    plain, guarded = _Tiny(), _Tiny()
+    guarded.context_embedder = ZeroRowSafeLinear(guarded.context_embedder)
+    assert guarded.context_embedder.in_features == 8
+    assert guarded.context_embedder.out_features == 6
+    assert guarded.context_embedder.weight is guarded.context_embedder.inner.weight
+    with pytest.raises(AttributeError):
+        guarded.context_embedder.definitely_not_a_linear_attribute
+
+    assert sorted(guarded.state_dict()) == sorted(plain.state_dict())
+    assert "context_embedder.inner.weight" not in guarded.state_dict()
+    assert plain.load_state_dict(dict(guarded.state_dict()), strict = True)
+    assert guarded.load_state_dict(dict(plain.state_dict()), strict = True)
+    assert torch.equal(guarded.context_embedder.weight, plain.context_embedder.weight)
+
+
+def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
+    """One gate covers all three cases: a dense Linear has nothing to guard (``F.linear`` handles
+    an empty input), and neither wrapper is an ``nn.Linear``, so a second pass cannot nest them."""
+    model = _Tiny()
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert isinstance(model.context_embedder, nn.Linear)
+
+    model.context_embedder = _fake_quantized_linear()
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ("context_embedder",)
+    assert isinstance(model.context_embedder, ZeroRowSafeLinear)
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert not isinstance(model.context_embedder.inner, ZeroRowSafeLinear)
+
+
+def test_the_two_wrappers_never_stack():
+    """A padded Linear already answers a zero-row call itself, at the same width and without
+    reaching the GEMM, so the guard must skip it rather than wrap it a second time. In practice
+    they cannot even meet (the row floor is int8's, the empty-input raise is nvfp4's); this pins
+    the behaviour if they ever do."""
+    model = _Tiny()
+    model.context_embedder = _fake_quantized_linear()
+    assert wrap_small_m_linears(model, ["context_embedder"]) == ("context_embedder",)
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert isinstance(model.context_embedder, PadToMinM)
+    assert model.context_embedder(torch.randn(0, 8)).shape == (0, 6)
+
+
+def test_the_guard_list_is_read_with_the_same_substring_rule():
+    """``apply_zero_row_guard`` resolves its tokens through ``matching_linear_fqns``, so a token
+    covers a whole submodule (``image_embedder`` reaches ``image_embedder.linear_1``)."""
+
+    class _Projection(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear_1 = _fake_quantized_linear(8, 8)
+            self.linear_2 = _fake_quantized_linear(8, 6)
+
+        def forward(self, x):
+            return self.linear_2(self.linear_1(x))
+
+    model = _Tiny()
+    model.image_embedder = _Projection()
+    fqns = matching_linear_fqns(model, ("image_embedder",))
+    assert fqns == ("image_embedder.linear_1", "image_embedder.linear_2")
+    assert wrap_zero_row_linears(model, fqns) == fqns
+    assert model.image_embedder(torch.zeros(1, 0, 8)).shape == (1, 0, 6)
+
+
 # ── the real thing ────────────────────────────────────────────────────────────
 
 
@@ -324,3 +426,38 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
     assert activation_granularity_is_per_row(lin) is True
     for m in (1, 10, 13, 16, 17, 19, 64):
         assert padding_is_bitwise_exact(lin, m), f"padding changed the kept rows at M = {m}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "nvfp4 dynamic quant needs Blackwell")
+def test_the_zero_row_guard_on_a_real_nvfp4_linear():
+    """Closes the loop the fakes leave open, on the shape that raises in production: torchao's
+    nvfp4 activation scale is ``torch.max(torch.abs(x))`` over the whole input, so an empty one
+    raises ``max(): Expected reduction dim to be specified for input.numel() == 0``. Small M is
+    fine (``to_blocked`` pads the scale rows), which is why the guard is only about zero."""
+    pytest.importorskip("torchao")
+    if torch.cuda.get_device_capability() < (10, 0):
+        pytest.skip("nvfp4 needs sm_100+")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import _make_quant_config, make_filter_fn
+
+    lin = nn.Linear(1152, 3072, dtype = torch.bfloat16).cuda().eval()
+    quantize_(lin, _make_quant_config("nvfp4"), filter_fn = make_filter_fn(0))
+    assert is_quantized_linear(lin)
+
+    empty = torch.zeros(1, 0, 1152, dtype = torch.bfloat16, device = "cuda")
+    with pytest.raises(RuntimeError, match = "numel"):
+        lin(empty)
+
+    guarded = ZeroRowSafeLinear(lin)
+    out = guarded(empty)
+    assert out.shape == (1, 0, 3072) and out.dtype == torch.bfloat16
+
+    # And inert on the row counts the same layer actually sees on a non-trimmed render.
+    torch.manual_seed(0)
+    for m in (1, 5, 7):
+        x = torch.randn(1, m, 1152, dtype = torch.bfloat16, device = "cuda")
+        with torch.no_grad():
+            got = guarded(x)
+            assert torch.equal(got, lin(x))
+        assert torch.isfinite(got).all()
