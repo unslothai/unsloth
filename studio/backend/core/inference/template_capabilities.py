@@ -539,9 +539,7 @@ def _scan_if(node, state, active, guarded):
     for current in remaining:
         # With an elif in the chain the else arm is reached for more than one
         # reason, so only a plain if/else carries the negated guard across.
-        else_guarded = guarded or (
-            not node.elif_ and _negated_guard(node.test, current)
-        )
+        else_guarded = guarded or (not node.elif_ and _negated_guard(node.test, current))
         emits, states = _scan(node.else_, current, active, else_guarded)
         if emits:
             return True, []
