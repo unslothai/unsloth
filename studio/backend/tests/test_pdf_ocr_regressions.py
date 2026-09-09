@@ -154,6 +154,7 @@ def test_recipe_pdf_process_keeps_event_loop_responsive(monkeypatch, tmp_path, m
             sys.modules["__main__"],
             "__file__",
             str(Path(__file__).resolve().parents[3] / "unsloth_cli/__main__.py"),
+            raising = False,
         )
     route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
     path = tmp_path / "digital.pdf"
