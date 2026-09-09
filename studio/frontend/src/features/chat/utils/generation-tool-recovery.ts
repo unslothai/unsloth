@@ -14,6 +14,12 @@ import {
   toolCallArgumentsText,
 } from "../tool-call-arguments";
 import type { CarriedPart } from "./chat-generation-recovery";
+import {
+  newDeepResearchHandoff,
+  readDeepResearchToolEvent,
+} from "./deep-research-handoff";
+import { documentCitationToSource } from "./document-citation-source";
+import { mergeGoogleNativeParts } from "./google-native-parts";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -100,6 +106,15 @@ export function createGenerationToolRecovery(
   snapshotSeq = 0,
 ) {
   const pending = new Map<string, CarriedPart>();
+  const researchHandoff = newDeepResearchHandoff();
+  const sourceIds = new Set(
+    carried.flatMap(({ part }) => {
+      const source = record(part);
+      return source?.type === "source" && typeof source.id === "string"
+        ? [source.id]
+        : [];
+    }),
+  );
   const savedPending = carried.filter((entry) => {
     const part = record(entry.part);
     return part?.type === "tool-call" && part.result === undefined;
@@ -142,13 +157,22 @@ export function createGenerationToolRecovery(
   ) => {
     const chunk = record(payload);
     const event = record(chunk?._toolEvent) ?? chunk;
-    if (event?.type !== "tool_start" && event?.type !== "tool_end") {
+    if (
+      event?.type !== "tool_start" &&
+      event?.type !== "tool_end" &&
+      event?.type !== "document_citations"
+    ) {
       return;
     }
     if (seq <= appliedSeq) return;
     appliedSeq = seq;
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
+    if (event.tool_name === "deep_research") {
+      if (event.type === "tool_start")
+        researchHandoff.hiddenCallIds.delete(backendId);
+      if (readDeepResearchToolEvent(researchHandoff, event)) return;
+    }
     // Older approval cards need their original start event to recover the backend id.
     if (seq <= snapshotSeq) {
       const entry =
@@ -165,6 +189,20 @@ export function createGenerationToolRecovery(
       }
       return;
     }
+    if (event.type === "document_citations") {
+      if (Array.isArray(event.citations)) {
+        event.citations.forEach((value, index) => {
+          const citation = record(value);
+          const part = citation
+            ? documentCitationToSource(citation, index)
+            : null;
+          if (!part || sourceIds.has(part.id)) return;
+          carried.push({ at, part });
+          sourceIds.add(part.id);
+        });
+      }
+      return;
+    }
     const toolName = typeof event.tool_name === "string" ? event.tool_name : "";
     let entry =
       pending.get(backendId) ?? findSavedEntry(backendId, event.approval_id);
@@ -174,6 +212,32 @@ export function createGenerationToolRecovery(
       pending.size === 1
     ) {
       entry = pending.values().next().value;
+    }
+    // Gemini can emit a second completion carrying a generated image.
+    if (
+      !entry &&
+      event.type === "tool_end" &&
+      record(record(event.google)?.native_part)
+    ) {
+      for (let i = carried.length - 1; i >= 0; i--) {
+        const candidate = record(carried[i].part);
+        if (
+          candidate?.type !== "tool-call" ||
+          !record(record(record(candidate.args)?.google)?.native_part)
+        )
+          continue;
+        const id = candidate.toolCallId;
+        if (
+          backendId &&
+          (candidate.backendToolCallId === backendId ||
+            (candidate.backendToolCallId === undefined &&
+              typeof id === "string" &&
+              (id === backendId || id.startsWith(`${backendId}:`))))
+        ) {
+          entry = carried[i];
+          break;
+        }
+      }
     }
     if (event.type === "tool_start") {
       if (!toolName) {
@@ -213,7 +277,10 @@ export function createGenerationToolRecovery(
       return;
     }
     const nextArgs = record(event.arguments);
-    const args = { ...record(part.args), ...nextArgs };
+    const args = mergeGoogleNativeParts(
+      { ...record(part.args), ...nextArgs },
+      event.google,
+    );
     entry.part = {
       ...part,
       args,

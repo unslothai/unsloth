@@ -547,3 +547,233 @@ test("the scheduler imports each live call once across reused backend ids", asyn
     assert.ok(result.imports.every((parts) => parts.length === 2));
   }
 });
+
+test("replay persists document citations without duplicate sources", async () => {
+  const citation = {
+    type: "page_location",
+    document_title: "Report",
+    document_index: 0,
+    start_page_number: 1,
+    end_page_number: 2,
+    cited_text: "Supporting passage",
+  };
+  const event = { type: "document_citations", citations: [citation] };
+  const result = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { content: "Answer [1]" } }] },
+      { _toolEvent: event },
+      event,
+    ],
+  );
+  assert.equal(recovery.generationRawContent(result.content).raw, "Answer [1]");
+  assert.deepEqual(
+    result.content.filter((part) => part.type === "source"),
+    [
+      {
+        type: "source",
+        sourceType: "url",
+        id: "#anthropic-doc-0#page_location:1:2",
+        url: "#anthropic-doc-0",
+        title: "Report",
+        metadata: { description: "Supporting passage" },
+      },
+    ],
+  );
+  assert.deepEqual(result.shown, result.content);
+  const resumed = await recoverRun(result.content, [event, event], {
+    cursor: 1,
+  });
+  assert.equal(
+    resumed.content.filter((part) => part.type === "source").length,
+    1,
+  );
+});
+
+test("research handoffs stay hidden and approval cards finish", async () => {
+  for (const gated of [false, true]) {
+    const event = {
+      ...start(),
+      tool_name: "deep_research",
+      arguments: { question: "Research this" },
+      ...(gated
+        ? { awaiting_confirmation: true, approval_id: "approval" }
+        : {}),
+    };
+    const result = await recoverRun(
+      [],
+      [
+        event,
+        {
+          ...end(),
+          tool_name: "deep_research",
+          result: "Deep Research has started",
+        },
+      ],
+    );
+    assert.equal(result.content.length, gated ? 1 : 0);
+    if (gated)
+      assert.equal(result.content[0].result, "Deep Research has started");
+  }
+});
+
+test("Gemini native results and later images survive reloads", async () => {
+  const code = {
+    executableCode: { language: "PYTHON", code: "print(1)" },
+    thoughtSignature: "code-signature",
+  };
+  const output = {
+    codeExecutionResult: { outcome: "OUTCOME_OK", output: "1" },
+  };
+  const image = {
+    inlineData: { mimeType: "image/png", data: "cGxvdA==" },
+    thoughtSignature: "image-signature",
+  };
+  const event = {
+    ...start(),
+    tool_name: "code_execution",
+    arguments: { google: { native_part: { parts: [code] } } },
+  };
+  const completion = {
+    ...end(),
+    tool_name: "code_execution",
+    google: { native_part: { parts: [output] } },
+  };
+  const saved = {
+    type: "tool-call",
+    toolCallId: "call_0:saved",
+    backendToolCallId: "call_0",
+    toolName: "code_execution",
+    args: event.arguments,
+  };
+  const result = await recoverRun([saved], [event, completion], { cursor: 1 });
+  const args = result.content[0].args as typeof event.arguments;
+  assert.deepEqual(args.google.native_part.parts, [code, output]);
+  const resumed = await recoverRun(
+    result.content,
+    [
+      event,
+      completion,
+      {
+        ...end(),
+        tool_name: "code_execution",
+        google: { native_part: { parts: [image] } },
+        result: '1\n__IMAGES__:["plot.png"]',
+      },
+    ],
+    { cursor: 2 },
+  );
+  assert.equal(resumed.content.length, 1);
+  const merged = resumed.content[0].args as typeof event.arguments;
+  assert.deepEqual(merged.google.native_part.parts, [code, output, image]);
+  assert.deepEqual(
+    JSON.parse(String(resumed.content[0].argsText)).google.native_part.parts,
+    [code, output, image],
+  );
+  assert.deepEqual(saved.args.google.native_part.parts, [code]);
+});
+
+test("legacy Gemini signatures and image calls retain exact arguments", () => {
+  const code = {
+    executableCode: { code: "print(1)" },
+    thought_signature: "legacy-signature",
+  };
+  const image = {
+    inlineData: { mimeType: "image/png", data: "aW1hZ2U=" },
+    thoughtSignature: "image-signature",
+  };
+  for (const toolName of ["code_execution", "image_generation"]) {
+    const carried: Carried[] = [];
+    const replay = createGenerationToolRecovery(carried, "run").apply;
+    const argsText = `{"id":9007199254740993,"google":{"native_part":${JSON.stringify(toolName === "code_execution" ? code : {})}}}`;
+    replay(
+      {
+        ...start(),
+        tool_name: toolName,
+        arguments: JSON.parse(argsText),
+        arguments_text: argsText,
+      },
+      0,
+      1,
+    );
+    replay(
+      {
+        ...end(),
+        tool_name: toolName,
+        google: { native_part: { parts: [image] } },
+        ...(toolName === "image_generation"
+          ? { image_b64: "aW1hZ2U=", image_mime: "image/png" }
+          : {}),
+      },
+      0,
+      2,
+    );
+    const part = carried[0].part as Record<string, unknown>;
+    const expected =
+      toolName === "code_execution"
+        ? [
+            {
+              executableCode: code.executableCode,
+              thoughtSignature: "legacy-signature",
+            },
+            image,
+          ]
+        : [image];
+    assert.deepEqual(
+      JSON.parse(String(part.argsText)).google.native_part.parts,
+      expected,
+    );
+    assert.match(String(part.argsText), /9007199254740993/);
+    if (toolName === "image_generation")
+      assert.equal(
+        (part.result as Record<string, unknown>).image_b64,
+        "aW1hZ2U=",
+      );
+  }
+});
+
+test("citations retain safe URLs and distinct footnotes", async () => {
+  const base = {
+    type: "char_location",
+    document_index: 2,
+    start_char_index: 0,
+    end_char_index: 10,
+    cited_text: "x".repeat(300),
+  };
+  const result = await recoverRun(
+    [],
+    [
+      {
+        type: "document_citations",
+        citations: [
+          null,
+          [],
+          { ...base, source: "javascript:alert(1)" },
+          { ...base, source: "https://example.com/report" },
+          {
+            ...base,
+            source: "https://example.com/report",
+            start_char_index: 10,
+            end_char_index: 20,
+          },
+        ],
+      },
+    ],
+  );
+  assert.equal(result.content.length, 3);
+  assert.deepEqual(
+    result.content.map((part) => part.url),
+    [
+      "#anthropic-doc-2",
+      "https://example.com/report",
+      "https://example.com/report",
+    ],
+  );
+  assert.equal(new Set(result.content.map((part) => part.id)).size, 3);
+  assert.ok(
+    result.content.every(
+      (part) =>
+        (part.metadata as { description: string }).description.length === 243,
+    ),
+  );
+});
