@@ -283,6 +283,10 @@ class TestARawHolderIsMeasuredOnceItProduces:
         controller.note_resident(4000)
         assert controller.snapshot().committed == 8000, "unmeasured: residency plus the charge"
         controller.note_measured("raw")
+        # Still on top: the reading in hand predates the mark, and the raw path has no
+        # probe of its own. The next reading is the first that can hold its cells.
+        assert controller.snapshot().committed == 8000
+        controller.note_resident(4000)
         assert controller.snapshot().committed == 4000
         assert controller.participant("raw").state == ParticipantState.STREAMING_RAW
         controller.note_measured("nobody")  # idempotent, tolerant
