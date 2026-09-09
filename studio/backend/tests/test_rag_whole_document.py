@@ -498,6 +498,73 @@ def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypa
     assert 1 <= injected.count("P" * 2000) < 4
 
 
+def test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens(rag_conn, monkeypatch):
+    # The merged block was admitted on the flat len(text) // 4; a CJK character is
+    # about one token, not four.
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["THREAD_DOC"])
+
+    def fake_search(**kw):
+        sources = [
+            {"citationId": 0, "filename": "project.txt", "text": "漢" * 2000} for _ in range(4)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 8192,
+                "response_headroom": 1024,
+            },
+        )
+    )
+
+    assert "THREAD_DOC" in injected
+    # Trimmed to what fits beside the document, not admitted or discarded whole.
+    assert 1 <= injected.count("漢" * 2000) < 4
+
+
+def test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document(rag_conn, monkeypatch):
+    # Trimming the merge touches only the project tail: an overlarge combination gives
+    # the document back whole, never a prefix of it.
+    body = ["SECTION%02d " % i + "word " * 398 for i in range(8)]
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "report.pdf",
+        "h1",
+        body,
+        tokens = [500] * len(body),
+    )
+
+    def fake_search(**kw):
+        sources = [{"citationId": 0, "filename": "notes.txt", "text": "PROJECT_HIT " + "x" * 500}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 8192,
+                "response_headroom": 1024,
+            },
+        )
+    )
+
+    assert [i for i in range(len(body)) if "SECTION%02d" % i in injected] == list(range(len(body)))
+    # The companion is what does not fit, so the companion is what goes.
+    assert "PROJECT_HIT" not in injected
+
+
 def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monkeypatch):
     # A CJK character is about one token where ASCII runs four to one, so the same
     # character count costs several times more and far less of it fits.

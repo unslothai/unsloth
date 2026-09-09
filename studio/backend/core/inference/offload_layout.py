@@ -14,6 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -123,33 +124,63 @@ def _field(
         return default
 
 
-def layout_from_gguf(path: str) -> ModelLayout:
+_SPLIT_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+
+
+def split_shard_paths(path: str) -> Optional[list[str]]:
+    """Every shard of the split *path* belongs to, in order, or None when the name
+    is not llama.cpp's ``<prefix>-NNNNN-of-MMMMM.gguf`` (llama_split_path)."""
+    directory, name = os.path.split(path)
+    match = _SPLIT_SHARD_RE.match(name)
+    if not match:
+        return None
+    prefix, _index, total = match.groups()
+    return [
+        os.path.join(directory, f"{prefix}-{i:05d}-of-{int(total):05d}.gguf")
+        for i in range(1, int(total) + 1)
+    ]
+
+
+def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
     """Read ``path`` into a :class:`ModelLayout`.
 
     Returns an incomplete layout (``complete = False``) rather than raising when
     anything required is missing, so a surprising GGUF makes the planner abstain
     instead of failing a load that llama.cpp would have handled.
+    ``all_shards`` reads every sibling shard; all of them must be present.
     """
     try:
         from gguf import GGUFReader
-        reader = GGUFReader(path)
+        readers = [GGUFReader(path)]
+        if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
+            shards = split_shard_paths(path)
+            if not shards or not all(os.path.isfile(p) for p in shards):
+                logger.debug("offload layout: split %s is missing a shard", path)
+                return ModelLayout()
+            readers = [GGUFReader(p) for p in shards]
     except Exception as exc:
         logger.debug("offload layout: cannot read %s (%s)", path, exc)
         return ModelLayout()
 
     try:
-        return _layout_from_reader(reader)
+        return _layout_from_readers(readers)
     except Exception as exc:
         logger.debug("offload layout: cannot interpret %s (%s)", path, exc)
         return ModelLayout()
 
 
 def _layout_from_reader(reader) -> ModelLayout:
+    return _layout_from_readers([reader])
+
+
+def _layout_from_readers(readers) -> ModelLayout:
+    """One reader per shard, the first carrying the metadata."""
+    reader = readers[0]
     # Split GGUF: llama.cpp loads every sibling shard (llama-model-loader.cpp:590-618), but GGUFReader memmaps only the
     # ONE path it was given. Shard 1 still carries the metadata, so the layout would look complete while undercounting
     # resident and spillable by most of the model -- an overstated fit, too few -ot patterns, and a startup OOM with
-    # --fit off. Abstain instead; the seam then reproduces --fit on exactly.
-    if int(_field(reader, "split.count") or 0) > 1:
+    # --fit off. Abstain unless every shard was handed over; the seam then reproduces --fit on exactly.
+    if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
     arch = str(_field(reader, "general.architecture") or "")
@@ -213,7 +244,7 @@ def _layout_from_reader(reader) -> ModelLayout:
     token_embd = 0
     other_resident = 0
 
-    for tensor in reader.tensors:
+    for tensor in (t for r in readers for t in r.tensors):
         name = str(tensor.name)
         nbytes = int(tensor.n_bytes)
         match = _BLOCK_RE.match(name)

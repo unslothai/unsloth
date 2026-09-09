@@ -124,9 +124,9 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value: the id says which decoder the two numbers above are about, and the integer
-        # depends on how many decoders the page has built.
-        # Same footing as `carried_flushes` beside it.
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
+        # decoder the two numbers above are about, and the exact integer depends on how many decoders
+        # the page has built before this assertion.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -233,8 +233,9 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value: the id says which decoder the two numbers above are about.
-        # Same footing as `carried_flushes` beside it.
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
+        # decoder the two numbers above are about, and the exact integer depends on how many decoders
+        # the page has built before this assertion.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -273,8 +274,9 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value: the id says which decoder the two numbers above are about.
-        # Same footing as `carried_flushes` beside it.
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
+        # decoder the two numbers above are about, and the exact integer depends on how many decoders
+        # the page has built before this assertion.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -433,8 +435,9 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value: the id says which decoder the two numbers above are about.
-        # Same footing as `carried_flushes` beside it.
+        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
+        # decoder the two numbers above are about, and the exact integer depends on how many decoders
+        # the page has built before this assertion.
         "decoder_id": got["decoder_id"],
     }, got
 

@@ -5,8 +5,11 @@
 // to one. The arithmetic and the flatten live in find-text-index.ts, which is pure.
 
 import {
+  FIND_PORTAL_ATTRIBUTE,
   FIND_SCOPE_ATTRIBUTE,
   FIND_SKIP_ATTRIBUTE,
+} from "./find-attributes.ts";
+import {
   type FindMatch,
   type FindTextIndex,
   endPositionAt,
@@ -31,9 +34,10 @@ export const MAX_PAINTED_RANGES = 400;
 /** Distance kept from a scroller's edge before a match counts as needing to be scrolled to. */
 const REVEAL_INSET_PX = 24;
 
-type HighlightLike = { priority: number };
+type HighlightLike = { priority: number; clear(): void };
 type HighlightConstructor = new (...ranges: Range[]) => HighlightLike;
 type HighlightRegistry = {
+  get(name: string): HighlightLike | undefined;
   set(name: string, highlight: HighlightLike): void;
   delete(name: string): void;
 };
@@ -69,29 +73,35 @@ export function resolveFindScope(): Element | null {
   );
 }
 
-/**
- * Surfaces the shell renders in front of the workspace but outside it.
- *
- * A popover portals to the body, so the model picker's list is on screen but not in the scope, and
- * searching the page behind it is a lie. Narrow on purpose: the layers a reader works IN, so a
- * toast or a tooltip does not change the count under them.
- */
-const PORTAL_SURFACE_SELECTOR =
+/** Searchable surfaces outside the scope; persistent portals are additive. */
+const DISMISSIBLE_PORTAL_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
+const SEARCHABLE_PORTAL_SURFACE_SELECTOR = `[${FIND_PORTAL_ATTRIBUTE}], ${DISMISSIBLE_PORTAL_SURFACE_SELECTOR}`;
 
-export function resolvePortalSurfaces(scope: Element | null): Element[] {
+function resolveSurfaces(scope: Element | null, selector: string): Element[] {
   if (typeof document === "undefined" || scope === null) return [];
   const found: Element[] = [];
-  for (const element of document.querySelectorAll(PORTAL_SURFACE_SELECTOR)) {
+  for (const element of document.querySelectorAll(selector)) {
     // Inside the scope already, or nested in a surface already taken.
     if (scope.contains(element)) continue;
     if (found.some((taken) => taken.contains(element))) continue;
-    // On its way out: these animate closed and keep a box until that finishes, so nothing else
-    // here would turn them down.
+    // Dismissible surfaces animate closed and keep a box until that finishes.
     if (element.getAttribute("data-state") === "closed") continue;
     found.push(element);
   }
   return found;
+}
+
+/** Every visible out-of-scope surface whose text belongs in the index. */
+export function resolvePortalSurfaces(scope: Element | null): Element[] {
+  return resolveSurfaces(scope, SEARCHABLE_PORTAL_SURFACE_SELECTOR);
+}
+
+/** Transient surfaces that own Escape before the find bar does. */
+export function resolveDismissiblePortalSurfaces(
+  scope: Element | null,
+): Element[] {
+  return resolveSurfaces(scope, DISMISSIBLE_PORTAL_SURFACE_SELECTOR);
 }
 
 /**
@@ -136,7 +146,7 @@ export function viewportOffset(index: FindTextIndex): number {
  * in the document is not the same as being searchable. Attributes only: a region hidden by a CLASS
  * is skipped through resolved style, which no selector can see.
  */
-const SKIPPED_REGION_SELECTOR = `[aria-hidden="true"], [inert], [hidden], [${FIND_SKIP_ATTRIBUTE}]`;
+const SKIPPED_REGION_SELECTOR = `[aria-hidden="true"]:not(.katex-html), [inert], [hidden], [${FIND_SKIP_ATTRIBUTE}]`;
 
 /** What the walk will actually read, asked of one element: inside the scope, and under nothing the
  *  walk turns back at. */
@@ -149,13 +159,7 @@ export function indexReaches(
   return element.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
-/**
- * True when a mutation touched text the index covers, rather than the bar's own chrome. `some()`
- * short-circuits, so this costs a `closest` call only on batches the bar itself produced.
- *
- * Lives here, not beside its caller, so a test can hand it a record: the hook imports React and
- * cannot be loaded under `node --test`.
- */
+/** True when a mutation affects indexed text rather than the bar's own chrome. */
 export function mutatesSearchableText(record: {
   target: { nodeType: number; parentElement: Element | null };
   type: string;
@@ -167,16 +171,10 @@ export function mutatesSearchableText(record: {
       ? (target as unknown as Element)
       : (target.parentElement ?? null);
   if (!element) return true;
-  // Whichever attribute changed, ask from the PARENT. `closest` matches where it starts, so an
-  // element just parked answers with itself and its own record is dropped - the one record saying a
-  // region left the index. Removal reindexed fine, addition never did, though the observer watches
-  // both, and every attribute it watches decides searchability. A detached target counts as a
-  // change.
+  // Attribute changes are checked from the parent so parked or newly indexed regions reindex.
   const from = record.type === "attributes" ? element.parentElement : element;
   if (!from) return true;
-  // Not just the bar's own chrome: an off-route workspace goes on streaming a reply into the
-  // document, and each character of it used to buy a full flatten that then correctly threw that
-  // text away. Once per throttle for as long as the generation ran.
+  // Streaming updates in skipped workspaces still need one throttled observer pass.
   return from.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
@@ -217,6 +215,42 @@ export function paintWindow(
   return { from, to: from + cap };
 }
 
+function removeRegisteredHighlight(
+  registry: HighlightRegistry,
+  name: string,
+): boolean {
+  const highlight = registry.get(name);
+  if (!highlight) return false;
+  // WebKit versions shipped by Tauri can remove the registry entry without invalidating its
+  // painted ranges. Emptying the registered set first takes the range-removal repaint path.
+  highlight.clear();
+  registry.delete(name);
+  return true;
+}
+
+/** Flush the last stale WebKit pixels after a highlight set becomes empty.
+ *
+ * WebKitGTK can update the registry and counter but leave highlight edges painted until scrolling
+ * invalidates the layer. A transient, imperceptible opacity change plus a layout read gives that
+ * layer a synchronous reason to repaint. This only runs when registered ranges were actually
+ * removed, not for every character in an unsettled typing burst. */
+function forceHighlightRepaint(): void {
+  if (typeof document === "undefined") return;
+  // The index also includes body-level portals outside the workspace scope, so repaint their shared
+  // document root rather than only the conversation container.
+  const root = document.documentElement ?? resolveFindScope();
+  if (
+    root === null ||
+    typeof HTMLElement === "undefined" ||
+    !(root instanceof HTMLElement)
+  )
+    return;
+  const previous = root.style.opacity;
+  root.style.opacity = previous === "0.999999" ? "0.999998" : "0.999999";
+  void root.offsetHeight;
+  root.style.opacity = previous;
+}
+
 /** Paint `ranges`, with `activeRange` on top. Both registries are replaced wholesale, which is one
  *  write per navigation rather than one per match. */
 export function paintHighlights(
@@ -226,15 +260,20 @@ export function paintHighlights(
   const api = highlightApi();
   if (!api) return;
   const { registry, Highlight } = api;
+  let removed = false;
   if (ranges.length === 0) {
-    registry.delete(FIND_HIGHLIGHT);
+    removed = removeRegisteredHighlight(registry, FIND_HIGHLIGHT);
   } else {
+    removeRegisteredHighlight(registry, FIND_HIGHLIGHT);
     registry.set(FIND_HIGHLIGHT, new Highlight(...ranges));
   }
   if (!activeRange) {
-    registry.delete(FIND_HIGHLIGHT_ACTIVE);
+    removed =
+      removeRegisteredHighlight(registry, FIND_HIGHLIGHT_ACTIVE) || removed;
+    if (removed) forceHighlightRepaint();
     return;
   }
+  removeRegisteredHighlight(registry, FIND_HIGHLIGHT_ACTIVE);
   const active = new Highlight(activeRange);
   // The same text is in both sets, and registration order is not a guarantee the spec makes.
   active.priority = 1;
@@ -245,8 +284,12 @@ export function paintHighlights(
 export function clearHighlights(): void {
   const api = highlightApi();
   if (!api) return;
-  api.registry.delete(FIND_HIGHLIGHT);
-  api.registry.delete(FIND_HIGHLIGHT_ACTIVE);
+  const removedActive = removeRegisteredHighlight(
+    api.registry,
+    FIND_HIGHLIGHT_ACTIVE,
+  );
+  const removedAll = removeRegisteredHighlight(api.registry, FIND_HIGHLIGHT);
+  if (removedActive || removedAll) forceHighlightRepaint();
 }
 
 /** The caret inside a focused text field, so moving the document selection can give it back. */

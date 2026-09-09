@@ -19,6 +19,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -32,7 +33,12 @@ import numpy as np
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 from . import config
 from utils.paths.path_utils import is_appledouble_metadata
@@ -46,6 +52,52 @@ _TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
 )
+
+
+_GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+# llama.cpp's own -ub default. An embedding prompt is not splittable, so one longer than this
+# is refused with a 500 no matter how large the model's context is.
+_UBATCH_SIZE = 512
+
+
+def _skip_gguf_value(f, vtype: int) -> None:
+    if vtype == 8:
+        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+    elif vtype == 9:
+        elem_type, count = struct.unpack("<IQ", f.read(12))
+        if elem_type in _GGUF_SCALAR_WIDTHS:
+            f.seek(_GGUF_SCALAR_WIDTHS[elem_type] * count, 1)
+        else:
+            for _ in range(count):
+                _skip_gguf_value(f, elem_type)
+    else:
+        f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
+
+
+def _gguf_context_length(path: str) -> int | None:
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            f.read(4)
+            _, kv_count = struct.unpack("<QQ", f.read(16))
+            arch = None
+            lengths: dict[str, int] = {}
+            for _ in range(kv_count):
+                key = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                vtype = struct.unpack("<I", f.read(4))[0]
+                if key == "general.architecture" and vtype == 8:
+                    arch = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                elif key.endswith(".context_length") and vtype in (4, 10):
+                    lengths[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
+                else:
+                    _skip_gguf_value(f, vtype)
+                if arch is not None and f"{arch}.context_length" in lengths:
+                    return lengths[f"{arch}.context_length"] or None
+    except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
+        return None
+    return None
 
 
 def _resolve_entrypoint(binary: str) -> str:
@@ -109,6 +161,7 @@ class LlamaServerBackend:
         # dim() takes the same _serve_lock the request path does; reentrant because dim() -> encode() ->
         # _ensure_ready() re-enters on one thread.
         self._dim: int | None = None
+        self._max_tokens: int | None = None
         # One subprocess serves one GGUF, so readiness and the request must be indivisible: a swap between
         # them lands A's POST on B's server.
         self._serve_lock = threading.RLock()
@@ -468,7 +521,11 @@ class LlamaServerBackend:
                 # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
                 # model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
-            raise RuntimeError(
+            # Typed: the same condition the ST path raises, and /v1/embeddings answers it
+            # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.
+            from .embeddings import EmbeddingModelDownloadRequiredError
+
+            raise EmbeddingModelDownloadRequiredError(
                 f"Embedding model {model!r} is not downloaded yet. "
                 "Finish its Settings download before indexing documents."
             )
@@ -539,6 +596,7 @@ class LlamaServerBackend:
         self._model_path = path
         self._model_repo = desired
         self._dim = None
+        self._max_tokens = None
         return self._model_path
 
     # A listing, not a transfer: a working hub answers well inside a second.
@@ -673,6 +731,11 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
+        # -ub at llama.cpp's own default, so nothing is allocated that was not already: raising
+        # the batch allocates n_vocab * n_ubatch * 4 up front (~938 MiB at 8192 with a 30k
+        # vocab), against the 1024 MiB free this backend calls enough to offload every layer.
+        # Passed rather than read back because /props publishes n_ctx and no batch field.
+        cmd += ["-ub", str(_UBATCH_SIZE)]
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -761,6 +824,10 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu, model_name)
         except RuntimeError:
+            # A shutdown refusal is terminal: the CPU fallback would just spawn into the
+            # same latch and be refused again.
+            if is_process_shutting_down():
+                raise
             if use_gpu and not config.embed_device_requires_gpu():
                 logger.warning("embed server GPU start failed; falling back to CPU")
                 self._force_cpu = True
@@ -784,6 +851,11 @@ class LlamaServerBackend:
             " ".join(cmd),
         )
         self._stdout_lines = []
+        # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
+        # encode still resolving or downloading its model as the app quits would
+        # otherwise Popen a server after terminate_all had taken its snapshot.
+        if is_process_shutting_down():
+            raise RuntimeError("Studio is shutting down; not starting the embed server")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -799,6 +871,14 @@ class LlamaServerBackend:
         # child_popen_kwargs() is empty on macOS, so the crash record is the only thing that can reap it
         # after a force quit.
         adopt_pid(proc.pid)
+        # Recheck once the pid is recorded, as the llama-server and inference worker
+        # spawns do: the latch can be set between the gate above and this record, and
+        # the child would then sit outside a sweep that has already finished. Adoption
+        # runs first either way, so a child killed here is still in the sweep record.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; killing the new embed server")
+            self._kill_process()
+            raise RuntimeError("Studio is shutting down; not starting the embed server")
         self._port = port
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout,
@@ -878,6 +958,9 @@ class LlamaServerBackend:
             if self._binary_path_revision != custom_llama_cpp_path_revision():
                 self._binary = None
                 self._binary_path_revision = None
+                # Half a server fact (n_ctx, n_ubatch differ between builds), and
+                # _resolve_model_path fast-paths on an unchanged repo, so nothing else clears it.
+                self._max_tokens = None
             self._spawn(model_name)
 
     def _restart(self, model_name: str | None = None) -> None:
@@ -1036,6 +1119,72 @@ class LlamaServerBackend:
             width = int(vec.shape[1])
             self._dim = width
             return width
+
+    def _server_props(self) -> dict | None:
+        """``/props``, or None. Advisory only -- it refines a limit that already has a
+        value from the GGUF, so no failure here may reach the caller. That includes a
+        malformed base URL, which is what an un-started server has.
+        """
+        try:
+            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+        except Exception:  # noqa: BLE001 - see docstring
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _positive(data: dict | None, key: str) -> int | None:
+        """*key* from /props, whether the build reports it at the top level or under
+        ``default_generation_settings``."""
+        for scope in (data, (data or {}).get("default_generation_settings")):
+            if isinstance(scope, dict):
+                value = scope.get(key)
+                if isinstance(value, int) and value > 0:
+                    return value
+        return None
+
+    def _server_context(self) -> int | None:
+        return self._positive(self._server_props(), "n_ctx")
+
+    def _server_batch(self) -> int | None:
+        """The physical batch this server actually runs at.
+
+        A non-causal (embedding) prompt longer than it is refused outright, so it bounds
+        what may be advertised no matter how large the model's context is.
+        """
+        # n_ubatch only: n_batch is the logical batch, and llama.cpp derives the physical one as
+        # min(n_batch, n_ubatch or n_batch), so against the -ub we launch with a reported n_batch
+        # is never the limit. No build publishes either today, leaving the launch value; read it
+        # first anyway, so a build that starts reporting it wins over the assumption.
+        found = self._positive(self._server_props(), "n_ubatch")
+        return min(found, _UBATCH_SIZE) if found else _UBATCH_SIZE
+
+    def max_tokens(self, *, model_name = None) -> int | None:
+        with self._operation(), self._serve_lock:
+            self._ensure_ready(model_name)
+            if self._max_tokens is None and self._model_path:
+                limit = _gguf_context_length(self._model_path)
+                running = self._server_context()
+                if limit and running:
+                    limit = min(limit, running)
+                elif running:
+                    limit = running
+                # Past one batch llama.cpp returns a 500, not the 400 this limit exists to give.
+                batch = self._server_batch()
+                if batch:
+                    limit = min(limit, batch) if limit else batch
+                if limit:
+                    data = self._post(
+                        "/tokenize",
+                        {"content": "", "add_special": True},
+                        model_name = model_name,
+                    )
+                    answer = max(1, limit - len(data.get("tokens", [])))
+                    if running is None or batch is None:
+                        # /props silent: answer with the header guess but do not freeze it,
+                        # or a too-large limit outlives the readback that would correct it.
+                        return answer
+                    self._max_tokens = answer
+            return self._max_tokens
 
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path.

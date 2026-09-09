@@ -269,8 +269,8 @@ def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_pat
 
 
 def test_missing_requirements_matches_on_distribution_not_import_name(tmp_path):
-    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are
-    # jwt / docx / fitz, so matching on imports would look missing.
+    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are jwt / docx / fitz, so matching on imports
+    # would look missing.
     req = tmp_path / "studio.txt"
     req.write_text("pytest\n", encoding = "utf-8")
     assert im.missing_requirements(req) == []
@@ -293,8 +293,7 @@ def test_missing_manifest_reports_incomplete(install_root, req_root):
 
 
 def test_interrupted_install_leaves_no_manifest(install_root, req_root):
-    # remove_manifest() runs before the dependency pass, so a later kill cannot
-    # leave a stale-but-valid manifest behind.
+    # remove_manifest() runs before the dependency pass, so a later kill cannot leave a stale-but-valid manifest behind.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     assert im.manifest_path(install_root).is_file()
     assert im.remove_manifest(install_root) is True
@@ -306,7 +305,6 @@ def test_interrupted_install_leaves_no_manifest(install_root, req_root):
 def test_remove_manifest_reports_whether_the_marker_is_really_gone(
     install_root, req_root, monkeypatch
 ):
-    # Nothing to remove is success: a first install has no manifest yet.
     assert im.remove_manifest(install_root) is True
 
     # A surviving marker must be reported, not swallowed: the dependency pass
@@ -349,8 +347,6 @@ def test_package_upgrade_invalidates_the_manifest(install_root, req_root):
 
 
 def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
-    # `studio update --package X` records X. Checking unsloth's version instead
-    # would report a change on every probe and repair for ever.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(
         root = install_root,
@@ -362,6 +358,7 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
 
 @pytest.mark.parametrize("conflict", ["pytest", "unsloth-zoo"])
 def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_root, conflict):
+    # `studio update --package X` records X.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(
         root = install_root,
@@ -376,8 +373,8 @@ def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_ro
 
 
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
-    # The --local dev path: an edited studio.txt must re-run the dependency
-    # pass, not sit behind setup.sh's "up to date" fast path.
+    # The --local dev path: an edited studio.txt must re-run the dependency pass, not sit behind setup.sh's "up to date"
+    # fast path.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     (req_root / "studio.txt").write_text("pytest\nrich\n", encoding = "utf-8")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
@@ -392,9 +389,8 @@ def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
 
 
 def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
-    # `unsloth studio update` injects no UNSLOTH_NO_TORCH, so the venv has to
-    # remember how it was built or the update reinstalls torch into a GGUF-only
-    # environment (and on Windows deletes the venv it is running out of).
+    # `unsloth studio update` injects no UNSLOTH_NO_TORCH, so the venv has to remember how it was built or the update
+    # reinstalls torch into a GGUF-only environment (and on Windows deletes the venv it is running out of).
     for recorded in (True, False):
         im.write_manifest(
             root = install_root,
@@ -410,9 +406,8 @@ def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
 
 
 def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
-    # Manifests written before the key existed must keep verifying, and must
-    # report None rather than False so callers fall back to their own detection
-    # instead of silently switching an install out of no-torch mode.
+    # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
+    # fall back to their own detection instead of silently switching an install out of no-torch mode.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
     assert "no_torch" not in payload
@@ -438,9 +433,8 @@ def test_recorded_no_torch_reports_unknown_without_a_manifest(install_root):
 
 
 def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_root):
-    # remove_manifest() runs before every dependency pass, so a run killed during
-    # it leaves no manifest. The marker is what stops the next update reading the
-    # absent torch as a stale venv and deleting the environment it runs out of.
+    # remove_manifest() runs before every dependency pass, so a run killed during it leaves no manifest. The marker is
+    # what stops the next update reading the absent torch as a stale venv and deleting the environment it runs out of.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = True)
     assert im.recorded_no_torch(root = install_root) is True
@@ -482,7 +476,6 @@ def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch):
     (tmp_path / "lib64").symlink_to("lib")
     alias = tmp_path / "lib64" / "python3.13" / "site-packages"
 
-    # install_manifest imports sysconfig inside the function, so patch the module.
     monkeypatch.setattr(
         sysconfig, "get_paths", lambda *a, **k: {"purelib": str(real), "platlib": str(alias)}
     )
@@ -496,6 +489,7 @@ def test_scan_paths_keeps_genuinely_separate_roots(tmp_path, monkeypatch):
     pure.mkdir()
     plat.mkdir()
 
+    # install_manifest imports sysconfig inside the function, so patch the module.
     monkeypatch.setattr(
         sysconfig, "get_paths", lambda *a, **k: {"purelib": str(pure), "platlib": str(plat)}
     )
@@ -556,7 +550,6 @@ def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(inst
     installed = _fake_venv(
         install_root, {"studio.txt": "pytest\n", "extras.txt": "openai==3.2.0\n"}
     )
-    # The installer's tree, as an older bundle would carry it.
     (req_root / "studio.txt").write_text("pytest\n", encoding = "utf-8")
     (req_root / "extras.txt").write_text("openai>=2.7.2\n", encoding = "utf-8")
 

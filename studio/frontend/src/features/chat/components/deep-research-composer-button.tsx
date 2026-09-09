@@ -243,8 +243,8 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // The API accepts second-level values the minutes field cannot spell, so saving an
-  // untouched control must replay the stored seconds rather than the rounded minutes.
+  // The API accepts second-level values the minutes field cannot spell, so saving an untouched
+  // control must replay the stored seconds rather than the rounded minutes.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
@@ -318,8 +318,8 @@ function DeepResearchWebsiteAccessContent({
           onClick={() => {
             setPolicy(draft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value reaching here, and falling
-            // through to the default would hand someone asking for a long run a short one.
+            // The max attribute does not stop a typed value reaching here, and falling through to the default
+            // would hand someone asking for a long run a short one.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

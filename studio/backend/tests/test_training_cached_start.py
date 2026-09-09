@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import contextlib
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from hub.utils import hf_cache_state
@@ -43,6 +45,24 @@ def _request(**overrides) -> TrainingStartRequest:
     }
     payload.update(overrides)
     return TrainingStartRequest(**payload)
+
+
+@pytest.mark.parametrize("dataset_path", ["", " ", "\t"])
+def test_local_dataset_path_validation_rejects_blank_values(dataset_path):
+    route = _load_route_module("training_route_rejects_blank_local_dataset_path")
+
+    with (
+        patch.object(
+            route,
+            "resolve_dataset_path",
+            side_effect = AssertionError("blank path must be rejected before resolution"),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._validate_local_dataset_paths([dataset_path], "Local eval dataset")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Local eval dataset path must not be blank"
 
 
 @pytest.mark.parametrize("repo_id", ["_team/dataset_", "dataset_"])
@@ -1239,7 +1259,6 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
         ({"is_embedding": True}, "Embedding model training"),
         ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
-        ({"use_dora": True}, "DoRA"),
     ],
 )
 def test_mlx_start_rejects_unsupported_training_config(request_overrides, expected):
@@ -1257,6 +1276,21 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
 
     assert exc_info.value.status_code == 400
     assert expected in exc_info.value.detail
+
+
+def test_mlx_start_accepts_dora():
+    # LoftQ is asserted alongside DoRA so a gate that stopped refusing anything at all
+    # cannot pass this test.
+    from utils.hardware import hardware
+
+    route = _load_route_module("training_route_mlx_accepts_dora")
+
+    with patch.object(hardware, "DEVICE", hardware.DeviceType.MLX):
+        route._validate_training_platform(_request(use_dora = True))
+        with pytest.raises(HTTPException) as exc_info:
+            route._validate_training_platform(_request(use_loftq = True))
+
+    assert "LoftQ" in exc_info.value.detail
 
 
 def test_mlx_start_detects_hardware_before_platform_validation():
@@ -1428,7 +1462,7 @@ def test_reset_route_without_body_stays_supported():
     route = _load_route_module("training_route_unscoped_reset")
     calls: list[str | None] = []
     backend = SimpleNamespace(
-        reset_training_state = lambda expected_job_id = None: (calls.append(expected_job_id) or "ok")
+        reset_training_state = lambda expected_job_id = None: calls.append(expected_job_id) or "ok"
     )
 
     with (
@@ -2318,8 +2352,9 @@ def test_worker_security_scans_exact_model_load_target(offline):
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["local_only_load"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = offline),
     ):
@@ -2352,8 +2387,9 @@ def test_worker_remote_retry_security_scan_is_not_local_only():
         patch("utils.security.security_load_subdirs", return_value = ()),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["local_only_load"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
     ):
@@ -2385,12 +2421,13 @@ def test_worker_security_scopes_pinned_target_before_registry_fallback():
         ),
         patch(
             "utils.security.security_load_subdirs",
-            side_effect = lambda target, _token: (("LLM",) if target == snapshot else ("registry",)),
+            side_effect = lambda target, _token: ("LLM",) if target == snapshot else ("registry",),
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["load_subdirs"]))
-            or decision,
+            side_effect = lambda target, **kwargs: (
+                scanned.append((target, kwargs["load_subdirs"])) or decision
+            ),
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
     ):
@@ -3278,3 +3315,140 @@ def test_cache_local_paths_blank_normalizes_to_none():
     request = _request(model_local_path = "   ", dataset_local_path = "")
     assert request.model_local_path is None
     assert request.dataset_local_path is None
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_boolean_eval_steps_is_rejected_by_the_request_model(value):
+    """`float` is not strict, so `"eval_steps": true` arrived as 1.0 before any trainer check."""
+    with pytest.raises(ValidationError):
+        _request(eval_steps = value)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 0.25, 1, 2, "0.1"])
+def test_numeric_eval_steps_still_accepted(value):
+    assert _request(eval_steps = value).eval_steps == float(value)
+
+
+def test_a_json_number_too_large_for_a_float_arrives_as_infinity():
+    """Pins the premise: `1e309` is a plain JSON number, not a non-standard `Infinity` literal,
+    and pydantic's non-strict `float` coerces it to inf."""
+    from pydantic import BaseModel
+
+    class _Bare(BaseModel):
+        eval_steps: float = 0.0
+
+    assert json.loads("1e309") == float("inf")
+    assert _Bare.model_validate_json('{"eval_steps": 1e309}').eval_steps == float("inf")
+
+
+@pytest.mark.parametrize("cadence", [float("inf"), float("nan")])
+def test_a_disabled_cadence_does_not_validate_the_local_eval_paths(cadence):
+    """A non-finite cadence is evaluation off, so the route must not 400 over unused paths."""
+    route = _load_route_module("training_route_disabled_cadence_skips_eval_paths")
+    request = _request(eval_steps = cadence, local_eval_datasets = [""])
+
+    labels: list[str] = []
+
+    with patch.object(
+        route,
+        "_validate_local_dataset_paths",
+        side_effect = lambda paths, label: labels.append(label) or paths,
+    ):
+        with contextlib.suppress(Exception):
+            _start(route, request)
+
+    assert labels == [], f"eval paths were validated for eval_steps={cadence}"
+
+
+def test_a_disabled_cadence_does_not_demand_a_separate_streaming_eval_split():
+    """`eval_steps > 0` let inf through, rejecting a streaming run over a split it did not need."""
+    route = _load_route_module("training_route_disabled_cadence_streaming_eval_split")
+    request = _request(
+        dataset_streaming = True, max_steps = 10, eval_steps = float("inf"), eval_split = None
+    )
+
+    detail = None
+    try:
+        _start(route, request)
+    except HTTPException as exc:
+        detail = exc.detail
+
+    assert detail != "dataset_streaming with evaluation requires a separate eval_split."
+
+
+def test_a_usable_cadence_still_demands_a_separate_streaming_eval_split():
+    route = _load_route_module("training_route_usable_cadence_streaming_eval_split")
+    request = _request(dataset_streaming = True, max_steps = 10, eval_steps = 0.25, eval_split = None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _start(route, request)
+
+    assert (
+        exc_info.value.detail == "dataset_streaming with evaluation requires a separate eval_split."
+    )
+
+
+@pytest.mark.parametrize("literal", ["1e309", "-1e309", "Infinity", "NaN"])
+def test_a_non_finite_cadence_is_stored_as_disabled(literal):
+    """json writes inf/NaN as the non-standard `Infinity` / `NaN` literals but Starlette renders
+    with `allow_nan = False`, so a config_json carrying one 500s the run's detail view."""
+    request = TrainingStartRequest.model_validate_json(
+        '{"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", '
+        '"format_type": "alpaca", "hf_dataset": "org/dataset", '
+        f'"eval_steps": {literal}}}'
+    )
+    assert request.eval_steps == 0.0
+
+
+def test_the_persisted_config_never_carries_a_non_finite_value():
+    from core.training.training import _sanitize_db_config
+
+    sanitized = _sanitize_db_config(
+        {
+            "eval_steps": float("inf"),
+            "learning_rate": float("nan"),
+            "nested": {"a": [float("-inf"), 1.0]},
+            "keep": 0.25,
+            "flag": True,
+        }
+    )
+
+    assert sanitized["eval_steps"] is None
+    assert sanitized["learning_rate"] is None
+    assert sanitized["nested"] == {"a": [None, 1.0]}
+    assert sanitized["keep"] == 0.25
+    assert sanitized["flag"] is True
+    JSONResponse(content = sanitized).render(sanitized)
+
+
+def test_a_run_stored_by_an_older_install_still_renders():
+    """An older install can already hold `Infinity` in config_json; the request model cannot."""
+    from utils.training_runs import drop_non_finite
+
+    stored = json.dumps({"eval_steps": float("inf"), "model_name": "unsloth/test"})
+    config = drop_non_finite(json.loads(stored))
+
+    assert config == {"eval_steps": None, "model_name": "unsloth/test"}
+    JSONResponse(content = config).render(config)
+
+
+def test_a_json_integer_too_large_for_a_float_is_disabled_not_a_500():
+    """`float()` on a huge JSON int raises OverflowError, which is not a ValueError, so it
+    escaped the validator and 500d the start endpoint."""
+    huge = "1" + "0" * 310
+    assert isinstance(json.loads(huge), int)
+    with pytest.raises(OverflowError):
+        float(json.loads(huge))
+
+    request = TrainingStartRequest.model_validate_json(
+        '{"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", '
+        '"format_type": "alpaca", "hf_dataset": "org/dataset", '
+        f'"eval_steps": {huge}}}'
+    )
+    assert request.eval_steps == 0.0
+
+
+def test_the_shared_cadence_gate_survives_an_unrepresentable_integer():
+    """`evaluation_enabled` caught only TypeError and ValueError, so this took down every caller."""
+    from core.training.eval_dataset import evaluation_enabled
+    assert evaluation_enabled(int("1" + "0" * 310)) is False

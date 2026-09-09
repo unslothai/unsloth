@@ -786,7 +786,8 @@ def retry(run_id: str, max_retries: int = 3) -> str:
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
         # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
-        # retry_count would hand a fresh question whatever the stopped one left over.
+        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all
+        # once the budget was spent.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "

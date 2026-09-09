@@ -40,7 +40,11 @@ KEYLESS_SCOPE_INFERENCE = "inference"
 KEYLESS_SCOPE_FULL = "full"
 KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL)
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
-APPROVED_DUMMY_BEARERS = frozenset({"not-needed", "lm-studio", "ollama"})
+APPROVED_DUMMY_BEARERS = frozenset(
+    # ``no-key-required`` is what hermes-agent substitutes when no key is configured,
+    # because the OpenAI SDK refuses an empty one (hermes_cli/runtime_provider_backends.py).
+    {"not-needed", "lm-studio", "ollama", "no-key-required"}
+)
 KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
 
 # Named by method and normalized path: /v1 also aliases model loading, media,
@@ -63,6 +67,14 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/version"),
     }
 )
+
+
+def is_empty_bearer(header: str) -> bool:
+    """Whether ``header`` is a bearer with no token: what a harness sends with no key set."""
+    from fastapi.security.utils import get_authorization_scheme_param
+
+    scheme, token = get_authorization_scheme_param(header)
+    return scheme.lower() == "bearer" and not token
 
 
 def _coerce_scope(value: Any) -> Optional[str]:
@@ -698,5 +710,7 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
     # making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
     from fastapi.security.utils import get_authorization_scheme_param
 
+    if is_empty_bearer(authorization[0]):
+        return True
     scheme, token = get_authorization_scheme_param(authorization[0])
     return bool(scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)

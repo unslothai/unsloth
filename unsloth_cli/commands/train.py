@@ -9,7 +9,7 @@ import typer
 
 from unsloth_cli._inference import ensure_studio_backend_path
 from unsloth_cli._studio_deps import studio_backend_imports
-from unsloth_cli.config import Config, load_config
+from unsloth_cli.config import Config, ConfigError, load_config
 from unsloth_cli.options import add_options_from_config
 
 
@@ -71,7 +71,7 @@ def train(
     """Launch training using the existing Unsloth training backend."""
     try:
         cfg = load_config(config)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 

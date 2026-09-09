@@ -76,10 +76,8 @@ def test_the_failure_is_real_without_the_fix(unpatched):
             f"transformers {transformers.__version__} passes kw_only=True "
             f"(5.5.1+), so the ordering rule this fix works around is gone"
         )
-    # The ordering rule only exists between 5.4.0 and 5.5.0: 5.0.0 to 5.3.x are
-    # 5.x but do not dataclass-ify configs at all (no `__init_subclass__`), so
-    # nothing raises there and the premise below does not apply. Ask the
-    # unpatched class rather than the version, which was the point of the probe.
+    # The ordering rule only exists between 5.4.0 and 5.5.0: 5.0.0 to 5.3.x are 5.x but do not dataclass-ify configs at
+    # all (no `__init_subclass__`), so nothing raises there and the premise below does not apply.
     if not _transformers_needs_bare_annotation_fix():
         pytest.skip(
             f"transformers {transformers.__version__} does not apply the "

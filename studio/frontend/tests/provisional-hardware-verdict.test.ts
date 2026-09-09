@@ -9,13 +9,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  readSrc,
+  readSrcAsync,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { isDetectionDeferred, isProvisionalVerdict, resolveVerdict, videoNavHint } = await import(
   "../src/config/hardware-verdict.ts"
 );
+
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const ENV = readSrc("config/env.ts");
+const USE_HARDWARE_INFO = readSrc("hooks/use-hardware-info.ts");
 
 const GPU_HOST = { chatOnly: false, chatOnlyReason: null, chatOnlyDetail: null };
 const MAC_DEFAULT = { chatOnly: true, chatOnlyReason: null, chatOnlyDetail: null };
@@ -144,17 +152,13 @@ test("an actively detecting reply is not deferred", () => {
 // wait on every navigation. Asserted on source: env.ts is not importable outside vite.
 test("the bounded hardware wait is spent at most once per page load", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    ENV,
     /let hardwareWaitSpent = false/,
     "no once-per-load latch: every navigation can repeat the full wait",
   );
   assert.match(
-    src,
+    ENV,
     /const deadline = spendWait \? Date\.now\(\) \+ HARDWARE_DETECT_WAIT_MS : 0/,
     "the guard does not zero the deadline, so the wait is not actually skipped",
   );
@@ -165,12 +169,8 @@ test("the bounded hardware wait is spent at most once per page load", async () =
 // provisional into measured, so it only holds the login form behind the torch import.
 test("an unauthenticated read never spends the detection window", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    ENV,
     /const spendWait = Boolean\(token\) && !hardwareWaitSpent/,
     "the wait is not gated on having a token, so /login blocks on hardware detection",
   );
@@ -181,26 +181,22 @@ test("an unauthenticated read never spends the detection window", async () => {
 // leaving the awaited caller on the local default and redirecting a GPU host to /chat.
 test("the latch is claimed after the wait, not during it", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
-  const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
+  const loopStart = ENV.indexOf("while (res.ok && Date.now() < deadline)");
   // Anchor on the loop's own closing brace, NOT on the latch. Searching for the latch
   // made this assertion unfalsifiable: String.prototype.search returns the FIRST match,
   // so moving the latch inside the loop moved loopEnd with it and the slice ended just
   // short of the claim either way. The test then passed against the exact regression its
   // header describes.
-  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  const loopEnd = ENV.indexOf("\n    }\n", loopStart);
   assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
   assert.ok(
-    !src.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
+    !ENV.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
     "the latch is claimed inside the loop, so a concurrent caller skips an unfinished window",
   );
   // And it must still be claimed somewhere after the loop, or deleting it outright
   // would satisfy the check above.
   assert.match(
-    src.slice(loopEnd),
+    ENV.slice(loopEnd),
     /if \(spendWait[^)]*\) hardwareWaitSpent = true;/,
     "the latch is never claimed after the wait, so the window is never spent",
   );
@@ -211,22 +207,18 @@ test("the latch is claimed after the wait, not during it", async () => {
 // as local, changing model filtering, paths and install commands.
 test("a provisional forced refresh keeps the server-reported platform", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    ENV,
     /const keepPlatform =\s*\n?\s*data\.device_type === undefined && previous\.fetched/,
     "no guard: a provisional forced refresh overwrites the authoritative platform",
   );
   assert.match(
-    src,
+    ENV,
     /keepPlatform \? previous\.deviceType : detectLocalPlatform\(\)/,
     "the guard does not actually keep the stored platform",
   );
   assert.match(
-    src,
+    ENV,
     /fetched: data\.device_type !== undefined \|\| keepPlatform/,
     "fetched drops to false, so the authoritative platform is not treated as held",
   );
@@ -237,18 +229,13 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
 // kept the conservative deferred verdict and stayed chat-only until a hard refresh.
 test("a deferred verdict is recorded so the sidebar can poll out of it", async () => {
   const { readFile } = await import("node:fs/promises");
-  const env = await readFile(new URL("../src/config/env.ts", import.meta.url), "utf8");
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    env,
+    ENV,
     /detectionDeferred: isDetectionDeferred\(data\)/,
     "the store never records that the verdict came from a deferred reply",
   );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /chatOnlyReason !== "mlx_unavailable" && !detectionDeferred/,
     "the recovery poll still ignores a deferred verdict, so it never recovers",
   );
@@ -259,16 +246,12 @@ test("a deferred verdict is recorded so the sidebar can poll out of it", async (
 // a stale token spends the whole window and holds /login on a cold boot.
 test("a rejected token stops the wait instead of polling it out", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
-  const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
+  const loopStart = ENV.indexOf("while (res.ok && Date.now() < deadline)");
   // Same brace anchor as above rather than the latch pattern, so the slice cannot move
   // with the code it is meant to be measuring.
-  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  const loopEnd = ENV.indexOf("\n    }\n", loopStart);
   assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
-  const loop = src.slice(loopStart, loopEnd);
+  const loop = ENV.slice(loopStart, loopEnd);
   assert.ok(
     /if \(peek\.version === undefined\)\s*\{?[^}]*break;/.test(loop),
     "the loop keeps polling a reply with no authed-only field, so an expired token " +
@@ -286,18 +269,14 @@ test("a rejected token stops the wait instead of polling it out", async () => {
 // the latch on a refused token leaves the route guard on local defaults until a refresh.
 test("a rejected token does not consume the once-per-load window", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    ENV,
     /if \(spendWait && !tokenRejected\) hardwareWaitSpent = true;/,
     "the latch is claimed even when the break came from a rejected token, so the " +
       "first accepted token in this page load skips its window",
   );
   assert.match(
-    src,
+    ENV,
     /tokenRejected = true;/,
     "nothing records that the break was caused by a rejected token",
   );
@@ -309,17 +288,13 @@ test("a rejected token does not consume the once-per-load window", async () => {
 // answered -- which PR #7607's lazy detection can stretch to minutes.
 test("the store exposes an unknown state, not just chat-only", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    ENV,
     /capabilitiesUnknown: \(\) => boolean;/,
     "PlatformState has no unknown state, so a caller can only read the guess",
   );
   assert.match(
-    src,
+    ENV,
     /return !state\.fetched && !state\.detectionDeferred;/,
     "the selector is not derived from `fetched`, the flag that already means " +
       "'a server-reported verdict is stored'",
@@ -331,11 +306,7 @@ test("the store exposes an unknown state, not just chat-only", async () => {
 // never flips. Calling that unknown would spin Train and Video for the whole session.
 test("a deferred verdict counts as settled, not as still checking", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/config/env.ts", import.meta.url),
-    "utf8",
-  );
-  const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(src);
+  const selector = /capabilitiesUnknown: \(\) => \{([\s\S]*?)\n  \},/.exec(ENV);
   assert.ok(selector, "capabilitiesUnknown is no longer a block the deferred case can live in");
   assert.match(
     selector[1],
@@ -346,12 +317,8 @@ test("a deferred verdict counts as settled, not as still checking", async () => 
 
 test("the sidebar gates Train and Video on a measured verdict", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    APP_SIDEBAR,
     /const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;/,
     "the rows still read chatOnly directly, so the UA guess disables them",
   );
@@ -362,13 +329,13 @@ test("the sidebar gates Train and Video on a measured verdict", async () => {
   // class keeps `disabled: chatOnlyMeasured,` from matching, since "M" is not in it.
   for (const pattern of [/disabled: chatOnly[,;\s]/, /if \(chatOnly\) return;/]) {
     assert.ok(
-      !pattern.test(src),
+      !pattern.test(APP_SIDEBAR),
       `${pattern} still reads the unmeasured verdict`,
     );
   }
   // Both rows opt into the pending state rather than rendering a guessed gray-out.
   assert.equal(
-    src.match(/pending: capabilitiesUnknown,/g)?.length,
+    APP_SIDEBAR.match(/pending: capabilitiesUnknown,/g)?.length,
     2,
     "Train and Video do not both mark themselves pending while the verdict is out",
   );
@@ -378,10 +345,7 @@ test("the sidebar gates Train and Video on a measured verdict", async () => {
 // pre-measurement guess strands a healthy host there for the rest of the session.
 test("the route guard waits out an unknown verdict on Train and Video", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("app/routes/__root.tsx");
   const guard = /const SELF_GATED_WHILE_UNKNOWN = \[([^\]]*)\]/.exec(src);
   assert.ok(guard, "no list of paths that wait the verdict out");
   for (const path of ["/studio", "/video"]) {
@@ -404,10 +368,7 @@ test("the route guard waits out an unknown verdict on Train and Video", async ()
 // so the page has to say which, rather than fail at load.
 test("the Video page gates on the backend's own capability answer", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/video/video-page.tsx");
   assert.match(
     src,
     /hardware\.videoSupported === false/,
@@ -478,22 +439,18 @@ test("a chat-only Apple Silicon host keeps Video navigable", () => {
 // tests above only describe.
 test("the Video row is disabled exactly when the hint has something to say", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    APP_SIDEBAR,
     /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\)/,
     "the Video hint no longer comes from the shared derivation",
   );
   assert.match(
-    src,
+    APP_SIDEBAR,
     /const videoDisabled = videoDisabledHint !== undefined/,
     "the Video row's disabled state is no longer derived from its hint",
   );
   // The train row keeps `disabled: chatOnlyMeasured`, so match inside the video row only.
-  const videoRow = src.slice(src.indexOf("    video: {"));
+  const videoRow = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("    video: {"));
   const videoBody = videoRow.slice(0, videoRow.indexOf("},"));
   assert.match(
     videoBody,
@@ -506,7 +463,7 @@ test("the Video row is disabled exactly when the hint has something to say", asy
     /tooltip: videoDisabledHint,/,
     "the Video row is disabled with no reason shown",
   );
-  assert.ok(!/coming soon/.test(src), "the Video row still promises macOS support that has shipped");
+  assert.ok(!/coming soon/.test(APP_SIDEBAR), "the Video row still promises macOS support that has shipped");
 });
 
 // The Video gate waits on useHardwareInfo's `loaded`, and a failed probe used to resolve to
@@ -514,17 +471,13 @@ test("the Video row is disabled exactly when the hint has something to say", asy
 // the rest of the session.
 test("a failed hardware probe is retried, not left unloaded", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    USE_HARDWARE_INFO,
     /if \(!cancelled && !hw\.loaded\) retry = setTimeout\(load, RETRY_MS\);/,
     "nothing re-probes after a failed read",
   );
   assert.match(
-    src,
+    USE_HARDWARE_INFO,
     /if \(retry !== undefined\) clearTimeout\(retry\);/,
     "the retry outlives the component that scheduled it",
   );
@@ -537,19 +490,15 @@ test("a failed hardware probe is retried, not left unloaded", async () => {
 // is a permanent "Checking this machine..." rather than a stale value.
 test("a cache filled between render and subscribe still reaches the component", async () => {
   const { readFile } = await import("node:fs/promises");
-  const src = await readFile(
-    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    src,
+    USE_HARDWARE_INFO,
     /if \(cached\) listener\(cached\);\s*\n\s*else load\(\);/,
     "a component that missed the notify has no path to the cache it skipped loading for",
   );
   // A 200 superseded by a later invalidate must not be reported as a failed probe: load()
   // reads !loaded as failure and drops the page back to its loading state.
   assert.ok(
-    !/return cached \?\? DEFAULT;/.test(src),
+    !/return cached \?\? DEFAULT;/.test(USE_HARDWARE_INFO),
     "a superseded but successful read still resolves as an unloaded DEFAULT",
   );
 });

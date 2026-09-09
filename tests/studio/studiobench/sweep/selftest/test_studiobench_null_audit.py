@@ -782,13 +782,15 @@ def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_
     assert ("r100K", "settings") not in unstable, unstable
 
 
-# The audit block sat below the structural early return while reading nothing from the plan,
-# so a payload with no structural entries returned first and it never ran; and `--mode
-# visible` / `--mode behaviour` hard-set `structural` to empty, so those two could never audit
-# at all.
-
-
 # ── the audit has to run in the modes that ask for it ────────────────
+#
+# The audit block sat below the structural early return while reading nothing from the plan, so a
+# payload with no structural entries returned first and the audit never ran. `--mode visible` and
+# `--mode behaviour` hard-set `structural` to an empty set for every pattern, so those two could
+# never audit at all: the command exited 0 out of the ordinary visible report, having silently
+# skipped the option whose promise is to FAIL unless the null decided what the result needs.
+
+
 def test_the_cli_audits_a_single_repetition_under_forced_visible_mode(tmp_path, capsys):
     """THE DEFECT. Same payload and same expectation as the auto-mode failure test above, with
     `--mode visible` added: the audit must still run and still fail."""

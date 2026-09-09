@@ -831,7 +831,11 @@ def prepare_cache_for_transport(
         if mode == TRANSPORT_XET:
             main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
-            # A matching marker only matters while something can still append to the partial it vouches for.
+            # A matching marker vouches for provenance, which is only worth something while something can
+            # still append to the partial it vouches for. When nothing can, what survives is dead weight
+            # that holds the disk the refetch needs and, carrying the etag of the blob being refetched,
+            # pins the bar to its own stale high-water mark until the new attempt overtakes it. Sweep it,
+            # but only once abandoned.
             if _read_marker(entry, variant) != mode:
                 main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
             else:
@@ -1194,10 +1198,12 @@ def existing_blob_bytes(
                     and not partial_is_resumable(blob.name, entry.parent)
                     and not blob_download_lock_held(entry, blob_hash)
                 ):
-                    # An unresumable partial is refetched in full into a new path, so counting it would clear a
-                    # download for a disk that cannot hold it. A LOCKED one is different: a live peer is finishing it
-                    # and snapshot_download blocks on that lock and reuses the result, so those bytes are not ours to
-                    # find room for.
+                    # Callers spend this on "bytes we will not have to fetch again", and _preflight_disk_space
+                    # subtracts it from the space a download needs. An unresumable partial is refetched in full into
+                    # a new path, so counting it would clear a download for a disk that cannot hold it. A LOCKED one
+                    # is different: a live peer is finishing it and snapshot_download blocks on that lock and reuses
+                    # the result, so those bytes are not ours to find room for. Two GGUF variants sharing an mmproj
+                    # hit this every time.
                     continue
                 # Measured by the bytes actually ON DISK: hf_transfer's parallel Range writer leaves a sparse file
                 # whose st_size runs ahead of what was written, observed at 1.2 GB reported against 112 MB. A
@@ -1637,8 +1643,9 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
-                # A scope slot is shared by every file set that rides it, so adopting the live job would let the
-                # caller wait on files it never asked for.
+                # A scope slot is shared by every file set that rides it (the images and video pages both
+                # key as "@diffusion"), so adopting the live job would let the caller wait on files it
+                # never asked for. Reject instead, under the lock.
                 live = self._metadata.get(key)
                 if (
                     scoped_files is not None

@@ -79,6 +79,7 @@ def print_studio_access_banner(
     port: int,
     bind_host: str,
     display_host: str,
+    network_host: str = "",
     include_stop_hint: bool = True,
     lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
@@ -89,6 +90,11 @@ def print_studio_access_banner(
     ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN
     access) is already serving on. A loopback launch that carries one is not
     reachable on this machine only, so the banner must say where else it answers.
+
+    ``network_host`` is the address printed under "another device on your
+    network", defaulting to ``display_host``. A wildcard-bind caller passes both:
+    ``display_host`` can be a public WAN IP, which is the reachability probe's
+    business and not what a LAN peer can open (#8868).
     """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
@@ -114,6 +120,12 @@ def print_studio_access_banner(
     else:
         external_url = f"http://{display_host}:{port}"
 
+    # Falls back to display_host for a caller with only one address to give.
+    resolved_network_host = network_host or display_host
+    if ":" in resolved_network_host:
+        network_url = f"http://[{resolved_network_host}]:{port}"
+    else:
+        network_url = f"http://{resolved_network_host}:{port}"
     # The exact aliases the canned loopback_url is valid for; any other bind (e.g. a specific LAN IP)
     # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
@@ -133,18 +145,16 @@ def print_studio_access_banner(
     if (listen_all or loopback_bind) and primary_url != alt_local:
         lines.append(style(f"    (same as {alt_local})", dim))
 
-    if listen_all and display_host not in (
-        "127.0.0.1",
-        "localhost",
-        "::1",
-        "0.0.0.0",
-        "::",
+    if (
+        listen_all
+        and not is_wildcard_host(resolved_network_host)
+        and resolved_network_host not in ("127.0.0.1", "localhost", "::1")
     ):
         lines.extend(
             [
                 "",
                 style("  From another device on your network / to share:", dim),
-                style(f"    {external_url}", secondary),
+                style(f"    {network_url}", secondary),
             ]
         )
     elif not listen_all and not loopback_bind and external_url != primary_url:

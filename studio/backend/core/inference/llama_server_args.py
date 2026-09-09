@@ -35,12 +35,16 @@ BATCH_MAX = 65536
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MAX_MIB = 1024 * 1024
 
+# Slot-count aliases in one place: the denial below, its #9510 hint and the single-sequence retry must cover the same
+# set, or a spelling one of them misses reaches llama-server unnoticed.
+_PARALLEL_FLAGS: frozenset[str] = frozenset({"-np", "--parallel", "--n-parallel"})
+
 # Each group = every alias (short + long) of one hard-denied flag. Extend the matching group when llama.cpp adds a new
 # alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a pass-through would desync the slot
     # bookkeeping from llama-server.
-    frozenset({"-np", "--parallel", "--n-parallel"}),
+    _PARALLEL_FLAGS,
     # Model identity: a second -m would load a different model than Unsloth thinks it loaded
     # Model identity: Unsloth resolves it from LoadRequest; a second -m would load a different model than Unsloth thinks
     # it loaded.
@@ -275,7 +279,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             # #9510: users reaching for `--parallel 1` hit this refusal with no pointer to the supported knob
             # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a local model hit this
             # refusal with no pointer to the supported knob; name it.
-            if flag in {"-np", "--parallel", "--n-parallel"}:
+            if flag in _PARALLEL_FLAGS:
                 message += "; set n_parallel on the load request (parallel decode slots) instead"
             raise ValueError(message)
         if flag is None:

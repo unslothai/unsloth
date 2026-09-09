@@ -61,8 +61,10 @@ except ImportError:
 # test_native_tls_entrypoints.py asserts the paste still matches, by AST.
 _TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
 _flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+_owned = os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri"
 if _flag in ("1", "true", "yes") or (
-    _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")
+    _flag not in ("0", "false", "no")
+    and (sys.platform in ("darwin", "win32") or (sys.platform.startswith("linux") and _owned))
 ):
     try:
         if _TRUSTSTORE_VENDOR not in sys.path:
@@ -71,7 +73,7 @@ if _flag in ("1", "true", "yes") or (
         truststore.inject_into_ssl()
     except Exception:
         pass
-del _flag
+del _flag, _owned
 
 
 class PrebuiltFallback(RuntimeError):
@@ -392,14 +394,12 @@ def is_github_api_url(url: str | None) -> bool:
 
 def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        # GitHub answers an API rate-limit with 403 or 429 (429 is already in
-        # RETRYABLE_HTTP_STATUS); anonymous calls share a 60-req/hour bucket per
-        # runner IP that CI fleets exhaust. Treat 403
-        # against api.github.com as retryable so we get a backoff cycle or two
-        # (honouring Retry-After / X-RateLimit-Reset) before the source-build
-        # fallback fires. 403s on other hosts (private downloads, auth) stay non-retryable.
+        # A GitHub API 403 is a rate limit; only retry when the reset is close enough to wait for.
         if exc.code == 403:
-            return is_github_api_url(getattr(exc, "url", None))
+            return (
+                is_github_api_url(getattr(exc, "url", None))
+                and _http_error_retry_delay(exc) is not None
+            )
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, urllib.error.URLError):
         return True

@@ -151,10 +151,22 @@ def test_images_stay_inline_and_everything_else_downloads():
 
     The allowlist is deliberately NOT just widened: the model picks these
     filenames, so an inline text/html would be same-origin script execution.
+
+    `.avif` joined because it is a raster codec, not a document type -- `nosniff`
+    pins the type either way, and a model that writes `photo.avif` should get an
+    image rather than an attachment it cannot see. `.svg` stays out for exactly
+    that document-type reason: inline SVG is same-origin script execution.
     """
+    from core.inference import tools as _t
     from routes.inference import _SANDBOX_MEDIA_TYPES
 
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+    # One set, two jobs: what the route serves inline and what a tool call reports inline must not
+    # drift apart, or a model's photo previews in chat but hides on the tool card (or vice versa).
+    assert (
+        set(_SANDBOX_MEDIA_TYPES) == _t._IMAGE_EXTS
+    ), "the route's inline map and the tool-result classifier drifted apart"
+
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"):
         assert ext in _SANDBOX_MEDIA_TYPES
     for ext in (".csv", ".txt", ".py", ".json", ".pdf", ".zip", ".html", ".svg"):
         assert ext not in _SANDBOX_MEDIA_TYPES, ext
@@ -5974,11 +5986,66 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
 
-    answers = [None, {"id": project_id}]
+    # Created once the delete has looked, and never removed again. A list popped per call has
+    # it come back and then vanish, which no registry does, and points the scenario at whichever
+    # probe is second: one added ownership read upstream moved it past every surviving check.
+    looked = {"once": False}
+
+    def created_after_the_first_look(pid):
+        if not looked["once"]:
+            looked["once"] = True
+            return None
+        return {"id": pid}
+
+    monkeypatch.setattr(chat_history, "get_chat_project", created_after_the_first_look)
+    monkeypatch.setattr(
+        studio_db,
+        "get_chat_project",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
+    )
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
+    assert tools.list_orphaned_projects() == [], "a live project was left recorded"
+
+
+def test_a_project_created_inside_the_record_write_itself_keeps_its_files(tmp_path, monkeypatch):
+    """The same rescue, pinned to the window the name describes rather than to a call count.
+
+    The test above is satisfied by the `recreated` probe, well before the record write, so it
+    never reached the last check. Here the project appears during `record_orphaned_project`
+    itself, so only that check can save the files.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj14141"
+    workspace = tmp_path / "Notes-proj1414"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
+
+    recreated = {"yet": False}
+    real_record = tools.record_orphaned_project
+
+    def record_then_recreate(*args, **kwargs):
+        result = real_record(*args, **kwargs)
+        recreated["yet"] = True
+        return result
+
+    monkeypatch.setattr(tools, "record_orphaned_project", record_then_recreate)
     monkeypatch.setattr(
         chat_history,
         "get_chat_project",
-        lambda pid: answers.pop(0) if answers else None,
+        lambda pid: {"id": pid} if recreated["yet"] else None,
     )
     monkeypatch.setattr(
         studio_db,
@@ -5992,6 +6059,7 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
 
+    assert recreated["yet"], "the record was never written, so this proves nothing"
     assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
     assert tools.list_orphaned_projects() == [], "a live project was left recorded"
 

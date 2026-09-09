@@ -888,7 +888,7 @@ class TestResearchPortMiddleware:
         seen = {}
 
         class Supervisor:
-            def note_server_port(self, server):
+            def note_server_address(self, server):
                 seen["server"] = server
 
         async def inner_app(scope, receive, send):

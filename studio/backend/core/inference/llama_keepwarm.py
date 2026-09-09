@@ -448,6 +448,20 @@ def _note_admitted_end() -> None:
         _admitted_inference = max(0, _admitted_inference - 1)
 
 
+def untrack_admitted_inference(scope) -> None:
+    """Drop an already-admitted request from the preview busy guard once the route knows it
+    will not run against the resident GGUF after all.
+
+    ``untrack_current_request`` covers only the in-flight counters; the admitted tally is
+    what ``load_model_for_preview`` reads, so a route that admitted at the auto-switch hook
+    and then served the request some other way keeps blocking preview swaps for its whole
+    duration. Pops the marker so the middleware's finally, which balances only a scope that
+    still carries it, cannot decrement a second time. Idempotent."""
+    if not isinstance(scope, dict) or not scope.pop(_ADMITTED_SCOPE_KEY, False):
+        return
+    _note_admitted_end()
+
+
 def begin_preview_serializer_wait(scope) -> bool:
     """Move a tracked preview from active to pending while it waits on the route lock."""
     global _inflight, _pending, _preview_inflight, _preview_pending
@@ -792,7 +806,9 @@ def _loaded_identity(backend):
     # Third slot is the advertised id (repo id) an auto-switch load sets on the backend; it's the override key, so an
     # idle stash keyed by the concrete load path doesn't drop the user's saved launch flags on the alias reload.
     advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
-    return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
+    identity = (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
+    companion_roots = tuple(getattr(backend, "_openai_gguf_companion_roots", ()) or ())
+    return (*identity, companion_roots) if companion_roots else identity
 
 
 def _note_idle_unload_event(freed) -> None:

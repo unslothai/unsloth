@@ -15,7 +15,6 @@ import {
   effectiveTransportMode,
 } from "./download-api-adapter";
 import type {
-  ConflictOwner,
   DownloadRequest,
   ManagedDownload,
 } from "./download-manager-types";
@@ -160,7 +159,6 @@ async function runWithPendingStartGuard(
 
 export async function requestStart(
   req: DownloadRequest,
-  conflictOwner: ConflictOwner = "caller",
 ): Promise<DownloadStartOutcome> {
   // Before the preflight below, which is two round trips the user can navigate
   // during; read after them it would name the page they moved to.
@@ -213,7 +211,6 @@ export async function requestStart(
         );
         if (action === "conflict") {
           setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
-            owner: conflictOwner,
             info: {
               previous: last,
               next: resolved,
@@ -283,41 +280,30 @@ export async function requestStart(
   });
 }
 
-export async function resumeConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): Promise<DownloadStartOutcome | undefined> {
+export function resumeConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+  if (!entry) return;
   setConflict(conflictKey, null);
-  return runWithPendingStartGuard(entry.pending, async () => {
+  void runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
     });
-    return isJobActiveFor(entry.pending) ? "started" : "error";
+    return "started";
   });
 }
 
-export async function restartConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): Promise<DownloadStartOutcome | undefined> {
+export function restartConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+  if (!entry) return;
   setConflict(conflictKey, null);
-  return runWithPendingStartGuard(entry.pending, async () => {
+  void runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
     });
-    return isJobActiveFor(entry.pending) ? "started" : "error";
+    return "started";
   });
 }
 
-export function cancelConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): void {
-  const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+export function cancelConflict(conflictKey: string): void {
   setConflict(conflictKey, null);
 }

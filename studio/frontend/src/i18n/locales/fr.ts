@@ -952,7 +952,11 @@ export const fr = {
         currentStreak: "Série en cours",
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
-        activityDescription: "{total} au cours des {weeks} dernières",
+        activityDescription: {
+          daily: "{total} au cours des {weeks} dernières",
+          weekly: "Semaine record {total} · {weeks} dernières",
+          cumulative: "{total} cumulés sur les {weeks} dernières",
+        },
         mode: {
           daily: "Quotidienne",
           weekly: "Hebdomadaire",
@@ -1290,6 +1294,7 @@ export const fr = {
       copy: "Copier",
       copied: "Copié",
       commandBuilder: "Générateur de commande",
+      commandShell: "Shell pour toutes les commandes",
       agent: "Agent de codage",
       model: "Modèle",
       searchModels: "Rechercher des modèles GGUF...",
@@ -1307,9 +1312,8 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1762,7 +1766,7 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
+          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
           "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
         desktopManualInstall:
@@ -1773,20 +1777,11 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
-        desktopPreparingDescription:
-          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
-        desktopReadyToRestartDescription:
-          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
-        desktopReadyToInstallDescription:
-          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
-        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
-        restartToUpdate: "Redémarrer pour mettre à jour",
-        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",
@@ -1956,6 +1951,7 @@ export const fr = {
       sourceHfCache: "Cache HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Dossier personnalisé",
       sourceLocalModel: "Modèle local",
       vramOomBadge: "OOM",
@@ -2214,6 +2210,7 @@ export const fr = {
       memoryEfficient: "Économe en mémoire",
       weightDecomposed: "Poids décomposés",
       notSupportedAppleSilicon: "Non pris en charge sur Apple Silicon",
+      doraNeedsVisionLayersOff: "Désactivez l'entraînement des couches de vision pour utiliser DoRA",
       optimization: "Optimisation",
       schedule: "Planification",
       memory: "Mémoire",

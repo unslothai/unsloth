@@ -1198,7 +1198,8 @@ def purge_all_state_for_repo(
         # resurrect as state for a cache that is gone.
         search = []
         # _scope_spellings, not cache_scope_names: every production caller resolves its target root first,
-        # so the raw-spelling probe would be inert here while the read path still has it.
+        # so the raw-spelling probe would be inert here while the read path still has it - a purged
+        # variant that the next read brings back.
         scopes = _scope_spellings(hub_cache)
         for path_factory, base, cancel_markers in (
             (manifest_path, manifests_dir(create = False), False),

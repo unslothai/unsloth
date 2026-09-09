@@ -15,6 +15,10 @@ import {
   markServerStopIntent,
 } from "../src/hooks/server-stop-intent.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
+const USE_TAURI_BACKEND = readSrc("hooks/use-tauri-backend.ts");
+
 type Storage = {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
@@ -49,13 +53,6 @@ function installThrowingSessionStorage(): void {
 
 function uninstallSessionStorage(): void {
   Reflect.deleteProperty(globalThis, "sessionStorage");
-}
-
-function hookSource(): Promise<string> {
-  return readFile(
-    new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
-    "utf8",
-  );
 }
 
 test("a fresh session carries no stop intent", () => {
@@ -151,7 +148,7 @@ test("the marker key belongs to nothing else in the app", async () => {
 });
 
 test("the hook reaches storage only through the guarded helpers", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
 
   // A raw sessionStorage call in the hook is the bug this module exists to prevent: the
   // read in checkInstallAndStart sits outside its try, so a SecurityError there rejects
@@ -168,7 +165,7 @@ test("the hook reaches storage only through the guarded helpers", async () => {
 });
 
 test("a persisted stop is honored before preflight runs", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
 
   const body = hook.slice(
     hook.indexOf("async function checkInstallAndStart()"),
@@ -196,7 +193,7 @@ test("a persisted stop is honored before preflight runs", async () => {
 });
 
 test("stopping records the intent before the shutdown it can outlive", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
   const body = hook.slice(
     hook.indexOf("async function stopServer()"),
     hook.indexOf("async function startInstall()"),
@@ -229,7 +226,7 @@ test("stopping records the intent before the shutdown it can outlive", async () 
 });
 
 test("a second stop cannot run while the first is in flight", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
 
   // The tray item stays enabled while the server runs and the toggle branches on
   // statusRef, which stays "running" for the whole invoke, so two Stop clicks reach
@@ -261,7 +258,7 @@ test("a second stop cannot run while the first is in flight", async () => {
 });
 
 test("every deliberate start drops the marker", async () => {
-  const hook = await hookSource();
+  const hook = USE_TAURI_BACKEND;
 
   const managed = hook.slice(
     hook.indexOf("async function startManagedServer()"),

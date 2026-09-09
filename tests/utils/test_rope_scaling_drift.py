@@ -50,9 +50,6 @@ HEAD_DIM = 128
 MAX_POS = 131072
 
 
-# --- Layer 1: AST structural tripwire (stdlib only, no unsloth import) ---
-
-
 def _load_class_init():
     tree = ast.parse(LLAMA_PY.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
@@ -115,9 +112,8 @@ def _find_function(source_path, function_name):
 
 def test_config_path_inspects_rope_scaling():
     init_fn = _load_class_init()
-    # inv_freq is derived through the shared _unsloth_recompute_inv_freq helper
-    # (or still inlined in the config branch on older layouts); whichever scope
-    # holds the scaling must read config.rope_scaling and call
+    # inv_freq is derived through the shared _unsloth_recompute_inv_freq helper (or still inlined in the config branch
+    # on older layouts); whichever scope holds the scaling must read config.rope_scaling and call
     # _compute_config_rope_inv_freq, else scaled models run unscaled (#2405).
     _, _, init_call_attrs = _iter_names_and_calls(init_fn)
     scope = _find_method(LLAMA_PY, CLASS_NAME, "_unsloth_recompute_inv_freq")
@@ -150,9 +146,8 @@ def test_config_path_inspects_rope_scaling():
 
 
 def test_v5_repair_reuses_recompute():
-    # transformers v5 blanks non-persistent buffers on load, so
-    # loader._fix_rope_inv_freq rebuilds inv_freq; it must reuse the scaled
-    # recompute, since an unscaled rebuild re-drops llama3 scaling (#2405).
+    # transformers v5 blanks non-persistent buffers on load, so loader._fix_rope_inv_freq rebuilds inv_freq; it must
+    # reuse the scaled recompute, since an unscaled rebuild re-drops llama3 scaling (#2405).
     fix_fn = _find_function(LOADER_PY, "_fix_rope_inv_freq")
     assert fix_fn is not None, (
         "loader._fix_rope_inv_freq not found; if it was renamed, update this "
@@ -164,9 +159,6 @@ def test_v5_repair_reuses_recompute():
         "_unsloth_recompute_inv_freq; transformers v5 blanks the buffer on load "
         "and an unscaled rebuild re-drops llama3 scaling (issue #2405)."
     )
-
-
-# --- Layer 2: CPU behavioral guard (pure helper, no instantiation) ---
 
 
 def _make_config(rope_scaling):
@@ -260,9 +252,9 @@ def test_recompute_helper_scales_on_cpu():
 
 
 def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
-    # Long-context extension keeps native llama3, but falls back to linear for every other
-    # type (the patched attention constructor only rebuilds linear/llama3/longrope), and the
-    # linear dict carries rope_theta so transformers v5 does not fall back to base 10000.
+    # Long-context extension keeps native llama3, but falls back to linear for every other type (the patched attention
+    # constructor only rebuilds linear/llama3/longrope), and the linear dict carries rope_theta so transformers v5 does
+    # not fall back to base 10000.
     from types import SimpleNamespace
 
     from unsloth.models.llama import _extended_rope_scaling
@@ -293,8 +285,8 @@ def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
 
 
 def test_extended_rotary_reads_config_factor():
-    # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8
-    # (Llama-3.2 uses 32); otherwise the subclass path re-drops scaling (#2405).
+    # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8 (Llama-3.2 uses 32); otherwise the
+    # subclass path re-drops scaling (#2405).
     from types import SimpleNamespace
 
     from unsloth.models.llama import LlamaExtendedRotaryEmbedding
@@ -359,9 +351,6 @@ def _cos_at_position(rot, position):
     return emb.cos().squeeze(0)
 
 
-# --- Layer 3: CUDA behavioral guard (real instantiation needs a device) ---
-
-
 @requires_gpu
 def test_constructor_applies_llama3_scaling():
     config = _make_config(LLAMA3_ROPE_SCALING)
@@ -402,7 +391,6 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
 @requires_gpu
 def test_extended_cache_keeps_scaling_after_growth():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
-    # Grow past the initial cache size (mirrors long-context decode).
     dummy = torch.zeros(1, dtype = torch.float32)
     scaled.extend_rope_embedding(dummy, seq_len = 40960)
 
@@ -498,7 +486,6 @@ def test_v5_blank_repair_roundtrip(build):
 
 
 def test_object_style_rope_scaling_does_not_crash():
-    # Object-style rope_scaling must be normalized, not .get()'d directly.
     from dataclasses import dataclass
 
     from unsloth.models.llama import _compute_config_rope_inv_freq
@@ -523,6 +510,7 @@ def test_object_style_rope_scaling_does_not_crash():
 
 
 def test_object_style_rope_scaling_on_config_delegates_correctly():
+    # Object-style rope_scaling must be normalized, not .get()'d directly.
     # 'linear' has no inline fallback; only the normalized-config retry passes this.
     from dataclasses import dataclass
 

@@ -591,13 +591,23 @@ def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
     """
     import gate
 
-    worst = 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC
-    before_the_gate = 120
-    timeout_s = _workflow()["jobs"]["gate"]["timeout-minutes"] * 60
-    assert timeout_s >= worst + before_the_gate, (
-        f"the gate can take {worst}s, the steps before it up to "
-        f"{before_the_gate}s, and the job is killed at {timeout_s}s"
+    # Per account: authentication, username and quota, each at the socket
+    # ceiling. Then ONE survey budget shared across every account (two back to
+    # back would be the bug), and the call still in flight when it expires.
+    accounts = len(gate.DEFAULT_ACCOUNT_ENVS)
+    worst = (
+        accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
     )
+    before_the_gate = 120
+    for path in (WORKFLOW, WORKFLOW.parent / "kaggle-t4-studio-gpu-ci.yml"):
+        workflow = pytest.importorskip("yaml").safe_load(path.read_text(encoding = "utf-8"))
+        timeout_s = workflow["jobs"]["gate"]["timeout-minutes"] * 60
+        assert timeout_s >= worst + before_the_gate, (
+            f"{path.name}: the gate can take {worst}s, the steps before it up to "
+            f"{before_the_gate}s, and the job is killed at {timeout_s}s"
+        )
+    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    assert "survey_deadline - time.monotonic()" in source, "the surveys do not share one budget"
 
 
 def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch, tmp_path):
@@ -672,7 +682,7 @@ def _run_gate_against(
     monkeypatch.setattr(gate, "client_username", lambda api: "danielhanchen")
     monkeypatch.setattr(gate, "remaining_gpu_hours", lambda api: dict(quota))
     monkeypatch.setattr(
-        gate, "survey_kernels", answer if callable(answer) else (lambda api: answer)
+        gate, "survey_kernels", answer if callable(answer) else (lambda api, **k: answer)
     )
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true", *extra)
     summary_path = tmp_path / "summary.md"
@@ -2732,15 +2742,20 @@ def test_a_dispatched_ref_is_resolved_to_one_commit():
     than a commit, so the drift is invisible afterwards too. Same hazard as the
     zoo pin below, same answer.
     """
-    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    workflow = _workflow()
+    steps = workflow["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
     ref = steps[names.index("Resolve the ref under test")]
     assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
-    # Resolved once, here, and retried before it gives up.
-    assert "git ls-remote https://github.com/unslothai/unsloth" in ref["run"]
-    assert "for attempt in 1 2 3" in ref["run"]
+    # Resolved once, by the GATE, and retried there; this job takes that answer
+    # rather than asking a moving ref again.
+    gate_ref = next(s for s in workflow["jobs"]["gate"]["steps"] if s.get("id") == "ref")
+    assert "git ls-remote https://github.com/unslothai/unsloth" in gate_ref["run"]
+    assert "for attempt in 1 2 3" in gate_ref["run"]
     # A full commit needs no resolving and ls-remote would not answer for one.
-    assert "^[0-9a-f]{40}$" in ref["run"]
+    assert "^[0-9a-f]{40}$" in gate_ref["run"]
+    assert ref["env"]["GATE_SHA"] == "${{ needs.gate.outputs.head_sha }}"
+    assert "$(git ls-remote" not in ref["run"]
     # A ref that cannot be pinned stands the run down rather than installing
     # a moving branch, exactly as an unresolvable zoo commit does.
     assert "stand_down=true" in ref["run"]
@@ -2762,7 +2777,7 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
     thing, and this one has four branches: no input, a mutable branch or tag, a
     commit needing no resolution, and a ref that resolves to nothing.
     """
-    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    steps = _workflow()["jobs"]["gate"]["steps"]
     script = next(s for s in steps if s.get("id") == "ref")["run"]
 
     def drive(
@@ -2794,24 +2809,68 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
         return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
 
     # No input: the head SHA under test, which is also the tree checked out.
-    assert drive("", "") == {"ref": "headsha"}
+    assert drive("", "") == {"head_sha": "headsha"}
     # A branch resolves to the commit it points at, once, for all four legs.
     main_sha = "dead" + "0" * 36
-    assert drive("main", f"{main_sha}\trefs/heads/main\n") == {"ref": main_sha}
+    assert drive("main", f"{main_sha}\trefs/heads/main\n") == {"head_sha": main_sha}
     # An annotated tag lists the tag object first; the COMMIT is what pip can
     # check out, and it is on the ^{} line.
     tag, commit = "aaaa" + "0" * 36, "bbbb" + "0" * 36
     assert drive("v1.2", f"{tag}\trefs/tags/v1.2\n{commit}\trefs/tags/v1.2^{{}}\n") == {
-        "ref": commit
+        "head_sha": commit
     }
     # A full commit is already immutable, and ls-remote answers nothing for
     # one, so it must not be sent there at all.
-    assert drive("f" * 40, "") == {"ref": "f" * 40}
-    # Nothing resolved: stand down rather than install a moving branch.
-    assert drive("no-such-branch", "") == {"stand_down": "true"}
+    assert drive("f" * 40, "") == {"head_sha": "f" * 40}
+    # Nothing resolved: an EMPTY key, which the GPU job turns into a stand-down.
+    assert drive("no-such-branch", "") == {"head_sha": ""}
     # The value is free text from a dispatch form and reaches no shell.
-    assert drive("'; touch pwned; echo '", "") == {"stand_down": "true"}
+    assert drive("'; touch pwned; echo '", "") == {"head_sha": ""}
     assert not (tmp_path / "pwned").exists()
+
+    # The GPU job's step takes the gate's answer and never resolves again.
+    gpu_script = next(s for s in _workflow()["jobs"]["t4-smoke"]["steps"] if s.get("id") == "ref")[
+        "run"
+    ]
+
+    def drive_gpu(
+        unsloth_ref,
+        gate_sha,
+        fetch_exit = 0,
+    ):
+        work = tmp_path / f"gpu{abs(hash((unsloth_ref, gate_sha, fetch_exit)))}"
+        stub = work / "bin"
+        stub.mkdir(parents = True)
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  ls-remote) echo "ls-remote must not be called" >&2; exit 97 ;;\n'
+            '  fetch) exit "$GIT_FETCH_EXIT" ;;\n'
+            "  *) exit 0 ;;\n"
+            "esac\n"
+        )
+        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for name in ("git", "sleep"):
+            (stub / name).chmod(0o755)
+        out = work / "github_output"
+        out.write_text("", encoding = "utf-8")
+        env = dict(
+            os.environ,
+            PATH = f"{stub}:{os.environ['PATH']}",
+            GITHUB_OUTPUT = str(out),
+            UNSLOTH_REF = unsloth_ref,
+            HEAD_SHA = "headsha",
+            GATE_SHA = gate_sha,
+            GIT_FETCH_EXIT = str(fetch_exit),
+        )
+        done = subprocess.run(["bash", "-c", gpu_script], env = env, capture_output = True, text = True)
+        assert done.returncode == 0, done.stderr
+        return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+
+    assert drive_gpu("", "") == {"ref": "headsha"}
+    assert drive_gpu("main", main_sha) == {"ref": main_sha}
+    assert drive_gpu("main", "") == {"stand_down": "true"}
+    assert drive_gpu("main", main_sha, fetch_exit = 128) == {"stand_down": "true"}
 
 
 def test_the_harness_stays_on_the_checked_out_tree_when_a_ref_is_dispatched():
@@ -3039,10 +3098,11 @@ def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     # --force skips the sampling draw only; the dice were rolled by the gate.
     assert "--force true" in recheck["run"]
     assert "--reserve-hours" in recheck["run"] and "--kernels" in recheck["run"]
-    # and it is the last thing before the push.
-    assert names[names.index("Recheck the Kaggle account") + 2] == "Launch on Kaggle and collect"
-    launch = steps[names.index("Launch on Kaggle and collect")]
-    assert launch["if"] == "steps.recheck.outputs.should_run == 'true'"
+    # and nothing that spends a session runs unless it approved. On the
+    # dispatch step's condition, not step order: collection now sits between the
+    # two, so a positional rule would assert the file's shape, not the property.
+    dispatch = steps[names.index("Dispatch to Kaggle")]
+    assert "steps.recheck.outputs.should_run == 'true'" in dispatch["if"]
 
 
 def test_the_exhausted_quota_failure_reaches_the_pull_request():
@@ -3196,8 +3256,8 @@ def test_an_unresolvable_zoo_commit_stands_the_run_down():
     # Nothing that spends a kernel runs after a stand-down.
     for name in ("Build the kernel notebooks", "Recheck the Kaggle account"):
         assert "steps.pins.outputs.stand_down != 'true'" in steps[names.index(name)]["if"]
-    launch_step = steps[names.index("Launch on Kaggle and collect")]
-    assert launch_step["if"] == "steps.recheck.outputs.should_run == 'true'"
+    launch_step = steps[names.index("Dispatch to Kaggle")]
+    assert "steps.recheck.outputs.should_run == 'true'" in launch_step["if"]
 
 
 def test_a_step_count_that_could_only_report_red_stands_the_run_down():
@@ -3405,7 +3465,12 @@ def test_an_evidence_upload_outage_cannot_colour_the_check_red():
     assert "::warning" in warn["run"]
     # The verdict still runs, and still on its own condition.
     report = steps[names.index("Report")]
-    assert report["if"] == "always() && steps.recheck.outputs.should_run == 'true'"
+    # always(), so a failed upload still reaches the verdict, and gated on "there
+    # is evidence to read" rather than "the recheck approved": a dispatching run
+    # approves but produces none, and a reporter over an empty directory prints
+    # "0 of 5 payloads", which reads as failure rather than pending.
+    assert report["if"].startswith("always()")
+    assert "hashFiles('kaggle_evidence/**/*_output.ipynb')" in report["if"]
     assert "steps.evidence" not in report["if"]
 
 
@@ -4602,7 +4667,8 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
             GITHUB_OUTPUT = str(out),
             UNSLOTH_REF = unsloth_ref,
             HEAD_SHA = "headsha",
-            LS_OUT = ls_remote,
+            # What the gate resolved: the GPU step takes it as given.
+            GATE_SHA = ls_remote.split("\t", 1)[0] if ls_remote else unsloth_ref,
             GIT_FETCH_EXIT = str(fetch_exit),
             FETCH_LOG = str(log),
         )

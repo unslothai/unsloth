@@ -103,8 +103,6 @@ def native_linux(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# macOS
-# ---------------------------------------------------------------------------
 def test_macos_reveals_a_file_with_open_dash_r(macos, spawned, tmp_path):
     """``open -R`` selects the file in its enclosing folder; plain ``open``
     would hand the file to whichever application claims the extension."""
@@ -129,8 +127,6 @@ def test_macos_keeps_an_awkward_name_in_one_argument(macos, spawned, tmp_path):
     assert len(spawned.popen[0]) == 2
 
 
-# ---------------------------------------------------------------------------
-# Windows
 # ---------------------------------------------------------------------------
 def test_windows_selects_a_file_in_explorer(windows, spawned, tmp_path):
     target = tmp_path / "report.csv"
@@ -221,9 +217,6 @@ def test_a_deeply_nested_path_is_passed_through_whole(native_linux, spawned, tmp
     assert len(str(target)) > 255
 
 
-# ---------------------------------------------------------------------------
-# Failing, on every platform
-# ---------------------------------------------------------------------------
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_missing_target_launches_nothing_anywhere(host, spawned, tmp_path, request):
     request.getfixturevalue(host)

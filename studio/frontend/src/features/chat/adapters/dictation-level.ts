@@ -20,10 +20,8 @@ function publishLevel(level: number): void {
   }
 }
 
-/**
- * Start a lightweight Web Audio meter for the shared recording waveform and
- * optional voice-activity detection. Returns an idempotent cleanup function.
- */
+/** Start a lightweight Web Audio meter for the shared recording waveform and optional
+ *  voice-activity detection. Returns an idempotent cleanup function. */
 export function startDictationLevelMeter(
   source: MediaStream,
   onFrame?: FrameListener,

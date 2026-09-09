@@ -358,22 +358,56 @@ def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float)
     return round(reserve_hours * (total_hours / basis_hours), 3)
 
 
-def weighted_pick(run_id: str, weights: dict[str, float]) -> tuple[str, float]:
-    """Deterministic weighted choice of account, keyed on the run id ALONE.
+def in_flight_for_commit(
+    own_busy: list[str],
+    head_sha: str,
+    kind: str,
+    slot: str = "1",
+) -> str | None:
+    """The ref of a busy kernel of ours already running THIS commit, kind and
+    slot, or None.
 
-    Not the attempt, for the same reason `sampled_in` excludes it and a sharper
-    one: a re-run of a run whose kernels are still in flight must return to the
-    SAME account, or the second attempt pushes to an account the first one is
-    not watching and the first one's kernels are reaped by nobody.
+    The slot is part of the identity: a slot-1 kernel must not stand a slot-2
+    dispatch down, while a retry of the slot-2 run itself must be.
+
+    Asked of every account surveyed, not only the one picked: a handover lands
+    a retry on the other account, whose GPU job collects with only its own
+    token and would see nothing in flight.
+    """
+    sha = (head_sha or "").strip().lower()
+    slot = str(slot or "1").strip()
+    if not sha or not kind:
+        return None
+    import launch  # noqa: PLC0415  (sibling script, loaded lazily so the gate imports alone)
+
+    for entry in own_busy:
+        ref = entry.split(" (", 1)[0]
+        parsed = launch.parse_slug(ref)
+        if not parsed or parsed.get("kind") != kind or not parsed.get("sha"):
+            continue
+        if parsed.get("slot", "1") != slot:
+            continue
+        if sha.startswith(parsed["sha"]) or parsed["sha"].startswith(sha):
+            return ref
+    return None
+
+
+def weighted_pick(key: str, weights: dict[str, float]) -> tuple[str, float]:
+    """Deterministic weighted choice of account, keyed on the COMMIT under test
+    (the run id when no commit is known).
+
+    The commit rather than the run or the attempt: every run of one commit
+    must land on the account already holding that commit's kernel, or the
+    collector on the other account sees nothing in flight, dispatches a
+    duplicate, and reaps nothing.
 
     Salted differently from `sampled_in` so the two draws off one run id are
-    independent -- without the salt, whether a run is sampled in would correlate
-    with which account it lands on, and one account would quietly get a
-    different SHARE of the forced runs than of the sampled ones.
+    independent; without the salt one account would get a different SHARE of
+    the forced runs than of the sampled ones.
     """
     ids = sorted(weights)
     total = sum(max(0.0, weights[i]) for i in ids)
-    digest = hashlib.sha256(("account:" + run_id).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(("account:" + key).encode("utf-8")).hexdigest()
     draw = (int(digest[:8], 16) % 1_000_000) / 1_000_000.0
     if not ids or total <= 0:
         return (ids[0] if ids else ""), draw
@@ -664,6 +698,25 @@ def main() -> int:
     )
     ap.add_argument("--run-id", default = os.environ.get("GITHUB_RUN_ID", "0"))
     ap.add_argument("--run-attempt", default = os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    ap.add_argument(
+        "--head-sha",
+        default = "",
+        help = "the commit under test; the account draw is keyed on it so every run of one "
+        "commit lands on the account holding its kernel",
+    )
+    ap.add_argument(
+        "--kind",
+        default = "",
+        help = "notebook or studio: with --head-sha, a kernel of this kind already running "
+        "this commit on ANY account stands the run down instead of dispatching a duplicate",
+    )
+    ap.add_argument(
+        "--slot",
+        default = "1",
+        help = "the workflow's session slot input. Slot 2 is an opt-in SECOND session on "
+        "the same commit beside slot 1: only a kernel already running this commit in "
+        "the SAME slot stands the run down",
+    )
     ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
     ap.add_argument("--label-name", default = "kaggle-t4-ci")
@@ -857,12 +910,11 @@ def main() -> int:
     print("[gate] accounts " + json.dumps(list(probes.values())), flush = True)
     _out("accounts", json.dumps(list(probes.values())))
 
-    # An account whose quota could not be read has no weight, because a weight
-    # is what its plan says and we did not get to hear it. It stays a CANDIDATE
-    # -- the order below still reaches it -- so an unreadable answer costs the
-    # account its share of the traffic and not its place in the queue.
+    # An unreadable quota means no weight but still a CANDIDATE: it costs the
+    # account its share of the traffic, not its place in the queue.
     weights = {i: p["total_hours"] for i, p in probes.items() if p.get("total_hours")}
-    sampled_account, account_draw = weighted_pick(args.run_id, weights)
+    account_key = (args.head_sha or "").strip().lower() or str(args.run_id)
+    sampled_account, account_draw = weighted_pick(account_key, weights)
     if weights:
         share = max(0.0, weights.get(sampled_account, 0.0)) / sum(weights.values())
         print(
@@ -878,11 +930,45 @@ def main() -> int:
             flush = True,
         )
 
-    # The sampled account first, then the rest in declaration order. Only the
-    # account actually being considered pays for a survey, which is the
-    # expensive call here.
+    # Sampled account first, then declaration order. Only an account actually
+    # considered pays for a survey, the expensive call here.
     order = [sampled_account] + [i for i in probes if i != sampled_account]
     handovers: list[str] = []
+    surveys: dict[str, dict] = {}
+    # ONE survey budget for the whole gate: two bounded surveys back to back
+    # outlive the job timeout, and a runner killed mid-question is a red rather
+    # than the soft stand-down an incomplete survey gives.
+    survey_deadline = time.monotonic() + SURVEY_BUDGET_SEC
+
+    def _survey(account_id: str) -> dict:
+        if account_id not in surveys:
+            surveys[account_id] = survey_kernels(
+                clients[account_id],
+                budget_sec = max(0.0, survey_deadline - time.monotonic()),
+            )
+        return surveys[account_id]
+
+    # Ask EVERY usable account about this commit before choosing one: an
+    # earlier run may have handed the commit to the other account, and a retry
+    # finding the preferred one free again would never look at the kernel still
+    # running. Capacity for a NEW launch is beside the point here.
+    slot = str(args.slot or "1").strip()
+    if args.head_sha and args.kind:
+        for account_id in order:
+            if not account_id or clients.get(account_id) is None:
+                continue
+            try:
+                survey = _survey(account_id)
+            except Exception:  # noqa: BLE001
+                continue  # reported below, where the account is considered
+            already = in_flight_for_commit(survey["own"], args.head_sha, args.kind, slot)
+            if already:
+                return _decide(
+                    False,
+                    f"a {args.kind} kernel for this commit (slot {slot}) is already running "
+                    f"on account {account_id} ({already}); its result arrives as the commit "
+                    "status, so nothing is dispatched",
+                )
 
     for account_id in order:
         if not account_id:
@@ -892,9 +978,8 @@ def main() -> int:
             handovers.append(f"account {account_id} {record['outcome']}")
             continue
 
-        api = clients[account_id]
         try:
-            survey = survey_kernels(api)
+            survey = _survey(account_id)
         except Exception as exc:  # noqa: BLE001
             record["outcome"] = "capacity_unreadable"
             record["error"] = type(exc).__name__

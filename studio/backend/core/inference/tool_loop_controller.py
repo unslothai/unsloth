@@ -723,7 +723,7 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
         return None
     try:
         from storage import mcp_servers_db
-        server = mcp_servers_db.get_server(parts[1])
+        server = mcp_servers_db.get_server_for_tool(parts[1])
     except Exception:  # noqa: BLE001
         return None
     display = (server or {}).get("display_name")

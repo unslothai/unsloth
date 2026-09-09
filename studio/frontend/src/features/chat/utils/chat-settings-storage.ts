@@ -175,10 +175,9 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
-// Not capped. The server merge never removes keys and keeps an existing key in
-// its original position, so a load-time trim would permanently hide the oldest
-// entries: editing one of those models would write an update that the next
-// reload silently drops again. Entries are a dozen numbers each.
+// Not capped. The server merge never removes keys and keeps an existing key in its original
+// position, so a load-time trim would permanently hide the oldest entries: editing one of those
+// models would write an update the next reload silently drops. Entries are a dozen numbers each.
 function sanitizeInferenceParamsByModel(
   value: unknown,
 ): Record<string, PersistedInferenceParams> | undefined {
@@ -459,12 +458,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
 
 export interface LoadedChatSettings {
   settings: PersistedChatSettings;
-  /**
-   * The GET answered, so a mirrored field missing from `settings` is missing on
-   * the server too. False when the read fell back to this browser's legacy
-   * storage: nothing is then known about the server, and treating every field
-   * as absent would back this browser's stale values over another's.
-   */
+  /** The GET answered, so a mirrored field missing from `settings` is missing on the server too.
+   *  False when the read fell back to this browser's legacy storage: nothing is then known about the
+   *  server, and treating every field as absent would back this browser's stale values over another's. */
   fromServer: boolean;
   /**
    * Whether these values are what the server holds. False when a legacy import

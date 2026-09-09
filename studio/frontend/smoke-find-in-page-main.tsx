@@ -20,7 +20,6 @@ import {
   type FindElementLike,
   buildTextIndex,
 } from "@/features/find-in-page/lib/find-text-index.ts";
-import { useFindInPageStore } from "@/features/find-in-page/stores/find-in-page-store.ts";
 /* eslint-enable no-restricted-imports */
 import "@/index.css";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
@@ -30,7 +29,8 @@ declare global {
   interface Window {
     // Optional: the app typechecks this entry, only the harness page installs it.
     __findSmoke?: {
-      store: typeof useFindInPageStore;
+      /** Observable controller state, without coupling the harness to its private implementation. */
+      state: () => { open: boolean; focused: boolean };
       /** What the counter is showing, read straight out of the bar. */
       counter: () => string | null;
       /** Scroll offset of the conversation, so a test can see the walk move it. */
@@ -209,7 +209,15 @@ function Harness() {
 
   useEffect(() => {
     window.__findSmoke = {
-      store: useFindInPageStore,
+      state: () => {
+        const input = document.querySelector<HTMLInputElement>(
+          '[role="search"] input',
+        );
+        return {
+          open: input !== null,
+          focused: document.activeElement === input,
+        };
+      },
       counter: () =>
         document.querySelector('[role="search"] [aria-live="polite"]')
           ?.textContent ?? null,

@@ -70,8 +70,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 BASE = os.environ["BASE_URL"]
-# STUDIO_OLD_PW is what the repo's own macOS workflow exports; STUDIO_PW is what the
-# staging harness exports. Accept either so the same script runs under both.
+# STUDIO_OLD_PW is what the repo's own macOS workflow exports;
+# STUDIO_PW is what the staging harness exports.
 OLD = os.environ.get("STUDIO_OLD_PW") or os.environ["STUDIO_PW"]
 # What to rotate the bootstrap password to, when the app forces a change on first
 # login. Only used on that path: a harness that already rotated over the API (the
@@ -80,42 +80,36 @@ NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# How long to keep polling the backend. The reported crash landed at t+66s, so the
-# window has to reach well past that; the workflow narrows it to 120s because nothing in
-# this phase runs the launcher's watchdog and the longer window buys no extra evidence.
+# How long to keep polling the backend. The reported crash landed at t+66s, so the window has to reach well past that;
+# the workflow narrows it to 120s because nothing in this phase runs the launcher's watchdog and the longer window buys
+# no extra evidence.
 SURVIVAL_S = float(os.environ.get("STUDIO_MAC_SURVIVAL_S", "330"))
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_POLL_INTERVAL_S", "5"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 # How long the forced-verdict check gives the row to settle into its pending state.
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
-# Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs, so a probe here waits
-# as long as the launcher's does before calling it a miss. It is the only watchdog number
-# this file needs; see BackendSurvivalPoller.report for why it does not mirror the rest.
+# Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs, so a probe here waits as long as the launcher's does
+# before calling it a miss. It is the only watchdog number this file needs;
+# see BackendSurvivalPoller.report for why it does not mirror the rest.
 PROBE_TIMEOUT_S = 10.0
 # How long to keep watching after sampling stops before calling a stall terminal.
-#
-# Sized from the stalls actually observed on this job rather than from a round number. In
-# run 32862298967 one macOS runner produced four of them, at 10.03s, 25.1s, 27.75s and
-# 33.2s, so a window that decides "this one never ended" has to comfortably clear 33.2s.
+# Sized from the stalls actually observed on this job rather than from a round number. In run 32862298967 one macOS
+# runner produced four of them, at 10.03s, 25.1s, 27.75s and 33.2s, so a window that
+# decides "this one never ended" has to comfortably clear 33.2s.
 # 90s is a little under three times that.
 #
-# This EXTENDS OBSERVATION; it is not a retry. A retry re-asks a question that already has
-# an answer and hopes for a better one, which is how a flaky test hides a real failure. The
-# question here has no answer yet: a probe that timed out says only that nothing came back
-# within its budget, and the run ended at an arbitrary point that may fall mid-stall. A
-# backend that is genuinely dead answers none of these probes either, so the window costs
-# these seconds only on a run that was already going to fail, and it cannot turn a real
-# death into a pass.
+# This EXTENDS OBSERVATION; it is not a retry. A retry re-asks a question that already has an answer and hopes for a
+# better one, which is how a flaky test hides a real failure. The question here has no answer yet: a probe that timed
+# out says only that nothing came back within its budget, and the run ended at an arbitrary point that may fall
+# mid-stall. A backend that is genuinely dead answers none of these probes either, so the window costs these seconds
+# only on a run that was already going to fail, and it cannot turn a real death into a pass.
 RECOVERY_WINDOW_S = 90.0
 # Minimum spacing between recovery probes.
-#
-# _transport_kind classifies a connection reset as a stall rather than a death, on
-# purpose, because a reset means a listener accepted and then failed to finish. But a
-# reset comes back in about a millisecond, so an unpaced loop turns this window into
-# thousands of connections against a backend that is already in trouble, which can
-# prolong the fault it is waiting to clear. Spacing costs nothing on the case that
-# matters: a real stall spends the full probe budget before returning, so no pause is
-# added at all there.
+# _transport_kind classifies a connection reset as a stall rather than a death on purpose, because a reset means a
+# listener accepted and then failed to finish. But a reset comes back in about a millisecond, so an unpaced loop turns
+# this window into thousands of connections against a backend that is already in trouble, which can prolong the fault
+# it is waiting to clear. Spacing costs nothing on the case that matters: a real stall spends the full probe budget
+# before returning, so no pause is added at all there.
 RECOVERY_PROBE_SPACING_S = 2.0
 # Health replies are a few hundred bytes; these bound a body read that is going wrong.
 _READ_CHUNK_BYTES = 65536
@@ -123,11 +117,11 @@ _MAX_BODY_BYTES = 1 << 20
 
 LIVENESS_PATH = "/api/liveness"
 HEALTH_PATH = "/api/health"
-# Both are polled, and an answer from either is proof the backend was serving, matching
-# check_health_inner, which probes /api/liveness and falls back to /api/health.
+# Both are polled, and an answer from either is proof the backend was serving, matching check_health_inner, which probes
+# /api/liveness and falls back to /api/health.
 PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
-# Every tab the user reported interacting with, plus the ones that share the
-# chat-only gate. (route, nav row id, human name).
+# Every tab the user reported interacting with, plus the ones that share the chat-only gate.
+# (route, nav row id, human name).
 TABS = [
     ("/chat", "projects", "Chat"),
     ("/hub", "hub", "Hub"),
@@ -137,8 +131,8 @@ TABS = [
     ("/export", "export", "Export"),
 ]
 
-# Routes that mean "not signed in". Landing on one invalidates every later assertion,
-# so they are matched explicitly rather than folded into the generic redirect check.
+# Routes that mean "not signed in". Landing on one invalidates every later assertion, so they are matched explicitly
+# rather than folded into the generic redirect check.
 _SIGNED_OUT_PATHS = ("/login", "/change-password")
 
 # Rows the sidebar pins inline by default, per SIDEBAR_NAV_DEFAULT_PINNED in
@@ -157,14 +151,13 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
-# Intercept pattern for the browser's health reads. Matches whether api-base.ts builds a
-# relative path or an absolute one.
+# Intercept pattern for the browser's health reads.
+# Matches whether api-base.ts builds a relative path or an absolute one.
 _HEALTH_ROUTE = "**/api/health"
 
 _failed: list[str] = []
-# Every nav row located anywhere in the tab walk. A walk that never finds the rows the
-# sidebar pins by default proves nothing about the gating, so it is a failure rather
-# than a stream of info lines.
+# Every nav row located anywhere in the tab walk. A walk that never finds the rows the sidebar pins by default proves
+# nothing about the gating, so it is a failure rather than a stream of info lines.
 _rows_seen: set[str] = set()
 
 
@@ -224,8 +217,8 @@ def _read_within(resp, deadline: float) -> str:
         chunks.append(chunk)
         total += len(chunk)
         if total > _MAX_BODY_BYTES:
-            # A health reply is a few hundred bytes. Anything this large is a fault, and
-            # reading it to the end would be another way to sit here indefinitely.
+            # A health reply is a few hundred bytes. Anything this large is a fault, and reading it to the end would
+            # be another way to sit here indefinitely.
             raise TimeoutError("response body exceeded the probe's size cap")
     return b"".join(chunks).decode("utf-8", "replace")
 
@@ -266,8 +259,8 @@ def _probe_once(path: str, timeout: float) -> tuple[int, dict | None, str]:
         # A connect-time failure arrives wrapped, so the reason decides, not the class.
         return 0, None, _transport_kind(exc.reason)
     except Exception as exc:
-        # A read-time failure raises directly: TimeoutError, or an http.client error
-        # when the peer went away mid-response.
+        # A read-time failure raises directly: TimeoutError, or an http.client error when the peer went away
+        # mid-response.
         return 0, None, _transport_kind(exc)
 
 
@@ -306,8 +299,8 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
     worker.join(timeout)
     if outcome:
         return outcome[0]
-    # Either still running, or it died without recording anything. Both are "no answer
-    # inside the budget", which is exactly what a timeout means here.
+    # Either still running, or it died without recording anything. Both are "no answer inside the budget", which is
+    # exactly what a timeout means here.
     return 0, None, "timeout"
 
 
@@ -335,15 +328,12 @@ def await_recovery(
     while True:
         remaining = window_s - (time.monotonic() - began)
         if probes and remaining <= 0:
-            # No time left to give a probe. Starting one anyway is how the watch ran
-            # past its own bound: the pacing sleep is clamped to the window, so the
-            # loop could arrive here with nothing left and still begin a full-budget
-            # request. That is the overrun the wall watchdog exists to catch, and it
-            # would terminate the run before the report it is waiting for.
+            # No time left to give a probe. Starting one anyway is how the watch ran past its own bound: the pacing
+            # sleep is clamped to the window, so the loop could arrive here with nothing left and still begin a
+            # full-budget request. That is the overrun the wall watchdog exists to catch.
             break
-        # Never hand out more budget than the window has left either. A probe started
-        # near the end with the default PROBE_TIMEOUT_S can outlive the window by most
-        # of that budget on its own.
+        # Never hand out more budget than the window has left either. A probe started near the end with the default
+        # PROBE_TIMEOUT_S can outlive the window by most of that budget on its own.
         probe_began = time.monotonic()
         status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
         # Recorded in the same shape and on the same clock as the poller's samples, so
@@ -432,15 +422,13 @@ class BackendSurvivalPoller:
                         "status": status,
                         "kind": kind,
                         "ms": round((time.monotonic() - began) * 1000, 1),
-                        # Recorded for whoever reads the artifact after a stall, since
-                        # "was it generating at the time" is the first question asked of
-                        # one. No verdict below reads it.
+                        # Recorded for whoever reads the artifact after a stall, since "was it generating at the time"
+                        # is the first question asked of one. No verdict below reads it.
                         "inference_active": (body or {}).get("inference_active"),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
-                        # Stage 0 of the warm only sets hardware_detecting; this one stays
-                        # lit through the transformers and datasets imports after it, so the
-                        # pair is what tells a reader of the artifacts how wide the real
-                        # provisional window on this host was.
+                        # Stage 0 of the warm only sets hardware_detecting; this one stays lit through the transformers
+                        # and datasets imports after it, so the pair is what tells a reader of the artifacts how wide
+                        # the real provisional window on this host was.
                         "torch_warm_in_progress": (body or {}).get("torch_warm_in_progress"),
                     }
                 )
@@ -470,10 +458,9 @@ class BackendSurvivalPoller:
         rather than failing; measuring spans from the poller's samples alone would let it
         pass in silence.
         """
-        # Written below, once the recovery probes have been folded in. Serialising
-        # self.samples alone published a healthy timeline next to a log reporting a long
-        # post-run stall, which removes the evidence a reader needs to check the very
-        # thing the warning announces.
+        # Written below, once the recovery probes have been folded in.
+        # Serialising self.samples alone published a healthy timeline next to a log reporting a long post-run stall,
+        # which removes the evidence a reader needs to check the very thing the warning announces.
         for path in PROBE_PATHS:
             got = [s for s in self.samples if s["path"] == path]
             if not got:
@@ -487,13 +474,13 @@ class BackendSurvivalPoller:
                 f"{path}: {len(got)} samples, {len(bad)} miss(es), worst {worst}ms, "
                 f"{unmeasured} with an unmeasured verdict, {warming} with the warm still running"
             )
-            # These two are the backend saying something, not failing to. Neither is a
-            # stall, so neither gets the watchdog's patience: they fail on sight.
+            # These two are the backend saying something, not failing to. Neither is a stall, so neither gets the
+            # watchdog's patience: they fail on sight.
             refused = [s for s in got if s["kind"] == "refused"]
             answered_badly = [s for s in got if s["kind"] == "http"]
             if refused:
-                # The port stopped accepting. Nothing transient does this to a backend
-                # that is meant to be up, so it is fatal on the first occurrence.
+                # The port stopped accepting. Nothing transient does this to a backend that is meant to be up, so it
+                # is fatal on the first occurrence.
                 fail(
                     f"{path}: connection refused at t={refused[0]['t']}s; the port was gone, "
                     "so the backend did not stay up through the warm window"
@@ -506,34 +493,22 @@ class BackendSurvivalPoller:
                 )
 
         # What is left of the verdict, and deliberately so.
+        # This used to replay the launcher's watchdog: a 15s grid, three consecutive misses, the widened budget while
+        # inference_active is latched, the 30s last-chance probe.
+        # This phase gets STUDIO_MAC_SURVIVAL_S = 120 (.github/workflows/studio-mac-ui-smoke.yml), while the busy path
+        # alone is HEALTH_WATCHDOG_MAX_FAILURES_BUSY * 15s plus a 30s confirmation, about 210s, and
+        # BACKEND_STARTUP_GRACE_PERIOD is 300s before a backend that has not yet answered healthy counts a failure at
+        # all. The watchdog is not running here either: this phase boots `unsloth studio` directly, with no Tauri
+        # shell, and the watchdog's own behaviour is covered by the Rust tests beside it in commands.rs.
         #
-        # This used to replay the launcher's watchdog: a 15s grid, three consecutive
-        # misses, the widened budget while inference_active is latched, the 30s
-        # last-chance probe. Mirroring that state machine in Python turned every detail
-        # of studio/src-tauri/src/commands.rs into a correctness requirement for a smoke
-        # test, and it cannot pay off here for two reasons.
+        # What is left is the part that needs no arithmetic and cannot false-positive: a backend that stops answering
+        # and never comes back did not survive. Anything that answers again did, on any reading of any budget, so it
+        # warns and passes. A threshold put back here has to be strictly longer than the launcher's most generous
+        # path, and nothing that long fits in this window.
         #
-        # The window is too small for the rule to run. This phase gets
-        # STUDIO_MAC_SURVIVAL_S = 120 (.github/workflows/studio-mac-ui-smoke.yml), while
-        # the busy path alone is HEALTH_WATCHDOG_MAX_FAILURES_BUSY * 15s plus a 30s
-        # confirmation, about 210s, and BACKEND_STARTUP_GRACE_PERIOD is 300s before a
-        # backend that has not yet answered healthy counts a failure at all. A verdict
-        # reached in 120s is a statement about a rule that never had room to run.
-        #
-        # And the watchdog is not running here in the first place. This phase boots
-        # `unsloth studio` directly, with no Tauri shell, which the workflow says at the
-        # step itself; the watchdog's own behaviour is covered by the Rust tests beside
-        # it in commands.rs. So the rule was being re-implemented to judge a process that
-        # was not subject to it.
-        #
-        # What is left is the part that needs no arithmetic and cannot false-positive: a
-        # backend that stops answering and never comes back did not survive. Anything
-        # that answers again did, on any reading of any budget, so it warns and passes.
-        # If you are tempted to put a threshold back, it has to be strictly longer than
-        # the launcher's most generous path, and nothing that long fits in this window.
-        # One timeline: the poller's samples then the watch's probes, same clock. A span
-        # is therefore measured across the join rather than truncated at it, and a stall
-        # that starts after sampling stops gets a span of its own instead of none.
+        # One timeline: the poller's samples then the watch's probes, same clock. A span is therefore measured across
+        # the join rather than truncated at it, and a stall that starts after sampling stops gets a span of its own
+        # instead of none.
         observed = list(self.samples) + list(recovery_samples)
         (ART / "survival_samples.json").write_text(
             json.dumps(observed, indent = 1),
@@ -556,12 +531,11 @@ class BackendSurvivalPoller:
                 "but reporting itself unhealthy"
             )
         elif final_kind == "timeout":
-            # Nothing came back for the whole recovery window. A stall that was going to
-            # end had every one of those seconds to end in.
+            # Nothing came back for the whole recovery window. A stall that was going to end had every one of those
+            # seconds to end in.
             if terminal is not None:
-                # terminal spans the recovery probes too, now that they are on the same
-                # timeline, so the total already includes the watch. Naming the watch
-                # again as extra time on top of it would count it twice.
+                # terminal spans the recovery probes too, now that they are on the same timeline, so the total already
+                # includes the watch. Naming the watch again as extra time on top of it would count it twice.
                 fail(
                     f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
                     f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence in "
@@ -578,9 +552,9 @@ class BackendSurvivalPoller:
             # is green. Say so anyway: a stall this long is a real backend defect even
             # when it is not a fatal one, and it must not vanish into a pass.
             worst_ms = max(s["ms"] for s in observed)
-            # Where the longest stall sits relative to the end of sampling decides what
-            # can honestly be said about it. All three cases are recovered stalls; only
-            # the first one cleared while the run was still watching in the normal way.
+            # Where the longest stall sits relative to the end of sampling decides what can honestly be said about it.
+            # All three cases are recovered stalls; only the first one cleared while the run was still watching in the
+            # normal way.
             if widest is None or widest[1] <= sampling_ended:
                 cleared = "It answered again before the run ended."
             elif widest[0] >= sampling_ended:
@@ -648,10 +622,9 @@ def log_in(page) -> bool:
     * The submit button is labelled "Login", not "Sign in".
     """
     page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
-    # A backend that still has its one-time bootstrap password injects it into the page
-    # and signs itself in, landing on /change-password with no login form ever rendered.
-    # Check that BEFORE waiting on #password, or the wait burns 60s and reports "no
-    # password field" for a session that is actually authenticated.
+    # A backend that still has its one-time bootstrap password injects it into the page and signs itself in, landing on
+    # /change-password with no login form ever rendered. Check that BEFORE waiting on #password, or the wait burns 60s
+    # and reports "no password field" for a session that is actually authenticated.
     try:
         page.wait_for_url(
             lambda url: "/change-password" in url or "/login" in url,
@@ -690,10 +663,9 @@ def log_in(page) -> bool:
                 )
             except Exception:
                 info(f"still on {page.url} 60s after submitting the login form")
-            # A first login with the bootstrap password lands on /change-password
-            # (session.ts:93 getPostAuthRoute -> mustChangePassword), which is a
-            # signed-out route here because it has no sidebar to assert against.
-            # The session is real, so finish the rotation instead of giving up.
+            # A first login with the bootstrap password lands on /change-password (session.ts:93 getPostAuthRoute ->
+            # mustChangePassword), which is a signed-out route here because it has no sidebar to assert against. The
+            # session is real, so finish the rotation instead of giving up.
             if "/change-password" in page.url:
                 rotate_password(page)
     except Exception as exc:
@@ -760,9 +732,8 @@ def sample_natural_warm_window(page) -> None:
         try:
             state = row_states(page, (GATED_ROW_ID,))
         except Exception as exc:
-            # Only fatal before anything was read: a page that cannot be evaluated at all
-            # is the signed-out/unrendered shape, and breaking out of it quietly is how
-            # this function used to report success on zero observations.
+            # Only fatal before anything was read: a page that cannot be evaluated at all is the signed-out/unrendered
+            # shape, and breaking out of it quietly is how this function used to report success on zero observations.
             if samples == 0:
                 fail(f"could not read the sidebar during the unmeasured window ({exc!r})")
             else:
@@ -822,10 +793,9 @@ def assert_pending_state_on_forced_verdict(page) -> None:
             f"(status {status}); the forced pending-state check could not run"
         )
         return
-    # A real reply with the measurement removed, so the only thing the browser sees
-    # differently is the field under test. device_type is what env.ts reads as "measured",
-    # and chat_only stays the conservative pre-detection default -- the exact pair a Mac
-    # got on first paint in the field report, where the row blacked out.
+    # A real reply with the measurement removed, so the only thing the browser sees differently is the field under test.
+    # device_type is what env.ts reads as "measured", and chat_only stays the conservative pre-detection default --
+    # the exact pair a Mac got on first paint in the field report, where the row blacked out.
     provisional = {
         k: v for k, v in live.items() if k not in ("device_type", "hardware_detection_deferred")
     }
@@ -849,16 +819,16 @@ def assert_pending_state_on_forced_verdict(page) -> None:
                 "come up or the row is gated on the verdict it is supposed to spin on"
             )
             return
-        # The row derives its state synchronously from the store, but the store is filled
-        # by the root route's beforeLoad, so give it frames rather than one read.
+        # The row derives its state synchronously from the store, but the store is filled by the root route's
+        # beforeLoad, so give it frames rather than one read.
         deadline = time.monotonic() + FORCED_PENDING_S
         got = None
         while True:
             try:
                 got = row_states(page, (GATED_ROW_ID,)).get(GATED_ROW_ID)
             except Exception as exc:
-                # Raising out of here would skip the survival report and the exit code
-                # main() is built around, so it lands as a failure like any other.
+                # Raising out of here would skip the survival report and the exit code main() is built around, so it
+                # lands as a failure like any other.
                 fail(f"could not read the {GATED_ROW_ID} row under a forced verdict ({exc!r})")
                 return
             if got and got["spinner"] and not got["disabled"]:
@@ -912,9 +882,9 @@ def drive_tabs(page) -> None:
         # without the capability. What it must not do is bounce while the verdict
         # is still unknown, which is the race this run is here to catch.
         if signed_out(landed):
-            # Never legitimate here: the session was proven signed in before the walk
-            # started. Calling this an allowed redirect is exactly how a run that
-            # authenticated with nobody goes green having exercised nothing.
+            # Never legitimate here: the session was proven signed in before the walk started. Calling this an
+            # allowed redirect is exactly how a run that authenticated with nobody goes green having exercised
+            # nothing.
             fail(f"{name}: bounced to the login page at {landed}; the session was lost mid-walk")
             continue
         if route not in landed:
@@ -926,15 +896,15 @@ def drive_tabs(page) -> None:
             else:
                 info(f"{name}: redirected to {landed} after a measured verdict (allowed)")
 
-        # Read every inline row, not just this tab's: they render together, so one read
-        # records that the sidebar came up at all and keeps the per-route detail in the log.
+        # Read every inline row, not just this tab's: they render together, so one read records that the sidebar came
+        # up at all and keeps the per-route detail in the log.
         try:
             _rows_seen.update(rid for rid, got in row_states(page).items() if got)
         except Exception as exc:
             info(f"{name}: could not read the sidebar rows ({exc!r})")
 
-        # Clicking the row is the interaction the user reported; a greyed-out row
-        # swallows the click, so this doubles as a check that it is reachable.
+        # Clicking the row is the interaction the user reported; a greyed-out row swallows the click, so this doubles
+        # as a check that it is reachable.
         try:
             row = page.locator(f'[data-testid="nav-row-{row_id}"]')
             if row.count() > 0 and row.first.is_enabled():
@@ -943,12 +913,12 @@ def drive_tabs(page) -> None:
             elif row.count() > 0:
                 info(f"{name}: nav row present but disabled (measured verdict)")
             elif row_id in INLINE_ROW_IDS:
-                # Not an info line: this row is pinned inline by default, so its absence
-                # means the sidebar did not render and this tab checked nothing.
+                # Not an info line: this row is pinned inline by default, so its absence means the sidebar did not
+                # render and this tab checked nothing.
                 fail(f"{name}: nav row {row_id} is pinned inline by default but did not render")
             else:
-                # Expected and permanent for Video and Export: they live under "More",
-                # which renders no test id. Reached by route instead.
+                # Expected and permanent for Video and Export: they live under "More", which renders no test id.
+                # Reached by route instead.
                 info(f"{name}: nav row not pinned inline; reached by route instead")
         except Exception as exc:
             info(f"{name}: row click did not land ({exc!r})")
@@ -979,9 +949,7 @@ def main() -> int:
 
         step("login")
         if not log_in(page):
-            # Every assertion past this point reads the authenticated shell. Signed out,
-            # the sidebar does not render, so the tab checks would find no rows, report
-            # nothing, and the run would go green having tested none of what it claims.
+            # Every assertion past this point reads the authenticated shell.
             fail("could not sign in; the tab assertions below would all be vacuous")
             poller.finish()
             poller.report()
@@ -996,8 +964,8 @@ def main() -> int:
                 "the tab gating was never actually exercised, so a green run here would mean nothing"
             )
 
-        # Hold the session open until the survival window is covered. The reported
-        # crash landed at t+66s, well inside this.
+        # Hold the session open until the survival window is covered.
+        # The reported crash landed at t+66s, well inside this.
         remaining = SURVIVAL_S - (time.monotonic() - began)
         if remaining > 0:
             step(f"holding the session for {remaining:.0f}s more to outlive the watchdog grace")
@@ -1025,10 +993,9 @@ def main() -> int:
         recovery_samples = recovery,
     )
 
-    # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI
-    # drive, so disarming before it ran left the longest-running part of the script with
-    # nothing enforcing WALL_TIMEOUT_S, and a probe that would not end had the job's own
-    # cap as its only bound. A hung job reports nothing, which is the worst outcome here.
+    # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI drive, so disarming before it ran
+    # left the longest-running part of the script with nothing enforcing WALL_TIMEOUT_S, and a probe that would not end
+    # had the job's own cap as its only bound. A hung job reports nothing, which is the worst outcome here.
     watchdog.cancel()
 
     if _failed:

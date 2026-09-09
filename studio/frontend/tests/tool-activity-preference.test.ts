@@ -11,13 +11,13 @@
 // Rendered behaviour lives in tests/studio/playwright_tool_activity.py.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import ts from "typescript";
 
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -49,8 +49,6 @@ const { useChatPreferencesStore } = await import(
 const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
   "../src/components/assistant-ui/tool-activity-open-state.ts"
 );
-
-const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 
 /** Write `state` as a persisted record and hydrate the live store from it. */
 async function rehydrateFrom(state: unknown): Promise<void> {
@@ -247,7 +245,7 @@ test("disabling collapsed activity respects a closed fallback default", () => {
 const sourceOf = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(
     path,
-    await read(path),
+    await readText(path),
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,

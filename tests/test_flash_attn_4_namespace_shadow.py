@@ -264,7 +264,7 @@ def test_the_warning_names_the_cost_and_the_remedy(monkeypatch):
     monkeypatch.setattr(import_fixes, "_flash_attn_4_present", lambda: True)
     import_fixes._FA4_NAMESPACE_WARNED[0] = False
     import_fixes._warn_flash_attn_4_shadow_once("test")
-    import_fixes._warn_flash_attn_4_shadow_once("test")  # once only
+    import_fixes._warn_flash_attn_4_shadow_once("test")
     assert len(messages) == 1
     text = messages[0]
     for needed in ("flash-attn 4", "SDPA", "3.9x", "flash_attn.cute", "pip uninstall"):

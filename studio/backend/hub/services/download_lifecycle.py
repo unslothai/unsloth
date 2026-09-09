@@ -366,8 +366,10 @@ def finalize_worker_exit(
     if state == "complete":
         hf_cache_scan.invalidate_hf_cache_scans()
         registry.set_job(key, "complete")
-        # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher.
-        # Models only, since noting a dataset id as a local model would refuse a bare request naming it.
+        # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher,
+        # so it would report the model absent and serve whatever is resident. Models only, since noting
+        # a dataset id as a local model would refuse a bare request naming it instead of letting a
+        # foreign id fall through.
         if repo_type == "model":
             try:
                 from core.inference.local_model_resolver import (

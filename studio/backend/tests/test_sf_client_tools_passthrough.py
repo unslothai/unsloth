@@ -53,6 +53,8 @@ class _Request:
     url = SimpleNamespace(path = "/v1/chat/completions")
     method = "POST"
     scope: dict = {}
+    # These cases drive the tool loop, whose confirm gate asks over these frames.
+    headers = {"X-Unsloth-Events": "1"}
 
     async def is_disconnected(self):
         return False

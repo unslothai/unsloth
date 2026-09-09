@@ -70,7 +70,8 @@ def get_dataset_snapshot_metadata_cached(
             size, hashes, restricted, cached_fp, ts = cached
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
-            # A gated or private repo's metadata is only served back to the token that fetched it.
+            # A gated or private repo's metadata is only served back to the token that fetched it;
+            # another token may have no access at all.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes

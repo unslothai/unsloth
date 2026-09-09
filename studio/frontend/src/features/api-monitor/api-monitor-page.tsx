@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
+
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
@@ -523,6 +525,7 @@ function RequestDetail({
 }
 
 export function ApiMonitorPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const {
     data,
     entries,
@@ -544,8 +547,8 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [loading]);
+    signalReady();
+  }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);

@@ -51,7 +51,7 @@ def _prune_helpers() -> str:
     """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
     return slice_between(
         read(ADAPTER),
-        "/** Payload the turn carries in its own parts",
+        "function assistantTurnCarriesPayload(",
         "function extractImageBase64(",
     )
 
@@ -60,7 +60,7 @@ def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
         "export async function buildLocalTokenCountHistory(",
-        "/**\n * The reasoning fields a completion would send",
+        "export function buildLocalTokenCountReasoning(",
     )
 
 
@@ -82,7 +82,7 @@ def _extras_builder() -> str:
         slice_between(
             read(ADAPTER),
             "function resolveAutoInject(",
-            "\n\n/** Server-side usage data",
+            "\ninterface ServerUsage {",
         ),
         slice_between(
             read(ADAPTER),
@@ -98,12 +98,12 @@ def _reasoning_builder() -> str:
     clamp = slice_between(
         read(CAPABILITIES),
         "export function clampReasoningEffortToLevels(",
-        "\n/**",
+        "\nexport const EXTERNAL_MAX_OUTPUT_TOKENS =",
     )
     builder = slice_between(
         read(ADAPTER),
         "export function buildLocalTokenCountReasoning(",
-        "/**\n * The tool flags a completion would send",
+        "export async function buildLocalTokenCountExtras(",
     )
     return clamp + "\n" + builder
 
