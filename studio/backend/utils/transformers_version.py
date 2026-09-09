@@ -2448,8 +2448,13 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     _venv_dir_is_valid accepts a sidecar without tiktoken, so a transient failure while
     the sidecar was built (the latest sidecar in particular, which no setup top-up
     visits) left Qwen tokenizers broken until the user deleted the directory. Best
-    effort and non-destructive: a failure is logged and not retried in this process.
+    effort and non-destructive: a failure is logged and not retried in this process,
+    nothing is attempted while the session is offline (a worker would otherwise sit
+    through network retries for a model that may not even need the package), and one
+    process at a time writes into a sidecar every worker shares.
     """
+    if _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
+        return
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg) or not _optional_package_absent(venv_dir, pkg):
             continue
@@ -2457,13 +2462,66 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
         if key in _OPTIONAL_TOP_UP_ATTEMPTED:
             continue
         _OPTIONAL_TOP_UP_ATTEMPTED.add(key)
-        logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
-        if not _install_to_dir(pkg, venv_dir):
-            logger.warning(
-                "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
-                pkg,
-                venv_dir,
-            )
+        with _optional_top_up_lock(venv_dir) as held:
+            if not held:
+                # Another process is adding it now; this one uses whatever it leaves.
+                continue
+            if not _optional_package_absent(venv_dir, pkg):
+                continue
+            logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
+            if not _install_to_dir(pkg, venv_dir):
+                logger.warning(
+                    "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
+                    pkg,
+                    venv_dir,
+                )
+
+
+_OPTIONAL_TOP_UP_LOCK = ".optional-top-up.lock"
+
+
+@contextlib.contextmanager
+def _optional_top_up_lock(venv_dir: str):
+    """A non-blocking cross-process lock on a sidecar's optional top-up.
+
+    Workers activate tiers independently, so two can find the package absent at once;
+    two installers writing one --target tree leave it half-written. Yields True when
+    this process holds the lock, False when another does (or the lock cannot be taken,
+    which is read as "someone else's turn" rather than a reason to write unguarded).
+    """
+    handle = None
+    try:
+        handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if handle is not None:
+            handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
 
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
