@@ -1148,9 +1148,7 @@ def _route_shell_masked(
             f"_kfd_gfx_targets() {{ {kfd_emit}; }}",
             "_infer_linux_amd_gfx_arch() { :; }",
             "_amd_gpu_present_via_pci() { return 0; }",
-            *_wheel_route_defs(
-                rocminfo = _fake_rocminfo(physical if devices is None else devices)
-            ),
+            *_wheel_route_defs(rocminfo = _fake_rocminfo(physical if devices is None else devices)),
             f"_detect_rocm_version_tag() {{ printf '%s\\n' {rocm_tag!r}; }}",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
