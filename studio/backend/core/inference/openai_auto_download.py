@@ -931,7 +931,10 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
             # org/repo:Q4_K_M with a 404 and the worker's fallback was never reached. Unambiguous only, for the same
             # reason.
             exact = _bare_quant_alias(wanted, lowered)
-        if exact is not None or looks_like_quant(wanted, known_keys = variants):
+        # The listing in hand IS the evidence a root stem needs: ``model-Q4_K_M-fp16`` beside a
+        # repo offering only ``model-Q4_K_M-mtp`` is an explicit build that is absent, and
+        # vouching only for keys the map holds let it fall through to the default ranking.
+        if exact is not None or looks_like_quant(wanted, allow_root_stem = True):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
     # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant

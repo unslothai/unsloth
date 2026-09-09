@@ -594,11 +594,18 @@ def _manifest_hashes(manifest: download_manifest.Manifest) -> frozenset[str]:
     return frozenset(f"{f.sha256 or ''}:{f.path}:{f.size}" for f in (manifest.expected_files or ()))
 
 
-def _progress_matcher_variant(requirement, progress_variant: str) -> str:
-    """The key the progress scan matches main shards against: the resolved plan's, when there is one."""
+def _progress_matcher_variant(requirement, progress_variant: str, manifest = None) -> str:
+    """The key the progress scan matches main shards against: the resolved plan's when there is
+    one, else the job's own manifest's, since offline the Hub lookup has nothing to resolve with."""
     from hub.utils.gguf import gguf_variant_key
 
     main = sorted(getattr(requirement, "main_filenames", ()) or ()) if requirement is not None else []
+    if not main and manifest is not None:
+        main = sorted(
+            file.path
+            for file in (getattr(manifest, "expected_files", ()) or ())
+            if gguf_plan.is_main_gguf_candidate(file.path)
+        )
     return gguf_variant_key(main[0]) if main else progress_variant
 
 
@@ -687,6 +694,39 @@ async def get_gguf_download_progress_response(
         )
         return requirement.expected_files if requirement is not None else ()
 
+    matcher_key: list[str] = []
+
+    def _matcher_variant() -> str:
+        # The resolved plan's key, not the request's spelling: a legacy bare request resolves to
+        # a lone tagged build whose files key to the qualified name, and matching them against the
+        # bare spelling missed every main shard -- so a finished download read as absent and the
+        # manager retired resumable state as gone. Offline, or while the Hub fails, the plan is
+        # None but the manifest the job wrote names the same resolved files, so it answers next;
+        # only with neither does this fall back to the request's spelling. Resolved once per poll.
+        if not matcher_key:
+            try:
+                requirement = gguf_variants.gguf_variant_requirements(repo_id, progress_variant, hf_token)
+            except Exception:
+                requirement = None
+            manifest = None
+            if requirement is None:
+                job_key = _download_job_key(repo_id, progress_variant)
+                job = _registry.get_job(job_key)
+                get_job_metadata = getattr(_registry, "get_job_metadata", None)
+                job_metadata = get_job_metadata(job_key) if callable(get_job_metadata) else None
+                hub_cache = getattr(job_metadata, "hub_cache", None)
+                try:
+                    manifest = _variant_manifest_in_any_cache(
+                        repo_id,
+                        progress_variant,
+                        force_active = getattr(job, "state", None) in {"running", "cancelling"},
+                        active_root = Path(hub_cache) if hub_cache else None,
+                    )
+                except Exception:
+                    manifest = None
+            matcher_key.append(_progress_matcher_variant(requirement, progress_variant, manifest))
+        return matcher_key[0]
+
     def _variant_file_matcher(path: str, *, companions: bool = True) -> bool:
         # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every
         # variant, so they belong to whichever one is being polled.
@@ -694,16 +734,7 @@ async def get_gguf_download_progress_response(
         # shared companions belong to every quant, so counting them reported bytes for a deleted file.
         if progress_variant is None:
             return False
-        # The resolved plan's key, not the request's spelling: a legacy bare request resolves to
-        # a lone tagged build whose files key to the qualified name, and matching them against the
-        # bare spelling missed every main shard -- so a finished download read as absent and the
-        # manager retired resumable state as gone. The lookup is cached, so this costs nothing
-        # per poll; it fails soft to the request's spelling when there is no plan.
-        try:
-            requirement = gguf_variants.gguf_variant_requirements(repo_id, progress_variant, hf_token)
-        except Exception:
-            requirement = None
-        if gguf_plan.is_main_gguf_variant_path(path, _progress_matcher_variant(requirement, progress_variant)):
+        if gguf_plan.is_main_gguf_variant_path(path, _matcher_variant()):
             return True
         return companions and gguf_plan.is_companion_gguf_path(path)
 

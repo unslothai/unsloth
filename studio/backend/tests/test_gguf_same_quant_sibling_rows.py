@@ -1496,6 +1496,74 @@ def test_the_progress_matcher_is_callable_and_matches_the_resolved_build(monkeyp
     assert matcher("mmproj-F16.gguf") is True
 
 
+def test_the_progress_matcher_reads_the_resolved_key_off_the_manifest_when_the_hub_is_down(monkeypatch):
+    """Offline, the requirements lookup is None and the matcher fell back to the bare spelling,
+    so every finalized ``model-Q4_K_M-mtp`` shard of a legacy ``Q4_K_M`` job read as absent and
+    hydration retired resumable state that was present. The job's manifest names the same files."""
+    import asyncio
+
+    from hub.services.models import downloads, gguf_variants
+    from hub.services import snapshot_progress
+    from hub.utils import download_manifest
+
+    monkeypatch.setattr(gguf_variants, "gguf_variant_requirements",
+                        lambda repo_id, variant, hf_token = None: None)
+    manifest = download_manifest.Manifest(
+        repo_type = "model", repo_id = "org/repo", variant = "Q4_K_M", started_at = "",
+        expected_files = (
+            download_manifest.ExpectedFile("mmproj-F16.gguf", 1),
+            download_manifest.ExpectedFile("model-Q4_K_M-mtp.gguf", 17),
+        ),
+    )
+    asked = []
+
+    def in_any_cache(repo_id, variant, **kw):
+        asked.append((repo_id, variant))
+        return manifest
+
+    monkeypatch.setattr(downloads, "_variant_manifest_in_any_cache", in_any_cache)
+    captured = {}
+
+    async def fake_progress(**kw):
+        captured.update(kw)
+        return {"progress": 0}
+
+    monkeypatch.setattr(snapshot_progress, "snapshot_progress_response", fake_progress)
+    asyncio.run(downloads.get_gguf_download_progress_response("org/repo", "Q4_K_M"))
+    matcher = next(v for k, v in captured.items() if callable(v) and "match" in k)
+    assert matcher("model-Q4_K_M-mtp.gguf", companions = False) is True
+    assert matcher("model-Q4_K_M-fp16.gguf", companions = False) is False
+    assert matcher("mmproj-F16.gguf", companions = False) is False
+    assert matcher("mmproj-F16.gguf") is True
+    # Resolved once per poll, not once per scanned path.
+    assert asked == [("org/repo", "Q4_K_M")]
+    # With neither a plan nor a manifest, the request's spelling still matches its own file.
+    monkeypatch.setattr(downloads, "_variant_manifest_in_any_cache", lambda *a, **kw: None)
+    captured.clear()
+    asyncio.run(downloads.get_gguf_download_progress_response("org/repo", "Q4_K_M"))
+    matcher = next(v for k, v in captured.items() if callable(v) and "match" in k)
+    assert matcher("model-Q4_K_M.gguf", companions = False) is True
+    assert matcher("model-Q4_K_M-mtp.gguf", companions = False) is False
+
+
+def test_an_absent_root_build_is_a_miss_for_the_auto_download_even_beside_its_sibling():
+    """``model-Q4_K_M-fp16`` against a repo offering ``model-Q4_K_M-mtp``: neither exact nor the
+    bare alias, and vouching only for keys the map holds read it as a foreign tag, so the default
+    ranking downloaded a build nobody asked for. The listing itself is the evidence the stem needs."""
+    from core.inference.openai_auto_download import _match_variant
+
+    variants = {"model-Q4_K_M-mtp": 10, "Q8_0": 20}
+    assert _match_variant("model-Q4_K_M-fp16", variants) is None
+    assert _match_variant("model-Q8_0-mtp", variants) is None
+    assert _match_variant("model-Q4_K_M-mtp", variants) == "model-Q4_K_M-mtp"
+    assert _match_variant("Q4_K_M", variants) == "model-Q4_K_M-mtp"
+    assert _match_variant("Q6_K", variants) is None
+    # A tag naming no quant still means the repo's default, as before.
+    assert _match_variant("latest", variants) is not None
+    assert _match_variant("8b", variants) is not None
+    assert _match_variant(None, variants) is not None
+
+
 def test_a_request_for_the_other_root_build_is_not_satisfied_by_the_resident(monkeypatch):
     """With ``model-Q4_K_M-mtp`` resident, a request for the cached ``model-Q4_K_M-fp16`` was
     absent from the one-element known_keys, read as a foreign tag, and the repo match alone

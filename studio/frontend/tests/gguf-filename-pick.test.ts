@@ -145,3 +145,26 @@ test("a build keyed by its parent directory answers to that directory's token", 
   assert.equal(pickGgufFilename([nested], "Q6_K-3.5bpw"), nested.filename);
   assert.equal(pickGgufFilename([nested], "Q6_K"), null);
 });
+
+test("a tagged root build outranks a subordinate checkpoint sharing its quant", () => {
+  const distilled = {
+    filename: "distilled/model-Q4_K_M.gguf",
+    quant: "distilled/model-Q4_K_M",
+    downloaded: true,
+  };
+  assert.equal(
+    pickGgufFilename([distilled, TAGGED], "Q4_K_M"),
+    TAGGED.filename,
+  );
+  // A quant-named directory leaves a build at the root, so it ties with the tagged root.
+  const quantDir = {
+    filename: "Q4_K_M/model-a.gguf",
+    quant: "Q4_K_M/model-a",
+    downloaded: true,
+  };
+  assert.equal(pickGgufFilename([quantDir, TAGGED], "Q4_K_M"), null);
+  assert.equal(
+    pickGgufFilename([distilled, TAGGED, TAGGED_FP16], "Q4_K_M"),
+    null,
+  );
+});

@@ -61,6 +61,15 @@ function quantTokenOf(key: string): string | null {
   return null;
 }
 
+/** The backend's `_keys_at_repo_root`: a quant-named parent only repeats how the file was
+ *  quantized and leaves the build at the root; any other directory is another checkpoint. */
+const atRepoRoot = (key: string): boolean =>
+  key
+    .replace(/\\/g, "/")
+    .split("/")
+    .slice(0, -1)
+    .every((segment) => !segment || selectQuantMatch(segment) !== null);
+
 /** Whether `quant` is a qualified key whose complete bare quant token is `label`. `Q4_K` is not
  *  the token of `model-Q4_K_M-mtp`, and an H3 denoiser partition never answers to its bare quant
  *  (the backend's `accepts_bare_quant_alias`), since that spelling picks the wrong checkpoint. */
@@ -75,6 +84,25 @@ const bareLabelOf = (quant: string, label: string): boolean => {
   }
   return quantTokenOf(quant)?.toLowerCase() === label.toLowerCase();
 };
+
+/** The lone qualified row a bare label is the legacy spelling of, else null. A repo's lone tagged
+ *  build is advertised as `model-Q4_K_M-mtp`, which the backend's download and load paths still
+ *  accept for the bare label; refusing it here left "Pick a quantization" on a hint that resolves
+ *  everywhere else. Root precedence as the backend's shared resolver applies it: the bare quant
+ *  is the spelling a root build USED to key under, so a tagged root outranks
+ *  `distilled/model-Q4_K_M`, and only two roots still tie. Two rows carrying the label name
+ *  neither, and the prompt stays. */
+function aliasedFilename(
+  listed: readonly { filename: string; quant: string | null }[],
+  wanted: string,
+): string | null {
+  let byAlias = listed.filter((v) => v.quant && bareLabelOf(v.quant, wanted));
+  if (byAlias.length > 1) {
+    const roots = byAlias.filter((v) => v.quant && atRepoRoot(v.quant));
+    byAlias = roots.length > 0 ? roots : byAlias;
+  }
+  return byAlias.length === 1 ? byAlias[0].filename : null;
+}
 
 /** The .gguf to load, given the listing and what the pick carried: a filename, a quant label, or nothing. A load needs a real
  *  filename and a label is not one. Null when the repo is ambiguous, so the caller keeps its prompt. */
@@ -113,18 +141,7 @@ export function pickGgufFilename(
         (byLabel.find((v) => v.downloaded) ?? byLabel[0])?.filename ?? null
       );
     }
-    // No row owns the label outright. A saved bare label may be the legacy spelling of ONE
-    // qualified row (a repo's lone tagged build is advertised as `model-Q4_K_M-mtp`), which the
-    // backend's download and load paths still accept; refusing it here left "Pick a quantization"
-    // on a hint that resolves everywhere else. Unique only: two rows carrying the label name
-    // neither, and the prompt stays. A trailing bit-width modifier is part of the token, not a tag.
-    const byAlias = listed.filter(
-      (v) => v.quant && bareLabelOf(v.quant, wanted),
-    );
-    if (byAlias.length === 1) {
-      return byAlias[0].filename;
-    }
-    return null;
+    return aliasedFilename(listed, wanted);
   }
   // No label: only a lone file names itself. Downloaded first, so a fully listed remote repo resolves to the quant on disk.
   const downloaded = listed.filter((v) => v.downloaded);
