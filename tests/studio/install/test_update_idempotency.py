@@ -713,6 +713,13 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
         after["distributions"] == before["distributions"]
     ), "a pass with no evidence resolved to a different set of packages"
     assert after["manifest"] is not None, "the pass did not rewrite the manifest"
+    # The rest of the install is the manifest's business only in that it is described
+    # there: a pass with no evidence re-checks every component and must leave the valid
+    # ones alone. The manifest itself is the one key allowed to differ.
+    untouched = [key for key in diff(before, after) if key not in ("manifest", "dist_records")]
+    assert untouched == [], (
+        "a pass with no evidence redid work on already-valid components: " + ", ".join(untouched)
+    )
 
 
 def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled):
@@ -863,11 +870,12 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
     """No --local: the flow the desktop app and the Repair button run. Its whole cost on
     a settled install should be one version check and the prebuilt HEADs.
 
-    Runs on BOTH branches of desktop_path. Skipping the case when the installed version
-    is not PyPI's latest also dropped the assertions that hold either way -- the release
-    payload hosts, api.github.com, release-assets -- and those are the ones that catch a
-    prebuilt regression regardless of whether the version check short-circuited. Only
-    what genuinely depends on that short-circuit is relaxed below, each with its reason.
+    Judged only when the version check short-circuits (desktop_path). With a version
+    mismatch this run IS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
+    whisper.cpp pins can differ from the checkout's, and an upgrade that rebuilds or
+    downloads those is behaving correctly; a version bump would otherwise fail this
+    smoke test for doing its job. The run still has to succeed on that branch, and the
+    checkout is put back for the workflow steps after this harness.
     """
     directory, _ = settled
     # Its own baseline, taken now: this is the last case, and the fault-injection cases
@@ -875,56 +883,32 @@ def test_the_desktop_update_path_does_no_network_work(install, settled, desktop_
     before = snapshot(install)
     run = run_update(directory, "run5-desktop", local = False)
     assert run.rc == 0, run.log[-8000:]
-    # files.pythonhosted.org is the ONE payload host the version check governs: with a
-    # version mismatch this run IS an upgrade, and an upgrade downloads the wheel it
-    # upgrades to. The other three carry release payloads -- llama.cpp, whisper.cpp,
-    # node -- which no upgrade of unsloth has any reason to refetch, so they are held at
-    # zero on both branches.
-    payload_hosts = (
-        PAYLOAD_HOSTS
-        if desktop_path
-        else tuple(host for host in PAYLOAD_HOSTS if host != "files.pythonhosted.org")
-    )
-    for host in payload_hosts:
+    if not desktop_path:
+        # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
+        # whisper.cpp pins can legitimately differ from the checkout's: it may rebuild or
+        # download any of them, so nothing below can be asserted of it. What can is that
+        # it succeeded, and that the checkout is put back for the workflow steps after
+        # this harness, which run the CLI and expect the code under test.
+        restore = run_update(directory, "run5-restore", local = True)
+        assert restore.rc == 0, restore.log[-8000:]
+        pytest.skip("installed version is not PyPI's latest; the desktop no-op path was not taken")
+    for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
     assert run.bytes_from("raw.githubusercontent.com") <= ICON_FETCH_CEILING, run.report()
-    # "dependencies up to date" is setup.sh's fast-path line, and the fast path is
-    # exactly what the version check decides; an upgrade legitimately runs the pass
-    # instead. The prebuilt and sidecar markers are not the version check's business:
-    # both are answered from disk whether or not the dependency pass runs.
-    markers = (
-        NO_WORK_MARKERS
-        if desktop_path
-        else tuple(marker for marker in NO_WORK_MARKERS if marker != "dependencies up to date")
-    )
-    for marker in markers:
+    for marker in NO_WORK_MARKERS:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
     # Each component, not the generic line once: one prebuilt re-validating while the
     # other answers from its marker would otherwise pass here.
     assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
     assert run.log.count("sidecar current") == 3, run.log[-8000:]
     # One version check, and one "what is the latest release" HEAD per prebuilt. The
-    # bound is what stops this quietly becoming a full release listing again. Only the
-    # pypi.org one is relaxed: a real dependency pass resolves against the index, and
-    # how many connections that takes is the resolver's business. The github.com bound
-    # belongs to the prebuilts, which do the same work either way.
-    if desktop_path:
-        assert run.connections_to("pypi.org") <= 2, run.report()
+    # bound is what stops this quietly becoming a full release listing again.
+    assert run.connections_to("pypi.org") <= 2, run.report()
     assert run.connections_to("github.com") <= 6, run.report()
     # The other half of the prebuilt claim: the release itself is never listed. Both of
     # these carried traffic on every update before the marker checks, and both are where
     # the 13-63 s macOS re-validation went.
     assert run.connections_to("api.github.com") == 0, run.report()
     assert run.connections_to("release-assets.githubusercontent.com") == 0, run.report()
-    if desktop_path:
-        # A dependency pass rewrites the manifest and can move the distribution list, so
-        # "nothing changed on disk" is only a claim about the short-circuited path. The
-        # no-op case is asserted in full by test_a_second_update_changes_nothing_on_disk.
-        assert diff(before, snapshot(install)) == []
-    else:
-        # This run WAS an upgrade to PyPI's release, so the checkout is no longer what is
-        # installed. Put it back: the workflow steps after this harness run the CLI and
-        # expect the code under test, not the released one.
-        restore = run_update(directory, "run5-restore", local = True)
-        assert restore.rc == 0, restore.log[-8000:]
+    assert diff(before, snapshot(install)) == []

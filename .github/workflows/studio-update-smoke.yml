@@ -23,6 +23,8 @@ on:
       - 'studio/install_node_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
+      # install_node_prebuilt.py reads the default version and archive digests from here.
+      - 'studio/node_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'

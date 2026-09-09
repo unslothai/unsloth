@@ -117,6 +117,10 @@ class Proxy:
                 conn, _ = self.srv.accept()
             except OSError:
                 return
+            # Counted here, before the worker exists: a connection accepted but not yet
+            # scheduled is invisible to the journal, and the harness reads the count to
+            # decide whether the proxy may be stopped.
+            self._adjust_active(+1)
             threading.Thread(target = self.handle, args = (conn,), daemon = True).start()
 
     @staticmethod
@@ -145,7 +149,8 @@ class Proxy:
         }
 
     def handle(self, conn: socket.socket) -> None:
-        self._adjust_active(+1)
+        # The accept loop counted this connection in; this releases it once its record
+        # is in the journal (or the worker died trying).
         try:
             self._handle(conn)
         finally:
