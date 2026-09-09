@@ -2035,7 +2035,9 @@ _OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 
 
 def _sidecar_package_is_optional(pkg_spec: str) -> bool:
-    return pkg_spec.split("==", 1)[0].strip().lower().replace("_", "-") in _OPTIONAL_SIDECAR_PACKAGES
+    return (
+        pkg_spec.split("==", 1)[0].strip().lower().replace("_", "-") in _OPTIONAL_SIDECAR_PACKAGES
+    )
 
 
 _SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
