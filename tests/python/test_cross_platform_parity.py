@@ -1178,7 +1178,8 @@ class TestInstallUvCacheRootParity:
         assert "utf-8-sig" in cli
 
         # Absolute on both sides: the update resolves it against its own directory.
-        assert 'case "$UV_CACHE_DIR" in' in sh
+        assert "_absolutize_uv_cache_dir() {" in sh
+        assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
         assert "IsPathRooted" in ps1
 
         # The reset must precede both consumers, the selector that writes the marker and

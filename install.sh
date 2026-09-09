@@ -627,22 +627,25 @@ _resolve_studio_destinations() {
 # dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
 # marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
 # moves, and which may itself be relative to where the installer was run.
+# Prints the absolute form of $1, default UV_CACHE_DIR: _configure_uv_cache must resolve `uv
+# cache dir`'s answer on the same base before scanning it, and two bases miss a warm cache.
 _absolutize_uv_cache_dir() {
-    case "$UV_CACHE_DIR" in
-        /*) return 0 ;;
+    _uv_cache_path="${1-$UV_CACHE_DIR}"
+    case "$_uv_cache_path" in
+        /*) printf '%s\n' "$_uv_cache_path" ; return 0 ;;
     esac
     _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
     case "$_uv_cache_base" in
         /*) ;;
         *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
     esac
-    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+    printf '%s\n' "$_uv_cache_base/$_uv_cache_path"
 }
 
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point
     # every phase of the install and the marker are made to agree on one directory.
-    _absolutize_uv_cache_dir
+    UV_CACHE_DIR=$(_absolutize_uv_cache_dir)
     _uv_marker_dir="$STUDIO_HOME/cache"
     _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
     _uv_marker_value="$UV_CACHE_DIR"
@@ -726,8 +729,15 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
+    # A relative cache-dir from uv.toml / UV_CONFIG_FILE comes back verbatim, and uv resolves
+    # it against ITS working directory, which UV_WORKING_DIR moves. Scanning it as written
+    # inspects a same-named directory beside the installer instead.
+    if [ -n "$_uv_default_cache" ]; then
+        _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
+    fi
 
     _uv_default_populated=false
+    _uv_default_writable=true
     _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
         # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
@@ -755,7 +765,23 @@ _configure_uv_cache() {
         done
     fi
 
+    # Readable is not usable: uv writes CACHEDIR.TAG into the cache root and aborts when it
+    # cannot ("Failed to initialize cache ... Permission denied"), so selecting a root-owned
+    # or read-only-mounted cache would fail an install that used to work. -w reads the mode
+    # rather than the filesystem, so probe with a real create as the early block does; mktemp
+    # because a predictable name in another account's directory can be a planted symlink.
     if [ "$_uv_default_populated" = true ]; then
+        _uv_shared_probe=$(mktemp "$_uv_default_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+            || _uv_shared_probe=""
+        if [ -z "$_uv_shared_probe" ]; then
+            _uv_default_writable=false
+        else
+            rm -f "$_uv_shared_probe" 2>/dev/null || true
+        fi
+        unset _uv_shared_probe
+    fi
+
+    if [ "$_uv_default_populated" = true ] && [ "$_uv_default_writable" = true ]; then
         UV_CACHE_DIR="$_uv_default_cache"
         _UV_CACHE_MODE=shared
     else
@@ -770,7 +796,9 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            if [ "$_uv_scan_blocked" = true ]; then
+            if [ "$_uv_default_writable" = false ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
+            elif [ "$_uv_scan_blocked" = true ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"

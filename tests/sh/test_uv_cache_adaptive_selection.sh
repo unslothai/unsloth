@@ -26,6 +26,8 @@
 #   * caller-set UV_CACHE_DIR            -> custom, left exactly as the caller wrote it
 #   * unset, uv's default is populated   -> shared, and the launch repoint becomes live
 #   * unset, uv's default is empty       -> studio
+#   * populated but not writable         -> studio; uv aborts on a cache it cannot init
+#   * a relative cache-dir               -> resolved against UV_WORKING_DIR before scanning
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
 set -e
@@ -47,6 +49,9 @@ awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/'
     "$INSTALL_SH" > "$_EARLY"
 awk '/^_configure_uv_cache\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN"
 awk '/^_prepare_studio_uv_cache_for_launch\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
+# Predates the fix too, so the relative-cache-dir case below runs against the old code and
+# fails on its assertion rather than on a missing function.
+awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then
     echo "FAIL: could not extract the early UV_CACHE_DIR block from install.sh"
@@ -60,7 +65,8 @@ fi
 _SH="${BASH:-/bin/bash}"
 
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
-# $4 = "true" to isolate. Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
+# $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
+# resolved against the wrong base is visible). Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
 _run() {
     _stub_bin=$(mktemp -d)
     printf '#!/bin/sh\ncase "$1 $2" in "cache dir") printf "%%s\\n" "%s" ;; esac\n' \
@@ -70,6 +76,11 @@ _run() {
         STUDIO_HOME='$1'
         _ISOLATE_UV_CACHE='${4:-false}'
         if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
+        if [ -n '${5:-}' ]; then
+            UV_WORKING_DIR='${5:-}'; export UV_WORKING_DIR; cd '$_TMP/cwd'
+        else
+            unset UV_WORKING_DIR
+        fi
         # Stubs for the surface _configure_uv_cache leans on, and nothing more: the point is to
         # run the real selection, not a paraphrase of it.
         step() { :; }
@@ -103,6 +114,18 @@ mkdir -p "$_metadata_only/wheels-v1"
 : > "$_metadata_only/wheels-v1/index.msgpack"
 _empty="$_TMP/uvempty"
 mkdir -p "$_empty"
+# Populated and readable, but uv cannot rewrite CACHEDIR.TAG in it. Only the root is closed,
+# so the scan still walks the buckets and reads it as warm -- which is the whole point.
+_readonly="$_TMP/uvro"
+mkdir -p "$_readonly/archive-v0/torch"
+: > "$_readonly/archive-v0/torch/libtorch.so"
+chmod a-w "$_readonly"
+# uv prints a relative cache-dir from uv.toml verbatim and resolves it against UV_WORKING_DIR,
+# so a same-named decoy beside the installer must not be what gets scanned.
+mkdir -p "$_TMP/cwd/relcache/archive-v0/decoy"
+: > "$_TMP/cwd/relcache/archive-v0/decoy/other.so"
+mkdir -p "$_TMP/work/relcache/archive-v0/torch"
+: > "$_TMP/work/relcache/archive-v0/torch/libtorch.so"
 
 echo "=== the installer's own default does NOT count as a caller override ==="
 # This is the regression. Before the fix the mode here was `custom` and the two lines below
@@ -120,6 +143,26 @@ assert_eq "no launch repoint in studio"  "$_TMP/b/cache/uv" "$(echo "$_out" | cu
 
 _out=$(_run "$_TMP/e" '' "$_metadata_only")
 assert_eq "metadata-only is not warm"    "studio" "$(echo "$_out" | cut -d' ' -f1)"
+
+echo "=== a populated cache we cannot WRITE is not a cache we can use ==="
+# Readable was the only thing the scan tested, so this cache got exported and uv then died on
+# `Failed to initialize cache ... Permission denied` -- an install that used to work.
+if [ "$(id -u)" = "0" ]; then
+    echo "  SKIP: unwritable-cache case (root writes through the mode bits)"
+else
+    _out=$(_run "$_TMP/f" '' "$_readonly")
+    assert_eq "unwritable default -> studio"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    assert_eq "and the Studio cache is used"  "$_TMP/f/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+fi
+chmod u+w "$_readonly"
+# The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
+_run "$_TMP/g" '' "$_populated" >/dev/null
+assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"
+
+echo "=== a relative cache-dir resolves against UV_WORKING_DIR, not the installer's cwd ==="
+_out=$(_run "$_TMP/h" '' "relcache" false "$_TMP/work")
+assert_eq "relative default is still warm" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "resolved against UV_WORKING_DIR" "$_TMP/work/relcache" "$(echo "$_out" | cut -d' ' -f2)"
 
 echo "=== a CALLER's UV_CACHE_DIR still outranks the selection, untouched ==="
 _out=$(_run "$_TMP/c" "$_TMP/mine" "$_populated")
