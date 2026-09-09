@@ -13,6 +13,12 @@
       "_GenerationThreadError": {
         "kind": "class"
       },
+      "_hf_token_for_loader": {
+        "kind": "def"
+      },
+      "_prompt_already_has_bos": {
+        "kind": "def"
+      },
       "get_inference_backend": {
         "kind": "def"
       },
@@ -27,6 +33,9 @@
   "core.inference.llama_cpp": {
     "symbols": {
       "CountAborted": {
+        "kind": "class"
+      },
+      "GgufDownloadCancelled": {
         "kind": "class"
       },
       "GgufLoadIntent": {
@@ -65,7 +74,13 @@
       "_BIG_ENDIAN_GGUF_FILENAME_RE": {
         "kind": "assign"
       },
+      "_BLOCKQUOTE_PREFIX": {
+        "kind": "assign"
+      },
       "_BOOTSTRAP_SWA_DEFAULTS": {
+        "kind": "assign"
+      },
+      "_BRACKET_THINK_OPEN_RE": {
         "kind": "assign"
       },
       "_CANONICAL_SPEC_MODES": {
@@ -75,6 +90,12 @@
         "kind": "assign"
       },
       "_CHAT_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_CLOSED_CODE_FENCE": {
+        "kind": "assign"
+      },
+      "_CLOSED_MARKUP_ARTIFACT": {
         "kind": "assign"
       },
       "_CONTINUE_AFTER_LENGTH_STATUS": {
@@ -101,6 +122,12 @@
       "_CTX_FIT_VRAM_FRACTION": {
         "kind": "assign"
       },
+      "_CombinedCancelEvent": {
+        "kind": "class"
+      },
+      "_CompactionBranchState": {
+        "kind": "class"
+      },
       "_CpuFallbackRuntime": {
         "kind": "class"
       },
@@ -122,6 +149,9 @@
       "_DEVICE_ROW_RE": {
         "kind": "assign"
       },
+      "_DOCTYPE_PREFIX": {
+        "kind": "assign"
+      },
       "_DRAFTER_DIR_KINDS": {
         "kind": "assign"
       },
@@ -134,10 +164,19 @@
       "_DRAFT_GPU_LAYER_FLAGS": {
         "kind": "assign"
       },
+      "_EMPTY_MARKUP_SKELETON": {
+        "kind": "assign"
+      },
       "_FAILURE_QUOTE_CHARS": {
         "kind": "assign"
       },
       "_FAILURE_SCAN_TAIL_CHARS": {
+        "kind": "assign"
+      },
+      "_FENCE_INFO_STRING_RE": {
+        "kind": "assign"
+      },
+      "_FENCE_RUN_RE": {
         "kind": "assign"
       },
       "_FINAL_ANSWER_SIGNAL": {
@@ -155,6 +194,9 @@
       "_GEMMA_MTP_FAMILY_RE": {
         "kind": "assign"
       },
+      "_GENERATION_CPU_AFFINITY_FLAGS": {
+        "kind": "assign"
+      },
       "_GGML_GPU_BACKEND_RE": {
         "kind": "assign"
       },
@@ -162,6 +204,15 @@
         "kind": "assign"
       },
       "_GGUF_KNOWN_QUANT_RE": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_LOCK": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_MAX": {
         "kind": "assign"
       },
       "_GGUF_REHEARSAL_ARGS_RE": {
@@ -173,10 +224,16 @@
       "_GPU_DEVICE_PREFIXES": {
         "kind": "assign"
       },
+      "_GPU_MODEL_BUFFER_RE": {
+        "kind": "assign"
+      },
       "_GPU_OFFLOAD_MARKERS": {
         "kind": "assign"
       },
       "_GPU_OFFLOAD_OVERRIDE_FLAGS": {
+        "kind": "assign"
+      },
+      "_HAS_ANSWER_ARTIFACT": {
         "kind": "assign"
       },
       "_HF_DRAFT_FLAGS": {
@@ -200,6 +257,9 @@
       "_LEGACY_SPEC_MODE_MAP": {
         "kind": "assign"
       },
+      "_LIST_MARKER_ONLY": {
+        "kind": "assign"
+      },
       "_LLAMA_ARG_AUTO_VALUES": {
         "kind": "assign"
       },
@@ -215,7 +275,13 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LLAMA_FIT_MIN_CTX": {
+        "kind": "assign"
+      },
       "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
+        "kind": "assign"
+      },
+      "_LLAMA_RANDOM_SEED": {
         "kind": "assign"
       },
       "_LOADS_IN_FLIGHT": {
@@ -245,6 +311,9 @@
       "_MISS": {
         "kind": "assign"
       },
+      "_MLA_MTP_FAST_ARCHS": {
+        "kind": "assign"
+      },
       "_MMPROJ_OFFLOAD_ENV_VAR": {
         "kind": "assign"
       },
@@ -257,13 +326,25 @@
       "_MTP_MIN_SIZE_B": {
         "kind": "assign"
       },
+      "_MTP_SHARD_SUFFIX_RE": {
+        "kind": "assign"
+      },
       "_MTP_VRAM_RESERVE_FRAC": {
         "kind": "assign"
       },
       "_OFFLOADED_LAYERS_RE": {
         "kind": "assign"
       },
+      "_ONE_QUOTE_MARKER": {
+        "kind": "assign"
+      },
       "_OVERRIDE_TENSOR_FLAGS": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_NOTE": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE": {
         "kind": "assign"
       },
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
@@ -332,6 +413,12 @@
       "_TEXT_TOOL_REHEARSAL_RE": {
         "kind": "assign"
       },
+      "_THINKING_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_THINK_OPEN_RE": {
+        "kind": "assign"
+      },
       "_THREAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
@@ -339,6 +426,9 @@
         "kind": "assign"
       },
       "_UNRECOVERABLE_LOCAL_ERRNOS": {
+        "kind": "assign"
+      },
+      "_UNSET": {
         "kind": "assign"
       },
       "_VALID_CACHE_TYPES": {
@@ -356,6 +446,9 @@
       "_WINDOW_NOTICE_MARKER": {
         "kind": "assign"
       },
+      "_ZERO_ROOM_MARKER": {
+        "kind": "assign"
+      },
       "_accumulated_spec_types": {
         "kind": "def"
       },
@@ -368,10 +461,25 @@
       "_apply_igpu_host_reserve_mib": {
         "kind": "def"
       },
+      "_apply_seeded_llama_request": {
+        "kind": "def"
+      },
       "_arch_aliases": {
         "kind": "def"
       },
+      "_arch_has_fast_mla_mtp": {
+        "kind": "def"
+      },
+      "_arch_mtp_skips_target_kv_copy": {
+        "kind": "def"
+      },
       "_archive_and_recall": {
+        "kind": "def"
+      },
+      "_archive_as_wire": {
+        "kind": "def"
+      },
+      "_archive_branch_chain": {
         "kind": "def"
       },
       "_archive_branch_transcript": {
@@ -389,6 +497,12 @@
       "_args_place_tensors_on_cpu": {
         "kind": "def"
       },
+      "_argv_keeps_projector_on_gpu": {
+        "kind": "def"
+      },
+      "_artifact_spans": {
+        "kind": "def"
+      },
       "_auto_mode_drops_mtp": {
         "kind": "def"
       },
@@ -396,6 +510,9 @@
         "kind": "def"
       },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_boundary_metadata": {
         "kind": "def"
       },
       "_branch_boundary": {
@@ -446,6 +563,12 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
+      "_compaction_branch_states": {
+        "kind": "def"
+      },
+      "_compaction_fit_kwargs": {
+        "kind": "def"
+      },
       "_companion_snapshot_sibling": {
         "kind": "def"
       },
@@ -468,6 +591,9 @@
         "kind": "def"
       },
       "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_effective_headroom_ratio": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -578,6 +704,12 @@
       "_finalize_reasoning_only_cumulative": {
         "kind": "def"
       },
+      "_find_outside_artifacts": {
+        "kind": "def"
+      },
+      "_first_real_artifact": {
+        "kind": "def"
+      },
       "_fit_context": {
         "kind": "def"
       },
@@ -603,6 +735,15 @@
         "kind": "def"
       },
       "_gguf_snapshot_files": {
+        "kind": "def"
+      },
+      "_has_answer_artifact": {
+        "kind": "def"
+      },
+      "_has_unclosed_code_fence": {
+        "kind": "def"
+      },
+      "_has_unclosed_markup_block": {
         "kind": "def"
       },
       "_held_rehearsal_tail_len": {
@@ -635,10 +776,16 @@
       "_hub_download_in_flight": {
         "kind": "def"
       },
+      "_idle_slot_clearing_active": {
+        "kind": "def"
+      },
       "_inject_recall": {
         "kind": "def"
       },
       "_is_big_endian_gguf_path": {
+        "kind": "def"
+      },
+      "_is_blank_fence": {
         "kind": "def"
       },
       "_is_companion_gguf_path": {
@@ -648,6 +795,9 @@
         "kind": "def"
       },
       "_is_dspark_drafter_path": {
+        "kind": "def"
+      },
+      "_is_empty_markup_skeleton": {
         "kind": "def"
       },
       "_is_external_link": {
@@ -669,6 +819,9 @@
         "kind": "def"
       },
       "_is_positive_int": {
+        "kind": "def"
+      },
+      "_is_published_mtp_drafter_name": {
         "kind": "def"
       },
       "_is_rehearsal_prefix": {
@@ -698,6 +851,9 @@
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
+      "_linux_math_core_count": {
+        "kind": "def"
+      },
       "_llama_lib_dir": {
         "kind": "def"
       },
@@ -710,6 +866,9 @@
       "_memory_tool_withheld": {
         "kind": "def"
       },
+      "_metal_capable_host": {
+        "kind": "def"
+      },
       "_metal_device_is_paravirtual": {
         "kind": "def"
       },
@@ -719,10 +878,16 @@
       "_mmproj_env_is_audio_only": {
         "kind": "def"
       },
+      "_mtp_head_borrows": {
+        "kind": "def"
+      },
       "_native_linux_system_rocm_lib_dirs": {
         "kind": "def"
       },
       "_normalized_load_mode": {
+        "kind": "def"
+      },
+      "_note_gguf_metadata_read": {
         "kind": "def"
       },
       "_pad_kv_cells": {
@@ -755,6 +920,9 @@
       "_pick_mtp": {
         "kind": "def"
       },
+      "_pick_mtp_root_only": {
+        "kind": "def"
+      },
       "_pipeline_parallel_disabled_by_args": {
         "kind": "def"
       },
@@ -785,6 +953,9 @@
       "_report_live_llama_timings": {
         "kind": "def"
       },
+      "_request_uses_checkpoint": {
+        "kind": "def"
+      },
       "_resolve_llama_binary": {
         "kind": "def"
       },
@@ -805,6 +976,12 @@
       },
       "_retrieval_budget": {
         "kind": "assign"
+      },
+      "_row_ended_early": {
+        "kind": "def"
+      },
+      "_row_replayed": {
+        "kind": "def"
       },
       "_save_swa_cache": {
         "kind": "def"
@@ -836,13 +1013,22 @@
       "_source_declares_option": {
         "kind": "def"
       },
+      "_spilled_decode_threads": {
+        "kind": "def"
+      },
       "_split_mode_confines_to_one_device": {
         "kind": "def"
       },
       "_sticky_compaction_boundary": {
         "kind": "def"
       },
+      "_sticky_compaction_state": {
+        "kind": "def"
+      },
       "_strip_flag_pairs": {
+        "kind": "def"
+      },
+      "_strip_markup_outside_fences": {
         "kind": "def"
       },
       "_subsequence_index": {
@@ -861,6 +1047,9 @@
         "kind": "def"
       },
       "_sweep_abandoned_cpu_runtimes": {
+        "kind": "def"
+      },
+      "_text_outside_think": {
         "kind": "def"
       },
       "_vram_reserve_floor_mib": {
@@ -957,6 +1146,9 @@
       "_coerce_arguments_with_provenance": {
         "kind": "def"
       },
+      "_dense_message_tokens": {
+        "kind": "def"
+      },
       "_detect_render_html_tool_start": {
         "kind": "def"
       },
@@ -985,6 +1177,9 @@
         "kind": "def"
       },
       "_search_images_kwargs": {
+        "kind": "def"
+      },
+      "_spent_prompt_tokens": {
         "kind": "def"
       },
       "_status_for_tool": {
@@ -1670,6 +1865,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str"
+      },
+      "admission_room_refused_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": ""
       },
       "continue_after_length_message": {
         "decorators": [],
