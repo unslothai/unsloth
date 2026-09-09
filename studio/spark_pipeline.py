@@ -1733,9 +1733,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if tied_problem:
         raise SystemExit(tied_problem)
-    save_problem = full_finetune_save_problem(
-        bool(args.full_finetune), args.save or "", world
-    )
+    save_problem = full_finetune_save_problem(bool(args.full_finetune), args.save or "", world)
     if save_problem:
         raise SystemExit(save_problem)
 
