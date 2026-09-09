@@ -1792,27 +1792,52 @@ def test_no_policy_answers_without_spawning_a_probe(script: str):
     assert _lines(result, "CALLS:") == ["CALLS:0"]
 
 
+# The runtime test below catches this by executing it, but only on a host where emit
+# succeeds. This one is the invariant itself, and it is the one a future edit trips: adding
+# a single double quote to the probe body is enough, and nothing about the resulting failure
+# points back at the quote.
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_the_probe_body_carries_no_double_quote(script: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    body = re.search(r"\$probe = @'\n(.*?)\n'@", source, flags = re.DOTALL)
+    assert body is not None, "the probe here-string is gone"
+    assert '"' not in body.group(1), (
+        "the emit probe body gained a double quote. Windows PowerShell 5.1 appends a native "
+        "argument verbatim inside its own double quotes, so the first one here closes the "
+        "wrapper and the child runs something else entirely, silently answering no."
+    )
+
+
+# Legacy is not a curiosity: it is how Windows PowerShell 5.1 ALWAYS binds a native
+# command's arguments, and 5.1 is the interpreter studio/src-tauri/src/install.rs spawns.
+# It wraps the value in quotes and appends the body verbatim without escaping the quotes
+# inside it, so a probe passed with -Command arrives as
+# `if (UnslothStudioEmitProbe -as [type])`, a command lookup that throws into the probe's
+# own catch and answers "no emit here" on every 5.1 host. pwsh can be put into that exact
+# binder with $PSNativeCommandArgumentPassing, so the case is reachable from Linux.
 @requires_pwsh
 @pytest.mark.parametrize("script", ["install", "setup"])
-def test_the_child_probe_answers_for_real_on_this_host(script: str):
-    """Not a stub: the real probe, spawning a real interpreter. It looks for the host under
-    $PSHOME by its Windows leaf name, so on Linux it correctly finds nothing and refuses,
-    which is the fail-safe direction. What this pins is that it returns a boolean and does
-    not throw, since the gate calls it under ErrorActionPreference Stop.
-    """
+@pytest.mark.parametrize("binding", ["Legacy", "Standard"])
+def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     result = _run_powershell(
         "\n".join(
             [
                 '$ErrorActionPreference = "Stop"',
+                f'$PSNativeCommandArgumentPassing = "{binding}"',
                 _one_function(source, "Test-StudioEmitInChildProcess"),
-                '$answer = Test-StudioEmitInChildProcess',
+                "$answer = Test-StudioEmitInChildProcess",
                 'Write-Output "TYPE:$($answer.GetType().Name)"',
+                'Write-Output "ANSWER:$answer"',
             ]
         )
     )
     assert result.returncode == 0, result.stderr
+    # Boolean either way, since the gate calls this under ErrorActionPreference Stop.
     assert _lines(result, "TYPE:") == ["TYPE:Boolean"]
+    # And True either way: emit works on this host, and the binder must not be able to
+    # turn a working host into a refusal.
+    assert _lines(result, "ANSWER:") == ["ANSWER:True"]
 
 
 @requires_pwsh

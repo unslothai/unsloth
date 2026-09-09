@@ -1636,31 +1636,47 @@ function Test-StudioCanDefineNativeTypes {
 function Test-StudioEmitInChildProcess {
     $probe = @'
 try {
-    $name = New-Object System.Reflection.AssemblyName "UnslothStudioEmitProbe"
+    $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
     $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
     $assembly = $null
     try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
     catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
-    $module = $assembly.DefineDynamicModule("UnslothStudioEmitProbe")
-    $builder = $module.DefineType("UnslothStudioEmitProbe", "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
-    $null = $builder.DefinePInvokeMethod("CloseHandle", "kernel32.dll", "CloseHandle",
-        "Public, Static, HideBySig, PinvokeImpl",
+    $module = $assembly.DefineDynamicModule('UnslothStudioEmitProbe')
+    $builder = $module.DefineType('UnslothStudioEmitProbe', 'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
+    $null = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
+        'Public, Static, HideBySig, PinvokeImpl',
         [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
         [System.Runtime.InteropServices.CallingConvention]::Winapi,
         [System.Runtime.InteropServices.CharSet]::Ansi)
     $null = $builder.CreateType()
-    if ("UnslothStudioEmitProbe" -as [type]) { Write-Output "STUDIO_EMIT_OK" }
+    if ('UnslothStudioEmitProbe' -as [type]) { Write-Output 'STUDIO_EMIT_OK' }
 } catch {}
 '@
     # This host, not a guessed one: a 5.1 answer does not carry to pwsh or the other way.
     $hostExe = $null
     try {
-        $leaf = if ($PSVersionTable.PSEdition -eq "Core") { "pwsh.exe" } else { "powershell.exe" }
-        $candidate = Join-Path $PSHOME $leaf
-        if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate }
+        $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
+                  else { @("powershell.exe", "powershell") }
+        foreach ($leaf in $leaves) {
+            $candidate = Join-Path $PSHOME $leaf
+            if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
+        }
     } catch {}
     if (-not $hostExe) { return $false }
     try {
+    # SINGLE quotes throughout, and that is load-bearing rather than style. Windows
+    # PowerShell 5.1 binds a native command's arguments the legacy way: it wraps the
+    # value in double quotes and appends the body verbatim, without escaping the double
+    # quotes inside it. The first one inside therefore CLOSES the wrapper, the rest of
+    # the probe is re-split on whitespace, and the child runs
+    # `if (UnslothStudioEmitProbe -as [type])`, a command lookup that throws into the
+    # probe's own catch. The answer would be "no emit here" on every 5.1 host, which is
+    # the interpreter studio/src-tauri/src/install.rs spawns. A body with no double
+    # quote has nothing to lose. Passing the body base64-encoded also fixes it
+    # and is what the documentation suggests, but base64 PowerShell is the shape
+    # this whole change exists to stop resembling, and
+    # tests/studio/test_installer_av_shapes.py rejects it. Verified both ways
+        # with $PSNativeCommandArgumentPassing.
         $out = & $hostExe -NoProfile -NonInteractive -Command $probe 2>$null
         return (($out | Out-String) -match "STUDIO_EMIT_OK")
     } catch {
