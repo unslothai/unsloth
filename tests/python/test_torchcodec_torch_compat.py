@@ -274,6 +274,41 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_select_torchcodec_spec_skips_older_torch():
+    ips = _load_install_python_stack()
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):
+        for suffix in (".0", ".1+cu121", ".0+cpu", ".0rc1"):
+            assert ips._select_torchcodec_spec(f"2.{minor}{suffix}") is None
+
+
+@pytest.mark.parametrize("version", ["2.3.0", "2.4.0+cu121"])
+def test_torchcodec_step_skips_older_torch(version):
+    from textwrap import dedent
+    from unittest.mock import Mock
+
+    ips = _load_install_python_stack()
+    namespace = vars(ips).copy()
+    namespace.update(
+        NO_TORCH = False,
+        PLATFORM_LACKS_TORCHCODEC_WHEEL = False,
+        _probe_installed_torch_version = lambda: version,
+        _progress = Mock(),
+        _note = Mock(),
+        _torchcodec_spec_is_installable = Mock(side_effect = AssertionError("must skip")),
+        pip_install_try = Mock(side_effect = AssertionError("must not install")),
+    )
+    source = Path(ips.__file__).read_text(encoding = "utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    exec(dedent(step[step.index("    _codec_torch_ver = None") :]), namespace)
+    namespace["_progress"].assert_called_once_with(
+        "torchcodec (skipped, unsupported torch version)"
+    )
+    namespace["_note"].assert_called_once_with(
+        f"torch {version} is below the oldest supported torchcodec pairing "
+        f"(torch 2.{ips._TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving torchcodec alone"
+    )
+
+
 def test_select_torchcodec_spec_matches_pyproject_audio_extras():
     """The installer's specs and the pip extras must not drift apart."""
     ips = _load_install_python_stack()
@@ -297,7 +332,7 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
 # `2.6: {0.2, 0.3}` and `2.5: {0.1, 0.2}` survived: upstream pairs 0.3 with torch 2.7 and 0.2
 # with torch 2.6, so the installer's window picked a release built against the NEXT torch.
 # torch 2.4 -> 0.0.3 is deliberately omitted below: the installer floors at 2.5 and returns
-# _TORCHCODEC_DEFAULT_SPEC underneath it.
+# None underneath it.
 _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -700,7 +735,7 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
     ips = _load_install_python_stack()
     probes = [f"0.{n}.0" for n in range(0, 20)]
 
-    for minor in range(5, 15):  # torch 2.5 .. 2.14, i.e. past the last lockstep row
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
         torch_v = f"2.{minor}.0"
         specifier = SpecifierSet(ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1])
         admitted = [p for p in probes if specifier.contains(p)]
@@ -827,7 +862,7 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
     ips = _load_install_python_stack()
     for label in _SIM_HOSTS:
         for python in ((3, 9), (3, 10), (3, 12), (3, 13), (3, 14)):
-            for minor in range(4, 15):
+            for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
                 _patch_host(ips, monkeypatch, label)
                 monkeypatch.setattr(ips.sys, "version_info", python + (0, "final", 0))
                 spec = ips._select_torchcodec_spec(f"2.{minor}.0")
@@ -1199,7 +1234,7 @@ def test_a_cuda_index_codec_also_installs_npp():
     dependency set, so a --no-deps install from a cuNNN index reports success and then fails
     to import. docker/Dockerfile installs nvidia-npp-cu12 beside the same wheel."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    assert 'f"nvidia-npp-cu{_npp_major}"' in source
+    assert '_npp_spec = _npp_requirement(_npp_major) if _npp_major else ""' in source
     assert "Installing torchcodec CUDA runtime (NPP)" in source
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
@@ -1218,6 +1253,77 @@ def test_a_cuda_index_codec_also_installs_npp():
     # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
+
+
+def test_cuda_13_asks_for_the_unsuffixed_npp():
+    """`nvidia-npp-cu13` is a wheel-less stub, so asking for it builds from source (or takes a
+    1.1 kB placeholder under --only-binary); plain `nvidia-npp` is the 13.x runtime."""
+    from studio.install_python_stack import _npp_requirement
+
+    assert _npp_requirement("11") == "nvidia-npp-cu11"
+    assert _npp_requirement("12") == "nvidia-npp-cu12"
+    assert _npp_requirement("13") == "nvidia-npp>=13,<14"
+    assert _npp_requirement("14") == "nvidia-npp>=14,<15"
+    assert not any(
+        _npp_requirement(str(major)).startswith("nvidia-npp-cu13") for major in range(11, 20)
+    )
+    assert _npp_requirement("not-a-major") == "nvidia-npp-cunot-a-major"
+
+
+def test_the_npp_rename_is_per_package_not_a_rule_about_13():
+    """ "13 means no suffix" is WRONG: NCCL and cuDNN kept theirs, and their unsuffixed names
+    resolve to "A fake package to warn the user they are not installing the correct package".
+    Hence a named constant with the counterexamples beside it, not a bare 13."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert "_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12" in source
+    assert "nvidia-cudnn" in source and "nvidia-nccl" in source
+
+
+def test_the_unsuffixed_request_is_bounded_to_the_major():
+    """`nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, which an unbounded
+    resolve behind an exclude-newer cutoff or a partial mirror can select."""
+    from studio.install_python_stack import _npp_requirement
+    for major in ("13", "14", "15"):
+        spec = _npp_requirement(major)
+        assert spec.startswith(f"nvidia-npp>={major}"), spec
+        assert spec != "nvidia-npp", "a bare name can resolve to the 0.0.0a0 placeholder"
+        # Upper bound too, so a cu14 host cannot take a 13 runtime or the reverse.
+        assert f",<{int(major) + 1}" in spec, spec
+
+
+def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
+    """`isdigit()` accepts more than `int()` does, and both gaps land here: the superscripts
+    raise ValueError out of an OPTIONAL dependency, and the non-ASCII decimal digits pass
+    `int()` but emit a non-PEP-440 `>=١٣`. The latter is reachable, since `_cuda_major_for_npp`
+    matches with a str pattern where `\\d` is every Unicode decimal digit."""
+    from studio.install_python_stack import _npp_requirement
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert (
+        'if not re.fullmatch(r"[0-9]+", cuda_major):' in source
+    ), "the major check must be an explicit ASCII digit match, not str.isdigit()"
+
+    # int()-hostile: must degrade, never raise.
+    for major in ("²", "³", "⁵"):
+        assert major.isdigit(), "fixture is only meaningful if isdigit() accepts it"
+        assert _npp_requirement(major) == f"nvidia-npp-cu{major}"
+
+    # PEP 440-hostile: int()-able, so only an ASCII check keeps them out of a version bound.
+    for major in ("١٣", "۱۳", "१३"):
+        assert major.isdigit() and int(major) == 13
+        spec = _npp_requirement(major)
+        assert not spec.startswith(
+            "nvidia-npp>="
+        ), f"{major!r} reached a PEP 440 version bound as {spec!r}"
+        assert spec == f"nvidia-npp-cu{major}"
+
+    # The real domain: a one or two character slice of an ASCII match. All of it must parse.
+    packaging_req = pytest.importorskip("packaging.requirements").Requirement
+    for major in [str(n) for n in range(0, 100)]:
+        packaging_req(_npp_requirement(major))
+
+    for major in ("", " ", "12.0", "-1", "+13", "13a", "1" * 64, "\U0001d7d9\U0001d7db"):
+        assert isinstance(_npp_requirement(major), str)
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():

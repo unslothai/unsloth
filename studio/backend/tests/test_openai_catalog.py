@@ -14,6 +14,7 @@ if str(_BACKEND) not in sys.path:
 
 import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
+import routes.models as models_mod
 
 
 class _Info:
@@ -202,7 +203,6 @@ def test_empty_and_errored_scans_are_cached(monkeypatch):
     # Cache validity is keyed on the timestamp, not list contents, so an empty
     # (fresh install / no local models) or errored scan is still cached for the
     # TTL instead of rescanning the filesystem on every /v1/models poll.
-    import routes.models as models_mod
     for outcome in ("empty", "error"):
         calls = {"n": 0}
 
@@ -227,7 +227,6 @@ def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
     # The cache timestamp must be taken AFTER the scan, not before it. A scan that
     # outlives the TTL would otherwise leave the cache born-expired, so the next
     # caller rescans instead of reusing the just-computed catalog.
-    import routes.models as models_mod
 
     clock = {"t": 1000.0}
     monkeypatch.setattr(inf.time, "monotonic", lambda: clock["t"])
@@ -276,8 +275,6 @@ def test_cached_local_catalog_offloads_and_caches(monkeypatch):
     def _fake_collect(_root):
         calls["scan"] += 1
         return [_Info("/data/models/A.gguf", "A")]
-
-    import routes.models as models_mod
 
     monkeypatch.setattr(models_mod, "collect_local_models", _fake_collect)
 

@@ -5,12 +5,11 @@
 // Its function is too large to call here, so the gated spreads are extracted and evaluated.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import ts from "typescript";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -27,10 +26,7 @@ const PARAMS = {
   presencePenalty: 0.3,
 };
 
-const source = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
+const source = readSrc("features/chat/api/chat-adapter.ts");
 const tree = ts.createSourceFile(
   "chat-adapter.ts",
   source,
@@ -140,10 +136,7 @@ test("an unknown provider stays on the OpenAI-compatible shape", () => {
 });
 
 test("the panel and the request read the same capability flags", () => {
-  const sheet = readFileSync(
-    new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
-    "utf8",
-  );
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
   // Gating the body on anything but these flags is how panel and request drifted apart.
   assert.match(sheet, /Boolean\(providerCapabilities\?\.minP\)/);
   assert.match(sheet, /Boolean\(providerCapabilities\?\.repetitionPenalty\)/);
