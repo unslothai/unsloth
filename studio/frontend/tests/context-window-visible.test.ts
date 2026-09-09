@@ -6,16 +6,17 @@
 // a build that fell back to 0 instead of null still passed every assertion.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-known.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
 const base = {
-  ggufContextLength: 32768,
+  loadedContextLength: 32768,
   modelLoading: false,
   isExternalModel: false,
   residentCheckpoint: RESIDENT as string | null | undefined,
@@ -30,14 +31,14 @@ test("a load in flight has no window to name", () => {
   assert.equal(hasKnownContextWindow({ ...base, modelLoading: true }), false);
 });
 
-// selecting an API model nulls ggufContextLength, so a stale length must be refused on its own
+// selecting an API model nulls loadedContextLength, so a stale length must be refused on its own
 test("an API model shows no window even with a stale length in the store", () => {
   assert.equal(hasKnownContextWindow({ ...base, isExternalModel: true }), false);
 });
 
 test("a non-GGUF local model has no window either", () => {
   assert.equal(
-    hasKnownContextWindow({ ...base, ggufContextLength: null }),
+    hasKnownContextWindow({ ...base, loadedContextLength: null }),
     false,
   );
 });
@@ -97,6 +98,31 @@ test("usage past the window clamps to 100 percent", () => {
   assert.equal(deriveContextUsageBar({ used: 40000, total: 32768 })?.percent, 100);
 });
 
+// llama.cpp stops at the window; MLX runs straight past it, so the advice differs, and
+// which side of the limit a chat is on cannot be read from the clamped percent
+test("the limit advice follows the backend and the unclamped ratio", () => {
+  const at = { used: 40000, total: 32768 };
+  assert.equal(deriveContextUsageBar(at)?.advice, "stops-at-limit");
+  // The MLX branches are about the ratio, so they state the bound they assume: an
+  // unconfirmed window advises on its own terms (see mlx-context-helpers).
+  assert.equal(
+    deriveContextUsageBar({ ...at, isMlx: true, contextEnforced: true })?.advice,
+    "mlx-past-limit",
+  );
+  assert.equal(
+    deriveContextUsageBar({
+      used: 30000,
+      total: 32768,
+      isMlx: true,
+      contextEnforced: true,
+    })?.advice,
+    "mlx-near-limit",
+  );
+  assert.equal(deriveContextUsageBar({ used: 4096, total: 32768 })?.advice, "none");
+  // no window and no count: nothing to advise against
+  assert.equal(deriveContextUsageBar({ used: 40000, total: null })?.advice, "none");
+});
+
 // external providers: usage is known, the window is not
 test("an unknown window shows a bare token count and no ratio", () => {
   const state = deriveContextUsageBar({ used: 4096, total: null });
@@ -120,10 +146,7 @@ test("an uncounted chat reports no per-turn rows", () => {
 });
 
 test("the header renders the bar on the window alone, with usage optional", () => {
-  const page = readFileSync(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = readSrc("features/chat/chat-page.tsx");
   assert.match(
     page,
     /view\.mode === "single" && \(contextUsage \|\| contextWindowKnown\)/,

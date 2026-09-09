@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The chat settings that describe one conversation rather than the installation: the composer
-// pills, the permission level, the retrieval controls and the sampling params. Editing one with
-// a chat open writes this snapshot onto the thread, and reopening that thread applies it back.
+// pills, the permission level, the retrieval controls and the sampling params. Editing one with a
+// chat open writes this snapshot onto the thread, and reopening that thread applies it back.
 
 import type {
   PermissionMode,
@@ -148,7 +148,7 @@ export function isThreadScopedSettingKey(
   return THREAD_SCOPED_SETTING_KEY_SET.has(key);
 }
 
-// derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
+// Derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
 // it globally would turn one chat's permission level into every other browser's default.
 const THREAD_DERIVED_SETTING_KEYS: ReadonlySet<string> = new Set([
   "confirmToolCalls",

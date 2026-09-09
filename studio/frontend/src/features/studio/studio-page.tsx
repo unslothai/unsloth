@@ -17,8 +17,12 @@ import {
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
-import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Image03Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -205,7 +209,7 @@ export function StudioPage(): ReactElement {
                     onClick={clearHistorySelection}
                     aria-label={t("studio.backToHistory")}
                   >
-                    <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                    <ChevronLeftIcon className="size-4" />
                   </Button>
                 )}
                 <TrainSubNav

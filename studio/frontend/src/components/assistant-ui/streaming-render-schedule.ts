@@ -69,9 +69,99 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+// Inside a block marked did not lex as code, the container markers and their indentation
+// have already been accounted for, so the label may sit behind any mix of them.
+// A block quote marker may be followed by nothing, but a list marker needs whitespace after
+// it or no list opens -- `-[label]:` is ordinary prose, not a bullet holding a definition.
+const LINK_DEFINITION_LINE_RE =
+  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// The two block shapes whose body is literal code: an opening fence, and an indent that
+// reaches column four -- four spaces, or a tab, which advances to the same column.
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
+// A backtick opener may not carry a backtick in its info string, or it is not a fence at all
+// and the line is ordinary prose -- which is where a reference can still be waiting. Tilde
+// openers have no such rule, so their info string is left alone.
+const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
+
+function isCodeBlock(block: string): boolean {
+  if (!CODE_BLOCK_RE.test(block)) {
+    return false;
+  }
+  const backtick = BACKTICK_OPENER_RE.exec(block);
+  return backtick === null || !backtick[1].includes("`");
+}
+const LINK_REFERENCE_RE =
+  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
+// Still the first line of a single block, for `updateLinkDefinitionParity` below.
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
+
+// One split per reply, shared by all three exported entry points. markdown-text.tsx asks for
+// the key and then hands `parseMarkdownIntoRenderableBlocks` to Streamdown, which calls it with
+// the same string, so a single slot is all the reuse this needs -- and it keeps the blocks path
+// paying for exactly the one split it already paid for before any of this existed.
+let splitMarkdown: string | null = null;
+let splitBlocks: readonly string[] = [];
+
+function blocksOf(markdown: string): readonly string[] {
+  if (splitMarkdown !== markdown) {
+    splitMarkdown = markdown;
+    splitBlocks = parseMarkdownIntoBlocks(markdown);
+  }
+  return splitBlocks;
+}
+
+// Which replies have to be lexed in one piece.
+//
+// marked keeps link reference definitions in one document-wide map and emits no token for a
+// label it has already seen, so a `[label][ref]` and its `[ref]: url` must reach the lexer
+// together or the reference survives as literal text. The question is therefore whether a real
+// definition exists outside code -- and the earlier answer, a hand-rolled scan for fences,
+// containers and raw HTML, kept disagreeing with marked at the seams: nested fences, the seven
+// HTML block shapes, list continuation indentation, lone-CR line endings.
+//
+// marked has already resolved every one of those by the time it hands back blocks, so the split
+// is the answer rather than something to re-derive. A fenced or indented block is code; anything
+// else is prose, and a definition line anywhere in the prose counts.
+//
+// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
+// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
+// `document` when blocks would have done only costs that reply its per-code-block Copy and
+// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
+// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+function documentProse(markdown: string): string | null {
+  if (!LINK_REFERENCE_RE.test(markdown) || !LINK_DEFINITION_RE.test(markdown)) {
+    return null;
+  }
+  const prose = blocksOf(markdown)
+    .filter((block) => !isCodeBlock(block))
+    .join("\n");
+  return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
+    ? prose
+    : null;
+}
+
+export function markdownRenderScope(markdown: string): "blocks" | "document" {
+  return documentProse(markdown) === null ? "blocks" : "document";
+}
+
+export function markdownRenderKey(markdown: string): string {
+  const prose = documentProse(markdown);
+  if (prose === null) {
+    return "blocks";
+  }
+  return `document:${prose
+    .split("\n")
+    .filter((line) => LINK_DEFINITION_LINE_RE.test(line))
+    .join("\n")}`;
+}
+
+export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
+  return markdownRenderScope(markdown) === "document"
+    ? [markdown]
+    : [...blocksOf(markdown)];
+}
 
 // Where remend believes the emphasis scan sits with respect to math.
 //
@@ -1155,7 +1245,7 @@ export class IncrementalMarkdownCache {
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
     ...this.committedBlocks,
-    ...parseMarkdownIntoBlocks(markdown),
+    ...parseMarkdownIntoRenderableBlocks(markdown),
   ];
 
   // Streamdown memoises the whole component on the Markdown string and ignores
@@ -1324,12 +1414,17 @@ export class IncrementalMarkdownCache {
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
-    // Streamdown deliberately turns a repaired document containing footnotes
-    // into one block so definitions can resolve references anywhere in the
-    // document. Such a construct is globally scoped and cannot retain a prefix.
+    // globally scoped definitions must stay in the same rendered document as
+    // their uses, so neither construct can retain an independently parsed prefix.
+    // Computed here rather than at the top of the method on purpose: both early returns above
+    // -- the coalescer handing the same text to several renders, and a reply already in
+    // full-document mode -- answer without it, and the precise scope costs a lex of everything
+    // received so far. Reaching this point means the reply is still a retention candidate,
+    // which is the only case where the answer is used.
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
-      FOOTNOTE_DEFINITION_RE.test(repaired)
+      FOOTNOTE_DEFINITION_RE.test(repaired) ||
+      markdownRenderScope(markdown) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }

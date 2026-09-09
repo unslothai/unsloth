@@ -2,19 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+
+const INDEX = readSrc("index.css");
 
 // The pinned top rows run an action rather than open a page, so neither may
 // mark itself active: nav rows paint one pill for both states, and an active
 // action row therefore sits there looking permanently hovered.
-
-async function sidebarSource(): Promise<string> {
-  return readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-}
 
 /** The props of the NavItem carrying `label`, from its tag to the next one. */
 function navItemFor(source: string, label: string): string {
@@ -25,27 +23,20 @@ function navItemFor(source: string, label: string): string {
 }
 
 test("New chat never marks itself active", async () => {
-  const row = navItemFor(await sidebarSource(), "shell.navigation.newChat");
+  const row = navItemFor(APP_SIDEBAR, "shell.navigation.newChat");
   assert.match(row, /active=\{false\}/);
 });
 
 test("Search never marks itself active either", async () => {
-  const row = navItemFor(
-    await sidebarSource(),
-    'label={t("shell.navigation.search")}',
-  );
+  const row = navItemFor(APP_SIDEBAR, 'label={t("shell.navigation.search")}');
   assert.match(row, /active=\{false\}/);
 });
 
 test("a nav row paints the same pill when active and when hovered", async () => {
   // The reason the rows above pass false. If active ever gets its own
   // background, that reason is gone and this can be revisited.
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
   const rule = /([^}]*)\{\s*background-color: var\(--nav-surface-hover\)/.exec(
-    css,
+    INDEX,
   );
   assert.ok(rule, "no rule paints a nav row with --nav-surface-hover");
   assert.match(rule[1], /\.sidebar-nav-btn:hover/);
@@ -53,7 +44,7 @@ test("a nav row paints the same pill when active and when hovered", async () => 
 });
 
 test("desktop branding clears the titlebar actions", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /shrink-0 p-0 pt-\[calc\(var\(--studio-desktop-titlebar-height,34px\)\+17px\)\]/,
@@ -61,43 +52,52 @@ test("desktop branding clears the titlebar actions", async () => {
 });
 
 test("desktop branding keeps an 11px gap above New chat", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[9px\]"/);
 });
 
 test("footer profile sits 11px above the sidebar edge", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /relative pb-\[11px\] group-data-\[collapsible=icon\]:px-0/,
   );
 });
 
-test("every sidebar row pill sits in one shared box", async () => {
+test("navigation rows align while the profile footer ignores the scroll rail", async () => {
   // A recent chat's pill has to match New Chat's. The rows inside the scroller
-  // lose the rail's width, so the rows outside add it back and both end on one
-  // edge; both pads match, so a pill sits the same distance from the scrollbar
-  // as from the near edge. Logical sides, since the rail moves under rtl.
-  const source = await sidebarSource();
+  // lose the rail's width, so New Chat adds it back and both end on one edge.
+  // The profile footer is unrelated to that list and must keep its full width
+  // when the scrollbar appears. Logical sides, since the rail moves under rtl.
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
   );
   assert.match(
     source,
-    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
+    /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
   );
-  // New Chat and the footer sit outside the scroller.
-  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
-  // Nav rows, pinned chats, Projects, Recents, training runs sit inside it.
-  assert.equal(source.match(/scrollRowPadding[,}]/g)?.length, 5);
+  // New Chat is the only outside row that aligns with the scroller's rail.
+  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
+  // Nav rows, pinned chats, Projects, Recents, and training runs sit inside the
+  // scroller; the footer is the sixth unrailed use outside it.
+  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
+
+  const footer = source
+    .split("<SidebarFooter")[1]
+    ?.split("</SidebarFooter>")[0];
+  assert.ok(footer, "no sidebar footer");
+  const footerProps = footer.split(">\n")[0];
+  assert.match(footerProps, /unrailedRowPadding/);
+  assert.doesNotMatch(footerProps, /var\(--sidebar-rail/);
   assert.equal(source.match(/"pl-2 pr-\[5px\]"/g), null);
 });
 
 test("the sidebar list measures its scroll rail", async () => {
   // 0 where scrollbars overlay, the platform's thin rail where they are
   // classic. Read off the scroller and written to the DOM: state loops (#185).
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /const rail = el\.offsetWidth - el\.clientWidth;[\s\S]*el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{rail\}px`,?\s*\)/,
@@ -125,46 +125,42 @@ test("the sidebar list measures its scroll rail", async () => {
     /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
   );
   // Writes a variable, never state: that pairing is what looped.
-  assert.equal(
-    /new ResizeObserver\([^)]*set[A-Z]/.test(source),
-    false,
-  );
+  assert.equal(/new ResizeObserver\([^)]*set[A-Z]/.test(source), false);
   // And only on a change, so it cannot re-trigger itself.
-  assert.match(
-    source,
-    /if \(rail === railWidthRef\.current\) return;/,
-  );
+  assert.match(source, /if \(rail === railWidthRef\.current\) return;/);
   // The fade stops at the rail too: the thumb ends its travel in that band.
   assert.match(
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
-  // No width override: the rail keeps the width the rest of the app uses, and
-  // hiding it outright is what took the scrollbar away.
-  assert.equal(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width/.test(css), false);
+  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // width override caused before.
+  const railWidthDecls = (
+    INDEX.match(
+      /\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g,
+    ) ?? []
+  ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
+  assert.deepEqual(railWidthDecls, ["auto"]);
+  assert.match(INDEX, /:root\.client-windows \.sidebar-scroll-fade,/);
   assert.equal(
-    /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(css),
+    /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,
   );
   // Thumb stays hidden until the list is hovered, as the other lists do.
-  assert.match(css, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
+  assert.match(INDEX, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
   // A mask covers the scrollbar, so the top fade keeps the rail column opaque.
   assert.match(
-    css,
+    INDEX,
     /mask-image: linear-gradient\(to bottom, transparent 0, #000 14px\),\s*linear-gradient\(to left, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
   );
   assert.match(
-    css,
+    INDEX,
     /\[dir="rtl"\] \.sidebar-scroll-fade\.is-scrolled \{[\s\S]*linear-gradient\(to right, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
   );
 });
 
 test("Tauri chat Recents label keeps its 2px shift", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,

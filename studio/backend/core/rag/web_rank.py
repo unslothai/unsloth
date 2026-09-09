@@ -95,10 +95,8 @@ def retrieve_web_chunks(
             )
             if not chunks:
                 continue
-            # The identity has to come from the encode that produced these vectors: a
-            # concurrent ST failure swaps the process embedder, and reading it after
-            # the fact would label this page with a space its vectors were never in,
-            # which the hybrid query below then searches instead of filtering out.
+            # The identity must come from the encode that produced these vectors: a concurrent ST failure
+            # swaps the process embedder, and reading it after the fact labels the page with the wrong space.
             vectors, identity = embeddings.encode_with_identity(
                 [chunk.text for chunk in chunks], model_name = model, normalize = True
             )

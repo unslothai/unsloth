@@ -5,10 +5,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 # Extract get_torch_index_url and its helper functions from install.sh.
 # Also replace the hardcoded /usr/bin/nvidia-smi fallback with a
 # controllable path so we can test the "no GPU" scenario on GPU machines.
@@ -46,6 +44,12 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_probe_arches()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_agreed_index_family()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -74,19 +78,17 @@ _FAKE_ROCM_DIR=$(mktemp -d)
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
+for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
+           _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
+           _detect_rocm_version_tag get_torch_index_url; do
+    if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
+        echo "FAIL: install.sh no longer defines $_fn() at column 0"
+        exit 1
+    fi
+done
+
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # Helper: create a mock nvidia-smi answering the version header, -L (so
 # _has_usable_nvidia_gpu sees a GPU) and --query-gpu=compute_cap. $1 is the CUDA version,
@@ -578,6 +580,4 @@ rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_FAKE_ROCM_DIR"
 rm -rf "$_TOOLS_DIR"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

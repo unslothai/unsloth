@@ -102,9 +102,11 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: vulkan
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
     return backend, gguf
 
 
@@ -3001,7 +3003,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
             },
         )()
 
-    def fake_health(timeout = None):
+    def fake_health(timeout = None, **_kw):
         launched = captured["cmds"][-1] if captured["cmds"] else []
         if "--mmproj" in launched:
             backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
@@ -3044,9 +3046,9 @@ def test_the_text_only_fallback_reprices_the_projector_it_dropped(tmp_path, monk
     assert "--mmproj" in captured["cmds"][0], captured["cmds"][0]
     assert "--mmproj" not in captured["cmds"][-1], captured["cmds"][-1]
     warning = backend.last_load_warning or ""
-    assert "unified-memory APU" not in warning, (
-        "the response still warns about a shortfall the resident model does not have: " f"{warning}"
-    )
+    assert (
+        "unified-memory APU" not in warning
+    ), f"the response still warns about a shortfall the resident model does not have: {warning}"
     if unmapped:
         # The one thing that IS still true of the running child.
         assert "memory mapping instead" in warning, warning
@@ -3229,7 +3231,7 @@ def _launch_with_vulkan_cpu_replay(
             },
         )()
 
-    def fake_health(timeout = None):
+    def fake_health(timeout = None, **_kw):
         if crash and not _is_cpu_replay(captured["cmds"][-1] if captured["cmds"] else []):
             backend._stdout_lines = ["ggml_vulkan: Device memory allocation failed"]
             return False
@@ -3265,10 +3267,9 @@ def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(tmp_p
     _launch_with_vulkan_cpu_replay(backend, gguf)
 
     warning = backend.last_load_warning or ""
-    assert "does not fit in GPU memory" in warning, (
-        "the CPU-only child pages the whole model from disk and says nothing about it: "
-        f"{warning!r}"
-    )
+    assert (
+        "does not fit in GPU memory" in warning
+    ), f"the CPU-only child pages the whole model from disk and says nothing about it: {warning!r}"
     assert "About 20 GB" in warning, warning
 
 

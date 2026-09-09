@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  audioPipelineTagFor,
+  nativeAudioCheckpointIsLoadable,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
@@ -116,13 +117,9 @@ import {
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
-const pickerSource = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/pickers.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const pickerSource = readSrc("features/model-picker/components/model-selector/pickers.tsx");
 
 test("fresh Hub pipeline metadata routes media picks before stale inventory", () => {
   assert.equal(
@@ -580,21 +577,28 @@ test("an unroutable speech pick is refused instead of loaded into chat", () => {
   );
 });
 
-test("a local Whisper checkpoint is not advertised as a routable ASR row", () => {
+test("fine-tuned audio rows receive only runnable pipeline tags", () => {
   // The STT sidecar's resolve_model_id takes a curated key or an owner/model Hub id, so a
   // filesystem path 422s. Routing one from the picker advertised a row that cannot load.
-  const source = readFileSync(
-    new URL(
-      "../src/features/model-picker/components/model-selector/pickers.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  assert.equal(audioPipelineTagFor("whisper", true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true), "text-to-speech");
+  // Native runtimes reject adapter-only checkpoints; merged exports remain runnable.
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, false), "text-to-speech");
   assert.match(
-    source,
-    /if \(audioType === "whisper"\)\s*\n?\s*return isLocalCheckpoint \? undefined : "automatic-speech-recognition";/,
+    pickerSource,
+    /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true, isLora\)/,
   );
-  assert.match(source, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
+});
+
+test("adapter-only native audio checkpoints are hidden from the runnable picker", () => {
+  assert.equal(nativeAudioCheckpointIsLoadable("moss_tts_local", "adapter"), false);
+  assert.equal(nativeAudioCheckpointIsLoadable("higgs_tts2", "merged"), true);
+  assert.equal(nativeAudioCheckpointIsLoadable("snac", "adapter"), true);
+  assert.match(
+    pickerSource,
+    /fineTunedRows[\s\S]*nativeAudioCheckpointIsLoadable\(m\.audioType, m\.exportType\)/,
+  );
 });
 
 test("an arch-tasked speech GGUF routes by detected codec", () => {
@@ -766,13 +770,7 @@ test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => 
   // GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM decoder. Calling
   // isTtsAudioType without the flag answered off the wider Transformers list and offered
   // a csm GGUF export that fails at load.
-  const source = readFileSync(
-    new URL(
-      "../src/features/audio/audio-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/audio/audio-page.tsx");
   assert.match(
     source,
     /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,

@@ -234,7 +234,7 @@ def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
             "npx fake-stdio-server", None, "take_screenshot", {}, scope = "s=p:t=thread1"
         )
     finally:
-        mcp_client.close_stdio_sessions()
+        mcp_client.close_mcp_sessions()
 
     assert seen["raise_on_error"] is False
     assert out.startswith("Error: boom")

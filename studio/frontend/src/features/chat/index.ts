@@ -165,6 +165,10 @@ export {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
+export {
+  planUserPromptQueueStop,
+  userStopTargetCancelMode,
+} from "./utils/prompt-queue-user-stop";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
@@ -215,7 +219,10 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
-export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "./utils/youtube-url";
 export {
   isSearchImagesToolResult,
   searchImagePath,

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate
+from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -289,10 +289,11 @@ def _is_application_control_block(error: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def _studio_runtime_launch_guard(*, inherited: bool = False):
+def _studio_runtime_launch_guard(*, inherited: bool = False, wait: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
         STUDIO_HOME,
         inherited = inherited,
+        wait = wait,
     )
     try:
         acquired = guard.__enter__()
@@ -334,16 +335,77 @@ def _stream_for_subprocess(stream):
 
 
 def _display_host_for_bind(run_mod, host: str) -> str:
-    return run_mod._resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    return run_mod._display_host_for_bind(host)
+
+
+def _network_share_host_for_bind(run_mod, host: str) -> str:
+    """Return the LAN-facing host, with a fallback for older backends."""
+    resolver = getattr(run_mod, "_network_share_host_for_bind", None)
+    if resolver is None:
+        return _display_host_for_bind(run_mod, host)
+    return resolver(host)
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    from unsloth_cli._tool_policy import wildcard_loopback_host
+    return wildcard_loopback_host(host) or "127.0.0.1"
+
+
+def _is_wildcard_bind(host: str) -> bool:
+    from unsloth_cli._tool_policy import is_wildcard_host
+    return is_wildcard_host(host)
+
+
+def _openable_host_for_bind(run_mod, host: str) -> str:
+    """The host for a URL we tell the user to open: the LAN address when one
+    resolves, else loopback. A wildcard bind with no LAN address (WSL NAT,
+    loopback-only) must never be printed as-is; no browser can open it."""
+    share_host = _network_share_host_for_bind(run_mod, host)
+    if _is_wildcard_bind(share_host):
+        return _loopback_bind_host_for(host)
+    return share_host
+
+
+def _require_bind_host(host: str) -> None:
+    if isinstance(host, str) and host.strip():
+        return
+    typer.echo(
+        "Error: --host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
+def _normalize_wildcard_bind_host(host: str) -> str:
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+    try:
+        return normalize_wildcard_bind_host(host)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(2) from None
+
+
+def _require_unambiguous_ephemeral_bind(host: str, port: int) -> None:
+    if port != 0:
+        return
+    from unsloth_cli._tool_policy import resolved_bind_address_count
+
+    if resolved_bind_address_count(host) <= 1:
+        return
+    typer.echo(
+        "Error: --port 0 cannot be used when --host resolves to multiple bind "
+        "addresses; choose an explicit port.",
+        err = True,
+    )
+    raise typer.Exit(2)
 
 
 def _url_host(host: str) -> str:
+    url_host = host.replace("%", "%25")
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{url_host}]"
+        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
+        else url_host
     )
 
 
@@ -632,13 +694,16 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
-def _install_state() -> dict:
+def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this install root.
 
     STUDIO_HOME is an extra search root so a CLI installed outside the managed
     venv still inspects the venv the desktop app launches.
     """
-    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
+    return _studio_deps.install_state(
+        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        deep = deep,
+    )
 
 
 _RUN_MODULE = None
@@ -820,17 +885,42 @@ def _find_frontend_dist() -> Optional[Path]:
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
+_direct_http_opener = None
 
-def _wait_for_server(port: int, timeout: int = 30) -> bool:
+
+def _direct_urlopen(request, timeout):
+    """Open a process-local URL without proxies or redirects."""
+    global _direct_http_opener
+
+    if _direct_http_opener is None:
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+                )
+
+        _direct_http_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        )
+    return _direct_http_opener.open(request, timeout = timeout)
+
+
+def _wait_for_server(
+    port: int,
+    timeout: int = 30,
+    request_host: str = "127.0.0.1",
+) -> bool:
     """Poll ``GET /api/health`` until the server responds 200 or *timeout* expires."""
     import urllib.request
     import urllib.error
 
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = f"http://{_url_host(request_host)}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout = 2) as resp:
+            with _direct_urlopen(url, timeout = 2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ConnectionError):
@@ -1080,20 +1170,80 @@ def _create_desktop_secret_in_cli() -> str:
         conn.close()
 
 
-def _should_prompt_password_change(
+def _launch_publishes_tunnel(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> bool:
-    """Whether this launch will expose Unsloth through the Cloudflare tunnel.
+    """Whether this launch will publish Unsloth through the Cloudflare tunnel.
 
-    CLI mirror of run.py's _cloudflare_tunnel_should_start, minus the Colab
-    case (Colab launches never come through this CLI path). --secure implies
-    the tunnel; --cloudflare only tunnels non-api-only wildcard binds.
+    CLI mirror of run.py's _cloudflare_tunnel_should_start, minus the Colab case
+    (Colab launches never come through this CLI path). --secure implies the
+    tunnel; --cloudflare only tunnels non-api-only wildcard binds.
+
+    Kept separate from the deliberately wider _should_prompt_password_change: the
+    guards keyed off THIS one exist because a headless tunnel launch strips
+    .bootstrap_password and could lock the admin out, and a raw wildcard bind
+    never strips, so widening them would add failure modes that protect nothing.
     """
     if secure:
         return True
     if cloudflare is not True:
         return False
-    return host in ("0.0.0.0", "::") and not api_only
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return is_wildcard_host(host) and not api_only
+
+
+def _bind_is_wildcard(host: str) -> bool:
+    """Whether this bind really is every interface, rather than one address.
+
+    Only used to word the prompt. `_launch_publishes_tunnel` already called
+    `is_wildcard_host` on this launch, so its getaddrinfo for a non-literal host
+    is not a new cost here.
+    """
+    from unsloth_cli._tool_policy import is_wildcard_host
+    return is_wildcard_host(host)
+
+
+def _should_prompt_password_change(
+    *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
+) -> bool:
+    """Whether this launch puts Unsloth where someone else can reach it.
+
+    CLI mirror of run.py's gate, minus the Colab case (Colab launches never come
+    through this CLI path). --secure implies the tunnel; --cloudflare only
+    tunnels non-api-only wildcard binds.
+
+    A raw non-loopback bind counts too, but only with a terminal attached. It is
+    reachable by the whole network (and the internet on a machine with a public
+    address) while starting no tunnel, so it previously got no prompt, no warning
+    and no strip: the seeded admin password stayed live and was served in the page.
+
+    is_external_host, NOT is_wildcard_host. The backend classifies exposure with
+    auth/bootstrap_timeout._is_exposed_bind, which counts anything that is not one
+    of the three loopback aliases; wildcard is a strict subset. The narrower test
+    meant `unsloth studio -H 192.168.1.50`, an ordinary LAN bind, skipped the
+    parent prompt and prompted in the re-exec'd child instead, and against an
+    OLDER studio-venv child (supported by the mixed-version path, and with no
+    backend gate) it prompted nowhere at all and served the seeded password. It is
+    also cheaper: a frozenset lookup rather than getaddrinfo.
+
+    The interactivity condition is what keeps this safe to ship. Everything
+    downstream is calibrated to publishing a public URL: it refuses to launch when
+    the deadline is disabled and it deletes .bootstrap_password, which would break
+    the long-running containers that are the common use of -H 0.0.0.0. Headless
+    raw binds therefore keep today's behaviour on the bootstrap deadline; only a
+    launch with a human present is asked to set a password.
+    """
+    if secure:
+        return True
+    if not host or api_only:
+        return False
+    from unsloth_cli._tool_policy import is_external_host, is_wildcard_host
+
+    if cloudflare is True and is_wildcard_host(host):
+        # A tunnel prompts regardless of the terminal; headless is handled downstream.
+        return True
+    return is_external_host(host) and _prompt_streams_interactive() and _prompt_owns_the_terminal()
 
 
 def _prompt_streams_interactive() -> bool:
@@ -1102,6 +1252,35 @@ def _prompt_streams_interactive() -> bool:
         return sys.stdin.isatty() and sys.stderr.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+# How long a raw-bind prompt waits for the FIRST keystroke before launching
+# anyway; once someone is typing there is no deadline. 30s because the launches
+# that reach here unwatched allocate a pty and never read it (`docker run -dt`,
+# `tmux new -d`, CI runners) and need to bind promptly: a longer stall can trip a
+# healthcheck into a restart loop, while 30s stays inside a default Docker
+# HEALTHCHECK start period and is ample for anyone actually watching. Mirrors run.py.
+_UNATTENDED_PROMPT_SECONDS = 30.0
+
+
+def _prompt_owns_the_terminal() -> bool:
+    """Whether this process may DRIVE the terminal, not merely see one.
+
+    A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
+    terminal so isatty() is True, but read_masked calls termios.tcsetattr and
+    POSIX SIGTTOUs a background process group that does; the default action stops
+    the process, freezing the launch instead of starting it -- the one thing
+    widening this gate to raw binds must not do. Only the raw-bind branch
+    consults this; a tunnel keeps failing closed rather than quietly proceeding.
+
+    True on any doubt (no job control, no controlling terminal, no fileno):
+    nothing can stop us there, so the isatty answer stands. Mirror of run.py's
+    _prompt_owns_the_terminal -- keep the two in sync.
+    """
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (AttributeError, OSError, ValueError):
+        return True
 
 
 def _bootstrap_deadline_active() -> bool:
@@ -1118,6 +1297,31 @@ def _bootstrap_deadline_active() -> bool:
         return int(raw) > 0
     except ValueError:
         return True
+
+
+# Set by the parent once it has put the prompt in front of this terminal and got
+# nothing, so the re-exec'd child does not repeat the wait.
+_UNATTENDED_PROMPT_DONE_ENV = "UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE"
+
+
+def _deadline_sentence() -> str:
+    """Say what will actually happen, not what usually happens.
+
+    UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the shutdown entirely, and this is
+    the sentence an operator acts on, so promising a deadline that will never arm
+    is worse than saying nothing.
+    """
+    if _bootstrap_deadline_active():
+        return (
+            "Unsloth shuts down after the bootstrap deadline "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
+            "is changed."
+        )
+    return (
+        "The bootstrap shutdown deadline is DISABLED for this launch "
+        "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it serving "
+        "that credential."
+    )
 
 
 def _generate_reset_password() -> str:
@@ -1302,7 +1506,7 @@ def _require_servable_frontend_or_exit(
     index.html) or the auto-resolved built dist. Returns `frontend` unchanged for
     non-public or --api-only launches (no login page needed).
     """
-    if api_only or not _should_prompt_password_change(
+    if api_only or not _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return frontend
@@ -1344,7 +1548,7 @@ def _validate_inproc_backend_before_strip(
     on that path and exit cleanly if broken, before anything is stripped.
     Headless-only so an interactive prompt is not delayed behind the import.
     """
-    if not _should_prompt_password_change(
+    if not _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
@@ -1451,6 +1655,35 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
+    # Only a tunnel launch is genuinely "a public Cloudflare URL"; a raw bind is
+    # the LAN behind a NAT router, or the internet on a cloud box. Use the real
+    # predicate, not `cloudflare is True`: a non-secure tunnel only starts for a
+    # wildcard host, so `--cloudflare -H 192.168.1.50` starts none and is reached
+    # through the raw bind instead. Naming the wrong one in the one message the
+    # operator is meant to act on trains people to ignore it.
+    tunnel_will_start = _launch_publishes_tunnel(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+    )
+    if not tunnel_will_start and os.environ.get(_UNATTENDED_PROMPT_DONE_ENV):
+        # An outer CLI already sat at this terminal for the full deadline and
+        # nobody typed. `unsloth studio run` re-execs into the studio venv and
+        # re-enters this gate, so without this the SAME unattended pty is waited
+        # on again: 30s becomes 60s before the backend gate even gets its turn,
+        # long enough to trip a startup watchdog. The parent committed the default
+        # admin before setting this, so there is nothing left to do. Peeked, never
+        # popped: run.py consumes it, and popping here would hand the backend a
+        # fresh 30s wait. Never for a tunnel, which fails closed -- a marker from
+        # an earlier raw-bind attempt must not buy a public URL a free pass.
+        return
+    if tunnel_will_start:
+        exposure = "on a public Cloudflare URL"
+    elif _bind_is_wildcard(host):
+        exposure = "on every network interface"
+    else:
+        # A concrete bind (`-H 192.168.1.50`, `-H myhost.local`) listens on that
+        # address ONLY, so "every network interface" is untrue; the gate widened to
+        # is_external_host and routes these here too. Name what the operator typed.
+        exposure = f"at {host}, which other machines on the network can reach"
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
     # seeded + committed below), an old studio-venv child could regenerate a fresh
@@ -1464,7 +1697,7 @@ def _enforce_password_change_before_exposure(
         # Refuse rather than risk a child serving the default login; a transient
         # lock clears on retry.
         typer.echo(
-            "Error: refusing to publish Unsloth on a public Cloudflare URL: could "
+            f"Error: refusing to expose Unsloth {exposure}: could "
             f"not open the Unsloth auth database ({exc}) to confirm the admin "
             "password was changed. Retry (a transient database lock clears), or "
             "change the password first (run `unsloth studio` locally with a "
@@ -1490,7 +1723,7 @@ def _enforce_password_change_before_exposure(
             except OSError:
                 pass
             typer.echo(
-                "Error: refusing to publish Unsloth on a public Cloudflare URL: could "
+                f"Error: refusing to expose Unsloth {exposure}: could "
                 f"not initialize the admin account ({exc}), so a re-exec'd Unsloth "
                 "child could regenerate and serve a default credential. Retry (a "
                 "transient database lock clears), or change the password first (run "
@@ -1599,21 +1832,71 @@ def _enforce_password_change_before_exposure(
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
+        # Ctrl+C aborts a TUNNEL launch and only a tunnel launch; on a raw bind it
+        # declines the prompt and the launch continues, because that launch worked
+        # before this gate existed. Saying "abort" there would leave an operator
+        # believing they stopped a server that is in fact up on the network with
+        # the auto-generated password.
+        refusal = (
+            "Ctrl+C to abort."
+            if tunnel_will_start
+            else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
+        )
         typer.echo(
-            "Unsloth Studio will be exposed on the public internet, so set a "
-            "password now. Ctrl+C to abort.",
+            f"Unsloth Studio will be reachable {exposure}, so set a password now. {refusal}",
             err = True,
         )
         try:
-            new_password = _password_prompt.prompt_new_password(_is_current_password)
-        except (KeyboardInterrupt, EOFError):
+            new_password = _password_prompt.prompt_new_password(
+                _is_current_password,
+                # A raw bind must never block a launch that used to start. A
+                # detached pty (`tmux new -d`, `docker run -dt`) passes every
+                # isatty and process-group test yet nobody will ever type, so an
+                # undeadlined read waits forever and no server starts; fall back
+                # to the bootstrap deadline it already had. A tunnel keeps waiting
+                # and fails closed rather than publish a public URL unprompted.
+                first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
+            )
+        except _password_prompt.PromptUnattended:
             typer.echo(
-                "\nError: password change aborted; refusing to expose Unsloth "
-                "with the default admin password. Re-run and set a password, "
-                "or launch without --secure/--cloudflare.",
+                "Warning: no response at the terminal, so Unsloth is starting with "
+                "the auto-generated admin password on a bind that is reachable from "
+                f"the network. {_deadline_sentence()} Change it by logging in, or "
+                "with `unsloth studio reset-password`.",
                 err = True,
             )
-            raise typer.Exit(1)
+            # The child gate sees the SAME unattended terminal and would wait its
+            # own deadline again: 30s becomes 60s, or 90 on the `studio run` path
+            # that re-enters this gate after re-exec, long enough to trip a startup
+            # watchdog into the restart loop the deadline exists to avoid. Tell the
+            # child the terminal has been tried. A direct `python run.py` sets
+            # nothing, so it keeps its own backstop.
+            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
+            return
+        except (KeyboardInterrupt, EOFError):
+            if tunnel_will_start:
+                typer.echo(
+                    "\nError: password change aborted; refusing to publish Unsloth "
+                    "on a public URL with the default admin password. Re-run and "
+                    "set a password, or launch without --secure/--cloudflare.",
+                    err = True,
+                )
+                raise typer.Exit(1)
+            # A raw bind is not a publication: it worked before the prompt
+            # existed, so Ctrl+C returns it to that rather than refusing to start.
+            # run.py's gate makes the same choice, and this mirror is what actually
+            # runs for `unsloth studio -H 0.0.0.0`, so disagreeing here would make
+            # run.py's warn-and-proceed unreachable.
+            typer.echo(
+                "\nWarning: password change aborted, so Unsloth is starting with "
+                "the auto-generated admin password on a bind that is reachable "
+                f"from the network. {_deadline_sentence()} Change it by logging "
+                "in, with `unsloth studio reset-password`, or by passing "
+                "--password / UNSLOTH_STUDIO_PASSWORD.",
+                err = True,
+            )
+            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
+            return
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     finally:
@@ -1633,6 +1916,7 @@ def _load_model_via_http(
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
+    request_host: str = "127.0.0.1",
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
     import json
@@ -1661,7 +1945,7 @@ def _load_model_via_http(
         payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
-    url = f"http://127.0.0.1:{port}/api/inference/load"
+    url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
     req = urllib.request.Request(
         url,
         data = data,
@@ -1672,7 +1956,7 @@ def _load_model_via_http(
         method = "POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with _direct_urlopen(req, timeout = timeout) as resp:
             try:
                 body = json.loads(resp.read())
             except ValueError:
@@ -1871,7 +2155,9 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
@@ -1891,6 +2177,9 @@ def studio_default(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
@@ -2049,29 +2338,32 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    with _studio_deps.studio_backend_imports("unsloth studio"):
-        run_mod = _load_run_module()
-    run_server = run_mod.run_server
+    with _studio_runtime_launch_guard(
+        inherited = runtime_gate_handoff,
+        wait = runtime_gate_acquire,
+    ):
+        with _studio_deps.studio_backend_imports("unsloth studio"):
+            run_mod = _load_run_module()
+        run_server = run_mod.run_server
 
-    if not silent:
-        display_host = _display_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+        if not silent:
+            launch_host = _openable_host_for_bind(run_mod, host)
+            typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
 
-    run_kwargs = dict(
-        host = host,
-        port = port,
-        silent = silent,
-        api_only = api_only,
-        llama_parallel_slots = parallel,
-        cloudflare = cloudflare,
-        secure = secure,
-        enable_tools = enable_tools,
-    )
-    # Forward the frontend validated before the gate (in-venv path), so the
-    # in-process server serves exactly the dist we vouched for.
-    if resolved_frontend is not None:
-        run_kwargs["frontend_path"] = resolved_frontend
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_kwargs = dict(
+            host = host,
+            port = port,
+            silent = silent,
+            api_only = api_only,
+            llama_parallel_slots = parallel,
+            cloudflare = cloudflare,
+            secure = secure,
+            enable_tools = enable_tools,
+        )
+        # Forward the frontend validated before the gate (in-venv path), so the
+        # in-process server serves exactly the dist we vouched for.
+        if resolved_frontend is not None:
+            run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
     try:
@@ -2552,6 +2844,8 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
+    _require_bind_host(host)
+
     # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
         if cloudflare is False:
@@ -2569,6 +2863,9 @@ def run(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
@@ -2794,10 +3091,14 @@ def run(
     from studio.backend.run import _graceful_shutdown, _server
 
     try:
+        request_host = getattr(app.state, "server_request_host", None)
+        if not isinstance(request_host, str) or not request_host:
+            typer.echo("Error: server did not expose its bound address.", err = True)
+            raise typer.Exit(1)
         # 3. Wait for server health.
         if not silent:
             typer.echo("Starting Unsloth Studio...")
-        if not _wait_for_server(actual_port):
+        if not _wait_for_server(actual_port, request_host = request_host):
             typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
             raise typer.Exit(1)
 
@@ -2824,6 +3125,7 @@ def run(
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
+                request_host = request_host,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
@@ -2838,8 +3140,10 @@ def run(
     context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
+    # Keep the public host for reachability, but print a LAN or loopback URL.
     display_host = _display_host_for_bind(run_mod, host)
-    base_url = f"http://{_url_host(display_host)}:{actual_port}"
+    base_host = _openable_host_for_bind(run_mod, host)
+    base_url = f"http://{_url_host(base_host)}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (wildcard or --secure).
     _cf_url = getattr(app.state, "cloudflare_url", None)
@@ -2957,6 +3261,8 @@ def _pid_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 10,
             ).stdout
         except Exception:
@@ -3535,6 +3841,195 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
+_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_cache_has_packages(cache_dir: Path) -> bool:
+    """wheels-* is metadata only on uv 0.10, so counting any file reads a cache that was
+    merely resolved against as warm. Same rule as install.sh:_configure_uv_cache."""
+    try:
+        buckets = [
+            entry
+            for entry in cache_dir.iterdir()
+            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+        ]
+    except (OSError, ValueError):
+        # ValueError too: an embedded NUL builds a Path fine and then raises out of
+        # scandir, aborting an update over a file that is only advisory.
+        return False
+    for bucket in buckets:
+        for _root, _dirs, files in os.walk(bucket):
+            for name in files:
+                if name in ("CACHEDIR.TAG", ".git", ".gitignore"):
+                    continue
+                if name.endswith(_UV_CACHE_METADATA_SUFFIXES):
+                    continue
+                return True
+    return False
+
+
+def _uv_platform_cache_dir() -> Optional[Path]:
+    """install.sh:646's fallback, for when uv cannot be asked: that is not "no cache"."""
+    if platform.system() == "Windows":
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "uv" / "cache" if local_app_data else None
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "uv"
+    home = (os.environ.get("HOME") or "").strip()
+    return Path(home) / ".cache" / "uv" if home else None
+
+
+# uv's boolish spelling. Anything outside it is a value uv refuses to run on, which is
+# not "no cache" either.
+_UV_TRUE = ("1", "true", "yes", "on")
+
+
+def _uv_no_cache_requested() -> bool:
+    """uv --no-cache caches in a temporary directory and discards it on exit, so the
+    probe would report that throwaway, --no-cache outranks --cache-dir anyway, and
+    recording it would aim later updates at a cache that never existed."""
+    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+
+
+def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
+    """Asked of uv, not reconstructed, so uv.toml and UV_CONFIG_FILE count.
+
+    Asked from where setup will ask it, too. Both setup scripts change into their own
+    directory before the dependency pass (studio/setup.sh:1788), and uv discovers
+    uv.toml and pyproject.toml from its working directory, so probing in the caller's
+    would answer for whatever project the user happens to be standing in.
+    """
+    uv = shutil.which("uv")
+    if not uv:
+        return _uv_platform_cache_dir()
+    child_env = {key: value for key, value in os.environ.items() if key != "UV_CACHE_DIR"}
+    try:
+        result = subprocess.run(
+            [uv, "cache", "dir"],
+            cwd = str(cwd) if cwd is not None else None,
+            capture_output = True,
+            text = True,
+            # UnicodeDecodeError is a ValueError, so the handler below would not catch it.
+            encoding = "utf-8",
+            errors = "replace",
+            env = child_env,
+            timeout = 30,
+            # Creation flags are not inherited from a hidden desktop update.
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        # Best effort: not knowing costs a preference, never the update.
+        return _uv_platform_cache_dir()
+    if result.returncode != 0:
+        # A malformed uv.toml beside the CALLER fails this, though setup.sh runs uv elsewhere.
+        return _uv_platform_cache_dir()
+    # Not stripped: a name may end in a space, and uv reports it verbatim.
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return _uv_platform_cache_dir()
+    # uv answers a relative cache-dir with the relative spelling, against its own working
+    # directory, and resolves a relative UV_WORKING_DIR after starting where this probe
+    # did. No expanduser: uv makes a literal "~" directory, not one in $HOME.
+    probe_cwd = str(cwd) if cwd is not None else os.getcwd()
+    working = os.environ.get("UV_WORKING_DIR")
+    base = os.path.join(probe_cwd, working) if working else probe_cwd
+    return Path(os.path.abspath(os.path.join(base, lines[-1])))
+
+
+def _recorded_install_uv_cache() -> Optional[Path]:
+    """The cache the installer used, as it recorded it.
+
+    Content cannot tell a Studio cache the installer filled from one holding a single
+    wheel the running backend dropped there (wheel_utils.py:405), since install.sh:705
+    points it there even in shared mode. Absent, the caller falls back to content.
+    """
+    try:
+        # utf-8-sig: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM.
+        # surrogateescape: a POSIX path may not be UTF-8, and U+FFFD would name nothing.
+        recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
+            encoding = "utf-8-sig", errors = "surrogateescape"
+        )
+    except OSError:
+        return None
+    # One record, one trailing delimiter, everything before it the path: splitting on
+    # lines would take a POSIX path containing a newline for several. Not otherwise
+    # stripped, since a path may end or begin with a space; blank means unset.
+    if recorded.endswith("\n"):
+        recorded = recorded[:-1]
+    if recorded.endswith("\r"):
+        recorded = recorded[:-1]
+    if not recorded.strip():
+        return None
+    # No expanduser, as in the probe: uv treats a tilde as an ordinary path segment.
+    return Path(os.path.abspath(recorded))
+
+
+def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
+    """Record the cache this update used, for installs whose installer never did.
+
+    Those reach the content fallback, which goes stale the moment the backend drops one
+    wheel into the Studio cache and both caches look warm. Writing the choice down once
+    setup has succeeded closes that, and likewise for a marker whose cache was emptied.
+    """
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        # One run's value. Only an installer's own choice becomes a marker.
+        return
+    if _uv_no_cache_requested():
+        # Setup cached nothing that outlived it, so there is no choice to record.
+        return
+    chosen = (env or {}).get("UV_CACHE_DIR")
+    if not chosen:
+        return
+    live = _recorded_install_uv_cache()
+    if live is not None and _uv_cache_has_packages(live):
+        return
+    stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
+    if stage_root:
+        # STUDIO_HOME names the LIVE install here and the stage can still be rejected,
+        # so the choice is parked and _studio_stage.stage promotes it on acceptance.
+        # Dropping it instead left desktop-only installs on the content fallback.
+        marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
+    else:
+        marker = STUDIO_HOME / "cache" / "uv-cache-dir"
+    try:
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        # Unlinked first: a write follows a symlink and truncates its target.
+        marker.unlink(missing_ok = True)
+        # fsencode: an undecodable path arrives as surrogates, and encoding those
+        # raises UnicodeEncodeError, which is not an OSError.
+        marker.write_bytes(os.fsencode(f"{chosen}\n"))
+    except (OSError, ValueError):
+        # ValueError covers UnicodeError, for a path fsencode still cannot render.
+        pass
+
+
+def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
+    """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
+    what the install had just fetched."""
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        return env
+    if _uv_no_cache_requested():
+        # --no-cache outranks --cache-dir, so naming one changes nothing.
+        return env
+    studio_cache = STUDIO_HOME / "cache" / "uv"
+    recorded = _recorded_install_uv_cache()
+    if recorded is not None and _uv_cache_has_packages(recorded):
+        # Only while it holds something: a marker for an emptied cache loses to a warm one.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
+    # No marker, so this install predates it and content is all there is, and content
+    # cannot settle it: install.sh:705 points the running backend at the Studio cache even
+    # in shared mode, so one on-demand wheel warms it. uv's default is what such an install
+    # has been updating from all along, and it cannot record its way out of a wrong guess.
+    default_cache = _uv_default_cache_dir(cwd)
+    if default_cache is not None and _uv_cache_has_packages(default_cache):
+        # Named, not re-resolved: a blank inherited value reaches uv as
+        # `--cache-dir ''` and exits 2.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -3549,6 +4044,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
+    # Where setup will run uv from, which differs by platform: setup.sh changes into its
+    # own directory (setup.sh:1788), setup.ps1 never does and hands install_python_stack.py
+    # the cwd it inherited from here (setup.ps1:5191).
+    setup_cwd = None if platform.system() == "Windows" else script.parent
+    env = _with_studio_uv_cache(env, cwd = setup_cwd)
 
     if platform.system() == "Windows":
         # Resolved, not bare: the gate that runs immediately before this in setup() and update()
@@ -3604,6 +4104,8 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if returncode != 0:
         raise typer.Exit(returncode)
+    # Only now: a cache that did not get through setup is not one to record.
+    _backfill_uv_cache_marker(env)
 
 
 # The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
@@ -3904,7 +4406,8 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     is the shape behind "just re-run the installer", and it is only actionable
     if the update says so.
     """
-    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+    managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
+    if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
@@ -4033,11 +4536,24 @@ def update(
         "--verify/--no-verify",
         help = "After updating, scan installed files for damage an update cannot repair.",
     ),
+    stage: bool = typer.Option(
+        False,
+        "--stage",
+        hidden = True,
+        help = "Prepare the update in a copy of the environment without touching the live one.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
     # subprocess resolves the same install root the user originally chose.
     _ensure_studio_env_exported()
+    # `is True`, not truthiness: only the CLI resolves the parameter to a bool. An
+    # in-process caller that leaves it out gets typer's OptionInfo sentinel, which
+    # is truthy, and every such call would stage instead of updating.
+    if stage is True:
+        _stage_update(local = local, package = package, verbose = verbose, verify = verify)
+        return
+    staging = _studio_stage.is_staging()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -4096,9 +4612,16 @@ def update(
     # the gate keeps a second Unsloth process off the venv, the transaction
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
-        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        with _WindowsLauncherUpdateTransaction() as launcher_update:
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
+        if not staging:
+            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        # Constructed after the idle scan, which test_studio_runtime_gate pins: the
+        # transaction wraps the mutation, so nothing of it may precede the gate.
+        launcher_transaction = _WindowsLauncherUpdateTransaction()
+        if staging:
+            # A staged run writes no launcher; there is nothing to keep recoverable.
+            launcher_transaction.enabled = False
+        with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
             # This deliberately runs even with --no-verify: the broad package scan
             # is optional, but a successful update must leave its own launcher usable.
@@ -4107,11 +4630,37 @@ def update(
                 _fail_if_install_damaged(package)
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
-    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+    if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
     _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> None:
+    if local:
+        typer.echo("Error: --stage cannot be combined with --local.", err = True)
+        raise typer.Exit(2)
+    if _studio_stage.is_staging():
+        typer.echo("Error: --stage cannot run inside a staged update.", err = True)
+        raise typer.Exit(2)
+    args = ["--package", package]
+    if verbose:
+        args.append("--verbose")
+    if not verify:
+        args.append("--no-verify")
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        try:
+            result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
+        except _studio_stage.StageError as exc:
+            typer.echo(f"[TAURI:ERROR] {exc}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            # convert staging exceptions to the structured error stream consumed by the desktop.
+            typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
+            raise typer.Exit(1)
+    typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
 
 
 class _WindowsLauncherUpdateTransaction:
@@ -4655,8 +5204,11 @@ def verify_install(
 
     Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
     to decide whether the "already up to date" fast path may be taken.
+
+    Scans the installed files too, unlike `desktop-capabilities`: nothing times
+    this one out.
     """
-    state = _install_state()
+    state = _install_state(deep = True)
 
     if json_output:
         typer.echo(json.dumps(state, sort_keys = True))

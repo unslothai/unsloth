@@ -28,23 +28,20 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# Terminal phases of GET /api/train/status. From
-# studio/backend/models/training.py: the field is `phase`, not `status`, and
-# `completed` is the only one of the three that means the adapter exists.
+# Terminal phases of GET /api/train/status.
+# From studio/backend/models/training.py: the field is `phase`, not `status`, and `completed` is the only one of the
+# three that means the adapter exists.
 TRAINING_TERMINAL = frozenset({"completed", "error", "stopped"})
 TRAINING_OK = "completed"
 
 # Terminal values of GET /api/export/status last_op_status.
 EXPORT_OK = "success"
 
-# What a saved PEFT adapter directory has to contain before this payload will
-# call a training run complete. The config alone is not enough: it is written
-# from the run's settings and would be there even if no weights were saved.
+# What a saved PEFT adapter directory has to contain before this payload will call a training run complete.
 ADAPTER_CONFIG = "adapter_config.json"
 ADAPTER_WEIGHTS = ("adapter_model.safetensors", "adapter_model.bin")
 
-# A LoRA adapter for the smallest model this payload will ever train is still
-# tens of MiB. A few hundred bytes is a stub.
+# A LoRA adapter for the smallest model this payload will ever train is still tens of MiB.
 MIN_ADAPTER_BYTES = 4096
 
 
@@ -368,9 +365,22 @@ def nonfinite_losses(status: Any) -> list:
 
 
 def newest_gguf(root: str | Path) -> Path | None:
-    """The most recently written ``.gguf`` under ``root``, if any."""
+    """The most recently written MODEL ``.gguf`` under ``root``, if any.
+
+    ``mmproj`` sidecars are excluded, and that is not a tidy-up. A vision export
+    writes two files -- ``Qwen3.5-2B.Q8_0.gguf`` and
+    ``Qwen3.5-2B.F16-mmproj.gguf`` -- and the projector is often the newer of
+    the two. Handing it to llama.cpp as a model is not an error: the server
+    starts, reports ``gpu_layers=-1``, offloads nothing and still returns text,
+    so the run reads as a GPU failure in the export assertion. Measured on
+    kernel unsloth-probe-studio-full2-815a0c, where exactly that happened.
+    """
     root = Path(root)
     if not root.is_dir():
         return None
-    candidates = sorted(root.rglob("*.gguf"), key = lambda p: p.stat().st_mtime, reverse = True)
+    candidates = sorted(
+        (p for p in root.rglob("*.gguf") if "mmproj" not in p.name.lower()),
+        key = lambda p: p.stat().st_mtime,
+        reverse = True,
+    )
     return candidates[0] if candidates else None

@@ -69,11 +69,7 @@ def _setup_source() -> str:
     return SETUP_PS1.read_text(encoding = "utf-8")
 
 
-# The two fixes, as (fixed, unfixed) pairs. Undoing them textually is what the red/green check
-# below runs against, rather than an older commit: a revision that is "before the fix" is only
-# before it until this merges, and reaching for it through git also fails in a shallow CI clone.
-# Reverting the wraps in memory keeps the comparison immutable and isolates the one thing under
-# test, since everything else about the two sources is identical by construction.
+# The two fixes, as (fixed, unfixed) pairs.
 _ARRAY_WRAPS = (
     (
         "$wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })",
@@ -108,9 +104,14 @@ def _amd_scan_block(src: str) -> str:
 
 
 def _arch_resolution_block(src: str) -> str:
-    """Everything from the arch-resolution header up to the ROCm version capture that follows."""
-    start = src.index("    # ── Arch resolution:")
-    end = src.index("    # Capture ROCm version early", start)
+    """Everything from the arch-resolution guard up to the hipconfig probe that follows.
+
+    Anchored on CODE at both ends for the same reason as _installer_scan_block: the two
+    comments this used to key on are exactly the kind a comment pass rewrites, and the
+    failure it produces is a ValueError rather than an assertion that says anything."""
+    marker = src.index("$script:ROCmUnsupportedGfxArch = $null")
+    start = src.index("    if (-not $script:ROCmGfxArch) {", marker)
+    end = src.index("    if ($HasROCm -or $HipSdkInstalled) {", start)
     return src[start:end]
 
 
@@ -163,8 +164,8 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing
-            # bug corrupts, and its first element is what Get-GfxArchFromGpuName is actually handed.
+            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing bug corrupts, and
+            # its first element is what Get-GfxArchFromGpuName is actually handed.
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
@@ -196,8 +197,8 @@ def _run(
     script.write_text(
         _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
     )
-    # Only what each case names may reach the child: a developer's own exported
-    # UNSLOTH_ROCM_GFX_ARCH would otherwise silently win every inference assertion here.
+    # Only what each case names may reach the child: a developer's own exported UNSLOTH_ROCM_GFX_ARCH would otherwise
+    # silently win every inference assertion here.
     child_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     child_env.update(env or {})
     proc = subprocess.run(
@@ -250,10 +251,13 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
-    # Saved after the last early return, so no path skips the restore.
-    assert src.index("$previousRocmGfxHandoff") > src.index(
-        "--with-llama-cpp-dir path does not exist"
-    )
+    # Cheap companion to test_the_bail_restores_the_caller_environment, which drives the
+    # bail: no path out of the setup call may skip the restore, and the bail now lives
+    # inside the restoring try, so assert the arrangement save < bail < restore.
+    saved = src.index("$previousRocmGfxHandoff = $env:")
+    bail = src.index("--with-llama-cpp-dir path does not exist")
+    restored = src.index(f"$env:{HANDOFF} = $previousRocmGfxHandoff")
+    assert saved < bail < restored, (saved, bail, restored)
 
 
 def test_setup_consumes_the_handoff_only_after_its_own_inference():
@@ -263,9 +267,6 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
     assert block.index("gfx arch inferred from GPU name") < block.index(f"$env:{HANDOFF}")
 
 
-# ── runtime: the adapter scan ─────────────────────────────────────────────────────────────────
-
-
 @requires_pwsh
 @pytest.mark.parametrize("ps51", [False, True], ids = ["pwsh", "ps51"])
 @pytest.mark.parametrize("strict", [False, True], ids = ["lax", "strict"])
@@ -273,8 +274,8 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
-    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so
-    # "reported" has to mean the name reached the inference.
+    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
+    # the name reached the inference.
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -306,9 +307,6 @@ def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
     assert out["labels"] == []
     assert out["label"] is None
     assert out["arch"] is None
-
-
-# ── runtime: name inference, where the second unwrapped if bites ──────────────────────────────
 
 
 @requires_pwsh
@@ -363,9 +361,6 @@ def test_a_discrete_card_is_preferred_over_a_shadowing_igpu(tmp_path):
 def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
     out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {"HIP_VISIBLE_DEVICES": "0"})
     assert out["arch"] == "gfx1103", "an explicit selection must never be repicked"
-
-
-# ── runtime: handoff precedence ───────────────────────────────────────────────────────────────
 
 
 @requires_pwsh
@@ -444,10 +439,12 @@ def _installer_scan_block() -> str:
     The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
     this one: it feeds no label and no arch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = src.index(
-        "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
-    )
-    end = src.index("        # Capture ROCm version for wheel selection", start)
+    # Anchored on CODE at both ends. The end anchor used to be a comment and a comment
+    # pass deleted it, which turned four tests into ValueError instead of a failure
+    # that said anything. The next statement after the block is the hipconfig probe.
+    body = src.index("$amdAdapters = @(Get-CimInstance Win32_VideoController")
+    start = src.rindex("        if (-not $HasROCm) {", 0, body)
+    end = src.index("        if ($HasROCm -or $HipSdkInstalled) {", start)
     return src[start:end]
 
 
@@ -461,8 +458,8 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # Both names: the routing scan asks WMI (unchanged by #8529), the
-                # report-only peer scan asks CIM. Same answer either way here.
+                # Both names:
+                # Both names: the routing scan asks WMI (unchanged by #8529), the report-only peer scan asks CIM.
                 f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
@@ -536,10 +533,20 @@ def _handoff_lifecycle_block() -> str:
 
 
 def _run_handoff_lifecycle(
-    tmp_path: Path, *, arch: str | None, inherited: str | None, fails: bool
+    tmp_path: Path,
+    *,
+    arch: str | None,
+    inherited: str | None,
+    fails: bool,
+    bails: bool = False,
 ) -> dict:
-    body = _handoff_lifecycle_block().replace(
-        "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+    call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
+    block = _handoff_lifecycle_block()
+    # Loudly: a silent miss leaves the probe unrun and every assertion reading
+    # "<never ran>" with nothing saying why.
+    assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
+    body = block.replace(
+        call,
         "throw 'setup exploded'"
         if fails
         else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",
@@ -556,16 +563,49 @@ def _run_handoff_lifecycle(
                 "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
+                # Installer inputs the block reads. Undefined, they throw under
+                # ErrorActionPreference Stop, the catch swallows it, and the probe never runs.
+                "$PackageName = 'unsloth'; $SkipTorch = $false; $TauriMode = $false",
+                "$StudioLocalInstall = $false; $RepoRoot = $null",
+                "$StudioRedirectMode = 'none'; $StudioHome = $null",
+                (
+                    f"$WithLlamaCppDir = '{tmp_path / 'no-such-llama.cpp'}'"
+                    if bails
+                    else "$WithLlamaCppDir = $null"
+                )
+                + "; $VenvPython = 'stub-python'; $VenvDir = 'stub-venv'",
+                "$TorchIndexUrl = $null; $ROCmIndexUrl = $null",
+                # Every installer function the block reaches, stubbed.
+                "function Get-ExpectedTorchFlavorTag { param($TorchIndexUrl, $ROCmIndexUrl) 'cu128' }",
+                "function Get-InstalledTorchVersionRaw { param($Python) '' }",
+                "function ConvertTo-TorchNumericRelease { param($Raw) $null }",
+                "function Write-StudioLine { param($Message, $ForegroundColor) }",
+                "function Write-ApplicationControlBlocked { param($Message, $Detail) }",
+                "function Exit-InstallFailure { param($Message) 1 }",
                 "$script:SeenByChild = '<never ran>'",
+                "$script:BlockError = $null",
+                # Read right after the setup call; null makes the block return early.
+                "$script:ManagedUnslothCliExit = 0",
+                "$script:PrevTorchPin = $null",
                 "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
+                # In a function so the block's own return -- the --with-llama-cpp-dir bail --
+                # leaves the block, not the script, letting us read the environment after it.
+                "function Invoke-HandoffBlock {",
                 "try {",
                 body,
-                "} catch { }",
+                "} catch { $script:BlockError = $_.ToString() }",
+                "}",
+                "Invoke-HandoffBlock | Out-Null",
                 "@{",
                 "  seen_by_child = $script:SeenByChild",
+                "  block_error = $script:BlockError",
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
+                # Set at the top of the block's try, above the bail: gone afterwards
+                # is what says the finally ran.
+                "  package_name = $(if (Test-Path Env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { $null })",
+                "  skip_base = $(if (Test-Path Env:SKIP_STUDIO_BASE) { $env:SKIP_STUDIO_BASE } else { $null })",
                 "} | ConvertTo-Json -Compress",
             ]
         ),
@@ -582,7 +622,20 @@ def _run_handoff_lifecycle(
         env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
-    return json.loads(proc.stdout)
+    # Last JSON object only: a stub may emit its return value into the pipeline first.
+    reports = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert reports, f"the handoff block printed no report:\n{proc.stdout}\n{proc.stderr}"
+    out = json.loads(reports[-1])
+    # The block may throw only where the test asked; anything else is a missing stub.
+    if fails:
+        # The injected throw specifically: an earlier helper failure would still restore
+        # the environment and pass every assertion without the failure path running.
+        assert "setup exploded" in (
+            out.get("block_error") or ""
+        ), f"the block failed before the injected throw: {out.get('block_error')}"
+    else:
+        assert not out.get("block_error"), f"the handoff block threw: {out['block_error']}"
+    return out
 
 
 @requires_pwsh
@@ -602,6 +655,26 @@ def test_the_caller_environment_survives_the_setup_call(tmp_path, arch, inherite
 
 
 @requires_pwsh
+def test_the_bail_restores_the_caller_environment(tmp_path):
+    """The --with-llama-cpp-dir bail returns from inside the try, so the finally still runs.
+
+    Textual ordering cannot show that: move the try below the bail and `saved < bail <
+    restored` still holds while the return walks out past the restore. So this takes the
+    bail, with a directory that does not exist, and reads the environment afterwards.
+    """
+    out = _run_handoff_lifecycle(
+        tmp_path, arch = "gfx1151", inherited = "gfx1030", fails = False, bails = True
+    )
+    assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
+    assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
+    assert out["after_set"] is True
+    # Set above the bail and removed only by the finally, so still set in the caller
+    # would mean the bail escaped the try.
+    assert out["package_name"] is None, "STUDIO_PACKAGE_NAME leaked past the bail"
+    assert out["skip_base"] is None, "SKIP_STUDIO_BASE leaked past the bail"
+
+
+@requires_pwsh
 @pytest.mark.parametrize(
     "arch, inherited, expected",
     [("gfx1151", None, "gfx1151"), ("gfx1151", "gfx1030", "gfx1151"), (None, "gfx1030", None)],
@@ -612,9 +685,6 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
     than forwarded as though the scan had produced it."""
     out = _run_handoff_lifecycle(tmp_path, arch = arch, inherited = inherited, fails = False)
     assert out["seen_by_child"] == expected
-
-
-# ── the guard on the guards ───────────────────────────────────────────────────────────────────
 
 
 @requires_pwsh

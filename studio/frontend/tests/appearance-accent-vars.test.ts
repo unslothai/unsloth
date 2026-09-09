@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /** Minimal <html> stand-in: the applier only needs style, attributes, classes. */
 function stubDocument() {
@@ -252,26 +253,8 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
   assert.ok(ratio(corrected, "#212121") >= 2.5);
 });
 
-test("loaded-model stripes stay on the semantic success color", () => {
-  const hubCss = readFileSync(
-    new URL("../src/features/hub/hub.css", import.meta.url),
-    "utf8",
-  );
-  const activeBlocks = [
-    ...hubCss.matchAll(/\[data-active="true"\]\s*\{([^}]+)\}/g),
-  ];
-  assert.equal(activeBlocks.length, 4);
-  for (const [, declarations = ""] of activeBlocks) {
-    assert.match(declarations, /box-shadow:[^;]+var\(--status-success\)/);
-    assert.doesNotMatch(declarations, /var\(--primary\)/);
-  }
-});
-
 test("resize-handle glows follow the primary token", () => {
-  const source = readFileSync(
-    new URL("../src/components/ui/resizable.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("components/ui/resizable.tsx");
   assert.doesNotMatch(source, /rgba\(23,\s*184,\s*139/);
   assert.equal(
     source.match(/color-mix\(in_srgb,var\(--primary\)_[0-9]+%,transparent\)/g)

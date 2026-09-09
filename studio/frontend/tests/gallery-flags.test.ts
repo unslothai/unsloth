@@ -20,6 +20,8 @@ import {
   sortGalleryItems,
 } from "../src/lib/gallery-flags.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const item = (id: string, created_at: number | string, pinned = false) => ({
   id,
   created_at,
@@ -27,6 +29,8 @@ const item = (id: string, created_at: number | string, pinned = false) => ({
 });
 
 const ids = (items: { id: string }[]) => items.map((i) => i.id);
+
+const archivedMediaSource = readSrc("features/settings/components/archived-media-dialog.tsx");
 
 test("unpinned items sort newest first", () => {
   const items = [item("old", 1), item("new", 3), item("mid", 2)];
@@ -473,4 +477,15 @@ test("a page fetch is refused while a shelf mutation is still pending", async ()
   assert.deepEqual(seen[0], ["b", "a"], "the first read did skip the boundary record");
   assert.ok(result);
   assert.deepEqual(result.page, ["c", "b"], "the retry, once nothing is pending, recovers it");
+});
+
+test("archived audio pages from the stable server cursor", () => {
+  assert.match(
+    archivedMediaSource,
+    /listAudioGallery\(\s*0,\s*ARCHIVED_PAGE_SIZE,\s*before,\s*true,?\s*\)/,
+  );
+  assert.match(
+    archivedMediaSource,
+    /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
+  );
 });

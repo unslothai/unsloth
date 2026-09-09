@@ -19,15 +19,6 @@
 
 import "@/index.css";
 
-// Load-bearing import order. `tool-group.tsx` reaches the `@/features/chat`
-// barrel, which re-exports chat-runtime-store, which sits in a cycle with it;
-// entering that graph from the barrel or from `assistant-ui/thread` dies with
-// "Cannot access 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Entering
-// from the store module orders it correctly. Observed, not theorised, and a
-// property of the app's module graph rather than of anything under test.
-/* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
-import "@/features/chat/stores/chat-runtime-store";
-
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
