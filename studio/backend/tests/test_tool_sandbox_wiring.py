@@ -732,3 +732,23 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
     else:
         assert "detached_descendant_cleanup_unverified" in limitations
     assert not hasattr(os_sandbox, "descendant_sweep_supported")
+
+
+def test_a_backend_that_has_just_stopped_being_available_still_falls_back(monkeypatch):
+    """A refusal after a successful probe is not always about the workdir: bwrap
+    removed by a package update raises the same error, and the cached verdict is
+    up to 60s stale. Re-probed before refusing, so that case reaches the fallback
+    the docs promise instead of failing the call."""
+    _declining_backend(monkeypatch, "bubblewrap (bwrap) is not installed on this host")
+    probes = []
+
+    def gone(**kwargs):
+        probes.append(kwargs.get("force"))
+        return os_sandbox.SandboxCapability(backend = "none", available = False, reason = "bwrap is gone")
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", gone)
+    tools._last_tool_execution_record = None
+    assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
+    assert tools._last_tool_execution_record.os_isolation is False
+    # Forced, or the stale verdict answers it.
+    assert probes and probes[-1] is True

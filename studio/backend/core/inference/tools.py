@@ -7318,14 +7318,29 @@ def _prepare_tool_launch(plan):
             prepared.preexec_fn = plan.preexec_fn
         return prepared
     except os_sandbox.SandboxUnavailableError:
-        # Never turned into an unisolated launch. os_sandbox only reaches a
-        # backend once the capability probe has passed, so every refusal from one
-        # is about the session workdir -- the single thing a tool call can write
-        # to -- and answering those by running the next call on the host would
-        # hand model-authored code a switch for its own boundary. The fallback
-        # auto promises belongs to a host that cannot build a sandbox at all, and
-        # os_sandbox returns that itself without raising.
-        raise
+        # A refusal about the session WORKDIR is never turned into an unisolated
+        # launch: the workdir is the single thing a tool call can write to, so
+        # answering those by running the next call on the host would hand
+        # model-authored code a switch for its own boundary.
+        #
+        # A backend can also refuse because it has just stopped being available --
+        # bwrap removed by a package update -- and that is the fallback's own
+        # case. The two are told apart by re-probing rather than by reading the
+        # cached verdict, which is up to 60s old and so is exactly long enough to
+        # answer it wrongly. The probe costs about a tenth of a second and only
+        # runs here, on a path that was going to fail the call otherwise.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode in os_sandbox.TOOL_EXECUTION_MODES
+            and os_sandbox.capability_snapshot(force = True).available
+        ):
+            raise
+        if plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
     except Exception as exc:  # noqa: BLE001 - auto never refuses; see the docstring
         logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
         if plan.requested_mode == "required":
