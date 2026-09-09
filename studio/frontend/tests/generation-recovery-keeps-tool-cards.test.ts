@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Recovery must preserve tool cards in storage and the live view.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -23,7 +21,6 @@ type Part = {
   toolCallId?: string;
 };
 
-/** What the follower does to a stored body on every publish. */
 function recoverBody(content: Part[]): Part[] {
   const { raw, reasoningOpen, carried } = generationRawContent(content);
   return restoreCarriedParts(
@@ -99,8 +96,7 @@ test("an unfinished reply keeps its calls and its open reasoning", () => {
 });
 
 test("a publish cannot swap a body that has cards for one that lost them", () => {
-  // The prefix guard reads both sides through the projection, which sees no tool call, so a
-  // stripped body of equal or greater length used to win outright.
+  // The prefix guard compares projections, which hide tool calls: a stripped body used to win.
   const stripped = TURN.filter((part) => part.type !== "tool-call");
   const kept = recoveredContentToImport(TURN, stripped) as Part[];
 

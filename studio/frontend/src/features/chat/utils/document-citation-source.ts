@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Accept navigable http(s) source URLs. */
 export function isSafeNavigableSourceUrl(raw: unknown): string {
   if (typeof raw !== "string") return "";
   const value = raw.trim();
@@ -15,7 +14,6 @@ export function isSafeNavigableSourceUrl(raw: unknown): string {
   return "";
 }
 
-/** Convert an Anthropic document citation dict into a Sources-panel source. */
 export function documentCitationToSource(
   cit: Record<string, unknown>,
   fallbackIdx: number,
@@ -34,14 +32,13 @@ export function documentCitationToSource(
     "";
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // Use document anchors for non-web sources.
   const url =
     isSafeNavigableSourceUrl(source) ||
     `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
   const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Keep separate footnotes for distinct citation positions.
+  // Position in the id, so distinct citations of one document stay separate footnotes.
   const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
@@ -69,7 +66,6 @@ export function documentCitationToSource(
   };
 }
 
-/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 export function parseSourcesFromResult(raw: string): {
   type: "source";
   sourceType: "url";
@@ -93,7 +89,7 @@ export function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      // Provider output is attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
+      // Attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
       const url = isSafeNavigableSourceUrl(urlMatch[1]);
       if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();

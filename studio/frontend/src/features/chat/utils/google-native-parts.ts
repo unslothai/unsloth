@@ -37,7 +37,6 @@ function collectParts(value: unknown): Record<string, unknown>[] {
   );
 }
 
-/** Retain ordered native parts and each part's own signature. */
 export function mergeGoogleNativeParts(
   args: Record<string, unknown>,
   endGoogle: unknown,

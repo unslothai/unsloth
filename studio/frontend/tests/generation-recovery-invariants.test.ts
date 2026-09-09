@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The properties recovery has to hold for EVERY reply, not just the shapes a
-// hand-written case thinks to try. Each reply and each event stream below is
-// generated from a seed, so a failure prints the seed and the input that broke
-// it. The named cases elsewhere say what recovery does; these say what it must
-// never do: lose a card, reorder one, move it through the text, change a word
-// of the reply, or count one call twice.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -40,9 +33,7 @@ function rng(seed: number) {
   };
 }
 
-// Whitespace, astral pairs and a zero-width space, since offsets are UTF-16
-// code units. No angle brackets: a literal think tag is a parser question and
-// tests/generation-recovery-keeps-tool-cards.test.ts asks it.
+// Astral pairs, since offsets are UTF-16 code units. No angle brackets: a think tag is a parser question.
 const ALPHABET = [
   "a",
   "b",
@@ -111,7 +102,6 @@ const identify = (part: Part) => String(part.toolCallId ?? part.id ?? "?");
 const carriedIds = (parts: Part[]) =>
   parts.filter((part) => !isSpoken(part)).map(identify);
 
-/** How much reply text precedes each carried part. */
 function prefixLengths(parts: Part[]): [string, number][] {
   const out: [string, number][] = [];
   let seen = 0;
@@ -149,7 +139,6 @@ test("a raw round trip keeps every card, its order, its position and the words",
     );
     assert.deepEqual(prefixLengths(out), prefixLengths(content), where());
 
-    // A reply that recovers twice must not drift on the second pass.
     const shape = (parts: Part[]) =>
       parts.map((part) => [part.type, identify(part), part.text]);
     assert.deepEqual(shape(roundTrip(out)), shape(out), `twice ${where()}`);
@@ -183,9 +172,7 @@ test("restoring onto parsed parts keeps the same properties", () => {
 
 type Event = Record<string, unknown>;
 
-/** A run a backend could really emit: ids that repeat, ids that are absent,
- *  and calls still open when the run ends. `cards` is what the adapter would
- *  draw, since a start on an id that is already open reuses that card. */
+/** `cards` counts what the adapter would draw: a start on an already-open id reuses its card. */
 function randomEvents(next: () => number): { events: Event[]; cards: number } {
   const rounds = 1 + Math.floor(next() * 5);
   const events: Event[] = [];
@@ -240,7 +227,6 @@ test("replay opens one card per call and lands each result once", () => {
       `repeated ${where()}`,
     );
 
-    // Replay adds; it never takes a part off the reply.
     const seeded: CarriedPart[] = [
       { at: 0, part: { type: "source", id: "kept", url: "https://e.com" } },
     ];

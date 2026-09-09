@@ -103,7 +103,6 @@ function recoveredToolResult(
   return text;
 }
 
-/** Update carried cards as a stored run replays tool events. */
 export function createGenerationToolRecovery(
   carried: CarriedPart[],
   runId: string,
@@ -123,8 +122,7 @@ export function createGenerationToolRecovery(
     const part = record(entry.part);
     return part?.type === "tool-call" && part.result === undefined;
   });
-  // Saved id-less cards all carry the same empty id, so keying them by it would keep the last
-  // one and leave the rest running for good. Each keeps its own slot, in the order it was saved.
+  // Id-less cards share the empty id: one slot each, else all but the last stay running forever.
   let savedIdless = 0;
   for (const entry of savedPending) {
     const id = record(entry.part)?.backendToolCallId;
@@ -137,8 +135,6 @@ export function createGenerationToolRecovery(
   )
     ? 0
     : snapshotSeq;
-  // Cards saved before the adapter recorded identities have no backend id to match on, and an
-  // id-less start carries none either, so replay hands them out in the order they were saved.
   const legacyPending = savedPending.filter(
     (entry) => typeof record(entry.part)?.backendToolCallId !== "string",
   );
@@ -147,9 +143,7 @@ export function createGenerationToolRecovery(
     if (at !== -1) legacyPending.splice(at, 1);
     return entry;
   };
-  // A card a provider completes twice. Cleared by a start on the same id, which means a new round.
-  // Seeded like the pending map is: a reload between the two completions saved the first one, so
-  // without this the second arrives after the card has left every lookup.
+  // Seeded from saves: a reload between two completions of one card leaves it in no other lookup.
   const completed = new Map<string, CarriedPart>();
   for (const entry of carried) {
     const part = record(entry.part);
@@ -245,9 +239,7 @@ export function createGenerationToolRecovery(
     let entry =
       (backendId ? pending.get(backendId) : undefined) ??
       findSavedEntry(backendId, event.approval_id);
-    // A provider that gave its calls no id leaves every start under the same key, so the second
-    // call would take the first one's card. The adapter opens a card per start and closes the
-    // most recent one; keyed replay does the same, else two calls recover as one.
+    // Id-less end closes the most recent start, as the adapter does; else two calls recover as one.
     if (
       event.type === "tool_end" &&
       !(entry || backendId) &&
@@ -255,9 +247,7 @@ export function createGenerationToolRecovery(
     ) {
       for (const active of pending.values()) entry = active;
     }
-    // OpenAI Responses closes a web search with a "Searching:" placeholder and reopens it at the
-    // end with the citation blocks. A start on the same id would have meant a new round, so only
-    // an uninterrupted second completion reaches the card it already finished.
+    // OpenAI Responses ends a web search twice (placeholder, then citations); a start clears this.
     if (!entry && event.type === "tool_end" && backendId) {
       entry = completed.get(backendId);
     }
@@ -355,9 +345,7 @@ export function createGenerationToolRecovery(
     }
     if (backendId) completed.set(backendId, entry);
   };
-  // The Sources-panel entries the live path derives from every finished web_search / web_fetch
-  // card at the end of a stream. Recovery has the same results but never reaches that yield, so
-  // it rebuilds them here and the commit appends them where the live path put them.
+  // Recovery never reaches the live path's end-of-stream source yield, so rebuild those entries.
   const withSources = <TPart>(parts: TPart[]): TPart[] => {
     const seen = new Set(sourceIds);
     const out: TPart[] = [...parts];

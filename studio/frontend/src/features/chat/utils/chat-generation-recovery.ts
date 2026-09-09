@@ -142,8 +142,6 @@ export function recoveredGenerationFinalMetadata(options: {
   timings?: RecoveryTimings;
   firstChunkAt?: number;
   totalChunks: number;
-  /** Tool names on the rebuilt reply. A recovered turn shows its cards, so the response details
-   *  must not report none; the adapter's own metadata is not persisted on these saves. */
   toolCalls?: string[];
 }): Record<string, unknown> {
   const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
@@ -229,7 +227,6 @@ const THINK_CLOSE = "</think>";
 /** A part the raw projection cannot express, kept with the offset it sat at. */
 export type CarriedPart = { at: number; part: unknown };
 
-/** Project text and reasoning for replay; retain other parts at their raw offsets. */
 export function generationRawContent(content: unknown): {
   raw: string;
   reasoningOpen: boolean;
@@ -263,7 +260,6 @@ export function generationRawContent(content: unknown): {
   return { raw, reasoningOpen, carried };
 }
 
-/** Restore carried parts, splitting text or reasoning at each saved offset. */
 export function restoreCarriedParts<TPart>(
   parts: readonly TPart[],
   carried: readonly CarriedPart[],
@@ -371,8 +367,7 @@ function followingCarriedMatches(matches: (number | undefined)[]) {
 }
 
 function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
-  // Every occurrence, not the last: the adapter does not deduplicate sources, so one url can
-  // appear twice and a single index would leave the second occurrence looking absent forever.
+  // Every occurrence, not the last: sources are not deduplicated, so a repeated url needs a slot each.
   const byId = new Map<string, number[]>();
   recovered.forEach((entry, i) => {
     const key = carriedPartKey(entry);
@@ -472,7 +467,6 @@ function mergeCarriedParts(
   ]);
 }
 
-/** Refuse lagging prefixes; restore missing cards only onto compatible replies. */
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,

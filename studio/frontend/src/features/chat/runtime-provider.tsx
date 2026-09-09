@@ -902,9 +902,8 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
-    /** The reply as it stands: cards restored, search sources trailing it where the live path
-     *  yields them. Both the save and the finalisation read it, so a settled turn cannot report
-     *  no tool calls while showing cards. */
+    // The save and the finalisation must read ONE rebuild: deriving the names separately reports
+    // the previous publish, or none at all on a turn that settles on its first commit.
     const rebuild = () =>
       toolRecovery.withSources(
         restoreCarriedPartsFromRaw(
@@ -1048,9 +1047,7 @@ function scheduleGenerationRecovery(
             }
             identityValidated = true;
           }
-          // A legacy pending card replays the run from 0 to recover its identity. Those chunks are
-          // already in the saved reply, so publishing them again would rewrite storage and reimport
-          // the thread once per historical token.
+          // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
           let advanced = false;
           if (update.event?.type === "chunk") {
             toolRecovery.apply(
