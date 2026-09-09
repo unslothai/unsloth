@@ -582,3 +582,140 @@ test("compact estimates retain units and never round a lower bound up", () => {
   assert.ok(!candidates.includes("≥ 26 GiB"));
   assert.ok(memoryFigureCandidates(2048 * GB, false).includes("2 TiB"));
 });
+
+// ---------------------------------------------------------------------------
+// The resident copy's own bytes, credited back to the free-memory questions.
+//
+// Studio unloads before it reloads, so those bytes return BEFORE the replacement allocates.
+// Charging them counted a model against itself: opening Run settings for the model already
+// loaded warned it would not fit the memory its own resident copy held.
+
+test("reloading an unchanged config does not warn about the memory it is about to release", () => {
+  // Apple 64 GB, a 25.61 GiB load, 25.53 GiB free because that same model is holding the rest.
+  // Uncredited this is ratio 1.003 -> exceeds.
+  const uncredited = fit(
+    { gpuBytes: 25.61 * GB, totalBytes: 25.61 * GB },
+    { freeGpuCapacityGb: 25.53, usableSystemRamGb: 25.53 },
+    APPLE,
+  );
+  assert.equal(uncredited.usableHostFit, "exceeds");
+  assert.ok(uncredited.advisory);
+
+  const credited = fit(
+    { gpuBytes: 25.61 * GB, totalBytes: 25.61 * GB },
+    {
+      freeGpuCapacityGb: 25.53,
+      usableSystemRamGb: 25.53,
+      reclaimableTotalBytes: 25.61 * GB,
+      reclaimableGpuBytes: 25.61 * GB,
+    },
+    APPLE,
+  );
+  assert.equal(credited.gpuPressured, false);
+  assert.equal(credited.hostPressured, false);
+  assert.equal(credited.advisory, null);
+});
+
+test("growing the context past what the resident copy returns still warns", () => {
+  // Context raised: 40 GB wanted, 25 GB coming back. The 15 GB of GROWTH is still a real question.
+  const result = fit(
+    { gpuBytes: 40 * GB, totalBytes: 40 * GB },
+    {
+      freeGpuCapacityGb: 12,
+      usableSystemRamGb: 12,
+      reclaimableTotalBytes: 25 * GB,
+      reclaimableGpuBytes: 25 * GB,
+    },
+    APPLE,
+  );
+  assert.ok(result.gpuPressured || result.hostPressured);
+  assert.equal(result.advisory?.text, ADVISORY_TEXTS.singlePoolPressure);
+});
+
+test("the credit never improves a CAPACITY verdict, only a free-memory one", () => {
+  // 70 GB on a 64 GB machine: unloading frees memory, it does not add any.
+  const result = fit(
+    { gpuBytes: 70 * GB, totalBytes: 70 * GB },
+    {
+      freeGpuCapacityGb: 2,
+      usableSystemRamGb: 2,
+      reclaimableTotalBytes: 70 * GB,
+      reclaimableGpuBytes: 70 * GB,
+    },
+    APPLE,
+  );
+  assert.equal(result.totalFit, "exceeds");
+  assert.equal(result.advisory?.tone, "warn");
+  assert.equal(result.advisory?.text, ADVISORY_TEXTS.singlePoolExceeds);
+});
+
+test("on discrete memory the credit follows the pool each byte came from", () => {
+  // 20 GB on the card, 20 GB on the host. The host credit is the part that was NOT on the GPU.
+  const result = fit(
+    { gpuBytes: 20 * GB, totalBytes: 40 * GB },
+    {
+      freeGpuCapacityGb: 4,
+      usableSystemRamGb: 4,
+      reclaimableTotalBytes: 40 * GB,
+      reclaimableGpuBytes: 20 * GB,
+    },
+  );
+  assert.equal(result.gpuPressured, false);
+  assert.equal(result.hostPressured, false);
+});
+
+test("a GPU credit larger than its own total cannot inflate the host share", () => {
+  // GPU share above its own total. Clamping keeps the host credit at zero instead of negative.
+  const result = fit(
+    { gpuBytes: 20 * GB, totalBytes: 40 * GB },
+    {
+      freeGpuCapacityGb: 23,
+      usableSystemRamGb: 60,
+      reclaimableTotalBytes: 10 * GB,
+      reclaimableGpuBytes: 999 * GB,
+    },
+  );
+  // 20 GB host share less a credit floored at zero, against 60 GB usable.
+  assert.equal(result.hostPressured, false);
+  assert.ok(Number.isFinite(result.hostShareBytes));
+});
+
+test("a garbage credit is ignored rather than subtracted", () => {
+  for (const credit of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    -50 * GB,
+    undefined,
+  ]) {
+    const result = fit(
+      { gpuBytes: 30 * GB, totalBytes: 30 * GB },
+      {
+        freeGpuCapacityGb: 6,
+        usableSystemRamGb: 6,
+        reclaimableTotalBytes: credit,
+        reclaimableGpuBytes: credit,
+      },
+      APPLE,
+    );
+    // The warning a real 30 GB load under 6 GB free deserves, unchanged.
+    assert.ok(
+      result.gpuPressured || result.hostPressured,
+      `credit ${String(credit)} should not have silenced the warning`,
+    );
+  }
+});
+
+test("an unmeasurable footprint stays unknown rather than becoming a credited zero", () => {
+  const result = fit(
+    { gpuBytes: Number.NaN, totalBytes: Number.NaN },
+    {
+      freeGpuCapacityGb: 6,
+      usableSystemRamGb: 6,
+      reclaimableTotalBytes: 30 * GB,
+      reclaimableGpuBytes: 30 * GB,
+    },
+    APPLE,
+  );
+  assert.equal(result.freeGpuFit, "unknown");
+  assert.equal(result.usableHostFit, "unknown");
+});

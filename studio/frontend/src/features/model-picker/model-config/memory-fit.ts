@@ -92,6 +92,23 @@ export interface MemoryFitCapacity {
   usableSystemRamKnown?: boolean;
   /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
   singleMemoryPool: boolean;
+  /** What the resident copy of this model holds and hands back on unload. 0 when nothing is
+   *  loaded. Credited to the free-memory questions only. */
+  reclaimableTotalBytes?: number;
+  /** The GPU share of the above. */
+  reclaimableGpuBytes?: number;
+}
+
+/** A credit is positive and finite or it is nothing: a negative or NaN one would INFLATE the
+ *  footprint it is subtracted from. */
+function reclaimableBytes(value: number | undefined): number {
+  return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 0;
+}
+
+/** Bytes still to find after the credit. A non-finite footprint passes through, so it stays
+ *  "unknown" rather than becoming a confident 0. */
+function afterReclaim(bytes: number, credit: number): number {
+  return Number.isFinite(bytes) ? Math.max(0, bytes - credit) : bytes;
 }
 
 export interface MemoryFitResult {
@@ -135,11 +152,23 @@ export function resolveMemoryFit(
     estimate.gpuBytes,
     capacity.gpuCapacityGb,
   );
+  // Studio unloads the resident model BEFORE the replacement allocates, so its bytes are about to
+  // be free rather than competing. Charging them counted a model against ITSELF: reloading an
+  // unchanged config warned it would not fit the memory its own resident copy held. Free-memory
+  // questions only -- unloading frees memory, it does not add any, so capacity is untouched.
+  const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
+  // Clamped: a GPU share above its own total would credit the host share a negative amount.
+  const reclaimableGpu = Math.min(
+    reclaimableBytes(capacity.reclaimableGpuBytes),
+    reclaimableTotal,
+  );
   // One pool means the WHOLE load draws on that memory, so the pressure question goes to the
   // total rather than a GPU share that is not a separate reservation. Asking it of gpuBytes
   // alone let a partly CPU-offloaded load on a Vulkan iGPU look comfortable.
   const freeGpuFit = classifyAvailableMemory(
-    singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
+    singleMemoryPool
+      ? afterReclaim(estimate.totalBytes, reclaimableTotal)
+      : afterReclaim(estimate.gpuBytes, reclaimableGpu),
     capacity.freeGpuCapacityGb,
     capacity.freeGpuCapacityKnown,
   );
@@ -150,9 +179,11 @@ export function resolveMemoryFit(
     Number.isFinite(estimate.totalBytes) && Number.isFinite(estimate.gpuBytes)
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
       : 0;
-  // Same question for the other pool. See the note above on why this warns.
+  // Same question for the other pool, with the same credit. See the two notes above.
   const usableHostFit = classifyAvailableMemory(
-    singleMemoryPool ? estimate.totalBytes : hostShareBytes,
+    singleMemoryPool
+      ? afterReclaim(estimate.totalBytes, reclaimableTotal)
+      : afterReclaim(hostShareBytes, reclaimableTotal - reclaimableGpu),
     capacity.usableSystemRamGb,
     capacity.usableSystemRamKnown,
   );

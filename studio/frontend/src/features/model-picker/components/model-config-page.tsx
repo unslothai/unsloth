@@ -2494,6 +2494,44 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // What the resident copy of this model holds and returns on unload. Priced at the settings it
+  // LOADED with, not the ones on screen: those are what get handed back.
+  const residentEstimateRequest =
+    memoryEstimateRequest && isActiveModel && loadedConfig
+      ? {
+          ...memoryEstimateRequest,
+          nCtx: activeLoadedContext ?? memoryEstimateRequest.nCtx,
+          cacheTypeKv: loadedConfig.kvCacheDtype,
+          nParallel: loadedConfig.nParallel,
+          nBatch: loadedConfig.nBatch,
+          nUbatch: loadedConfig.nUbatch,
+          ctxCheckpoints: loadedConfig.ctxCheckpoints ?? null,
+          speculativeType:
+            loadedConfig.speculativeType ?? speculativeFallback ?? null,
+          specDraftNMax: loadedConfig.specDraftNMax,
+          specDraftCacheType: loadedConfig.specDraftCacheDtype ?? null,
+          tensorParallel: loadedConfig.tensorParallel,
+          disableVision: loadedConfig.disableVision,
+          gpuMemoryMode: loadedConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+          gpuLayers:
+            loadedConfig.gpuLayers != null &&
+            loadedConfig.gpuLayers !== GPU_LAYERS_AUTO
+              ? loadedConfig.gpuLayers
+              : null,
+          nCpuMoe: loadedConfig.nCpuMoe ?? null,
+          selectedGpuIds: loadedConfig.selectedGpuIds ?? null,
+          llamaExtraArgs: loadedConfig.llamaExtraArgs ?? null,
+        }
+      : null;
+  const residentEstimate = useMemoryEstimate(residentEstimateRequest);
+  // Settled answers only: a stale or in-flight credit would silence a real warning while the
+  // resident price caught up with a settings change.
+  const reclaimableEstimate =
+    residentEstimate.estimate?.available &&
+    !residentEstimate.loading &&
+    !residentEstimate.stale
+      ? residentEstimate.estimate
+      : null;
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
@@ -2854,6 +2892,8 @@ export function ModelConfigPage({
               usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
+              reclaimableTotalBytes={reclaimableEstimate?.totalBytes ?? 0}
+              reclaimableGpuBytes={reclaimableEstimate?.gpuBytes ?? 0}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />
