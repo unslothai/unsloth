@@ -1717,12 +1717,18 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
-
-
 def apply_lora(model, r: int):
     """The one LoRA configuration every arm trains, so that a layer split and a data
-    parallel replica of the same model train the same adapters."""
+    parallel replica of the same model train the same adapters.
+
+    Targets are read off the loaded model, the same way the layer-split arm does it, rather
+    than from the hard-coded Llama tuple. ``lora_target_modules`` returns that tuple verbatim
+    when it matches, so nothing moves for Llama or Qwen; it is the architectures whose
+    projections are named differently -- GPT-NeoX's ``query_key_value``, ``dense`` -- that were
+    aborting in PEFT with "Target modules ... not found", after the full model had been
+    allocated on both ranks. Hard-coding here while the other arm discovered was also the one
+    thing that could make the two arms train genuinely different adapters, which is the
+    comparison this file exists to make."""
     from peft import LoraConfig, get_peft_model
     return get_peft_model(
         model,
@@ -1732,7 +1738,7 @@ def apply_lora(model, r: int):
             lora_dropout = 0.0,
             bias = "none",
             task_type = "CAUSAL_LM",
-            target_modules = list(LORA_TARGET_MODULES),
+            target_modules = lora_target_modules(model),
         ),
     )
 
@@ -1757,7 +1763,17 @@ def make_token_batches(tok, args, device):
             for r in rows
         ]
         enc = tok(
-            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
+            texts,
+            return_tensors = "pt",
+            padding = "max_length",
+            truncation = True,
+            max_length = args.seq,
+            # apply_chat_template has already rendered the template's own BOS/EOS into the
+            # text, so the default add_special_tokens=True adds a SECOND set -- a duplicated
+            # BOS on the Llama-style templates. The layer-split arm passes this at its own
+            # tokenizer call for the same reason; without it here the two arms are not
+            # training on the same examples, and neither matches inference.
+            add_special_tokens = False,
         )
         ids = enc.input_ids
         # Padded positions are not text. Without this the target is the padded input, so a short
@@ -1811,6 +1827,14 @@ def _main_data_parallel(args) -> int:
             f"--batch ({args.batch}) and --microbatches ({args.microbatches}) must both "
             f"be divisible by the world size ({world}) so every rank gets equal rows."
         )
+    if args.data:
+        # The same preflight the layer-split path runs, and for the same reason: it is reached
+        # from `main` only on that path, below the dispatch to this function, so an empty or
+        # blank-only jsonl got as far as tokenization -- after both ranks had joined the process
+        # group and allocated a full model each. Fail in a second instead.
+        problem = dataset_problem(args.data)
+        if problem:
+            raise SystemExit(problem)
     use_cpu = os.environ.get("SPARK_PP_CPU", "0") == "1"
     if use_cpu:
         dist.init_process_group("gloo")
@@ -1843,6 +1867,12 @@ def _main_data_parallel(args) -> int:
     # Right padding keeps every real token preceded only by real tokens, so a causal model
     # needs no padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
+    # Seed BEFORE the adapters exist. The only other manual_seed on this path is inside
+    # make_token_batches, which runs after the model is built, so LoRA's A/B matrices were
+    # drawn from an unseeded generator: two identical invocations -- including the documented
+    # WORLD_SIZE=1 control that every two-Spark number is divided by -- started from different
+    # adapter parameters. make_token_batches reseeds for the rows, as the layer-split path does.
+    torch.manual_seed(TRAIN_SEED)
     # rank 0 of a world of 1: the whole stack, embedding and head, on this device.
     model, cfg, _ = build_stage_model(
         args.model, 0, 1, device, shard_load = False, dtype = dtype, log = log
