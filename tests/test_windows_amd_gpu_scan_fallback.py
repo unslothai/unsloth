@@ -556,21 +556,43 @@ assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sent
 # Which variables the caller's shell already has. All-present and all-absent between them run both
 # arms of the finally, but they run the SAME arm for all fifteen at once, so every $hadPrevious*
 # flag holds the same value and a restore consulting the wrong variable's flag still lands on the
-# right branch by luck. The mixed patterns split the flags, which is the only way that shows.
-# Two of them, complementary, so no variable is always on the same side. Not exhaustive on purpose:
-# 2**15 patterns would be a worse test, not a better one, and one pair of complements already
-# separates every variable from every other one it could be cross-wired to.
+# right branch by luck. Separating the flags is the only way that shows.
+#
+# The masks are a binary encoding: pattern k keeps the names whose index has bit k set. Any two
+# distinct indices differ in at least one bit, so for every PAIR of variables there is a mask with
+# one present and the other absent, which is exactly the condition under which a restore reading
+# the wrong variable's flag takes the wrong branch. Fifteen names reach index 14, so four masks
+# cover it, and a sixteenth name is the first that would need a fifth.
+#
+# This replaces an earlier pair of complementary even/odd patterns, which was not enough: two
+# variables of the same parity were present together in one and absent together in the other, so
+# cross-wiring between, say, indices 0 and 2 stayed invisible. Six patterns, not 2**15: exhaustive
+# over PAIRS, which is the failure mode, rather than over subsets, which is not.
+_PRESENCE_MASK_BITS = max((len(_CALLER_ENV_NAMES) - 1).bit_length(), 1)
 _PRESENCE_PATTERNS = {
     "all": lambda i: True,
     "none": lambda i: False,
-    "mixed": lambda i: i % 2 == 0,
-    "mixed_complement": lambda i: i % 2 == 1,
+    **{f"mask{k}": (lambda i, k = k: bool((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
 }
 
 
 def _present_names(pattern: str) -> tuple[str, ...]:
     keep = _PRESENCE_PATTERNS[pattern]
     return tuple(name for i, name in enumerate(_CALLER_ENV_NAMES) if keep(i))
+
+
+def test_the_presence_masks_separate_every_pair():
+    """The property the masks are chosen for, asserted rather than claimed in a comment.
+
+    A restore that consults another variable's $hadPrevious flag only misbehaves when the two
+    disagree, so every pair must be split by at least one pattern. If a name is added and the mask
+    count no longer suffices, this says so instead of the coverage quietly thinning."""
+    masks = [_present_names(p) for p in _PRESENCE_PATTERNS if p.startswith("mask")]
+    for i, a in enumerate(_CALLER_ENV_NAMES):
+        for b in _CALLER_ENV_NAMES[i + 1 :]:
+            assert any(
+                (a in m) != (b in m) for m in masks
+            ), f"no pattern tells {a} apart from {b}, so cross-wiring between them is invisible"
 
 
 def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) -> None:
@@ -655,7 +677,12 @@ def _run_handoff_lifecycle(
         call,
         "throw 'setup exploded'"
         if fails
-        else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",
+        else (
+            "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF; "
+            # Read at the same point, so it is what the child would inherit rather than what
+            # the finally later leaves behind.
+            "$script:SeenLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR"
+        ),
     )
     script = tmp_path / "handoff.ps1"
     script.write_text(
@@ -691,7 +718,7 @@ def _run_handoff_lifecycle(
                 "function Write-StudioLine { param($Message, $ForegroundColor) }",
                 "function Write-ApplicationControlBlocked { param($Message, $Detail) }",
                 "function Exit-InstallFailure { param($Message) 1 }",
-                "$script:SeenByChild = '<never ran>'",
+                "$script:SeenByChild = '<never ran>'; $script:SeenLlamaCppDir = '<never ran>'",
                 "$script:BlockError = $null",
                 # Read right after the setup call; null makes the block return early.
                 "$script:ManagedUnslothCliExit = 0",
@@ -707,6 +734,7 @@ def _run_handoff_lifecycle(
                 "Invoke-HandoffBlock | Out-Null",
                 "@{",
                 "  seen_by_child = $script:SeenByChild",
+                "  seen_llama_cpp_dir = $script:SeenLlamaCppDir",
                 "  block_error = $script:BlockError",
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
@@ -789,11 +817,25 @@ def test_every_saved_variable_in_the_block_is_covered():
     restored around 6981, so covering it means a slice spanning most of install.ps1 -- the venv
     build, the torch install, the llama.cpp fetch -- and stubbing all of it. TMP and TEMP are the
     same shape around the temp probe. All three sit outside this block on both ends."""
-    saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", _handoff_lifecycle_block()))
+    block = _handoff_lifecycle_block()
     covered = {name for name, _ in _CALLER_ENV} | {HANDOFF}
-    assert saved == covered, (
-        "the block saves variables whose restore nothing checks: "
-        f"{sorted(saved - covered)}; and checks ones it no longer saves: {sorted(covered - saved)}"
+    saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", block))
+    # Driven from the RESTORE side too, and that half is what closes the anchor hole. The slice
+    # starts at whichever save happens to be first today, so a save PREPENDED above that line falls
+    # outside it and is invisible to a save-side check, including this guard, whose whole job is to
+    # notice such drift. Its restore cannot escape: the finally is inside the slice by
+    # construction. A prepended save therefore shows up here as a variable the block restores but
+    # never appears to save, which is what stops the anchor's identity being load-bearing.
+    restored = set(re.findall(r"\$env:(\w+) = \$previous\w+", block))
+    assert restored == covered, (
+        "the block restores variables this file does not claim to cover: "
+        f"{sorted(restored - covered)} (a save prepended above the slice anchor looks like this); "
+        f"and claims ones it no longer restores: {sorted(covered - restored)}"
+    )
+    assert saved == restored, (
+        "saves and restores in the block disagree: saved but never restored "
+        f"{sorted(saved - restored)}; restored but not saved inside the slice "
+        f"{sorted(restored - saved)}"
     )
 
 
@@ -849,6 +891,11 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
     )
     # Past the bail, unlike the case above: the directory exists, so the block runs on to the child.
     assert out["seen_by_child"] == "gfx1151", "the block did not reach the setup call"
+    # Reaching the child is not the same as handing it the directory. Asserted as the resolved
+    # path, since that is what the block writes and what setup.ps1 goes on to read.
+    assert out["seen_llama_cpp_dir"] == str(
+        _existing_llama_dir(tmp_path).resolve()
+    ), "the child did not inherit the --with-llama-cpp-dir directory"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored"
     _assert_caller_env_restored(out, _present_names(caller_env), "the llama.cpp handoff")
 
