@@ -12,6 +12,7 @@ import {
   desktopUpdateBundleStatus,
   downloadDesktopUpdate,
   installDesktopUpdate,
+  listenDesktopUpdateDownload,
   sameUpdateVersion,
   type DesktopUpdateMetadata,
 } from "@/lib/tauri-updater";
@@ -80,6 +81,11 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
 const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
 const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const BUNDLE_DOWNLOAD_POLL_MS = 500;
+// A native download that stalls without ever clearing the flag would otherwise
+// hold the update in this wait forever, with nothing on screen to say so. The
+// bound hands the attempt back to download_desktop_update, which either takes the
+// download over or reports why it cannot.
+const BUNDLE_DOWNLOAD_WAIT_MS = 10 * 60 * 1000;
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
@@ -361,19 +367,33 @@ export function useTauriUpdate(isExternalServer = false) {
     setUpdateProgress(0);
     const version = updateRef.current?.version;
     if (!version) throw new Error("No desktop update has been checked.");
-    for (;;) {
-      // A bundle retained by an earlier attempt is reused; the update check
-      // rehydrates it, so a retry usually stops here.
-      const bundle = await desktopUpdateBundleStatus();
-      if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
-        setUpdateProgress(100);
-        return;
+    // Attached only once a download really is in flight, and released whichever way
+    // the wait ends, so the ordinary path pays neither the import nor the listener.
+    let unlisten: (() => void) | null = null;
+    const waitUntil = Date.now() + BUNDLE_DOWNLOAD_WAIT_MS;
+    try {
+      for (;;) {
+        // A bundle retained by an earlier attempt is reused; the update check
+        // rehydrates it, so a retry usually stops here.
+        const bundle = await desktopUpdateBundleStatus();
+        if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
+          setUpdateProgress(100);
+          return;
+        }
+        // A webview reload during a download leaves the native one running with no
+        // listener attached, and download_desktop_update refuses a second one. Wait
+        // that out rather than failing the whole update on it.
+        if (!bundle.downloading) break;
+        if (Date.now() >= waitUntil) break;
+        if (!unlisten) {
+          unlisten = await listenDesktopUpdateDownload(version, setUpdateProgress);
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, BUNDLE_DOWNLOAD_POLL_MS),
+        );
       }
-      // A webview reload during a download leaves the native one running with no
-      // listener attached, and download_desktop_update refuses a second one. Wait
-      // that out rather than failing the whole update on it.
-      if (!bundle.downloading) break;
-      await new Promise((resolve) => setTimeout(resolve, BUNDLE_DOWNLOAD_POLL_MS));
+    } finally {
+      unlisten?.();
     }
     await downloadDesktopUpdate(version, setUpdateProgress);
   }

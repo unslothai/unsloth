@@ -43,20 +43,35 @@ export async function desktopUpdateBundleStatus(): Promise<DesktopUpdateBundleSt
   return invoke<DesktopUpdateBundleStatus>("desktop_update_bundle_status");
 }
 
-export async function downloadDesktopUpdate(
+/**
+ * Progress for the one bundle download in flight, whoever started it.
+ *
+ * Split out of `downloadDesktopUpdate` because a webview reload leaves the native
+ * download running with nothing listening: the update that comes back has to wait
+ * that one out, and has no download of its own to report on.
+ */
+export async function listenDesktopUpdateDownload(
   expectedVersion: string,
   onProgress: (percent: number) => void,
-): Promise<void> {
-  const [{ invoke }, { listen }] = await Promise.all([
-    import("@tauri-apps/api/core"),
-    import("@tauri-apps/api/event"),
-  ]);
-  const unlisten = await listen<DesktopUpdateDownloadEvent>(
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<DesktopUpdateDownloadEvent>(
     "desktop-update-download",
     (event) => {
       if (!sameUpdateVersion(event.payload.version, expectedVersion)) return;
       onProgress(downloadPercent(event.payload.downloaded, event.payload.total));
     },
+  );
+}
+
+export async function downloadDesktopUpdate(
+  expectedVersion: string,
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const unlisten = await listenDesktopUpdateDownload(
+    expectedVersion,
+    onProgress,
   );
   try {
     await invoke("download_desktop_update");

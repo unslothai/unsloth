@@ -8,6 +8,14 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const STARTUP_DELAY_MS = 5_000;
 const PERIODIC_INTERVAL_MS = 60 * 60 * 1_000;
+const BUNDLE_POLL_MS = 500;
+const BUNDLE_WAIT_MS = 10 * 60 * 1_000;
+
+interface BundleState {
+  version: string | null;
+  downloaded: boolean;
+  downloading: boolean;
+}
 
 type UpdateController = {
   checkForUpdate: () => Promise<void>;
@@ -20,6 +28,10 @@ interface HookHarnessOptions {
   failCheckAt?: number;
   noUpdateAt?: number;
   tauri?: boolean;
+  /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
+  backendUpdate?: "completes" | "fails";
+  /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
+  bundleStates?: BundleState[];
 }
 
 function createEventTarget() {
@@ -184,6 +196,7 @@ function createHookReact() {
   const effects: Array<() => unknown> = [];
   const cleanups: Array<() => void> = [];
   const statusUpdates: string[] = [];
+  const progressUpdates: number[] = [];
   let stateIndex = 0;
   return {
     react: {
@@ -194,6 +207,8 @@ function createHookReact() {
           (next: unknown) => {
             if (index === 0 && typeof next === "string")
               statusUpdates.push(next);
+            // Progress is the hook's only numeric state, so this needs no index.
+            if (typeof next === "number") progressUpdates.push(next);
           },
         ];
       },
@@ -213,13 +228,20 @@ function createHookReact() {
     unmount(): void {
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
+    progressUpdates,
     statusUpdates,
   };
 }
 
 function hookHarness(
   t: TestContext,
-  { failCheckAt, noUpdateAt, tauri = true }: HookHarnessOptions = {},
+  {
+    failCheckAt,
+    noUpdateAt,
+    tauri = true,
+    backendUpdate = "fails",
+    bundleStates = [{ version: null, downloaded: false, downloading: false }],
+  }: HookHarnessOptions = {},
 ) {
   const browser = installBrowserClock();
   const host = createHookReact();
@@ -228,6 +250,26 @@ function hookHarness(
     browser.restore();
   });
   let checks = 0;
+  let polls = 0;
+  let relaunches = 0;
+  const events = new Map<string, Set<(event: { payload: unknown }) => void>>();
+  const emit = (name: string, payload?: unknown) => {
+    for (const callback of events.get(name) ?? []) callback({ payload });
+  };
+  // What the hook does with the download it is only watching, not running.
+  const download: {
+    attached: string[];
+    released: number;
+    started: number;
+    report: (percent: number) => void;
+  } = {
+    attached: [],
+    released: 0,
+    started: 0,
+    report: () => {
+      throw new Error("no download listener is attached");
+    },
+  };
   const hook = loadWithStubs<{
     useTauriUpdate: () => UpdateController;
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
@@ -247,10 +289,28 @@ function hookHarness(
           rawJson: {},
         });
       },
-      desktopUpdateBundleStatus: () => Promise.resolve({ downloaded: false }),
-      downloadDesktopUpdate: () => Promise.resolve(),
+      desktopUpdateBundleStatus: () => {
+        const state = bundleStates[Math.min(polls, bundleStates.length - 1)];
+        polls += 1;
+        return Promise.resolve(state);
+      },
+      downloadDesktopUpdate: () => {
+        download.started += 1;
+        return Promise.resolve();
+      },
       installDesktopUpdate: () => Promise.resolve(),
-      sameUpdateVersion: () => true,
+      listenDesktopUpdateDownload: (
+        version: string,
+        onProgress: (percent: number) => void,
+      ) => {
+        download.attached.push(version);
+        download.report = onProgress;
+        return Promise.resolve(() => {
+          download.released += 1;
+        });
+      },
+      sameUpdateVersion: (left: string | null | undefined, right: string) =>
+        Boolean(left) && left === right,
     },
     "@/lib/toast": { toast: { error: () => undefined } },
     "@tauri-apps/api/core": {
@@ -263,12 +323,37 @@ function hookHarness(
           };
         }
         if (command === "desktop_update_cleanup_armed") return true;
+        if (command === "start_backend_update") {
+          // The command itself is what decides the backend step, so a test that
+          // means to fail it says so here rather than leaning on a stub that
+          // happens to throw somewhere earlier in the same path.
+          if (backendUpdate === "fails")
+            throw new Error("backend update failed");
+          queueMicrotask(() => emit("update-complete"));
+          return undefined;
+        }
+        if (command === "set_renderer_activity") return undefined;
+        if (command === "mark_in_app_relaunch") return undefined;
         throw new Error(`unexpected invoke: ${command}`);
       },
     },
     "@tauri-apps/api/event": {
-      listen: async () => {
-        throw new Error("backend update failed");
+      listen: async (
+        name: string,
+        callback: (event: { payload: unknown }) => void,
+      ) => {
+        const registered =
+          events.get(name) ?? new Set<(event: { payload: unknown }) => void>();
+        registered.add(callback);
+        events.set(name, registered);
+        return () => {
+          registered.delete(callback);
+        };
+      },
+    },
+    "@tauri-apps/plugin-process": {
+      relaunch: async () => {
+        relaunches += 1;
       },
     },
   });
@@ -278,7 +363,11 @@ function hookHarness(
     browser,
     checks: () => checks,
     controller,
+    download,
     host,
+    polls: () => polls,
+    progressUpdates: host.progressUpdates,
+    relaunches: () => relaunches,
     statusUpdates: host.statusUpdates,
   };
 }
@@ -362,7 +451,8 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
 
-  // The event listener the classic path registers is what fails here.
+  // start_backend_update itself refuses, which is the failure the classic path
+  // reports rather than an accident of how the listeners are stubbed.
   await hook.controller.installUpdate();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "error");
@@ -373,6 +463,66 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.checks(), 1);
   assert.equal(hook.statusUpdates.at(-1), "error");
+});
+
+test("a bundle download the update did not start reports its progress", async (t) => {
+  const hook = hookHarness(t, {
+    backendUpdate: "completes",
+    // A webview reload left a native download running; download_desktop_update
+    // would refuse a second one, so the update watches this one instead.
+    bundleStates: [
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: false, downloading: true },
+      { version: "2.0.0", downloaded: true, downloading: false },
+    ],
+  });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  const installing = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+  hook.download.report(40);
+
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  // One listener for the whole wait, however many polls it takes.
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  await installing;
+
+  assert.equal(hook.polls(), 3);
+  // Watched to the end, not restarted, and the listener let go either way.
+  assert.equal(hook.download.started, 0);
+  assert.equal(hook.download.released, 1);
+  assert.ok(hook.progressUpdates.includes(40));
+  assert.equal(hook.progressUpdates.at(-1), 100);
+  assert.equal(hook.relaunches(), 1);
+});
+
+test("waiting out a bundle download the update did not start is bounded", async (t) => {
+  const hook = hookHarness(t, {
+    backendUpdate: "completes",
+    // Stuck: the flag never clears, so without the bound the update waits forever.
+    bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
+  });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  const installing = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(hook.download.attached, ["2.0.0"]);
+
+  hook.browser.advance(BUNDLE_WAIT_MS);
+  hook.browser.fireTimeouts(BUNDLE_POLL_MS);
+  await settle();
+  await installing;
+
+  // Handed back to the real download, which is what surfaces the failure.
+  assert.equal(hook.download.started, 1);
+  assert.equal(hook.download.released, 1);
 });
 
 test("restoring an overdue hidden window checks immediately", async (t) => {
