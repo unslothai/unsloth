@@ -146,6 +146,35 @@ def test_viewer_masks_a_private_key_across_requests(client):
     assert response.json()["lines"][-1] == "ordinary: kept"
 
 
+def test_viewer_keeps_private_key_state_during_a_large_append(client, monkeypatch):
+    from utils import debug_log_reader
+
+    monkeypatch.setattr(debug_log_reader, "MAX_APPEND_BYTES", 256)
+    path = _seed_server_log("before\n")
+    cursor = client.get("/api/settings/debug/logs").json()["cursor"]
+    with path.open("a") as handle:
+        handle.write(
+            "-----BEGIN PRIVATE KEY-----\n"
+            + "opaque-body\n" * 100
+            + "-----END PRIVATE KEY-----\nordinary: kept\n"
+        )
+
+    lines = []
+    for _ in range(30):
+        response = client.get("/api/settings/debug/logs", params = {"cursor": cursor})
+        assert response.status_code == 200
+        assert "opaque-body" not in response.text
+        page = response.json()
+        assert page["dropped_bytes"] == 0
+        lines.extend(page["lines"])
+        cursor = page["cursor"]
+        if not page["more_pending"]:
+            break
+    else:
+        pytest.fail("the bounded pages did not finish")
+    assert lines[-1] == "ordinary: kept"
+
+
 @pytest.mark.parametrize(
     "body,expected",
     [

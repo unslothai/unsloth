@@ -180,7 +180,9 @@ def test_a_writer_outrunning_the_reader_is_bounded(tmp_path):
         for i in range(60_000):
             handle.write(f"flood {i} {'y' * 34}\n")
     result = read_since(path, cursor)
-    assert result.dropped_bytes > 0
+    assert result.dropped_bytes == 0
+    assert result.more_pending
+    assert result.lines[0].startswith("flood 0 ")
     assert len(result.lines) <= 2000
 
 
@@ -257,7 +259,7 @@ def test_an_unterminated_record_larger_than_the_window_still_shows(tmp_path):
     assert result.lines and result.lines[-1].endswith(" LIVE")
 
 
-def test_an_oversized_append_with_no_newline_is_not_swallowed(tmp_path):
+def test_an_oversized_append_is_omitted_across_bounded_pages(tmp_path):
     path = tmp_path / "a.log"
     path.write_text("start\n")
     cursor = read_tail(path).cursor
@@ -265,10 +267,13 @@ def test_an_oversized_append_with_no_newline_is_not_swallowed(tmp_path):
         handle.write("Q" * (MAX_APPEND_BYTES + 50_000) + " END\n")
 
     result = read_since(path, cursor)
-    assert result.lines, "the append must not vanish while the cursor moves past it"
-    assert result.lines[-1].endswith(" END")
-    assert result.dropped_bytes > 0
-    assert read_since(path, result.cursor).lines == []
+    assert result.lines == ["[oversized log record omitted]"]
+    assert result.more_pending
+    assert result.dropped_bytes == 0
+    second = read_since(path, result.cursor)
+    assert second.lines == []
+    assert not second.more_pending
+    assert read_since(path, second.cursor).lines == []
 
 
 def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path):
@@ -379,3 +384,112 @@ def test_a_cursor_without_issued_redaction_state_cannot_skip_the_opener(tmp_path
     result = read_since(path, forged)
     assert result.reset and result.reset_reason == "cursor_stale"
     assert "opaque-key-body" not in "\n".join(result.lines)
+
+
+@pytest.mark.parametrize(
+    "opener,body,closer",
+    [
+        ("-----BEGIN PRIVATE KEY-----\n", "opaque-body\n", "-----END PRIVATE KEY-----\n"),
+        ("password: |\n", "  opaque-body\n", ""),
+        ('password="first\n', "opaque-body\n", 'last-secret"\n'),
+    ],
+)
+@pytest.mark.parametrize("partial_tail", [False, True])
+def test_large_appends_keep_secret_context_in_bounded_pages(
+    tmp_path, monkeypatch, opener, body, closer, partial_tail
+):
+    from utils import debug_log_reader
+
+    monkeypatch.setattr(debug_log_reader, "MAX_APPEND_BYTES", 256)
+    path = tmp_path / "a.log"
+    path.write_text("befo" if partial_tail else "before\n")
+    cursor = read_tail(path).cursor
+    with path.open("a") as handle:
+        handle.write(
+            ("re\n" if partial_tail else "") + opener + body * 100 + closer + "ordinary: kept\n"
+        )
+
+    real_open = open
+    read_sizes = []
+
+    class CountedFile:
+        def __init__(self, *args, **kwargs):
+            self.handle = real_open(*args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def seek(self, offset):
+            return self.handle.seek(offset)
+
+        def read(self, size):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    monkeypatch.setattr(debug_log_reader, "open", CountedFile, raising = False)
+    all_lines = []
+    for _ in range(30):
+        page = read_since(path, cursor)
+        assert page.dropped_bytes == 0
+        assert "opaque-body" not in "\n".join(page.lines)
+        assert "last-secret" not in "\n".join(page.lines)
+        assert read_since(path, cursor).lines == page.lines
+        all_lines.extend(page.lines)
+        cursor = page.cursor
+        if not page.more_pending:
+            break
+    else:
+        pytest.fail("the bounded pages did not finish")
+    assert all_lines[-1] == "ordinary: kept"
+    assert all(0 < size <= 256 for size in read_sizes)
+    assert read_since(path, cursor).lines == []
+
+
+@pytest.mark.parametrize(
+    "oversized,body,closer",
+    [
+        ("-----BEGIN PRIVATE KEY-----" + "x" * 700, "opaque-body\n", "-----END PRIVATE KEY-----\n"),
+        (
+            "x" * 248 + "-----BEGIN PRIVATE KEY-----" + "x" * 700,
+            "opaque-body\n",
+            "-----END PRIVATE KEY-----\n",
+        ),
+        ("x" * 700 + " password: |", "  opaque-body\n", ""),
+        ('password="' + "x" * 700, "opaque-body\n", 'last-secret"\n'),
+        ("tool --api-key " + "x" * 700 + "\\", "opaque-body\\\n", "last-secret\n"),
+    ],
+)
+def test_omitted_records_keep_secret_context_across_pages(
+    tmp_path, monkeypatch, oversized, body, closer
+):
+    from utils import debug_log_reader
+
+    monkeypatch.setattr(debug_log_reader, "MAX_APPEND_BYTES", 256)
+    path = tmp_path / "a.log"
+    path.write_text("before\n")
+    cursor = read_tail(path).cursor
+    with path.open("a") as handle:
+        handle.write(oversized)
+
+    pages = []
+    for _ in range(30):
+        page = read_since(path, cursor)
+        pages.extend(page.lines)
+        cursor = page.cursor
+        if not page.more_pending:
+            break
+    else:
+        pytest.fail("the oversized record did not finish")
+    assert pages == ["[oversized log record omitted]"]
+    assert read_since(path, cursor).cursor == cursor
+
+    with path.open("a") as handle:
+        handle.write("\n" + body + closer + "ordinary: kept\n")
+    page = read_since(path, cursor)
+    assert "opaque-body" not in "\n".join(page.lines)
+    assert "last-secret" not in "\n".join(page.lines)
+    assert page.lines[-1] == "ordinary: kept"
+    assert read_since(path, cursor).lines == page.lines
