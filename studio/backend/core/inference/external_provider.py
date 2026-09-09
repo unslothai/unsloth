@@ -815,7 +815,9 @@ def _safe_fetch_image_for_gemini_sync(
 
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
+        _explicit_proxy_applies,
         _NoRedirect,
+        _pinned_netloc,
         _SNIHTTPSHandler,
         _validate_and_resolve_host,
     )
@@ -852,7 +854,7 @@ def _safe_fetch_image_for_gemini_sync(
         return None
     parsed, current_host, current_port = parsed_info
     current_url = url
-    ok, reason, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+    ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
     if not ok:
         logger.warning(
             "Gemini image fetch: refusing host=%s reason=%s",
@@ -867,14 +869,15 @@ def _safe_fetch_image_for_gemini_sync(
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
-        ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-        ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-        pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+        pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
-        opener = urllib.request.build_opener(
-            _NoRedirect,
-            _SNIHTTPSHandler(current_host),
-        )
+        # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
+        # pinned URL's IP. A proxied request reaches the origin through the proxy.
+        proxied = _explicit_proxy_applies("https", _pinned_netloc(current_host, cp.port))
+        handlers = [_NoRedirect, _SNIHTTPSHandler(current_host, () if proxied else pinned_ips)]
+        if not proxied:
+            handlers.append(urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
             headers = {"Host": current_host},
@@ -906,7 +909,7 @@ def _safe_fetch_image_for_gemini_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+            ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
             if not ok2:
                 logger.warning(
                     "Gemini image fetch: refusing redirect host=%s reason=%s",
