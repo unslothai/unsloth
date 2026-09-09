@@ -15,13 +15,17 @@ later caller cannot forget.
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
+from copy import copy
 import json
 import os
+import secrets
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from utils.log_redaction import redact_log_text
+from utils.log_redaction import StreamingLogRedactor
 
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
@@ -34,6 +38,18 @@ MAX_LINE_BYTES = 32_768
 MAX_LINES_PER_RESPONSE = 2_000
 
 _CURSOR_PREFIX = "c1."
+MAX_CURSOR_STATES = 256
+
+
+@dataclass
+class _CursorState:
+    path: str
+    redactor: StreamingLogRedactor
+    partial_record: bool
+
+
+_CURSOR_STATES: OrderedDict[str, _CursorState] = OrderedDict()
+_CURSOR_LOCK = threading.Lock()
 
 
 @dataclass
@@ -54,8 +70,15 @@ def _file_key(stat: os.stat_result, name: str) -> str:
     return f"{name}|{stat.st_dev}|{stat.st_ino}"
 
 
-def encode_cursor(key: str, offset: int) -> str:
-    raw = json.dumps({"k": key, "o": int(offset)}, separators = (",", ":")).encode("utf-8")
+def encode_cursor(
+    key: str,
+    offset: int,
+    state_id: Optional[str] = None,
+) -> str:
+    payload = {"k": key, "o": int(offset)}
+    if state_id is not None:
+        payload["s"] = state_id
+    raw = json.dumps(payload, separators = (",", ":")).encode("utf-8")
     return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
@@ -75,6 +98,31 @@ def decode_cursor(cursor: Optional[str]) -> Optional[tuple[str, int]]:
     if not isinstance(key, str) or offset < 0:
         return None
     return key, offset
+
+
+def _remember_cursor(
+    path: Path,
+    key: str,
+    offset: int,
+    redactor: StreamingLogRedactor,
+    partial_record: bool = False,
+) -> str:
+    cursor = encode_cursor(key, offset, secrets.token_urlsafe(16))
+    state = _CursorState(os.path.abspath(path), copy(redactor), partial_record)
+    with _CURSOR_LOCK:
+        _CURSOR_STATES[cursor] = state
+        while len(_CURSOR_STATES) > MAX_CURSOR_STATES:
+            _CURSOR_STATES.popitem(last = False)
+    return cursor
+
+
+def _restore_cursor(path: Path, cursor: str) -> Optional[_CursorState]:
+    with _CURSOR_LOCK:
+        state = _CURSOR_STATES.get(cursor)
+        if state is None or state.path != os.path.abspath(path):
+            return None
+        _CURSOR_STATES.move_to_end(cursor)
+        return _CursorState(state.path, copy(state.redactor), state.partial_record)
 
 
 def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bool]:
@@ -98,26 +146,32 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     lines: list[str] = []
     for line in raw:
         line = line.rstrip("\r")
-        # An enormous line is split rather than dropped, so nothing is lost.
-        while len(line) > MAX_LINE_BYTES:
-            lines.append(line[:MAX_LINE_BYTES])
-            line = line[MAX_LINE_BYTES:]
         lines.append(line)
     return lines, truncated_head
 
 
-def _redact(lines: list[str]) -> list[str]:
-    return [redact_log_text(line) for line in lines]
+def _redact(lines: list[str], redactor: StreamingLogRedactor) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        # Redact physical records before splitting them for display.
+        line = redactor.redact_record(line)
+        while len(line) > MAX_LINE_BYTES:
+            result.append(line[:MAX_LINE_BYTES])
+            line = line[MAX_LINE_BYTES:]
+        result.append(line)
+    return result
 
 
 def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     max_lines = max(1, min(int(max_lines), MAX_TAIL_LINES))
     stat = path.stat()
     size = stat.st_size
+    key = _file_key(stat, path.name)
+    redactor = StreamingLogRedactor()
     result = ReadResult(size_bytes = size)
-    result.cursor = encode_cursor(_file_key(stat, path.name), size)
     result.reset = True
     if size == 0:
+        result.cursor = _remember_cursor(path, key, size, redactor)
         return result
 
     chunks: list[bytes] = []
@@ -139,10 +193,12 @@ def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     data = b"".join(chunks)
     lines, truncated = _split_lines(data, drop_partial_head = pos > 0)
     result.truncated_head = truncated
+    lines = _redact(lines, redactor)
     if len(lines) > max_lines:
         lines = lines[-max_lines:]
         result.truncated_head = True
-    result.lines = _redact(lines[-MAX_LINES_PER_RESPONSE:])
+    result.lines = lines[-MAX_LINES_PER_RESPONSE:]
+    result.cursor = _remember_cursor(path, key, size, redactor, not data.endswith(b"\n"))
     return result
 
 
@@ -173,9 +229,19 @@ def read_since(
         result.reset_reason = "truncated"
         return result
 
+    state = _restore_cursor(path, cursor)
+    if state is None:
+        result = read_tail(path, max_lines)
+        result.reset_reason = "cursor_stale"
+        return result
+
     result = ReadResult(size_bytes = size)
     if offset == size:
-        result.cursor = encode_cursor(current_key, offset)
+        result.cursor = cursor
+        return result
+    if state.partial_record:
+        result = read_tail(path, max_lines)
+        result.reset_reason = "partial_record"
         return result
 
     start = offset
@@ -191,7 +257,7 @@ def read_since(
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
         if len(data) < MAX_LINE_BYTES:
-            result.cursor = encode_cursor(current_key, start)
+            result.cursor = _remember_cursor(path, current_key, start, state.redactor)
             return result
         consumed = len(data)
         body = data
@@ -214,6 +280,8 @@ def read_since(
 
     lines, truncated = _split_lines(body, drop_partial_head = result.dropped_bytes > 0)
     result.truncated_head = truncated
-    result.lines = _redact(lines)
-    result.cursor = encode_cursor(current_key, start + consumed)
+    result.lines = _redact(lines, state.redactor)
+    result.cursor = _remember_cursor(
+        path, current_key, start + consumed, state.redactor, not body.endswith(b"\n")
+    )
     return result

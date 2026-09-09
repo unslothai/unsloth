@@ -133,6 +133,19 @@ def test_credentials_in_the_log_never_reach_the_response(client):
         assert secret not in text
 
 
+def test_viewer_masks_a_private_key_across_requests(client):
+    path = _seed_server_log("-----BEGIN PRIVATE KEY-----\n")
+    first = client.get("/api/settings/debug/logs").json()
+    with path.open("a") as handle:
+        handle.write("opaque-key-body\n-----END PRIVATE KEY-----\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs", params = {"cursor": first["cursor"]})
+
+    assert response.status_code == 200
+    assert "opaque-key-body" not in response.text
+    assert response.json()["lines"][-1] == "ordinary: kept"
+
+
 def test_an_api_key_session_cannot_read_the_logs():
     """Log lines and a local realpath are UI-operator material, not something a
     remote API key should be able to pull."""

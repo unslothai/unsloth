@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -278,3 +280,102 @@ def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path)
         encoding = "utf-8",
     )
     assert "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345" not in "\n".join(read_tail(path).lines)
+
+
+@pytest.mark.parametrize(
+    "opener,body,closer",
+    [
+        ("-----BEGIN PRIVATE KEY-----\n", "opaque-key-body\n", "-----END PRIVATE KEY-----\n"),
+        ("PASSWORD: |\n", "  opaque-password-body\n", ""),
+        ('password="first-value\n', "opaque-quoted-body\n", 'last-value"\n'),
+    ],
+)
+def test_multiline_credentials_stay_masked_across_polls(tmp_path, opener, body, closer):
+    path = tmp_path / "a.log"
+    path.write_text("before\n" + opener)
+    first = read_tail(path)
+    idle = read_since(path, first.cursor)
+    assert idle.lines == []
+
+    with path.open("a") as handle:
+        handle.write(body + closer + "ordinary: kept\n")
+    result = read_since(path, idle.cursor)
+    assert "opaque-" not in "\n".join(result.lines)
+    assert "last-value" not in "\n".join(result.lines)
+    assert result.lines[-1] == "ordinary: kept"
+    assert read_since(path, idle.cursor).lines == result.lines
+
+
+def test_tail_redacts_context_before_applying_the_line_limit(tmp_path):
+    path = tmp_path / "a.log"
+    path.write_text("-----BEGIN PRIVATE KEY-----\nopaque-key-body\n")
+
+    assert read_tail(path, max_lines = 1).lines == ["<redacted>"]
+
+
+def test_redaction_state_survives_the_response_line_limit(tmp_path, monkeypatch):
+    from utils import debug_log_reader
+
+    monkeypatch.setattr(debug_log_reader, "MAX_LINES_PER_RESPONSE", 2)
+    path = tmp_path / "a.log"
+    path.write_text("before\n")
+    cursor = read_tail(path).cursor
+    with path.open("a") as handle:
+        handle.write("ordinary\n-----BEGIN PRIVATE KEY-----\nopaque-key-body\n")
+
+    first = read_since(path, cursor)
+    assert first.more_pending
+    assert read_since(path, first.cursor).lines == ["<redacted>"]
+
+
+def test_evicted_redaction_state_restarts_from_a_masked_tail(tmp_path, monkeypatch):
+    from utils import debug_log_reader
+
+    monkeypatch.setattr(debug_log_reader, "MAX_CURSOR_STATES", 1)
+    path = tmp_path / "a.log"
+    path.write_text("-----BEGIN PRIVATE KEY-----\n")
+    cursor = read_tail(path).cursor
+    other = tmp_path / "other.log"
+    other.write_text("ordinary\n")
+    read_tail(other)
+    with path.open("a") as handle:
+        handle.write("opaque-key-body\n")
+
+    result = read_since(path, cursor)
+    assert result.reset and result.reset_reason == "cursor_stale"
+    assert "opaque-key-body" not in "\n".join(result.lines)
+
+
+def test_a_completed_partial_tail_is_redacted_from_its_start(tmp_path):
+    path = tmp_path / "a.log"
+    path.write_text("pass")
+    cursor = read_tail(path).cursor
+    with path.open("a") as handle:
+        handle.write("word=opaque-password\n")
+
+    result = read_since(path, cursor)
+    assert result.reset and result.reset_reason == "partial_record"
+    assert result.lines == ["password=<redacted>"]
+
+
+def test_a_long_credential_is_redacted_before_display_splitting(tmp_path):
+    from utils.debug_log_reader import MAX_LINE_BYTES
+
+    path = tmp_path / "a.log"
+    path.write_text('password="' + "x" * (MAX_LINE_BYTES + 1) + 'credential-suffix"\n')
+
+    assert read_tail(path).lines == ['password="<redacted>"']
+
+
+def test_a_cursor_without_issued_redaction_state_cannot_skip_the_opener(tmp_path):
+    from utils.debug_log_reader import decode_cursor, encode_cursor
+
+    path = tmp_path / "a.log"
+    opener = "-----BEGIN PRIVATE KEY-----\n"
+    path.write_text(opener + "opaque-key-body\n")
+    key, _ = decode_cursor(read_tail(path).cursor)
+    forged = encode_cursor(key, len(opener))
+
+    result = read_since(path, forged)
+    assert result.reset and result.reset_reason == "cursor_stale"
+    assert "opaque-key-body" not in "\n".join(result.lines)
