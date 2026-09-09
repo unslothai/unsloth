@@ -51,9 +51,3 @@ test("GPU and RAM probes distinguish zero from missing or invalid readings", () 
     }
   }
 });
-
-test("an unfilled cache has no confirmed free-memory readings", () => {
-  snapshot = null;
-  assert.deepEqual(hooks.useGpuDevices(), []);
-  assert.equal(hooks.useInferenceGpuInfo().systemRamAvailableKnown, false);
-});

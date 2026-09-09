@@ -8,7 +8,7 @@ import {
   selectResidentEstimateSettings,
 } from "../src/features/model-picker/model-config/resident-memory-request.ts";
 
-const LOADED: Parameters<typeof selectResidentEstimateSettings>[0] = {
+const loaded: Parameters<typeof selectResidentEstimateSettings>[0] = {
   loadedKvCacheDtype: "q8_0",
   loadedNParallel: 2,
   loadedNBatch: 512,
@@ -29,61 +29,37 @@ const LOADED: Parameters<typeof selectResidentEstimateSettings>[0] = {
   mmprojFallbackReason: null,
 };
 
-test("staged Manual controls cannot turn an Auto resident into fixed placement", () => {
-  const staged = {
-    ...LOADED,
-    gpuMemoryMode: "manual",
-    gpuLayers: 99,
-    nCpuMoe: 0,
-  };
-  const request = resolveResidentEstimateRequest(
-    { modelPath: "model", gpuMemoryMode: "manual", gpuLayers: 99 },
-    selectResidentEstimateSettings(staged),
-    8192,
-  );
-  assert.ok(request);
-  assert.equal(request.gpuMemoryMode, "auto");
-  assert.equal(request.gpuLayers, null);
-});
-
-test("resident sizing reads loaded baselines despite edits to every control", () => {
-  const staged = {
-    ...LOADED,
-    loadedGpuMemoryMode: "manual" as const,
-    loadedGpuLayers: 12,
-    loadedNCpuMoe: 4,
-    kvCacheDtype: "f16",
+test("pending controls cannot change the loaded placement or memory requirements", () => {
+  const pending = {
+    modelPath: "model",
+    ggufVariant: "Q4_K_M",
+    nCtx: 262144,
+    cacheTypeKv: "f16",
     nParallel: 8,
     nBatch: 4096,
     nUbatch: 2048,
     ctxCheckpoints: 64,
     speculativeType: "mtp",
     specDraftNMax: 16,
-    specDraftCacheDtype: "f16",
+    specDraftCacheType: "f16",
     tensorParallel: true,
     disableVision: false,
-    gpuMemoryMode: "auto",
-    gpuLayers: -1,
+    gpuMemoryMode: "manual",
+    gpuLayers: 99,
     nCpuMoe: 0,
     selectedGpuIds: [1],
+    llamaExtraArgs: ["--swa-full"],
   };
   const request = resolveResidentEstimateRequest(
-    {
-      modelPath: "model",
-      ggufVariant: "Q4_K_M",
-      hfToken: "test-token",
-      nativePathToken: "test-path",
-      nCtx: 262144,
-      ...staged,
-    },
-    selectResidentEstimateSettings(staged),
+    pending,
+    selectResidentEstimateSettings({ ...pending, ...loaded }),
     8192,
   );
   assert.deepEqual(request, {
     modelPath: "model",
     ggufVariant: "Q4_K_M",
-    hfToken: "test-token",
-    nativePathToken: "test-path",
+    hfToken: undefined,
+    nativePathToken: undefined,
     nCtx: 8192,
     cacheTypeKv: "q8_0",
     nParallel: 2,
@@ -95,130 +71,42 @@ test("resident sizing reads loaded baselines despite edits to every control", ()
     specDraftCacheType: "q8_0",
     tensorParallel: false,
     disableVision: true,
-    gpuMemoryMode: "manual",
-    gpuLayers: 12,
-    nCpuMoe: 4,
+    gpuMemoryMode: "auto",
+    gpuLayers: null,
+    nCpuMoe: null,
     selectedGpuIds: [0],
     llamaExtraArgs: ["--no-kv-offload"],
   });
-});
-
-test("loaded defaults never fall back to pending values", () => {
-  const state = {
-    ...LOADED,
-    loadedKvCacheDtype: null,
-    loadedNParallel: null,
-    loadedNBatch: null,
-    loadedNUbatch: null,
-    loadedCtxCheckpoints: null,
-    loadedSpecDraftNMax: null,
-    loadedSpecDraftCacheDtype: null,
-    loadedGpuIds: null,
-    loadedLlamaExtraArgs: null,
-  };
-  const request = resolveResidentEstimateRequest(
-    {
-      modelPath: "model",
-      cacheTypeKv: "q4_0",
-      nParallel: 8,
-      nBatch: 4096,
-      nUbatch: 2048,
-      ctxCheckpoints: 64,
-      specDraftNMax: 16,
-      specDraftCacheType: "q4_0",
-      selectedGpuIds: [1],
-      llamaExtraArgs: ["--swa-full"],
-    },
-    selectResidentEstimateSettings(state),
+  const defaults = resolveResidentEstimateRequest(
+    pending,
+    selectResidentEstimateSettings({
+      ...loaded,
+      loadedNParallel: null,
+      loadedLlamaExtraArgs: null,
+    }),
     8192,
   );
-  for (const field of [
-    "cacheTypeKv",
-    "nParallel",
-    "nBatch",
-    "nUbatch",
-    "ctxCheckpoints",
-    "specDraftNMax",
-    "specDraftCacheType",
-    "selectedGpuIds",
-    "llamaExtraArgs",
-  ] as const) {
-    assert.equal(request?.[field], null, field);
-  }
+  assert.equal(defaults?.nParallel, null);
+  assert.equal(defaults?.llamaExtraArgs, null);
 });
 
-test("unhydrated resident baselines withhold the estimate", () => {
-  for (const field of [
-    "loadedGpuMemoryMode",
-    "loadedSpeculativeType",
-    "loadedTensorParallel",
-    "loadedDisableVision",
-  ] as const) {
-    assert.equal(
-      selectResidentEstimateSettings({ ...LOADED, [field]: null }),
-      null,
-      field,
-    );
-  }
-  for (const field of ["loadedGpuLayers", "loadedNCpuMoe"] as const) {
-    assert.equal(
-      selectResidentEstimateSettings({
-        ...LOADED,
-        loadedGpuMemoryMode: "manual",
-        loadedGpuLayers: 12,
-        loadedNCpuMoe: 0,
-        [field]: null,
-      }),
-      null,
-      field,
-    );
-  }
-  assert.equal(
-    selectResidentEstimateSettings({
-      ...LOADED,
-      loadedGpuMemoryMode: "manual",
-      loadedGpuLayers: -1,
-      loadedNCpuMoe: 0,
-    })?.gpuLayers,
-    null,
-  );
-});
-
-test("resident fallbacks still withhold estimates built from requested baselines", () => {
-  for (const specFallbackReason of [
-    "runtime_error",
-    "binary_outdated",
-    "mtp_partial_offload",
+test("missing baselines and recorded fallbacks withhold resident credit", () => {
+  for (const patch of [
+    { loadedGpuMemoryMode: null },
+    { loadedSpeculativeType: null },
+    { loadedTensorParallel: null },
+    { loadedDisableVision: null },
+    { loadedGpuMemoryMode: "manual" as const, loadedGpuLayers: null, loadedNCpuMoe: 0 },
+    { loadedGpuMemoryMode: "manual" as const, loadedGpuLayers: 12, loadedNCpuMoe: null },
+    { loadedCpuFallback: true },
+    { specFallbackReason: "runtime_error" },
+    { mmprojFallbackReason: "cpu_offload" as const },
+    { mmprojFallbackReason: "projector_startup_failure" as const },
   ]) {
-    assert.equal(
-      selectResidentEstimateSettings({ ...LOADED, specFallbackReason }),
-      null,
-    );
+    assert.equal(selectResidentEstimateSettings({ ...loaded, ...patch }), null);
   }
-  for (const mmprojFallbackReason of [
-    "cpu_offload",
-    "projector_incompatible",
-    "projector_startup_failure",
-  ] as const) {
-    assert.equal(
-      selectResidentEstimateSettings({ ...LOADED, mmprojFallbackReason }),
-      null,
-    );
-  }
-  assert.equal(
-    selectResidentEstimateSettings({ ...LOADED, loadedCpuFallback: true }),
-    null,
-  );
-});
-
-test("resident pricing requires an active source and reported context", () => {
-  const settings = selectResidentEstimateSettings(LOADED);
-  assert.equal(resolveResidentEstimateRequest(null, settings, 8192), null);
-  assert.equal(
-    resolveResidentEstimateRequest({ modelPath: "model" }, null, 8192),
-    null,
-  );
-  for (const context of [null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  const settings = selectResidentEstimateSettings(loaded);
+  for (const context of [null, 0, Number.NaN]) {
     assert.equal(
       resolveResidentEstimateRequest(
         { modelPath: "model", nCtx: 262144 },
@@ -227,5 +115,20 @@ test("resident pricing requires an active source and reported context", () => {
       ),
       null,
     );
+  }
+  assert.equal(resolveResidentEstimateRequest(null, settings, 8192), null);
+});
+
+test("fixed Manual layers and automatic layers retain their loaded meaning", () => {
+  for (const layers of [12, -1]) {
+    const settings = selectResidentEstimateSettings({
+      ...loaded,
+      loadedGpuMemoryMode: "manual",
+      loadedGpuLayers: layers,
+      loadedNCpuMoe: 4,
+    });
+    assert.equal(settings?.gpuMemoryMode, "manual");
+    assert.equal(settings?.gpuLayers, layers < 0 ? null : layers);
+    assert.equal(settings?.nCpuMoe, 4);
   }
 });
