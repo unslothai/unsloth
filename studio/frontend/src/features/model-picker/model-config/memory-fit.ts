@@ -451,7 +451,7 @@ export function resolveMemoryAdvisory(
   if (verdicts.hostPressured) {
     return {
       tone: "muted",
-      text: "Fits system RAM, but little is free right now. Free memory or use fewer CPU layers.",
+      text: "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
     };
   }
   if (verdicts.rawGpuFit === "fits" && verdicts.gpuPressured) {

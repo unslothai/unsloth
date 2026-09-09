@@ -146,7 +146,7 @@ const ADVISORY_TEXTS = {
   gpuExceeds:
     "Exceeds GPU memory. Try Auto context or fewer GPU layers; loading may still fail.",
   hostPressure:
-    "Fits system RAM, but little is free right now. Free memory or use fewer CPU layers.",
+    "Fits system RAM, but little is free right now. Free memory, or try a shorter context or smaller model.",
   gpuPressure:
     "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
 };
@@ -308,6 +308,23 @@ test("a discrete host under host-RAM pressure keeps the system-RAM wording", () 
     { usableSystemRamGb: 38 },
   );
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.hostPressure);
+});
+
+test("host pressure advice does not shift layers onto a tight GPU", () => {
+  for (const freeGpu of [24, 22, 0]) {
+    const result = fit(
+      { gpuBytes: 22 * GB, totalBytes: 40 * GB },
+      {
+        freeGpuCapacityGb: freeGpu,
+        usableSystemRamGb: 10,
+        reclaimableTotalBytes: 10 * GB,
+      },
+    );
+    assert.equal(result.rawGpuFit, "tight");
+    assert.equal(result.usableHostFit, "tight");
+    assert.doesNotMatch(result.advisory?.text ?? "", /CPU layers|offload/);
+    assert.match(result.advisory?.text ?? "", /shorter context or smaller model/);
+  }
 });
 
 test("a discrete host under VRAM pressure alone gets the card wording", () => {
