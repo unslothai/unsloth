@@ -322,20 +322,45 @@ def account_process_spec(module: str, target: str, env: dict, kwargs: dict):
     }
 
 
+# Model provider credentials the recipe engine reads straight from the environment.
+_PROVIDER_SECRET_ENV_VARS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "NVIDIA_API_KEY",
+        "NGC_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MISTRAL_API_KEY",
+        "TOGETHER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "FIREWORKS_API_KEY",
+    }
+)
+
+
 def run_account_child(*, account: AccountContext, job_module: str, job_target: str, **kwargs):
     def execute():
         if not account.is_owner:
             # Child-only: never mutate credentials in the multithreaded server.
             for key in tuple(os.environ):
-                if key.startswith(("AWS_", "WANDB_")) or key in {
-                    "HF_TOKEN",
-                    "HF_HUB_TOKEN",
-                    "HUGGINGFACE_HUB_TOKEN",
-                    "HUGGINGFACEHUB_API_TOKEN",
-                    "HUGGING_FACE_HUB_TOKEN",
-                    "GH_TOKEN",
-                    "GITHUB_TOKEN",
-                }:
+                if (
+                    key.startswith(("AWS_", "WANDB_"))
+                    or key
+                    in {
+                        "HF_TOKEN",
+                        "HF_HUB_TOKEN",
+                        "HUGGINGFACE_HUB_TOKEN",
+                        "HUGGINGFACEHUB_API_TOKEN",
+                        "HUGGING_FACE_HUB_TOKEN",
+                        "GH_TOKEN",
+                        "GITHUB_TOKEN",
+                    }
+                    or key in _PROVIDER_SECRET_ENV_VARS
+                ):
                     os.environ.pop(key, None)
             private_tmp = tmp_root()
             private_tmp.mkdir(parents = True, exist_ok = True)
@@ -490,6 +515,13 @@ def validate_recipe_access(recipe) -> None:
         for key, value in recipe.items():
             if key in {"api_key_env", "token_env", "hf_token_env"} and value:
                 raise HTTPException(status_code = 403, detail = "Supply your own provider credential")
+            # The recipe engine resolves these through the environment before treating them
+            # as literals, so a bare variable name would send the host credential.
+            if key in {"api_key", "token", "hf_token"} and isinstance(value, str):
+                if value in os.environ:
+                    raise HTTPException(
+                        status_code = 403, detail = "Supply your own provider credential"
+                    )
             if key in {
                 "path",
                 "paths",

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib as _hashlib
+import inspect
 import hmac as _hmac
 import re as _re
 import secrets as _secrets
@@ -452,6 +453,22 @@ def _generation_started_by(backend) -> Optional[str]:
         return _generation_account
 
 
+def _read_generate_progress(backend, expected_account):
+    """Progress rechecked against the authorized reservation when the backend supports it."""
+    if expected_account is None:
+        return backend.generate_progress()
+    try:
+        params = inspect.signature(backend.generate_progress).parameters
+    except (TypeError, ValueError):
+        params = {}
+    accepts = "expected_account" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    if not accepts:
+        return backend.generate_progress()
+    return backend.generate_progress(expected_account = expected_account)
+
+
 _UNREAD = object()
 
 
@@ -623,9 +640,20 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    if _generation_hidden(backend):
+    # One reservation read serves the visibility check, and the backend rechecks that owner
+    # under its lock: begin_generate runs on a worker thread and a successor can reserve mid-poll.
+    reserved = _reserved_generation_account(backend)
+    if reserved is not None:
+        started_by = reserved
+    else:
+        with _generation_lock:
+            started_by = _generation_account
+    if _generation_hidden(backend, started_by):
         return account_access.hidden_resident_response()
-    progress = backend.generate_progress()
+    progress = _read_generate_progress(backend, reserved)
+    if progress is None:
+        # The reservation changed hands mid-poll; the successor's progress is not ours to see.
+        return account_access.hidden_resident_response()
     log_media_generation_progress("video", progress)
     return VideoGenerateProgressResponse(**progress)
 
@@ -648,9 +676,13 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     if started_by is None and account_access.foreign_work_active():
         return {"cancelled": False}
     if reserved is None:
-        cancelled = await asyncio.to_thread(backend.cancel_generate)
+        # No reservation yet, so bind the cancel to the caller: another account reserving before
+        # the executor runs would otherwise receive it. An idle backend stays a no-op.
+        from utils.account_context import current_account
+        expected = current_account().account_id
     else:
-        cancelled = await asyncio.to_thread(backend.cancel_generate, expected_account = reserved)
+        expected = reserved
+    cancelled = await asyncio.to_thread(backend.cancel_generate, expected_account = expected)
     return {"cancelled": cancelled}
 
 

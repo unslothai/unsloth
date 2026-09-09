@@ -6205,8 +6205,12 @@ class VideoBackend:
             except OSError:
                 pass
 
-    def generate_progress(self) -> dict[str, Any]:
+    def generate_progress(self, expected_account: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Progress and its reservation under one lock: ``expected_account`` names the owner the
+        caller authorized, so a successor reserving mid-poll returns None instead of its progress."""
         with self._lock:
+            if expected_account is not None and self._generate_job_account != expected_account:
+                return None
             gen = dict(self._gen)
             # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active
             # across that gap.
