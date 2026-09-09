@@ -5341,6 +5341,26 @@ if ($ROCmIndexUrl) {
     if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
     if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
     if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
+    # The +rocm tag names the family, not the GPU architecture: AMD publishes one index
+    # per architecture family and the same torch version from each, so a changed
+    # UNSLOTH_ROCM_GFX_ARCH, another GPU on a mixed host or a replaced card moves
+    # $ROCmIndexUrl while the resident trio still satisfies its pins. The index a trio was
+    # installed from is recorded beside the venv after each successful install; a record
+    # that names another index, or no record at all (an install from before this was
+    # kept), takes the reinstall the unconditional --force-reinstall used to give everyone.
+    $script:RocmIndexRecord = Join-Path $VenvDir ".unsloth-rocm-index"
+    $_recordedRocmIndex = ""
+    if (Test-Path -LiteralPath $script:RocmIndexRecord -PathType Leaf) {
+        try { $_recordedRocmIndex = (Get-Content -LiteralPath $script:RocmIndexRecord -Raw -ErrorAction Stop).Trim() } catch { $_recordedRocmIndex = "" }
+    }
+    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd('/')) {
+        if ($_recordedRocmIndex) {
+            substep "the ROCm trio was installed from $_recordedRocmIndex, this run selects $ROCmIndexUrl; reinstalling the trio" "Yellow"
+        } else {
+            substep "no record of the index the ROCm trio came from; reinstalling the trio once to record it" "Yellow"
+        }
+        $rocmForce = @("--force-reinstall")
+    }
     if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe)) {
         # torch alone names the family. A torchvision or torchaudio that another step
         # re-resolved from PyPI satisfies its version pin without linking ROCm, and the
@@ -5384,6 +5404,11 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip the probe and the manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        # Recorded after the trio landed, so the next run can tell a changed architecture
+        # family from an unchanged one (see $rocmForce above).
+        try {
+            if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value $ROCmIndexUrl.TrimEnd('/') -Encoding ascii -NoNewline }
+        } catch { }
         substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }

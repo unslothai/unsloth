@@ -623,3 +623,18 @@ def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
     assert "t.startswith('cpu') or t.startswith('cu')" in companion
     assert '$rocmForce = @("--force-reinstall")' in companion
     assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]
+
+
+def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
+    """The +rocm tag names the family, not the GPU architecture: AMD publishes one index
+    per architecture family, so a changed UNSLOTH_ROCM_GFX_ARCH or a replaced card moves
+    the index while the resident trio still satisfies its pins. The index a trio came
+    from is recorded after each successful install and compared before the fast path."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    force = text.index('$_recordedRocmIndex -ne $ROCmIndexUrl.TrimEnd(\'/\')')
+    record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
+    installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
+    assert force < installed < record
+    # The record follows the install, never precedes it: a failed trio must not be recorded.
+    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    assert failed < record
