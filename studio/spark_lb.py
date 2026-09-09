@@ -38,11 +38,22 @@ async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 
 def _handler(backends: List[Tuple[str, int]], rr):
     async def handle(client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
-        host, port = backends[next(rr) % len(backends)]
-        try:
-            up_r, up_w = await asyncio.open_connection(host, port)
-        except OSError:
-            # One engine down must not take the front end with it; the client retries next.
+        # Round robin picks where to START, not the only backend to try. Failing the request
+        # outright meant one dead engine killed every Nth connection, which is the opposite of
+        # what this front end exists for: with two replicas, half of them. Healthy engines are
+        # unaffected, since the first attempt is the one round robin already chose.
+        start = next(rr)
+        up_r = up_w = None
+        for offset in range(len(backends)):
+            host, port = backends[(start + offset) % len(backends)]
+            try:
+                up_r, up_w = await asyncio.open_connection(host, port)
+                break
+            except OSError:
+                continue
+        if up_w is None:
+            # Every engine is down, so there is nothing to serve and the client is told at once
+            # rather than left waiting.
             client_w.close()
             return
         await asyncio.gather(_pump(client_r, up_w), _pump(up_r, client_w))
