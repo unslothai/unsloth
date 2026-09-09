@@ -1074,3 +1074,34 @@ def test_reordering_a_list_over_approximates_rather_than_losing_the_catalog():
         template_supports_tools("{% set c=[tools, []] %}{% do c.reverse() %}{{ c[0]|tojson }}")
         is True
     )
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3968192941: a name bound to a macro calls the same body.
+        (
+            "{% macro show() %}{{ tools|tojson }}{% endmacro %}{% set render=show %}"
+            "{{ render() }}",
+            True,
+        ),
+        ("{% macro show() %}plain{% endmacro %}{% set render=show %}{{ render() }}", False),
+        # 3968192960: the role may be staged in a name before the comparison.
+        (
+            "{% set role=message.role %}{% if role == 'tool' %}{{ message.content }}{% endif %}",
+            True,
+        ),
+        (
+            "{% set role=message.role %}{% if role == 'user' %}{{ message.content }}{% endif %}",
+            False,
+        ),
+        # A role read off a template-built record still means nothing.
+        (
+            "{% set w={'role':'tool'} %}{% set role=w.role %}{% if role == 'tool' %}plain"
+            "{% endif %}",
+            False,
+        ),
+    ],
+)
+def test_round_ten_leftovers_now_closed(template, expected):
+    assert template_supports_tools(template) is expected

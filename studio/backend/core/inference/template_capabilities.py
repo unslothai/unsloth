@@ -46,6 +46,9 @@ class _State:
     # Names bound to a constant, so a subscript written through one resolves to a
     # single field rather than to every field.
     consts: dict = field(default_factory = dict)
+    # Names bound straight to a field of something else, so `{% set role =
+    # message.role %}` still reads as a role check when the comparison uses `role`.
+    origins: dict = field(default_factory = dict)
     # Set when the path hit break, so a literal loop stops simulating further items
     # for it. `continue` only ends the current iteration, so it is tracked apart:
     # the path skips the rest of the body but still sees the next item.
@@ -62,6 +65,7 @@ class _State:
             set() if scoped else self.mutated.copy(),
             self.constructed.copy(),
             self.consts.copy(),
+            self.origins.copy(),
             self.terminated,
             self.continued,
             self.budget,
@@ -81,6 +85,16 @@ def _reading_call(node):
         and len(node.args) == 1
         and not node.kwargs
     )
+
+
+def _origin_field(node, state):
+    """The field a plain name was bound from, so `{% set role = message.role %}`
+    still answers `role` when the comparison names the alias."""
+    if isinstance(node, nodes.Name):
+        origin = state.origins.get(node.name)
+        if origin is not None:
+            return origin[-1]
+    return _UNKNOWN
 
 
 def _field(node):
@@ -220,6 +234,7 @@ def _signature(state):
         frozenset(state.mutated),
         frozenset(state.constructed),
         frozenset((name, repr(value)) for name, value in state.consts.items()),
+        frozenset(state.origins.items()),
         state.terminated,
         state.continued,
     )
@@ -270,6 +285,9 @@ def _template_built(node, state):
     """The member-name shortcuts below read a field off an untracked value, so they
     only mean anything when the base is one. A base the template constructed is
     tracked, and its provenance already lives in `aliases`."""
+    if isinstance(node, nodes.Name):
+        origin = state.origins.get(node.name)
+        return origin is not None and origin[:-1] in state.constructed
     base = node.node.node if _reading_call(node) else node.node
     return _reference_key(base) in state.constructed
 
@@ -374,7 +392,7 @@ def _positive_test(node, state):
         operand = node.ops[0]
         if operand.op == "eq":
             return any(
-                _field(role) == "role"
+                (_field(role) == "role" or _origin_field(role, state) == "role")
                 and not _template_built(role, state)
                 and (literal := _as_const(value, state)) is not None
                 and literal.value == "tool"
@@ -650,6 +668,15 @@ def _bind(
             state.consts[target.name] = value.value
         else:
             state.consts.pop(target.name, None)
+        origin = _reference_key(value) if value is not None else None
+        if origin is not None and len(origin) > 1 and origin not in state.constructed:
+            state.origins[target.name] = origin
+        else:
+            state.origins.pop(target.name, None)
+        # `{% set render = show %}` hands the name the macro, so calling it runs the
+        # same body. _bind_paths has already dropped any macro under this name.
+        if isinstance(value, nodes.Name) and value.name in state.macros:
+            state.macros[target.name] = state.macros[value.name]
     truth = _constant_truth(value, source) if value is not None else None
     if isinstance(target, nodes.Name) and truth is not None:
         state.facts[repr(nodes.Name(target.name, "load"))] = (truth, {target.name})
