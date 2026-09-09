@@ -23388,22 +23388,14 @@ class LlamaCppBackend:
                 # a page-lock, so it errs True for an unprobed device and stays False for
                 # an -ngl a cpu-only prebuilt accepts and ignores, where dio would buffer
                 # the whole file instead of mapping it.
-                # The projector counts as well. _mem_host_resident answers for the
-                # MAIN-MODEL weights only, so a launch that fully offloads them can still
-                # append --no-mmproj-offload and put the projector in host RAM, where dio
-                # allocates it instead of mapping it. The CPU-projector crash retry
-                # already withdraws the pair for exactly this placement; deciding it up
-                # front is the same judgement one step earlier.
-                _mem_projector_in_host_memory = bool(
-                    launch_mmproj_path
-                    and (
-                        _mmproj_cpu_pinned
-                        or _resolved_mmproj_offload(_mem_extra_args, _mem_env) is False
-                    )
-                )
+                # Deliberately NOT gated on where the projector lands. --load-mode is a
+                # main-model loader setting: mtmd_context_params carries no use_mmap or
+                # load_mode field, and clip.cpp reads the mmproj through an ifstream into
+                # buffers it allocates, so the projector is an allocated copy whatever
+                # this resolves to. Gating on it only withheld dio from the multi-GB
+                # weights that DO respond to it.
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
-                    and not _mem_projector_in_host_memory
                     and self._build_offers_gpu_backend(binary)
                     and (_detected_gpus or gpu_indices)
                 )
@@ -25664,18 +25656,12 @@ class LlamaCppBackend:
                                         "projector into host RAM the fit credited to VRAM."
                                     )
                                 _cpu_projector_cmd = _stripped_cpu_projector_cmd
-                            # And the managed DirectIO, for the reason the block above
-                            # already gives: those bytes move into host RAM, where dio
-                            # buffers them instead of mapping them. A copy strip, so the
-                            # record stays nameable for the fallbacks below.
-                            _dio_stripped_projector_cmd = self._drop_managed_dio(
-                                _cpu_projector_cmd,
-                                "the CPU-projector retry moves the projector into host RAM",
-                                clear_record = False,
-                            )
-                            if _dio_stripped_projector_cmd != _cpu_projector_cmd:
-                                _cpu_projector_cmd = _dio_stripped_projector_cmd
-                                self._record_memory_state(_cpu_projector_cmd, env)
+                            # The managed DirectIO stays: this retry moves the PROJECTOR,
+                            # and clip.cpp loads that through its own ifstream with no
+                            # use_mmap or load_mode to consult, so the pair says nothing
+                            # about it. The main model is still fully offloaded, which is
+                            # what the pair was chosen for. The block above is about the
+                            # fit's VRAM accounting, which the move really does void.
                             logger.warning(
                                 "llama-server failed while loading this model's GPU "
                                 "vision projector (--mmproj); retrying with the "

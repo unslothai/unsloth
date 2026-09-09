@@ -2880,25 +2880,19 @@ class TestEveryRungThatGivesUpTheOffloadWithdrawsTheDio:
 
         return inspect.getsource(LlamaCppBackend.load_model)
 
-    def test_the_cpu_projector_rung_drops_it(self):
-        src = self._load_model_source()
-        arm = src[: src.index('"-mmproj-cpu"')]
-        arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
-        assert "self._drop_managed_dio(" in arm
-        # A copy strip: the fallbacks below respawn from an argv that still has it.
-        assert "clear_record = False" in arm
-
     def test_all_four_rungs_are_covered(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
         launch = self._load_model_source()
         replay = inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch)
-        # --fit on retry, arch-crash retry, CPU-projector retry, CPU-fallback replay.
-        assert launch.count("self._drop_managed_dio(") == 3
+        # --fit on retry and arch-crash retry here, CPU-fallback replay in the builder.
+        # The CPU-projector retry is deliberately NOT one of them; see
+        # TestTheProjectorDoesNotGateTheDio.
+        assert launch.count("self._drop_managed_dio(") == 2
         assert replay.count("self._drop_managed_dio(") == 1
         # Exactly one of them strips `cmd` itself and may forget the tokens.
-        assert launch.count("clear_record = False") == 2
+        assert launch.count("clear_record = False") == 1
         assert replay.count("clear_record = False") == 1
 
 
@@ -2954,32 +2948,46 @@ def _llama_cpp_mod():
     return m
 
 
-class TestTheProjectorCountsAsHostResidency:
-    """`_mem_host_resident` answers for the MAIN-MODEL weights only. A vision
-    launch can offload every layer and still append --no-mmproj-offload, and
-    under dio the projector is then an allocated buffer rather than a mapping.
-    The CPU-projector crash retry already withdraws the pair for that placement,
-    so the initial placement has to reach the same verdict."""
+class TestTheProjectorDoesNotGateTheDio:
+    """--load-mode is a MAIN-MODEL loader setting. mtmd_context_params carries no
+    use_mmap or load_mode field and clip.cpp reads the mmproj through its own
+    ifstream into allocated buffers, so the projector is an allocated copy under
+    mmap and under dio alike. Gating the pair on where the projector lands only
+    withheld it from the multi-GB weights that do respond to it, which is the
+    residency #9033 is about."""
 
-    def test_the_confirmation_excludes_a_cpu_pinned_projector(self):
+    def test_the_confirmation_ignores_the_projector(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        arm = src[src.index("_mem_projector_in_host_memory = bool(") :]
+        arm = src[src.index("_mem_gpu_offload_confirmed = bool(") :]
         arm = arm[: arm.index("_mem_managed, _mem_extras = apply_model_memory_policy(")]
-        compact = "".join(arm.split())
-        assert "launch_mmproj_path" in compact
-        assert "_mmproj_cpu_pinned" in compact
-        assert "_resolved_mmproj_offload(_mem_extra_args,_mem_env)isFalse" in compact
-        assert "andnot_mem_projector_in_host_memory" in compact
+        assert "_mmproj_cpu_pinned" not in arm
+        assert "_resolved_mmproj_offload" not in arm
 
-    def test_a_resolved_false_is_what_places_it_on_the_cpu(self):
-        """Same helper the launch reads, so the two cannot drift: argv over env,
-        and silence in both is not a CPU placement."""
-        assert _llama_cpp_mod()._resolved_mmproj_offload(["--no-mmproj-offload"], {}) is False
-        assert _llama_cpp_mod()._resolved_mmproj_offload(["--mmproj-offload"], {}) is True
-        assert _llama_cpp_mod()._resolved_mmproj_offload([], {}) is None
+    def test_the_projector_retry_keeps_the_pair(self):
+        """That retry moves the projector, not the weights; the main model is still
+        fully offloaded, so the pair it was chosen for still holds."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[: src.index('"-mmproj-cpu"')]
+        arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
+        assert "_drop_managed_dio" not in arm
+
+    def test_only_main_model_placement_changes_withdraw_it(self):
+        """The three rungs that keep the strip all move the WEIGHTS: --fit on hands
+        placement back to llama.cpp, the arch-crash retry runs on another device
+        set, and the CPU replay appends --device none."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        launch = inspect.getsource(LlamaCppBackend.load_model)
+        replay = inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch)
+        assert launch.count("self._drop_managed_dio(") == 2
+        assert replay.count("self._drop_managed_dio(") == 1
 
 
 class TestAShadowedPairIsNotPolicyActivity:
