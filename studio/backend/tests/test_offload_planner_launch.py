@@ -699,6 +699,24 @@ def test_the_flag_off_load_mode_matches_main_on_a_spill_the_host_holds(tmp_path,
     assert "--load-mode" not in on, on
 
 
+def test_a_caller_nkvo_cache_is_host_ram_the_planner_admits_against(tmp_path, monkeypatch):
+    """-nkvo puts the WHOLE cache in host RAM whatever the layer placement says
+    (llama-kv-cache.cpp upgrades a layer's buffer type only inside `if (offload)`),
+    and it is the largest host term there is. The unpriced sum carried the drafter,
+    the checkpoints, the prompt cache and a pinned projector but not this, so the
+    planner booked the cache as VRAM it no longer had to find and never as RAM it
+    now needed, then took --load-mode none against a pool the cache was already in."""
+    _cmd, _b, plain = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    _cmd, _b, forced = _launch_with(
+        tmp_path, monkeypatch, Plan(reason = "declined"), extra_args = ["-nkvo"]
+    )
+    kv = forced["inputs"]["kv_cache_bytes"]
+    assert kv > 0
+    assert (
+        forced["inputs"]["host_ram_unpriced_bytes"] - plain["inputs"]["host_ram_unpriced_bytes"]
+    ) == kv
+
+
 def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
     tmp_path, monkeypatch
 ):

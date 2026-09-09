@@ -22550,7 +22550,19 @@ class LlamaCppBackend:
                         # backend buffer: the same bytes the fit's own footprint
                         # charges as mmproj_pinned_bytes below.
                         + int(_mmproj_pinned_bytes or 0)
-                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0),
+                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0)
+                        # A caller's -nkvo puts the WHOLE cache in host RAM
+                        # (llama-kv-cache.cpp upgrades a layer's buffer type only inside
+                        # `if (offload)`), so it is the largest host term of the lot and
+                        # the plan carries none of it: the planner books the cache as
+                        # VRAM it no longer has to find, never as RAM it now needs.
+                        # Resolved off the same view _planned_tensor_spill reads, so the
+                        # pool it admits against and the kv_on_host it is told agree.
+                        + (
+                            max(0, _kv_bytes(_spill_ctx))
+                            if not _kv_offload_from_args(extra_args, env = os.environ)
+                            else 0
+                        ),
                     )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
