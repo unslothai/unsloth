@@ -120,9 +120,13 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     loader_utils.get_model_name = (
         lambda name, load_in_4bit = True: "unsloth/base-bnb-4bit" if load_in_4bit else name
     )
+    loader = types.ModuleType("unsloth.models.loader")
+    loader.ALLOW_PREQUANTIZED_MODELS = True
+    loader._strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-bnb-4bit")
     for name, module in (
         ("unsloth", package),
         ("unsloth.models", models),
+        ("unsloth.models.loader", loader),
         ("unsloth.models.loader_utils", loader_utils),
     ):
         monkeypatch.setitem(sys.modules, name, module)
@@ -144,3 +148,10 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     assert worker._load_download_repos(local, True, SimpleNamespace(device = "mlx")) == ["owner/base"]
     plain = SimpleNamespace(identifier = "owner/model", base_model = None)
     assert worker._load_download_repos(plain, True, cuda) == ["owner/model"]
+
+    loader.ALLOW_PREQUANTIZED_MODELS = False
+    assert worker._load_download_repos(adapter, True, cuda) == [
+        "owner/adapter",
+        "owner/base",
+        "unsloth/base",
+    ]

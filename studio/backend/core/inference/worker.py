@@ -401,8 +401,11 @@ def _load_download_repos(mc, load_in_4bit: bool, backend) -> list[str]:
         repos.append(str(base))
         if getattr(backend, "device", None) != "mlx":
             try:
+                from unsloth.models import loader
                 from unsloth.models.loader_utils import get_model_name
                 mapped = get_model_name(str(base), load_in_4bit = load_in_4bit)
+                if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
+                    mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
                 mapped = None
             if mapped:
