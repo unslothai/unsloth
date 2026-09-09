@@ -50,6 +50,7 @@ write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
 existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
 ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_server
+runtime_payload_health_groups = INSTALL_LLAMA_PREBUILT.runtime_payload_health_groups
 
 
 def linux_host() -> HostInfo:
@@ -2400,11 +2401,23 @@ def write_windows_install_shape(
     include_llama_dll: bool = True,
     include_cuda_dll: bool = False,
     include_cudart_dlls: bool = False,
+    include_shared_runtime: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin" / "Release"
     runtime_dir.mkdir(parents = True, exist_ok = True)
     (runtime_dir / "llama-server.exe").write_bytes(b"MZ")
     (runtime_dir / "llama-quantize.exe").write_bytes(b"MZ")
+    if include_shared_runtime:
+        # What a BUILD_SHARED_LIBS bundle carries alongside llama.dll.
+        for name in (
+            "llama-common.dll",
+            "llama-server-impl.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu-x64.dll",
+            "mtmd.dll",
+        ):
+            (runtime_dir / name).write_bytes(b"DLL")
     if include_llama_dll:
         (runtime_dir / "llama.dll").write_bytes(b"DLL")
     if include_cuda_dll:
@@ -6882,8 +6895,6 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
     assert host.driver_cuda_version == (13, 1)
 
 
-# ── ggml-rpc-server: copied by every allowlist, backfilled, found by spark_cluster ──
-
 _RPC_INSTALL_KINDS = {
     "linux-cpu": "ggml-rpc-server",
     "linux-cuda": "ggml-rpc-server",
@@ -6949,9 +6960,8 @@ def _load_spark_cluster():
 @pytest.mark.parametrize(("install_kind", "expected"), sorted(_RPC_INSTALL_KINDS.items()))
 @pytest.mark.parametrize("source_label", ["published", "upstream"])
 def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source_label):
-    """The bundle ships ./ggml-rpc-server beside ./libggml-rpc.so; lib*.so* admits the
-    client library only, so the executable has to be named or a fresh install lacks
-    the peer-side half of the two-Spark layer split. Fork and upstream alike."""
+    """lib*.so* admits the client library only, so the executable has to be named or a fresh
+    install lacks it. Fork and upstream alike."""
     patterns = INSTALL_LLAMA_PREBUILT.runtime_patterns_for_choice(
         _rpc_choice(install_kind, source_label = source_label)
     )
@@ -6979,10 +6989,8 @@ def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source
 def test_rpc_server_backfill_true_when_missing_false_once_present(
     tmp_path, host_factory, install_kind, source_label, runtime_parts, library
 ):
-    """An install made before ggml-rpc-server entered the allowlist has the client
-    library (lib*.so* copied it) but not the executable: owed a re-extract. Once the
-    binary is present the backfill is done and must say so, or it would re-extract
-    on every update."""
+    """An install predating the allowlist has the client library but not the executable, so it
+    is owed a re-extract; once the binary is present it must say so, or it re-extracts forever."""
     host = host_factory()
     tag = "b10798" if source_label == "upstream" else "b10798-mix-659e406"
     choice = _rpc_choice(install_kind, source_label = source_label, tag = tag)
@@ -7081,11 +7089,9 @@ def test_every_reuse_path_consults_the_bundle_backfill():
 
 
 def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
-    """Layout agreement, pinned on both ends: the names the installer copies are the
-    names spark_cluster searches, the overlay directory for every install kind is one
-    spark_cluster searches, and a real overlay of a tarball whose ggml-rpc-server lost
-    its exec bit (extraction does not keep it) ends up where rpc_server_binary() finds
-    it, executable."""
+    """Layout agreement pinned on both ends: the names and directories the installer writes are
+    the ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still
+    ends up executable where rpc_server_binary() finds it."""
     sc = _load_spark_cluster()
     installer_names = set()
     for host in (linux_host(), _macos_host(), _windows_host()):
@@ -7165,3 +7171,142 @@ def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeyp
     assert sc.llama_bundle_identity(install)["rpc_server"] == str(server)
     # And the install is complete as far as the backfill is concerned.
     assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install, linux_host(), choice) is None
+
+
+def _flat(groups: list[list[str]]) -> set[str]:
+    return {pattern for group in groups for pattern in group}
+
+
+@pytest.mark.parametrize(
+    "install_kind",
+    [
+        "windows-cpu",
+        "windows-arm64",
+        "windows-cuda",
+        "windows-hip",
+        "windows-rocm",
+        "windows-vulkan",
+    ],
+)
+def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
+    """Requiring only llama.dll let a tree missing llama-common.dll validate and
+    then fail at exec."""
+    patterns = _flat(runtime_payload_health_groups(install_kind, source_label = "published"))
+    for required in (
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server.exe",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu*.dll",
+        "mtmd.dll",
+    ):
+        assert required in patterns, f"{install_kind} does not require {required}"
+
+
+def test_windows_source_build_does_not_require_the_shared_runtime():
+    """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so requiring these would
+    fail a healthy tree."""
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
+    assert "llama.dll" in patterns
+    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+        assert absent not in patterns
+
+
+def test_windows_upstream_bundles_require_the_shared_runtime_too():
+    """Upstream ggml-org Windows zips are also built with shared libs on."""
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = "upstream"))
+    assert "llama-common.dll" in patterns
+
+
+# Real win-cpu-x64 zip payloads either side of the impl split (llama.cpp#23462).
+_PRE_SPLIT_WINDOWS_PAYLOAD = (
+    "llama.dll",
+    "llama-common.dll",
+    "llama-server.exe",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu-haswell.dll",
+    "mtmd.dll",
+)
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+
+
+@pytest.mark.parametrize(
+    ("tag", "payload", "healthy"),
+    [
+        ("b9279", _PRE_SPLIT_WINDOWS_PAYLOAD, True),
+        ("b9283", _POST_SPLIT_WINDOWS_PAYLOAD, True),
+        ("b9283", _PRE_SPLIT_WINDOWS_PAYLOAD, False),
+    ],
+    ids = ["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
+)
+def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
+    tmp_path: Path, tag: str, payload: tuple[str, ...], healthy: bool
+):
+    """A pinned upstream tag older than b9283 ships no llama-server-impl.dll.
+
+    Requiring it unconditionally made validate_prebuilt_choice reject a valid
+    downloaded prebuilt and fall back to a costly Windows source build.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    runtime_dir.mkdir(parents = True)
+    for name in payload:
+        (runtime_dir / name).write_bytes(b"DLL")
+
+    choice = AssetChoice(
+        repo = "ggml-org/llama.cpp",
+        tag = tag,
+        name = f"llama-{tag}-bin-win-cpu-x64.zip",
+        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/x.zip",
+        source_label = "upstream",
+        install_kind = "windows-cpu",
+    )
+    assert (
+        INSTALL_LLAMA_PREBUILT.runtime_payload_is_healthy(install_dir, _windows_host(), choice)
+        is healthy
+    )
+
+
+def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_windows_install_shape(install_dir, include_llama_dll = True)
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    (runtime_dir / "llama-common.dll").unlink()
+
+    groups = runtime_payload_health_groups("windows-cpu", source_label = "published")
+    host = HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is False
+
+    (runtime_dir / "llama-common.dll").write_bytes(b"DLL")
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is True
+
+
+def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
+    """A source guard: reaching that call needs a real download, but the check
+    has to run where the bundle is unpacked, not only on the reuse path."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    gate = source[source.index("overlaying prebuilt bundle") :]
+    gate = gate[: gate.index("preflight_linux_installed_binaries")]
+    assert "runtime_payload_is_healthy" in gate, "fresh installs are not payload checked at all"
+    assert (
+        'choice.install_kind.startswith("windows-")' in gate
+    ), "fresh Windows installs are not payload checked"
+    assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"

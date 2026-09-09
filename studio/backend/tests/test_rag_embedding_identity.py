@@ -386,7 +386,11 @@ def test_a_swap_between_batches_re_embeds_the_document(
     passes = {"n": 0}
     real_pass = ingestion._embed_pass
 
-    def swap_during_the_first_pass(texts, model_name):
+    def swap_during_the_first_pass(
+        texts,
+        model_name,
+        on_progress = None,
+    ):
         passes["n"] += 1
         if passes["n"] == 1:
             calls = {"n": 0}
@@ -402,7 +406,7 @@ def test_a_swap_between_batches_re_embeds_the_document(
                 return out
 
             monkeypatch.setattr(embeddings, "encode_with_identity", swap_after_one_batch)
-        return real_pass(texts, model_name)
+        return real_pass(texts, model_name, on_progress)
 
     monkeypatch.setattr(ingestion, "_embed_pass", swap_during_the_first_pass)
     scope = store.kb_scope("K8")

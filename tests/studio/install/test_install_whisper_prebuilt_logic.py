@@ -785,8 +785,7 @@ def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch
 
 
 def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
-    # The exemption is Windows only: llama's clang-built linux slices bundle libomp beside a libggml-base that really
-    # imports it, so it stays mandatory.
+    # x64 ggml really imports its bundled libomp; the arm64 exemption must not widen here.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -796,6 +795,180 @@ def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
     )
 
     assert M.slim_pairing_for_artifact(artifact, _host("linux", "x64"), "cuda") is None
+
+
+def test_linux_arm64_gpu_slim_drops_manifest_libomp(tmp_path, monkeypatch):
+    # The manifest names libomp for the *cpu* bundle's ggml; CUDA imports GNU libgomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    # Real CUDA bundle; without this the test would pass on "could not inspect".
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1", "libc.so.6"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is not None
+
+
+def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(tmp_path, monkeypatch):
+    """The published arm64 Vulkan bundle really does import libomp, unlike CUDA."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-vulkan.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-vulkan")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libomp.so.5", "libc.so.6"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "vulkan") is None
+
+
+def test_linux_arm64_gpu_slim_keeps_libomp_when_only_the_backend_module_imports_it(
+    tmp_path, monkeypatch
+):
+    """The module is dlopen'd after startup, so a core-only check calls this clean."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(
+        M,
+        "_elf_needed",
+        lambda path: (
+            {"libomp.so.5", "libc.so.6"}
+            if path.name.startswith("libggml-cuda")
+            else {"libgomp.so.1", "libc.so.6"}
+        ),
+    )
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_exemption_fails_closed_without_elf_tools(tmp_path, monkeypatch):
+    """Dropping it here is unrecoverable: the loader error goes to DEVNULL."""
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: None)
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_exemption_fails_closed_on_partial_elf_inspection(tmp_path, monkeypatch):
+    # One unreadable library makes the answer unknown; the rest are not a clean bill.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(
+        M,
+        "_elf_needed",
+        lambda path: None if path.name == "libggml-base.so.0" else {"libgomp.so.1"},
+    )
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_libomptarget_is_not_llvm_openmp(tmp_path, monkeypatch):
+    # libomptarget is a different library; a prefix match would read it as libomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libomptarget.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is not None
+
+
+def test_linux_arm64_exemption_does_not_drop_libomptarget_requirement(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
+    )
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = [
+            "libggml.so.0",
+            "libggml-base.so.0",
+            "libomptarget.so.1",
+        ],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is None
+
+
+def test_linux_arm64_gpu_module_must_be_a_file(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    (bin_dir / "libggml-cuda.so").mkdir()
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1"})
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cpu") is None
+
+
+@pytest.mark.parametrize(
+    ("os_key", "arch"),
+    [("windows", "x64"), ("windows", "arm64"), ("macos", "arm64"), ("linux", "x64")],
+)
+def test_elf_inspection_never_runs_off_linux_arm64(tmp_path, monkeypatch, os_key, arch):
+    # readelf/objdump are usually absent off linux; this pins the short circuit.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    calls = []
+
+    def _spy(path):
+        calls.append(path)
+        return {"libgomp.so.1"}
+
+    monkeypatch.setattr(M, "_elf_needed", _spy)
+    artifact = _slim_artifact(
+        os = os_key,
+        arch = arch,
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0"],
+    )
+
+    M.slim_pairing_for_artifact(artifact, _host(os_key, arch), "cuda")
+
+    assert calls == []
+
+
+def test_linux_arm64_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch):
+    # No GPU module, so no exemption: a cpu bundle's ggml really does import libomp.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    artifact = _slim_artifact(
+        arch = "arm64",
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
+
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cpu") is None
 
 
 @pytest.mark.parametrize(

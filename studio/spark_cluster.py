@@ -3,31 +3,11 @@
 
 """NVIDIA DGX Spark cluster detection and setup.
 
-Two DGX Sparks cabled together over their ConnectX-7 QSFP ports are two
-*independent hosts*, not one two-GPU machine: NVLink-C2C never leaves the
-package, so ``nvidia-smi`` shows one GB10 on each and ``torch.cuda.device_count()``
-is always 1. What the cable buys is a ~200 Gb/s RoCEv2 link between them, which
-llama.cpp's RPC backend and any NCCL job can use.
-
-Nothing here runs off a DGX Spark. ``is_dgx_spark()`` is the gate every entry
-point calls first, and on a non-Spark host it answers from two string compares
-with no I/O at all -- an x86 laptop, a Mac, a Windows box or an AMD host pays
-nothing for this module existing. The shell installer has a byte-for-byte twin of
-that gate (``_unsloth_is_dgx_spark`` in install.sh) so a piped install does not
-even source Python to find out.
-
-Layout of a Spark's ConnectX-7, which drives the whole design:
-
-    rocep1s0f0   -> enp1s0f0np0    physical QSFP port 0, PCIe fn 1
-    roceP2p1s0f0 -> enP2p1s0f0np0  SAME physical port 0, PCIe fn 2
-    rocep1s0f1   -> enp1s0f1np1    physical QSFP port 1, PCIe fn 1
-    roceP2p1s0f1 -> enP2p1s0f1np1  SAME physical port 1, PCIe fn 2
-
-The NIC hangs off GB10 by two independent PCIe Gen5 x4 links, ~100 Gb/s each, so
-NVIDIA exposes each physical port as two PCIe functions. One cable carries the
-full ~200 Gb/s, but only if both functions are used, and a single TCP flow over
-one function tops out near 100 Gb/s. That is why each rail needs its own /24:
-one subnet cannot drive both functions.
+Two cabled Sparks are two independent hosts: ``device_count()`` is 1 on each, and the cable
+is a RoCEv2 link. ``is_dgx_spark()`` gates every entry point; install.sh carries a twin.
+The ConnectX-7 exposes each physical QSFP port as TWO PCIe functions (``rocep1s0f0`` and
+``roceP2p1s0f0`` are the same port), and one subnet drives only one function, so each rail
+needs its own /24 to reach the full link.
 """
 
 from __future__ import annotations
@@ -40,6 +20,7 @@ import os.path as osp
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -52,10 +33,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── Identity gate ────────────────────────────────────────────────────────────
-# Ordered cheapest-first. Linux+aarch64 is two comparisons against values Python
-# already has, so every non-Spark host returns before touching the filesystem.
-
 _DGX_RELEASE = "/etc/dgx-release"
 _DMI_PRODUCT = "/sys/class/dmi/id/product_name"
 _SPARK_RE = re.compile(r"dgx[_ -]*spark", re.IGNORECASE)
@@ -64,14 +41,7 @@ _IS_SPARK_CACHE: Optional[bool] = None
 
 
 def is_dgx_spark() -> bool:
-    """True only on an NVIDIA DGX Spark. Cached; safe to call in hot paths.
-
-    A DGX Spark is always Linux on aarch64, so the two cheap checks come first
-    and short-circuit every other platform -- Windows, macOS, WSL on x86, and any
-    x86_64 Linux box, NVIDIA or AMD or CPU-only -- before a single file is opened.
-    Only an aarch64 Linux host pays for the two small reads below, and a Grace
-    Hopper or Jetson box fails them too (neither advertises "DGX Spark").
-    """
+    """True only on an NVIDIA DGX Spark. Cached; short-circuits before any file is opened."""
     global _IS_SPARK_CACHE
     if _IS_SPARK_CACHE is not None:
         return _IS_SPARK_CACHE
@@ -80,8 +50,7 @@ def is_dgx_spark() -> bool:
     if platform.system() == "Linux" and platform.machine() in ("aarch64", "arm64"):
         for path in (_DGX_RELEASE, _DMI_PRODUCT):
             try:
-                # Both files are a few hundred bytes; cap anyway so a bad mount
-                # cannot make the gate expensive.
+                # Capped so a bad mount cannot make the gate expensive.
                 with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
                     if _SPARK_RE.search(handle.read(4096)):
                         result = True
@@ -93,16 +62,12 @@ def is_dgx_spark() -> bool:
     return result
 
 
-# What every entry point says off a Spark. One string, so the answer cannot drift
-# between commands, and so a caller can match on it.
+# Callers match on this exact string; keep it single-sourced.
 NOT_A_SPARK = "This machine is not a DGX Spark; nothing to do."
 
 
 def _ssh_user() -> str:
-    """The login to reach the peer as: this session's, since `provision` mirrors the
-    install as the same account on both nodes. The environment first, then the login
-    database, so a service or cron context that sets no USER still names the right
-    account rather than a fixed one."""
+    """The login to reach the peer as: `provision` mirrors the install as the same account."""
     for var in ("USER", "USERNAME", "LOGNAME"):
         value = os.environ.get(var)
         if value:
@@ -112,8 +77,6 @@ def _ssh_user() -> str:
     except Exception:
         return "nvidia"
 
-
-# ── Rail discovery (pure sysfs, no subprocesses) ─────────────────────────────
 
 _IB_ROOT = Path("/sys/class/infiniband")
 _NET_ROOT = Path("/sys/class/net")
@@ -132,14 +95,8 @@ def _read(path: Path, limit: int = 256) -> str:
 
 
 def _rail_sort_key(name: str) -> Tuple[int, int, str]:
-    """Order rails by physical port, then PCIe function -- not alphabetically.
-
-    Plain sorting puts ``roceP2p1s0f0`` (function 2) ahead of ``rocep1s0f0``
-    (function 1) because uppercase P sorts first, which would make the *second*
-    function the one every caller treats as primary. Ordering by (port, function)
-    keeps the choice stable and matches how NVIDIA's docs name these, so
-    ``NCCL_SOCKET_IFNAME`` lands on enp1s0f0np0 on every Spark.
-    """
+    """Order by (port, PCIe function): plain sorting puts ``roceP2p1s0f0`` (function 2) first,
+    since uppercase P sorts first, and hands every caller the wrong primary rail."""
     match = re.search(r"s0f(\d+)$", name)
     port = int(match.group(1)) if match else 9
     function = 2 if name.startswith("roceP2p") else 1
@@ -147,27 +104,20 @@ def _rail_sort_key(name: str) -> Tuple[int, int, str]:
 
 
 def local_rails() -> List[Dict[str, Any]]:
-    """Every RoCE device on this Spark, with its netdev, link state and IPv4s.
-
-    Reads sysfs only -- no ``ibdev2netdev``, no ``ip``, no fork. A rail is
-    "usable" when the IB port is ACTIVE *and* the Ethernet netdev reports
-    carrier, which is exactly the pair of facts that says a cable is seated and
-    trained at the far end.
-    """
+    """Every RoCE device here: netdev, link state, IPv4s. Sysfs only, no fork. Usable =
+    IB port ACTIVE *and* netdev carrier: the cable is seated and trained at the far end."""
     rails: List[Dict[str, Any]] = []
     if not _IB_ROOT.is_dir():
         return rails
 
     for dev in sorted(_IB_ROOT.iterdir(), key = lambda p: _rail_sort_key(p.name)):
         port = dev / "ports" / "1"
-        state = _read(port / "state")  # e.g. "4: ACTIVE"
-        phys = _read(port / "phys_state")  # e.g. "5: LinkUp"
+        state = _read(port / "state")
+        phys = _read(port / "phys_state")
         netdev = ""
-        # ConnectX exposes the owning netdev under the device's own tree.
         gid_attr = dev / "ports" / "1" / "gid_attrs" / "ndevs" / "0"
         netdev = _read(gid_attr)
         if not netdev:
-            # Fall back to matching by parent PCI device.
             try:
                 dev_pci = (dev / "device").resolve()
                 for candidate in _NET_ROOT.iterdir():
@@ -200,7 +150,6 @@ def local_rails() -> List[Dict[str, Any]]:
 
 
 def _netdev_ipv4(netdev: str) -> List[str]:
-    """IPv4 addresses on a netdev. Uses `ip` when present, else returns []."""
     ip_bin = shutil.which("ip")
     if not ip_bin:
         return []
@@ -217,27 +166,18 @@ def _netdev_ipv4(netdev: str) -> List[str]:
 
 
 def cabled_rails() -> List[Dict[str, Any]]:
-    """Rails with a live cable -- the evidence another Spark is attached."""
     return [r for r in local_rails() if r["ib_active"] and r["carrier"]]
 
 
-# ── Peer discovery: RoCE probe + mDNS ────────────────────────────────────────
-
 _MDNS_TIMEOUT = 3.0
-# A peer probe must be bounded and cheap: this runs in `status`, which people run
-# while a job is starting. One TCP SYN to sshd per peer, sub-second, no fork.
+# Bounded: `status` runs while a job is starting. One TCP SYN to sshd per peer, no fork.
 _PEER_PROBE_PORT = 22
 _PEER_PROBE_TIMEOUT = 0.75
 
 
 def _ipv4_sort_key(address: str) -> Tuple[int, int, int, int, int]:
-    """Numeric ordering for an IPv4 string, so .9 sorts before .10.
-
-    Lexical ordering of addresses is the classic way a "deterministic" peer list
-    silently reorders itself once a cluster grows past ten nodes, which would
-    reshuffle rank assignment between runs. Non-IPv4 (a link-local IPv6 from
-    avahi) sorts last rather than being dropped.
-    """
+    """Numeric IPv4 ordering, so .9 sorts before .10: lexical ordering silently reshuffles
+    rank assignment once a cluster passes ten nodes. Non-IPv4 sorts last, never dropped."""
     parts = address.split(".")
     if len(parts) == 4 and all(p.isdigit() and len(p) <= 3 for p in parts):
         a, b, c, d = (int(p) for p in parts)
@@ -251,13 +191,8 @@ def peer_reachable(
     port: int = _PEER_PROBE_PORT,
     timeout: float = _PEER_PROBE_TIMEOUT,
 ) -> Optional[bool]:
-    """Is this peer answering on the network? ``None`` when we could not tell.
-
-    A refused connection still proves the host is up and routable, which is the
-    question being asked -- so it counts as reachable. Only a timeout or a routing
-    failure counts as unreachable, and anything unexpected answers ``None`` rather
-    than claiming a healthy peer is down.
-    """
+    """Is this peer answering? A refused connection still proves the host is up, so it
+    counts as reachable. ``None`` means could not tell, never "down"."""
     if not address:
         return None
     try:
@@ -265,7 +200,7 @@ def peer_reachable(
     except (socket.timeout, TimeoutError):
         return False
     except ConnectionRefusedError:
-        return True  # host is up; sshd merely is not listening
+        return True
     except OSError:
         return False
     except Exception:
@@ -278,24 +213,8 @@ def peer_reachable(
 
 
 def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False) -> Dict[str, Any]:
-    """Look for other Sparks: a cabled RoCE rail, plus mDNS hostnames.
-
-    Both halves are bounded and best-effort. The RoCE probe is authoritative
-    about a *cable* (it cannot name the peer); mDNS is authoritative about a
-    *name* (it cannot prove the peer is cabled to us rather than merely on the
-    same Wi-Fi). Reporting both lets the caller say "a cable is live and I can
-    see spark-82be" without pretending either fact implies the other.
-
-    Off a DGX Spark this returns immediately with ``is_spark: False`` and touches
-    nothing -- no sysfs walk, and in particular no avahi-browse, which does exist
-    on an ordinary Linux laptop and would otherwise put this module on the network
-    on a machine that has no Spark at all.
-
-    ``peers`` generalises past a single pair: every discovered Spark, plus any
-    peer pinned in the saved config, deduplicated and ordered deterministically by
-    address so node index N means the same host on every node of the cluster.
-    ``check_reachable`` adds a bounded TCP probe per peer.
-    """
+    """A cabled RoCE rail proves a cable but cannot name the peer; mDNS is the reverse. Returns
+    immediately off a Spark, so avahi-browse never runs on an ordinary Linux box."""
     if not is_dgx_spark():
         return {
             "is_spark": False,
@@ -321,20 +240,14 @@ def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False
     peers = merge_peers(result["mdns_peers"], check_reachable = check_reachable)
     result["peers"] = peers
     result["n_peers"] = len(peers)
-    # This node plus its peers. The planner counts nodes, not peers, and getting
-    # that off by one is how a 3-Spark cluster ends up planned as a 2-Spark one.
+    # Nodes, not peers: the planner counts nodes.
     result["n_nodes"] = len(peers) + 1
     return result
 
 
 def configured_peers() -> List[Dict[str, str]]:
-    """Peers pinned in the saved config, if any.
-
-    mDNS is not reliable past a direct cable -- a switched fabric may not carry it,
-    and a peer that is up but not advertising is invisible. A cluster larger than a
-    pair is expected to be written down, so the config is a first-class source and
-    not a fallback. Malformed entries are skipped rather than raising.
-    """
+    """Peers pinned in the saved config. mDNS does not survive a switched fabric, so the
+    config is a first-class source, not a fallback. Malformed entries are skipped."""
     out: List[Dict[str, str]] = []
     raw = load_config().get("peers")
     if not isinstance(raw, list):
@@ -355,13 +268,8 @@ def configured_peers() -> List[Dict[str, str]]:
 def merge_peers(
     mdns: Optional[List[Dict[str, str]]] = None, check_reachable: bool = False
 ) -> List[Dict[str, Any]]:
-    """Every known peer, deduplicated, deterministically ordered, index-stamped.
-
-    Ordering is by address (numerically, see ``_ipv4_sort_key``) then hostname, so
-    the same list comes out on every node of the cluster in the same order. That is
-    what makes ``index`` usable as a node rank: an ordering that depends on which
-    node ran the discovery would hand two nodes the same rank.
-    """
+    """Every known peer, deduplicated and ordered by (address, hostname) so every node
+    computes the same list: ``index`` is only usable as a node rank because of that."""
     merged: Dict[str, Dict[str, Any]] = {}
     for entry in list(mdns or []) + configured_peers():
         hostname = str(entry.get("hostname", ""))
@@ -381,20 +289,13 @@ def merge_peers(
             prev["address"] = address or prev["address"]
     peers = sorted(merged.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["short"]))
     for index, peer in enumerate(peers):
-        # index 0 is the FIRST PEER, not this node; this node is always node 0 of
-        # the cluster and peers occupy 1..N-1.
+        # This node is node 0; peers occupy 1..N-1.
         peer["index"] = index + 1
         peer["reachable"] = peer_reachable(peer["address"]) if check_reachable else None
     return peers
 
 
 def _mdns_spark_peers(timeout: float) -> List[Dict[str, str]]:
-    """`spark-*.local` hosts other than ourselves, via avahi. [] if unavailable.
-
-    Returns every Spark it can see, not just one: a three-node cluster on a switch
-    advertises three names and the caller needs all of them. Ordering is by address
-    so the list is stable across nodes and across runs.
-    """
     browse = shutil.which("avahi-browse")
     if not browse:
         return []
@@ -427,18 +328,8 @@ def _mdns_spark_peers(timeout: float) -> List[Dict[str, str]]:
     return sorted(seen.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["hostname"]))
 
 
-# ── QSFP hot-plug throttle ───────────────────────────────────────────────────
-# The usual reason a two-Spark link runs at ~13-14 Gb/s instead of ~98 per rail:
-# when the QSFP cable is connected after boot, the ConnectX-7 can come up with both
-# PCIe domains throttled. The fix is procedural -- reboot with the cabling already
-# in place -- and rebooting *either* end can clear it.
-#
-# It cannot be inferred from sysfs. `carrier_up_count` looks like a tempting signal
-# (a link trained at boot reads 1) but it is not one: measured on a GB10 pair, a node
-# sitting at carrier_up_count=7, whose link had flapped repeatedly, ran at a full
-# 97.97 Gb/s per rail once the *peer* was rebooted. Counting link events says nothing
-# about whether this NIC is throttled, so anything built on that counter reports a
-# throttled link on a healthy machine. Only a measurement settles it.
+# The QSFP hot-plug throttle cannot be inferred from sysfs. `carrier_up_count` is NOT a
+# signal for it: a node at count=7 measured a full 97.97 Gb/s. Only a measurement settles it.
 HOTPLUG_NOTE = (
     "If the link measures far below ~98 Gb/s per rail, the usual cause is the QSFP "
     "cable having been connected after boot, which can leave the ConnectX-7 throttled. "
@@ -447,16 +338,9 @@ HOTPLUG_NOTE = (
 
 
 def link_carrier_events(rails: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Optional[int]]:
-    """Per-rail carrier_up_count, reported as a FACT and never as a verdict.
-
-    Useful context when reading a slow measurement (a link that has flapped a lot may
-    have been recabled), but see HOTPLUG_NOTE: it does not imply the link is throttled.
-    """
+    """Per-rail carrier_up_count, reported as a FACT and never a verdict; see HOTPLUG_NOTE."""
     rails = rails if rails is not None else cabled_rails()
     return {r["ib_device"]: r.get("carrier_up_count") for r in rails}
-
-
-# ── Persisted state (idempotency) ────────────────────────────────────────────
 
 
 def _studio_root() -> Path:
@@ -480,7 +364,9 @@ def load_config() -> Dict[str, Any]:
         return {}
 
 
-def save_config(config: Dict[str, Any]) -> None:
+def save_config(config: Dict[str, Any]) -> bool:
+    """False when the plan did not reach disk. Setup must not report success on that: the
+    cluster stays unconfigured and the next invocation has forgotten the plan."""
     path = config_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -488,19 +374,16 @@ def save_config(config: Dict[str, Any]) -> None:
         with open(tmp, "w", encoding = "utf-8") as handle:
             json.dump(config, handle, indent = 2, sort_keys = True)
         os.replace(tmp, path)
-        # Peer credentials never land here, but the file names hosts and subnets.
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        print(f"  could not save the cluster plan to {path}: {exc}")
+        return False
+    return True
 
 
 def cluster_state() -> str:
-    """One of: ``not_spark``, ``no_cable``, ``unconfigured``, ``configured``.
-
-    This is what makes a re-run safe. ``configured`` means a previous setup wrote
-    a config *and* the rails it named still carry IPv4, so an install that runs
-    again skips straight past the prompt instead of asking a settled question.
-    """
+    """``not_spark`` | ``no_cable`` | ``unconfigured`` | ``configured``. ``configured``
+    needs a config AND rails still carrying IPv4, which is what makes a re-run safe."""
     if not is_dgx_spark():
         return "not_spark"
     rails = cabled_rails()
@@ -512,26 +395,16 @@ def cluster_state() -> str:
     return "unconfigured"
 
 
-# ── Recommended tuning ───────────────────────────────────────────────────────
-# Defaults, applied automatically, so a user never has to know any of this.
-
-# NVIDIA's addressing for the port-0 rail pair. Each PCIe function of the one
-# physical port gets its own /24, because a single subnet can only drive one
-# function and would leave half the ~200 Gb/s on the floor.
+# One /24 per PCIe function: a single subnet drives only one function, half the link.
 DEFAULT_SUBNETS = ("192.168.200", "192.168.201")
 DEFAULT_MTU = 9000  # lifts the RoCE path MTU from 1024 to 4096
 
 
 def nccl_env(rails: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
-    """NCCL settings that are correct for GB10. Every one of these is load-bearing.
-
-    ``NCCL_NET_GDR_LEVEL=0`` is not a tuning knob: Grace Blackwell on Spark has no
-    GPUDirect RDMA, so NIC<->GPU traffic must stage through system memory. Leaving
-    it unset is a documented hang at ``init_process_group``, as is
-    ``NCCL_IB_GID_INDEX=0`` (that is the RoCEv1 GID; RoCEv2's IPv4 GID is index 3).
-    ``NCCL_IB_MERGE_NICS=1`` is what lets NCCL drive both PCIe functions of the one
-    physical port -- without it a job sits on a single rail at roughly half the link.
-    """
+    """NCCL settings for GB10; every one is load-bearing, none is a tuning knob. GB10 has no
+    GPUDirect RDMA, so ``NCCL_NET_GDR_LEVEL=0`` is required: unset, it hangs
+    ``init_process_group``, as does GID index 0 (RoCEv1; RoCEv2's IPv4 GID is 3).
+    ``NCCL_IB_MERGE_NICS=1`` is what drives both PCIe functions of the one physical port."""
     rails = rails if rails is not None else cabled_rails()
     hcas = ",".join(r["ib_device"] for r in rails) or "rocep1s0f0,roceP2p1s0f0"
     primary = next((r["netdev"] for r in rails if r["netdev"]), "enp1s0f0np0")
@@ -548,11 +421,7 @@ def nccl_env(rails: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
 
 
 def apply_nccl_env(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """Put the GB10 NCCL defaults into ``os.environ`` without overriding a user.
-
-    Only ever fills in names the caller has not already set, so an explicit
-    export from the user or a launcher always wins.
-    """
+    """Fill the GB10 NCCL defaults into ``os.environ``; an existing value always wins."""
     target = env if env is not None else os.environ
     applied: Dict[str, str] = {}
     if not is_dgx_spark():
@@ -564,11 +433,7 @@ def apply_nccl_env(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     return applied
 
 
-# ── Health / verification ────────────────────────────────────────────────────
-
-# NVIDIA's published dual-Spark reference is ~92-97 Gb/s per rail (~190 aggregate).
-# Anything near 13-16 Gb/s is the documented kernel-6.17/ConnectX-7 firmware fault,
-# not a cable problem, and system updates are the published remedy.
+# ~92-97 Gb/s per rail is NVIDIA's reference; ~13-16 is the kernel-6.17/CX-7 firmware fault.
 DEGRADED_GBPS = 40.0
 EXPECTED_GBPS = 90.0
 
@@ -580,13 +445,8 @@ def link_health(
     seconds: int = 5,
     port: int = 18999,
 ) -> Dict[str, Any]:
-    """Measure one rail end to end. Returns {} when it cannot be measured.
-
-    ib_write_bw needs a server on one node and a client on the other, so this starts
-    the server locally and drives the client on the peer over SSH. That means it only
-    works once passwordless SSH is set up -- which the pairing step arranges anyway.
-    A measurement is the only thing that can tell a throttled link from a healthy one.
-    """
+    """Measure one rail end to end; {} when it cannot be measured. ib_write_bw needs a
+    server here and a client on the peer, so this needs the pairing step's SSH keys."""
     if not shutil.which("ib_write_bw") or not shutil.which("ssh"):
         return {}
     server = None
@@ -612,7 +472,7 @@ def link_health(
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
         )
-        # Give the server its listening socket before the client dials in.
+        # Let the server bind before the client dials in.
         import time
 
         time.sleep(3)
@@ -625,7 +485,7 @@ def link_health(
                 "StrictHostKeyChecking=no",
                 "-o",
                 "ConnectTimeout=8",
-                f"{os.environ.get('USER', 'nvidia')}@{peer_ip}",
+                f"{_ssh_user()}@{peer_ip}",
                 f"ib_write_bw -d {ib_device} -F -x 3 --report_gbits -D {seconds} "
                 f"-s 1048576 -q 4 -p {port} {local_ip}",
             ],
@@ -664,19 +524,9 @@ _WC_MARKER = "Write combining is not supported"
 
 
 def write_combining_broken() -> Optional[bool]:
-    """Whether mlx5 reported that ARM64 write-combining failed its boot test.
-
-    ``True`` broken, ``False`` healthy, ``None`` *could not tell* -- and the
-    difference matters. Ubuntu ships ``kernel.dmesg_restrict=1``, so an
-    unprivileged read fails; answering ``False`` there would report a healthy
-    link on the very machines that have this fault. Callers must treat ``None``
-    as unknown and stay quiet rather than claim the link is fine.
-
-    This is the fingerprint of the ~13 Gb/s ceiling on kernel 6.17 Sparks: the
-    mlx5 write-combining probe is unreliable on Grace-class ARM64 cores, and when
-    it fails the driver gives up BlueFlame doorbell batching. It is a platform
-    fault -- Unsloth cannot patch around it, only name it.
-    """
+    """True broken, False healthy, None *could not tell*. Ubuntu sets dmesg_restrict, so an
+    unprivileged read fails and answering False would report a healthy link on exactly the
+    machines carrying this fault (the mlx5 write-combining ceiling on Grace-class ARM64)."""
     dmesg = shutil.which("dmesg")
     if dmesg:
         try:
@@ -686,7 +536,7 @@ def write_combining_broken() -> Optional[bool]:
                 return _WC_MARKER in proc.stdout and "mlx5" in proc.stdout
         except (OSError, subprocess.SubprocessError):
             pass
-    # Boot messages survive in the journal/kern.log even when dmesg is restricted.
+    # kern.log survives dmesg_restrict.
     for log in ("/var/log/kern.log", "/var/log/dmesg"):
         try:
             with open(log, "r", encoding = "utf-8", errors = "replace") as handle:
@@ -699,13 +549,8 @@ def write_combining_broken() -> Optional[bool]:
 
 
 def pending_system_updates() -> List[str]:
-    """DGX/ConnectX-relevant packages with an upgrade waiting.
-
-    Unsloth never installs these itself. A degraded link is a platform fault with
-    a published NVIDIA remedy (dist-upgrade + fwupdmgr + reboot), so the most
-    useful thing to do is name the packages and hand the user the commands --
-    a reboot is not Unsloth's to take.
-    """
+    """DGX/ConnectX-relevant packages with an upgrade waiting. Unsloth never installs
+    these itself: the remedy needs a reboot, which is not Unsloth's to take."""
     apt = shutil.which("apt")
     if not apt:
         return []
@@ -724,14 +569,12 @@ def pending_system_updates() -> List[str]:
     names = []
     for line in out.splitlines():
         pkg = line.split("/", 1)[0].strip()
-        # A held package is a decision already taken, not an outstanding update.
         if pkg and pkg not in held and any(token in pkg for token in wanted):
             names.append(pkg)
     return sorted(set(names))
 
 
 def _held_packages() -> set:
-    """Packages pinned with `apt-mark hold`; empty set when apt-mark is unavailable."""
     apt_mark = shutil.which("apt-mark")
     if not apt_mark:
         return set()
@@ -745,13 +588,8 @@ def _held_packages() -> set:
 
 
 def ota_status() -> Dict[str, Any]:
-    """What NVIDIA's own OTA checker says about this Spark, when it is installed.
-
-    ``nvidia-spark-ota-check`` (from dgx-spark-ota-update-meta) is authoritative about
-    whether a newer validated release exists, and it is the only thing that can tell a
-    genuinely out-of-date box from one that is already fully converged. Returns {} when
-    the tool is absent -- callers must not assume "no OTA" from that.
-    """
+    """What ``nvidia-spark-ota-check`` says about this Spark. Returns {} when the tool is
+    absent, which callers must not read as "no OTA available"."""
     tool = shutil.which("nvidia-spark-ota-check")
     if not tool:
         return {}
@@ -768,14 +606,8 @@ def ota_status() -> Dict[str, Any]:
 
 
 def update_instructions() -> List[str]:
-    """What to actually do about a degraded link -- OTA state decides.
-
-    The widely repeated advice ("dist-upgrade + fwupdmgr + reboot") only helps a Spark
-    that is genuinely behind. On a box already converged with the newest OTA it changes
-    nothing: measured on a GB10 running OTA2607, the upgrade carried no kernel, no GPU
-    driver and no ConnectX firmware, and the link stayed at ~14 Gb/s afterwards. Telling
-    that user to dist-upgrade is a reboot spent for no reason, so check first.
-    """
+    """What to do about a degraded link; OTA state decides. The usual "dist-upgrade + reboot"
+    advice changes nothing on a box already on the newest OTA, so check before spending one."""
     status = ota_status()
     if status.get("available"):
         name = status.get("name") or "a newer release"
@@ -799,41 +631,58 @@ def update_instructions() -> List[str]:
     ]
 
 
-# ── Distributed GGUF inference across both Sparks (llama.cpp RPC) ────────────
-# This is the one thing two Sparks genuinely buy you that one cannot: llama.cpp's
-# RPC backend places layers on a remote device, so a model too large for a single
-# 121 GiB Spark can be split across the pair. Training cannot do this -- see
-# unsloth/unsloth#4858 -- because each Spark is its own host with its own single
-# GPU; torch.cuda.device_count() is 1 on both, so `device_map="balanced"` has
-# nothing to balance across.
-#
-# The RPC transport auto-selects RDMA over RoCE when llama.cpp was built with
-# libibverbs present (set GGML_RPC_NO_RDMA=1 to force TCP).
-
+# llama.cpp's RPC backend places layers on a remote device, so a model too large for one
+# Spark splits across the pair. Training cannot: device_count() is 1 on each host, so
+# `device_map="balanced"` has nothing to balance (unsloth/unsloth#4858).
 RPC_DEFAULT_PORT = 50052
 
-# The executable and the library, under every name the bundles have used. The
-# legacy `rpc-server` name predates the ggml- prefix; Windows bundles carry .exe
-# and ggml-rpc.dll; macOS carries a versioned dylib.
+# The legacy `rpc-server` name predates the ggml- prefix; macOS carries a versioned dylib.
 _RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
+# What Windows will actually run. `os.access(path, os.X_OK)` is not that test: on Windows it
+# succeeds for ANY existing file, so it accepted a text file as a server binary. The extension
+# is the real permission there, and it is a fixed set rather than PATHEXT because the only
+# thing being resolved is a binary this project ships.
+_WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
+
+
+def _on_windows(windows: Optional[bool] = None) -> bool:
+    return (os.name == "nt") if windows is None else bool(windows)
+
+
+def _is_executable_file(path, windows: Optional[bool] = None) -> bool:
+    """Whether this host would run `path`. POSIX means the exec bit; Windows means the suffix."""
+    try:
+        if not os.path.isfile(path):
+            return False
+        if _on_windows(windows):
+            return os.path.splitext(str(path))[1].lower() in _WINDOWS_EXECUTABLE_SUFFIXES
+        return os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def rpc_server_names(windows: Optional[bool] = None) -> Tuple[str, ...]:
+    """`_RPC_SERVER_NAMES` with the platform's own spelling first.
+
+    The list is POSIX-shaped, extensionless names leading, and the search takes the first hit.
+    On Windows that let a stray extensionless `ggml-rpc-server` sitting beside the real
+    `ggml-rpc-server.exe` win, so the resolution could report success while returning the wrong
+    file. Ordering by platform is what stops that; rejecting non-executables alone would not."""
+    suffixed = tuple(
+        n for n in _RPC_SERVER_NAMES if n.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
+    )
+    plain = tuple(n for n in _RPC_SERVER_NAMES if n not in suffixed)
+    return (suffixed + plain) if _on_windows(windows) else (plain + suffixed)
+
+
 _RPC_LIB_NAMES = ("libggml-rpc.so", "libggml-rpc.dylib", "libggml-rpc.0.dylib", "ggml-rpc.dll")
-# Where inside a bundle the payload lives: the Linux/macOS layout, the Windows
-# layout, the raw tarball layout, and a flat directory, in that order.
 _BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
 
 
 def llama_bundle_dir() -> Path:
-    """The managed llama.cpp prebuilt bundle, resolved the way the installer resolves it.
-
-    Mirrors ``default_managed_llama_dir()`` in studio/install_llama_prebuilt.py and the
-    ``_css_llama_path`` logic in setup.sh rather than importing either: this module has
-    to stay stdlib-only and cheap. The rule is ``UNSLOTH_LLAMA_CPP_PATH`` if set, else
-    ``<UNSLOTH_STUDIO_HOME>/llama.cpp`` for a custom studio home, else the legacy
-    ``~/.unsloth/llama.cpp``. The default is deliberately NOT under the studio root:
-    the venv lives at ``~/.unsloth/studio/unsloth_studio`` while the bundle lives one
-    level up, so ``_studio_root() / "llama.cpp"`` would name a directory that does not
-    exist on a default install and provision would silently skip the bundle.
-    """
+    """The managed llama.cpp bundle, resolved as the installer resolves it. The default is
+    deliberately NOT under the studio root -- the bundle sits one level up from the venv -- so
+    ``_studio_root() / "llama.cpp"`` would make provision silently skip it."""
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
     if override:
         return Path(override).expanduser()
@@ -847,12 +696,37 @@ def llama_bundle_dir() -> Path:
     return Path.home() / ".unsloth" / "llama.cpp"
 
 
+def _peer_dir_exists(peer_ip: str, user: str, remote_dir: str) -> bool:
+    """Read-only `test -d` on the peer. Used only by the dry run, which must not write."""
+    try:
+        return (
+            subprocess.run(
+                [
+                    "ssh",
+                    "-n",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"{user}@{peer_ip}",
+                    "test",
+                    "-d",
+                    remote_dir,
+                ],
+                capture_output = True,
+                timeout = 30,
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
+
+
 def _find_in_bundle(
     root: Path,
     names: Tuple[str, ...],
     executable: bool = False,
 ) -> Optional[Path]:
-    """The first of ``names`` present in any known bundle layout under ``root``."""
     for parts in _BUNDLE_SUBDIRS:
         base = root.joinpath(*parts) if parts else root
         for name in names:
@@ -860,7 +734,7 @@ def _find_in_bundle(
             try:
                 if not candidate.is_file():
                     continue
-                if executable and not os.access(candidate, os.X_OK):
+                if executable and not _is_executable_file(candidate):
                     continue
             except OSError:
                 continue
@@ -869,37 +743,20 @@ def _find_in_bundle(
 
 
 def rpc_server_binary() -> Optional[str]:
-    """Path to ggml-rpc-server, or None.
-
-    Unsloth's llama.cpp prebuilt ships the executable next to llama-server, together
-    with libggml-rpc.so, from release b10796-mix-659e406 of unslothai/llama.cpp
-    onward; earlier bundles shipped only the RPC client backend. So the managed bundle
-    (``llama_bundle_dir()``, which honours UNSLOTH_STUDIO_HOME and
-    UNSLOTH_LLAMA_CPP_PATH) is searched first, under the current name and the legacy
-    ``rpc-server`` name, and a source build or a binary on PATH is the fallback for
-    an older bundle.
-
-    The installer (studio/install_llama_prebuilt.py, runtime_patterns_for_choice and
-    install_from_archives) copies it into ``build/bin`` on Linux and macOS and into
-    ``build/bin/Release`` on Windows, chmod 755, with no root-level link; both
-    directories lead ``_BUNDLE_SUBDIRS``, and a test in
-    tests/studio/install/test_install_llama_prebuilt_logic.py pins that agreement.
-    """
+    """Path to ggml-rpc-server, or None. Bundles from b10796-mix-659e406 onward ship it;
+    earlier ones shipped only the client backend, so a source build or PATH is the fallback.
+    build/bin and build/bin/Release lead ``_BUNDLE_SUBDIRS`` to match the installer."""
     roots = [llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"]
     for root in roots:
-        found = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+        found = _find_in_bundle(root, rpc_server_names(), executable = True)
         if found is not None:
             return str(found)
     return shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
 
 
 def _bundle_version(root: Path) -> str:
-    """The release tag from the bundle's BUILD_INFO.txt, or ``"unknown"``.
-
-    The first line reads ``llama.cpp version: b10796-mix-659e406``. Bundles older
-    than the file, and source builds, have no BUILD_INFO.txt at all, and that must
-    read as unknown rather than fail: an unknown is compared by library hash instead.
-    """
+    """The release tag from BUILD_INFO.txt, or ``"unknown"``. Source builds have no such file,
+    and that must read unknown rather than fail: an unknown is compared by library hash."""
     for parts in ((), ("build", "bin"), ("bin",)):
         base = root.joinpath(*parts) if parts else root
         text = _read(base / "BUILD_INFO.txt", 4096)
@@ -931,13 +788,9 @@ def _file_md5(path: Path) -> Optional[str]:
 
 
 def llama_bundle_identity(root: Optional[Path] = None) -> Dict[str, Any]:
-    """What llama.cpp this node would run: the bundle tag and the RPC library's hash.
-
-    Two independent signals because each fails alone. BUILD_INFO.txt is absent from
-    older bundles and from source builds (``version`` is then ``"unknown"``); the md5
-    of libggml-rpc catches a bundle that was patched in place under the same tag.
-    Never raises: a missing bundle answers ``present: False``.
-    """
+    """The bundle tag and the RPC library's hash: two signals because each fails alone.
+    BUILD_INFO.txt is missing from source builds; the md5 catches a bundle patched in
+    place under an unchanged tag. Never raises; a missing bundle is ``present: False``."""
     root = Path(root) if root is not None else llama_bundle_dir()
     out: Dict[str, Any] = {
         "root": str(root),
@@ -958,27 +811,23 @@ def llama_bundle_identity(root: Optional[Path] = None) -> Dict[str, Any]:
     if lib is not None:
         out["rpc_lib"] = str(lib)
         out["rpc_lib_md5"] = _file_md5(lib)
-    server = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+    server = _find_in_bundle(root, rpc_server_names(), executable = True)
     if server is not None:
         out["rpc_server"] = str(server)
     return out
 
 
 def _peer_relative_path(path: Path) -> str:
-    """``path`` as the peer should see it: ``~/...`` when it sits under our home.
-
-    Provision copies to the same path on the peer, but the peer's home directory may
-    differ from ours (different username), so a path under our home is sent home
-    relative and expanded THERE. A custom absolute location is sent as is.
-    """
+    """``path`` as the peer should see it. The peer's home may differ (different username),
+    so a path under our home is sent home-relative and expanded THERE."""
     try:
         return "~/" + path.relative_to(Path.home()).as_posix()
     except ValueError:
         return path.as_posix()
 
 
-# Runs on the PEER under its own python3, so it must be self-contained: the peer may
-# have no Unsloth checkout at all. It mirrors llama_bundle_identity() field for field.
+# Runs on the PEER under its own python3, so it must stay self-contained: no Unsloth
+# checkout is assumed there. Mirrors llama_bundle_identity() field for field.
 _BUNDLE_PROBE = """\
 import hashlib, json, os
 root = os.path.expanduser(os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or {root!r})
@@ -987,19 +836,30 @@ libs = {libs!r}
 servers = {servers!r}
 out = {{"root": root, "present": os.path.isdir(root), "version": "unknown",
        "rpc_lib": None, "rpc_lib_md5": None, "rpc_server": None}}
+win = os.name == "nt"
+exts = (".exe", ".com", ".bat", ".cmd")
+def runnable(c):
+    if win:
+        return os.path.splitext(c)[1].lower() in exts
+    return os.access(c, os.X_OK)
+def order(names):
+    # The peer decides for itself: it may not be the platform that launched this probe.
+    suffixed = [n for n in names if n.lower().endswith(exts)]
+    plain = [n for n in names if n not in suffixed]
+    return (suffixed + plain) if win else (plain + suffixed)
 def find(names, executable):
     for parts in subs:
         base = os.path.join(root, *parts) if parts else root
-        for name in names:
+        for name in order(names):
             c = os.path.join(base, name)
-            if os.path.isfile(c) and (not executable or os.access(c, os.X_OK)):
+            if os.path.isfile(c) and (not executable or runnable(c)):
                 return c
     return None
 if out["present"]:
     for parts in ((), ("build", "bin"), ("bin",)):
         p = os.path.join(root, *parts, "BUILD_INFO.txt")
         try:
-            with open(p, "r", errors="replace") as fh:
+            with open(p, "r", encoding = "utf-8", errors="replace") as fh:
                 text = fh.read(4096)
         except OSError:
             continue
@@ -1029,12 +889,8 @@ print("UNSLOTH_BUNDLE " + json.dumps(out))
 
 
 def peer_llama_bundle_identity(peer_ip: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
-    """``llama_bundle_identity()`` as evaluated ON THE PEER, or None if it cannot be.
-
-    Runs over non-interactive ssh with the same base64 transport the other peer probes
-    use. None means "could not check", which callers must report as unverified rather
-    than as matching.
-    """
+    """``llama_bundle_identity()`` as evaluated ON THE PEER. None means "could not check",
+    which callers must report as unverified rather than as matching."""
     if not peer_ip or not shutil.which("ssh"):
         return None
     import base64
@@ -1080,14 +936,9 @@ PROVISION_FIX = "run `unsloth spark provision` to copy this node's llama.cpp bun
 
 
 def compare_llama_bundles(local: Dict[str, Any], peer: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Will llama-server here and ggml-rpc-server there speak the same RPC protocol?
-
-    The protocol is pinned by the build, so two nodes on the same bundle tag with the
-    same libggml-rpc are safe, and two nodes on different tags are not: b10796 speaks
-    RPC 6.0 where the bundles before it spoke 5.1, and llama-server then fails at load
-    with "RPC server version mismatch". ``ok`` is True, False, or None for
-    "could not verify". Pure: it compares two dicts and touches nothing.
-    """
+    """Will llama-server here and ggml-rpc-server there speak the same RPC protocol? The
+    protocol is pinned by the build: b10796 speaks 6.0 where earlier bundles spoke 5.1,
+    and llama-server then fails at load. ``ok`` may be None for "could not verify"."""
     out: Dict[str, Any] = {"ok": None, "problems": [], "notes": [], "local": local, "peer": peer}
     lv = str(local.get("version") or "unknown")
     if peer is None:
@@ -1135,19 +986,11 @@ def compare_llama_bundles(local: Dict[str, Any], peer: Optional[Dict[str, Any]])
     return out
 
 
-# ── Live RPC HELLO probe ─────────────────────────────────────────────────────
-# Wire format of the handshake, from ggml/src/ggml-rpc/ggml-rpc.cpp and transport.h
-# at ggml-org/llama.cpp tag b10796 (RPC protocol 6.0.0):
-#
-#   client -> one byte RPC_CMD_HELLO (14), a little-endian uint64 payload length,
-#             then rpc_msg_hello_req: uint8 conn_caps[RPC_CONN_CAPS_SIZE], all zero
-#   server -> a little-endian uint64 body length, then rpc_msg_hello_rsp:
-#             uint8 major, minor, patch, padding, then conn_caps[RPC_CONN_CAPS_SIZE]
-#
-# A 6.0 server checks the request length first and, if it is not exactly
-# sizeof(rpc_msg_hello_req), logs "HELLO request size mismatch" and closes the socket
-# without replying. So EOF before any reply means "something is listening but it is
-# not a 6.0 server", which is a different finding from a refused connection.
+# HELLO wire format, ggml/src/ggml-rpc/ggml-rpc.cpp at ggml-org/llama.cpp b10796 (RPC 6.0):
+#   client -> uint8 RPC_CMD_HELLO(14), LE uint64 payload length, then conn_caps[24] zeroed
+#   server -> LE uint64 body length, then uint8 major, minor, patch, pad, conn_caps[24]
+# A 6.0 server closes without replying on a request length it does not recognise, so EOF
+# before any reply means "listening, but not a 6.0 server" -- not the same as refused.
 RPC_CMD_HELLO = 14
 RPC_CONN_CAPS_SIZE = 24
 RPC_HELLO_MAX_BODY = 4096
@@ -1169,14 +1012,8 @@ def rpc_hello_probe_detail(
     timeout: float = 2.0,
     read_timeout: float = 3.0,
 ) -> Dict[str, Any]:
-    """Send one HELLO and classify what came back. Never raises, always bounded.
-
-    ``state`` is one of ``ok`` (``version`` holds (major, minor, patch)), ``refused``
-    (nothing listening), ``closed`` (a listener hung up without replying, which is
-    what a 6.0 server does to a request it does not recognise and what an older
-    server may do to a 6.0 request), ``timeout``, or ``garbled`` (a reply too short
-    or too long to be a HELLO response).
-    """
+    """Send one HELLO and classify the reply. Never raises, always bounded. ``closed`` means a
+    listener hung up without replying, which is what a protocol-mismatched server does."""
     import struct
 
     out: Dict[str, Any] = {"host": host, "port": port, "state": "refused", "version": None}
@@ -1224,20 +1061,13 @@ def rpc_hello_probe(
     port: int = RPC_DEFAULT_PORT,
     timeout: float = 2.0,
 ) -> Optional[Tuple[int, int, int]]:
-    """The (major, minor, patch) RPC protocol of a running ggml-rpc-server, or None."""
     return rpc_hello_probe_detail(host, port, timeout = timeout)["version"]
 
 
 def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
-    """Both signals, before a two-node layer split is launched.
-
-    (a) the bundle identity on both nodes, from BUILD_INFO.txt and the libggml-rpc
-    hash, which works before anything is running; (b) a live HELLO against whatever
-    already listens on the peer's RPC port, and on ours, which catches a stale server
-    left over from an older bundle. A refused connection is the normal state before
-    launch and is only a note. ``ok`` False means a mismatch was CONFIRMED; None means
-    it could not be verified and the caller should say so and carry on.
-    """
+    """Bundle identity (works before anything runs) plus a live HELLO against whatever
+    already listens (catches a stale server from an older bundle). A refused connection is
+    the normal pre-launch state. ``ok`` False means CONFIRMED mismatch, None unverified."""
     result = compare_llama_bundles(llama_bundle_identity(), peer_llama_bundle_identity(peer_ip))
     result["peer_rpc"] = peer_live = rpc_hello_probe_detail(peer_ip, port)
     result["local_rpc"] = local_live = rpc_hello_probe_detail("127.0.0.1", port)
@@ -1290,10 +1120,8 @@ def peer_ip_for(rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
 
 
 def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
-    """Everything needed to run one model across both Sparks, or the reason we cannot."""
     if not is_dgx_spark():
-        # Answer before the sysfs walk and the `ip` fork that rail discovery would do:
-        # the answer cannot change, so paying for it would be pure waste off-box.
+        # Answer before rail discovery's sysfs walk and `ip` fork; the answer cannot change.
         return {
             "ok": False,
             "problems": ["not a DGX Spark"],
@@ -1328,17 +1156,12 @@ def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
         "local_ip": local,
         "peer_ip": peer,
         "port": port,
-        # Remote first: llama.cpp fills RPC devices in the order given, and putting
-        # the remote ahead of the local device keeps the split from starving it.
+        # Remote first: llama.cpp fills RPC devices in the given order; local-first starves it.
         "rpc_arg": f"{peer}:{port},127.0.0.1:{port}" if peer else None,
     }
 
 
-# ── Peer setup ───────────────────────────────────────────────────────────────
-
-# NVIDIA's numbering puts the first node at .12 of each rail subnet, and each
-# further node one above it. A /24 leaves room for far more Sparks than anyone
-# has, so the cap below is about honesty, not address space.
+# NVIDIA numbers the first node .12 of each rail subnet; the cap is honesty, not space.
 NODE_BASE_OCTET = 12
 MAX_PLANNABLE_NODES = 240
 
@@ -1349,20 +1172,10 @@ def rail_plan_report(
     n_nodes: int = 2,
     switched: bool = False,
 ) -> Dict[str, Any]:
-    """The addressing plan, or an explicit refusal -- never a wrong plan.
-
-    Two Sparks are cabled QSFP-to-QSFP: one point-to-point link, so a flat /24 per
-    PCIe function is exactly right and needs no switch. THREE OR MORE Sparks cannot
-    be cabled that way. Either they hang off a switch (in which case the same flat
-    /24 per rail is right, and ``switched=True`` says so), or they are cabled in a
-    chain or ring, in which case each *link* needs its own subnet and this flat plan
-    is simply wrong -- it would give two nodes that share no cable addresses on the
-    same subnet, and every route between them would black-hole.
-
-    A netplan that looks plausible and does not work is worse than a refusal,
-    because the user applies it, reboots, and then debugs the wrong layer. So for
-    N>2 without ``switched=True`` this returns ``ok: False`` and says why.
-    """
+    """The addressing plan, or an explicit refusal -- never a wrong plan. A flat /24 per PCIe
+    function is right for a cabled pair and for a switch (``switched=True``) but wrong for 3+
+    Sparks in a chain: nodes sharing no cable land on one subnet and every route black-holes.
+    A plausible netplan that does not work is worse than a refusal, so N>2 refuses."""
     rails = rails if rails is not None else cabled_rails()
     problems: List[str] = []
     notes: List[str] = []
@@ -1421,27 +1234,14 @@ def rail_plan(
     n_nodes: int = 2,
     switched: bool = False,
 ) -> List[Dict[str, str]]:
-    """Addressing plan for the cabled rails: one /24 per PCIe function.
-
-    ``node_index`` 0 is this Spark, 1 the next, so the hosts land on .12, .13, ...
-    of each subnet (NVIDIA's own numbering). Two subnets are not redundancy: a
-    single subnet can only drive one PCIe function, which would cap a pair near
-    100 Gb/s instead of ~190.
-
-    Returns ``[]`` -- never a half-right plan -- when the request cannot be
-    honoured; ``rail_plan_report`` carries the reason. See its docstring for why
-    N>2 needs ``switched=True``.
-    """
+    """One /24 per PCIe function, node N on .12+N. Two subnets are not redundancy: one subnet
+    drives one function and caps a pair near 100 Gb/s. Returns ``[]``, never a half plan."""
     return rail_plan_report(rails, node_index, n_nodes, switched)["plan"]
 
 
 def netplan_yaml(plan: List[Dict[str, str]]) -> str:
-    """A netplan drop-in that makes the rail addressing survive a reboot.
-
-    An empty plan renders as a comment block, not as an empty ``ethernets:`` map:
-    the latter is valid YAML that netplan accepts and that quietly configures
-    nothing, which is exactly the silent-wrong-answer this module exists to avoid.
-    """
+    """A netplan drop-in for the rail addressing. An empty plan renders as comments, not an
+    empty ``ethernets:`` map: netplan accepts that and silently configures nothing."""
     if not plan:
         return (
             "# No addressing plan was produced -- nothing to apply.\n"
@@ -1466,17 +1266,13 @@ def _print_manual_steps(
     *,
     extra_plans: Optional[List[List[Dict[str, str]]]] = None,
 ) -> None:
-    """Print the netplan drop-in for this node and for each peer.
-
-    ``extra_plans`` carries nodes 2..N-1 for a cluster larger than a pair; the
-    two positional arguments keep the pair case calling exactly as it did.
-    """
-
     def emit(where: str, entries: List[Dict[str, str]]) -> None:
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")
         print(netplan_yaml(entries), end = "")
-        print("    EOF")
+        # Column 0: <<'EOF' only ends on an unindented terminator, and an indented one makes the
+        # heredoc swallow the chmod and netplan apply lines into the file it was writing.
+        print("EOF")
         print("    sudo chmod 600 /etc/netplan/40-unsloth-cx7.yaml && sudo netplan apply")
 
     emit("THIS Spark", plan)
@@ -1486,9 +1282,7 @@ def _print_manual_steps(
         emit(label, entries)
 
 
-# Below this, the link is degraded rather than merely imperfect. Healthy on this hardware
-# measures ~21.6 GB/s (88% of the 24.5 GB/s raw RDMA ceiling); the fault state measures ~3.0.
-# The gap is so wide that a single threshold is safe, and 8.0 sits far from both.
+# Healthy measures ~21.6 GB/s here and the fault state ~3.0, so 8.0 sits far from both.
 NCCL_DEGRADED_GBPS = 8.0
 NCCL_HEALTHY_GBPS = 15.0
 
@@ -1511,22 +1305,16 @@ def nccl_bandwidth(
     mb: int = 1024,
     timeout: int = 90,
 ) -> Optional[float]:
-    """Real NCCL all-reduce bus bandwidth in GB/s, or None if it cannot be measured.
-
-    Shells out to torchrun on both nodes rather than importing torch here, so that merely
-    importing this module stays free on every other platform.
-    """
+    """Real NCCL all-reduce bus bandwidth in GB/s, or None. Shells out to torchrun rather
+    than importing torch, so importing this module stays free on every other platform."""
     if not shutil.which("ssh"):
         return None
-    # A fixed port collides with a previous run that died at the rendezvous and left
-    # the socket held, which then fails as an unexplained 'could not measure'.
+    # Random port: a fixed one collides with a dead run still holding the socket.
     import random
 
     port = random.randint(29600, 29999)
-    # Copy the probe to the peer and run BOTH sides by absolute path. Running it as
-    # `-m studio.spark_nccl_probe` would require Unsloth to be installed at the same
-    # importable path on both nodes, which is not guaranteed -- the peer may have a
-    # different venv, or none.
+    # Both sides run the probe by absolute path: `-m studio.spark_nccl_probe` would need
+    # Unsloth importable at the same path on both nodes, and the peer may have no venv.
     local_probe = osp.join(osp.dirname(osp.abspath(__file__)), "spark_nccl_probe.py")
     if not osp.exists(local_probe):
         return None
@@ -1549,9 +1337,8 @@ def nccl_bandwidth(
         f"{env} SPARK_PROBE_MB={mb} torchrun --nnodes=2 --nproc_per_node=1 "
         f"--master_addr={local_ip} --master_port={port}"
     )
-    # A non-interactive ssh shell does not have the Unsloth venv on PATH, so `torchrun`
-    # is simply missing on the peer -- the peer side never starts, and the local side sits
-    # at the rendezvous until it times out. Source the venv when it is there.
+    # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the
+    # peer, so it never starts and the local side hangs at the rendezvous.
     activate = venv_activate()
     peer_cmd = (
         f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
@@ -1590,7 +1377,6 @@ def nccl_bandwidth(
 
 
 def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
-    """Turn a measured bandwidth into a verdict and, when needed, the fix."""
     if busbw is None:
         return {
             "verdict": "unknown",
@@ -1627,21 +1413,9 @@ def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
 
 
 def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
-    """Check for CPython dev headers locally and on the peer.
-
-    Worth a dedicated check because the failure is invisible. Triton JIT-compiles a small
-    `cuda_utils.c` shim at model-inspection time, so without `Python.h` it cannot build --
-    and neither vLLM nor torch says so. Locally it surfaces as
-    `Model architectures [...] failed to be inspected` (the gcc error is swallowed in a
-    subprocess). On a WORKER node it is worse: the head rank simply blocks for 601 s and
-    dies with `DistStoreError: Timed out ... 1/2 clients joined`, never reporting that its
-    peer already exited. An apparently slow multi-node launch is often this.
-
-    rsyncing a venv between nodes -- which is the fast way to set up the second Spark,
-    since the RoCE link does ~444 MB/s while the internet may not -- copies the Python
-    packages but NOT the system headers they shell out to, so the peer is the likely
-    offender.
-    """
+    """CPython dev headers, here and on the peer. The failure is invisible: Triton JIT-builds a
+    shim, and without Python.h a head rank blocks 601 s and dies with `DistStoreError: 1/2
+    clients joined`. rsync copies packages but NOT the system headers they need."""
     import sysconfig
 
     out: Dict[str, Any] = {"local": False, "peer": None, "include": ""}
@@ -1650,12 +1424,8 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     out["local"] = bool(inc) and osp.exists(osp.join(inc, "Python.h"))
     if peer_ip and shutil.which("ssh"):
         user = _ssh_user()
-        # Ask the PEER's own interpreter where its headers live rather than assuming it
-        # matches ours. Triton builds against whichever Python that node's venv runs, so
-        # checking our include path over there answers the wrong question -- and the whole
-        # point of this check is a node whose environment differs from the head's.
-        # base64 the probe: it has to survive ssh -> bash -lc -> python -c, and every
-        # layer of nested quoting is a chance to mangle it (it did, twice).
+        # Ask the PEER's own interpreter: Triton builds against whichever Python that
+        # node's venv runs. base64 so the probe survives ssh -> bash -lc -> python -c.
         import base64
 
         probe = (
@@ -1688,11 +1458,8 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-# Caches that must exist on BOTH nodes. A node missing one does not fail -- it silently
-# rebuilds from scratch, which presents as a HANG rather than an error. Observed: a peer
-# without `flashinfer_autotune_cache` sat 17+ minutes in CUDA-graph capture at 191% CPU
-# while the head logged only "No available shared memory broadcast block found in 60
-# seconds" once a minute. Nothing named the cause.
+# Caches that must exist on BOTH nodes. A node missing one silently rebuilds from scratch,
+# which presents as a HANG rather than an error (observed: 17+ min in CUDA-graph capture).
 SHARED_CACHES = (
     "~/.cache/flashinfer",
     "~/.cache/vllm/flashinfer_autotune_cache",
@@ -1701,12 +1468,7 @@ SHARED_CACHES = (
 
 
 def cache_symmetry(peer_ip: str) -> Dict[str, Optional[bool]]:
-    """For each shared cache present locally, is it also present on the peer?
-
-    Only flags caches we HAVE locally: one neither node has is simply cold, and both will
-    build it. The dangerous case is asymmetry, because then one node is fast, the other
-    silently spends many minutes rebuilding, and the job looks stuck.
-    """
+    """Only caches present LOCALLY are flagged: one neither node has is merely cold."""
     out: Dict[str, Optional[bool]] = {}
     if not shutil.which("ssh"):
         return out
@@ -1737,27 +1499,9 @@ def cache_symmetry(peer_ip: str) -> Dict[str, Optional[bool]]:
 
 
 def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
-    """Detect a GPU that enumerates but whose compute engine is dead.
-
-    Observed on a DGX Spark after a power cycle, and it is genuinely confusing because every
-    obvious check passes:
-
-        nvidia-smi                -> works, reports NVIDIA GB10
-        driver modules            -> all loaded (nvidia, nvidia_uvm, nvidia_drm, ...)
-        /dev/nvidia*              -> present, correct permissions
-        CUDA_VISIBLE_DEVICES      -> unset
-        torch.cuda.is_available() -> False
-        cuInit(0)                 -> 100  (CUDA_ERROR_NO_DEVICE)
-        dmesg                     -> NVRM: ... Possible bad register read ... 0xbadf5600
-
-    `0xbadf5600` is NVIDIA's sentinel for a failed register read: the GPU is on the bus and
-    enumerable, but not responding. **A reboot clears it; a module reload does not, and a
-    power cycle is not required** -- which is worth stating because the natural response to
-    "the GPU is dead after a power cycle" is another power cycle, and that is the slower fix.
-
-    Distinct from the power-delivery fault, which leaves CUDA perfectly healthy and instead
-    caps NCCL bandwidth -- see `diagnose_link`. Same symptom class, opposite remedy.
-    """
+    """A GPU that enumerates but whose compute engine is dead: nvidia-smi looks fine, cuInit(0)
+    returns 100 and dmesg shows NVRM 0xbadf5600. A REBOOT clears it; a module reload does not,
+    and a power cycle is NOT required. Not the power-delivery fault, which caps NCCL instead."""
     probe = (
         "import ctypes\n"
         "try:\n"
@@ -1772,7 +1516,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         if cuinit == 0:
             return "ok"
         if smi_ok and cuinit is not None:
-            return "dead-engine"  # enumerates but will not initialise
+            return "dead-engine"
         return "unknown"
 
     smi = shutil.which("nvidia-smi") is not None
@@ -1784,9 +1528,15 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
             code = int((r.stdout or "-1").strip().splitlines()[-1])
         except Exception:
             code = None
-        smi_ok = (
-            subprocess.run(["nvidia-smi", "-L"], capture_output = True, timeout = 30).returncode == 0
-        )
+        # A wedged driver is the case this command exists for, and there nvidia-smi is what hangs
+        # or refuses to run, so an unguarded probe would abort doctor with a traceback.
+        try:
+            smi_ok = (
+                subprocess.run(["nvidia-smi", "-L"], capture_output = True, timeout = 30).returncode
+                == 0
+            )
+        except Exception:
+            smi_ok = False
         out["local"] = {"cuinit": code, "state": _classify(code, smi_ok)}
 
     if peer_ip and shutil.which("ssh"):
@@ -1823,7 +1573,6 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _cmd_doctor() -> int:
-    """Measure the link the only way that detects the power-delivery fault."""
     if not is_dgx_spark():
         print("This machine is not a DGX Spark; nothing to check.")
         return 0
@@ -1861,8 +1610,6 @@ def _cmd_doctor() -> int:
         elif ok is None:
             print(f"  could not check Python.h on {where} (ssh unavailable)\n")
 
-    # A dead compute engine makes every downstream measurement fail in confusing ways, so
-    # check it before anything expensive.
     for where, info in cuda_health(peer).items():
         if not info:
             continue
@@ -1890,8 +1637,7 @@ def _cmd_doctor() -> int:
             print(f"      rsync -a {cache}/ {peer}:{cache}/")
             print("")
 
-    # The llama.cpp bundle must match too, or a two-node layer split dies at load
-    # with "RPC server version mismatch". Only worth asking when we have a bundle.
+    # A mismatched llama.cpp bundle kills a layer split at load; only ask when we have one.
     bundle_bad = False
     local_bundle = llama_bundle_identity()
     if local_bundle["present"]:
@@ -1918,9 +1664,7 @@ def _cmd_doctor() -> int:
 
 def _cmd_status(benchmark: bool = False) -> int:
     if not is_dgx_spark():
-        # Explicit, and first: `cluster_state()` happens to answer "not_spark" here too,
-        # but relying on that made the guard a property of another function's ordering
-        # rather than a stated rule of this one.
+        # Explicit, so this guard does not depend on cluster_state()'s internal ordering.
         print("state: not_spark")
         print(NOT_A_SPARK)
         return 0
@@ -1941,8 +1685,7 @@ def _cmd_status(benchmark: bool = False) -> int:
     if shown:
         print(f"\n  link events: carrier_up_count {shown}")
 
-    # Only a measurement can say whether the link is throttled -- carrier counters
-    # cannot (see HOTPLUG_NOTE). Measure when perftest and a peer are both available.
+    # Only a measurement can say whether the link is throttled (see HOTPLUG_NOTE).
     peer_ip = None
     for rail in info["configured"]:
         for addr in rail["ipv4"]:
@@ -1974,7 +1717,6 @@ def _cmd_status(benchmark: bool = False) -> int:
 
 
 def _cmd_env() -> int:
-    """Print the GB10 NCCL settings as shell exports."""
     if not is_dgx_spark():
         return 0
     for key, value in nccl_env().items():
@@ -1982,23 +1724,15 @@ def _cmd_env() -> int:
     return 0
 
 
-# What must exist identically on both nodes for a two-Spark job to work, and which the
-# internet cannot supply here: HuggingFace measures ~20 KB/s from these boxes while the
-# RoCE link does ~444 MB/s. Installing on the peer is therefore both slower and a source of
-# resolver drift; copying is faster and bit-identical.
-# The venv path is resolved, not hardcoded, because UNSLOTH_STUDIO_HOME moves it. Copying
-# `~/.unsloth/studio/unsloth_studio` from a machine whose venv lives somewhere else copies
-# a stale venv or nothing at all, and then reports "Peer now matches this node" -- which
-# hands the user the exact 601 s `DistStoreError: 1/2 clients joined` this command exists
-# to prevent, while telling them everything is fine.
+# Copying beats installing on the peer: far faster here, and a copy cannot drift. The venv
+# path is RESOLVED because UNSLOTH_STUDIO_HOME moves it, and a hardcoded one copies a stale
+# venv while still reporting "Peer now matches this node".
 _DEFAULT_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
 
 
 def provision_paths() -> Tuple[Tuple[str, str], ...]:
-    # The llama.cpp bundle is NOT inside the venv: it sits beside the studio root
-    # (see llama_bundle_dir). Without it a paired peer keeps whatever llama-server it
-    # had, and two bundles a release apart speak different RPC protocols, which
-    # llama-server reports at load as "RPC server version mismatch".
+    # The llama.cpp bundle is NOT inside the venv (see llama_bundle_dir): skip it and the
+    # peer keeps an older bundle, which llama-server rejects at load as a version mismatch.
     return (
         (str(_studio_root() / "unsloth_studio"), "Unsloth venv"),
         (str(llama_bundle_dir()), "llama.cpp prebuilt"),
@@ -2009,37 +1743,22 @@ def provision_paths() -> Tuple[Tuple[str, str], ...]:
 
 
 def venv_activate() -> str:
-    """The peer's `activate`, for a non-interactive ssh that has no venv on PATH.
-
-    Left as the literal `$HOME/...` in the default case so it expands on the PEER, which
-    stays correct even if the two nodes have different usernames or home directories.
-    Only a custom UNSLOTH_STUDIO_HOME forces an absolute path, and that is right because
-    `provision` copies to the same absolute path on the peer.
-    """
+    """The peer's `activate`. Left as the literal `$HOME/...` so it expands on the PEER, whose
+    home may differ; only a custom UNSLOTH_STUDIO_HOME forces an absolute path."""
     root = _studio_root()
     if root == _DEFAULT_STUDIO_ROOT:
         return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
     return str(root / "unsloth_studio" / "bin" / "activate")
 
 
-# A process holding less than this is a CUDA context and scratch, not a job. Anything
-# at or above it means someone's work is resident on that GPU right now.
+# Below this a process is a CUDA context and scratch, not somebody's job.
 PEER_BUSY_MIB = 96
 
 
 def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
-    """Is the peer's GPU holding someone's work? FAILS CLOSED, by design.
-
-    This gates a destructive `rsync --delete` onto a machine that may be running a
-    job out of the very directory being overwritten. The asymmetry is deliberate and
-    is the whole point: "I could not tell" must read as BUSY, never as free. Probing
-    a peer is unreliable in exactly the situations where a running job is most likely
-    (the box is loaded, ssh is slow, nvidia-smi is queued behind a driver call), so a
-    probe that fails to answer is evidence of nothing and must not be spent as
-    permission. Fail-open here has cost this project twice.
-
-    Returns ``{"busy": bool, "known": bool, "processes": [...], "reason": str}``.
-    """
+    """Is the peer's GPU holding someone's work? FAILS CLOSED: this gates a destructive
+    ``rsync --delete``, and the probe is least likely to answer exactly when a job IS running,
+    so "could not tell" must read as BUSY. Returns {"busy", "known", "processes", "reason"}."""
     out: Dict[str, Any] = {"busy": True, "known": False, "processes": [], "reason": ""}
     if not peer_ip:
         out["reason"] = "no peer address"
@@ -2048,9 +1767,8 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
         out["reason"] = "ssh unavailable, so the peer's GPU state cannot be checked"
         return out
     user = _ssh_user()
-    # The RC marker separates "nvidia-smi ran and listed nothing" (idle) from
-    # "nvidia-smi did not run" (unknown). Without it both are an empty string, and
-    # reading the second as idle is exactly the fail-open mistake.
+    # RC separates "nvidia-smi ran and listed nothing" (idle) from "it did not run"
+    # (unknown); without it both are an empty string and idle is the fail-open mistake.
     remote = (
         "nvidia-smi --query-compute-apps=pid,used_gpu_memory "
         "--format=csv,noheader,nounits; echo RC=$?"
@@ -2080,19 +1798,34 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     if rc is None or rc != "0":
         out["reason"] = f"nvidia-smi did not run on the peer (rc={rc!r}); treating the GPU as BUSY"
         return out
+    # A row that cannot be read is not an absent process. nvidia-smi reports `[N/A]` for
+    # used_memory in real situations, and skipping such a row and then declaring the peer idle
+    # inverts this function's whole contract: provisioning would overwrite a venv the process
+    # behind that row is running out of. Unreadable means unverifiable, which means busy.
+    unreadable = []
     for line in lines:
         if line.startswith("RC=") or line.lower().startswith("pid"):
             continue
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 2 or not parts[0].isdigit():
+            unreadable.append(line)
             continue
         mem = parts[1].replace("MiB", "").replace("MB", "").strip()
         try:
             mib = int(float(mem))
         except ValueError:
+            unreadable.append(line)
             continue
         if mib >= PEER_BUSY_MIB:
             out["processes"].append({"pid": int(parts[0]), "used_mib": mib})
+    if unreadable:
+        out["known"] = False
+        out["busy"] = True
+        out["reason"] = (
+            f"{len(unreadable)} process row(s) from nvidia-smi could not be read "
+            f"({unreadable[0][:80]!r}); treating the GPU as BUSY"
+        )
+        return out
     out["known"] = True
     out["busy"] = bool(out["processes"])
     out["reason"] = (
@@ -2103,54 +1836,25 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     return out
 
 
-# ── Fast provisioning: an ephemeral rsync daemon on the direct rail ──────────
-# rsync over ssh is bound by ssh's CPU, not by the disk or the wire. Measured here
-# with the same 1 GiB file in /dev/shm on both ends, over one rail:
-#
-#   rsync -a over ssh, default cipher           0.22 GB/s
-#   rsync -a over ssh -c aes128-gcm@openssh.com 0.28 GB/s
-#   one raw TCP stream (nc)                     0.63 GB/s
-#   NVMe read on these nodes                   ~1    GB/s
-#
-# So a 170 GiB GGUF takes ~13 minutes over ssh where the disk allows ~3. The fast path
-# takes ssh off the data path: `provision` starts an ephemeral `rsync --daemon` on the
-# peer (over ssh, with a temporary config, killed by pid file when the command ends)
-# and runs up to FAST_MAX_WORKERS rsync clients against it over disjoint file subsets,
-# because one TCP stream measured 0.63 GB/s and the disk floor needs two to four.
-#
-# SECURITY. The bytes travel UNENCRYPTED. That is acceptable only because the rail is
-# a point-to-point QSFP cable between the two Sparks with no other host on it, and the
-# daemon is locked to that cable: it binds the peer's rail address only, `hosts allow`
-# is the single local rail address, the module needs a random one-shot username and
-# secret that never appear on a command line, and the daemon dies with the command
-# (and, as a backstop, with `timeout` on the peer). The path is refused when the peer
-# is not a private address or is not in the local rail's /24, and `--no-fast` or
-# UNSLOTH_SPARK_PROVISION_FAST=0 forces the ssh path. Everything else is Linux plus
-# is_dgx_spark() gated, so no other platform can reach it.
-#
-# SYMLINKS. Without root the daemon cannot chroot, and a non-chrooted module rewrites
-# absolute symlink targets (a venv's bin/python -> /usr/bin/python3 arrives as
-# usr/bin/python3; `munge symlinks` is worse). The workers therefore carry regular
-# files only, and the unchanged ssh rsync runs last as the finaliser: on a tree the
-# workers already filled it moves symlinks, directory metadata and --delete, and no
-# file bytes, because every regular file already matches by size and mtime. The end
-# state is exactly what the ssh path alone produces, and the ssh path stays the
-# fallback whenever the daemon cannot be started.
+# rsync over ssh is bound by ssh's CPU, well below the disk floor, so `provision` runs an
+# ephemeral `rsync --daemon` on the peer with FAST_MAX_WORKERS clients over disjoint subsets.
+# SECURITY: the bytes travel UNENCRYPTED. Acceptable ONLY because the rail is a
+# point-to-point cable with no other host on it AND the daemon is locked to it: bound to the
+# peer's rail address, `hosts allow` the one local rail address, a random one-shot user and
+# secret that never reach a command line, dying with the command, and refused unless the peer
+# is a private address inside the local rail's /24.
+# SYMLINKS: without root the daemon cannot chroot, and a non-chrooted module rewrites absolute
+# symlink targets, so the workers carry REGULAR FILES ONLY and the ssh rsync runs last as the
+# finaliser for symlinks, directory metadata and --delete.
 FAST_ENV = "UNSLOTH_SPARK_PROVISION_FAST"
 FAST_MAX_WORKERS = 4
 FAST_PORT_RANGE = (40000, 59999)
-# A worker that sees no I/O for this long gives up and is retried on a fresh
-# connection. Measured need, not caution: with four streams on a rail whose NICs
-# count millions of rx_err_lane_*_phy errors (a QSFP seating problem, see the
-# carrier notes above), one flow in ten or so gets blackholed in both directions
-# with TCP in RTO backoff at 51 s. Waiting it out took 600 s and fell back to ssh;
-# a retry is a new 5-tuple, goes through, and rsync only re-sends what does not
-# already match by size and mtime. 30 s is long against any legitimate pause here
-# (a cold-cache list of 14k files builds in seconds) and short against a stall.
+# A worker idle this long is retried on a fresh connection: with four streams, roughly one
+# flow in ten is blackholed in both directions with TCP in RTO backoff at 51 s, and a retry
+# is a new 5-tuple. 30 s is long against a legitimate pause and short against a stall.
 FAST_IO_TIMEOUT = 30
 FAST_WORKER_ATTEMPTS = 3
-# Backstop only: the daemon is stopped from a `finally`, but if this process is
-# SIGKILLed the peer would otherwise keep listening. `timeout` on the peer ends it.
+# Backstop only: the daemon is stopped from a `finally`; this covers a SIGKILL here.
 FAST_DAEMON_MAX_SECONDS = 4 * 3600
 _FAST_UP_MARKER = "UNSLOTH_DAEMON_UP"
 _FAST_LEFT_MARKER = "UNSLOTH_RSYNC_LEFT"
@@ -2171,11 +1875,8 @@ def _ssh_argv(user: str, peer_ip: str) -> List[str]:
 
 
 def _peer_path(path: str) -> str:
-    """`~/x` as the peer's shell must see it: `$HOME/x`, expanding on the PEER.
-
-    A quoted `~` does not expand, and it must expand there, not here: the peer's home
-    may differ from ours.
-    """
+    """`~/x` as `$HOME/x`: a quoted `~` does not expand, and it must expand on the PEER,
+    whose home may differ from ours."""
     if path == "~":
         return "$HOME"
     if path.startswith("~/"):
@@ -2190,7 +1891,6 @@ def _unquoted_heredoc(text: str) -> str:
 
 
 def fast_port() -> int:
-    """A random high port for the ephemeral daemon, from FAST_PORT_RANGE."""
     lo, hi = FAST_PORT_RANGE
     return lo + secrets.randbelow(hi - lo + 1)
 
@@ -2220,13 +1920,8 @@ def fast_path_decision(
     local_ip: Optional[str] = None,
 ) -> Dict[str, Any]:
     """May bulk bytes go through the unencrypted rail daemon? {"ok", "reason", "local_ip"}.
-
-    Every refusal names its reason so `provision` can print why it is on ssh. The
-    order is cheapest-first: the flag, the platform and the Spark gates come before
-    the rail lookup (which forks `ip`) and the address arithmetic, so a laptop, or
-    `--no-fast`, answers without touching anything. `local_ip` is looked up on the
-    cabled rails unless given.
-    """
+    Every refusal names its reason so `provision` can print why it fell back to ssh. Order
+    is cheapest-first: the flag and platform gates precede the rail lookup, which forks `ip`."""
     env = os.environ if env is None else env
 
     def no(reason: str) -> Dict[str, Any]:
@@ -2269,12 +1964,8 @@ def rsync_daemon_config(
     auth_user: str,
     work_dir: str,
 ) -> str:
-    """rsyncd.conf for the ephemeral daemon. `modules` maps name -> path ON THE PEER.
-
-    One module per destination root, each writable only by `auth_user` from the single
-    address in `hosts_allow`. `munge symlinks = no` is explained above; it does not
-    matter for the workers (regular files only) and the finaliser never uses the daemon.
-    """
+    """rsyncd.conf for the ephemeral daemon. `modules` maps name -> path ON THE PEER, one
+    per destination root, writable only by `auth_user` from the one `hosts_allow` address."""
     lines = [
         f"address = {bind_ip}",
         f"port = {port}",
@@ -2304,12 +1995,9 @@ def rsync_daemon_config(
 def daemon_files_script(
     config: str, auth_user: str, secret: str, dest_paths: List[str], work_dir: str
 ) -> str:
-    """The file-writing half of the peer script: a 700 work dir, the 600 secrets file,
-    the config, and the destination roots the modules point at.
-
-    The secret travels inside the ssh session (the script is stdin) and lands only in
-    that 600 file; it is never an argument to anything.
-    """
+    """The file-writing half of the peer script: a 700 work dir, the 600 secrets file, the
+    config, and the module destination roots. The secret travels inside the ssh session
+    (the script is stdin) and lands only in that 600 file; it is never an argument."""
     q = _unquoted_heredoc
     mkdirs = " ".join(f'"{q(p)}"' for p in dest_paths)
     return (
@@ -2331,12 +2019,9 @@ def daemon_files_script(
 def daemon_setup_script(
     config: str, auth_user: str, secret: str, dest_paths: List[str], work_dir: str, port: int
 ) -> str:
-    """The bash that runs on the peer (over `ssh bash -s`, script on stdin).
-
-    Writes the files, then starts the daemon detached from the ssh session under
-    `timeout`, and reports it up only once its pid file exists and the port is
-    listening, so a bind failure is an error here rather than a hang later.
-    """
+    """The bash that runs on the peer (`ssh bash -s`, script on stdin). Reports the daemon up
+    only once its pid file exists AND the port listens, so a bind failure is an error here
+    rather than a hang later."""
     return daemon_files_script(config, auth_user, secret, dest_paths, work_dir) + (
         f"setsid timeout {FAST_DAEMON_MAX_SECONDS} rsync --daemon --no-detach "
         '--config="$d/rsyncd.conf" </dev/null >/dev/null 2>&1 &\n'
@@ -2386,12 +2071,8 @@ def start_peer_rsync_daemon(
     modules: Dict[str, str],
     timeout: int = 60,
 ) -> Dict[str, Any]:
-    """Start the ephemeral daemon on the peer. Raises RuntimeError when it did not.
-
-    `modules` maps module name -> destination path in peer form (`$HOME/...` or
-    absolute). The returned dict is what `stop_peer_rsync_daemon` and the workers need;
-    the secret lives only in it and in the peer's 600 file.
-    """
+    """Start the ephemeral daemon on the peer; raises RuntimeError when it did not. The
+    secret lives only in the returned dict and in the peer's 600 file."""
     port = fast_port()
     auth_user = "unsloth-" + secrets.token_hex(4)
     secret = secrets.token_urlsafe(24)
@@ -2425,12 +2106,9 @@ def start_peer_rsync_daemon(
 
 
 def stop_peer_rsync_daemon(daemon: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
-    """Stop the daemon and remove its temp dir; never raises.
-
-    Returns {"stopped": bool, "left": [pids of any rsync still on the peer], "error"}.
-    `left` is a FACT for the caller to print: another rsync may legitimately be running
-    there, but our daemon must not be, and "stopped" is False if it still is.
-    """
+    """Stop the daemon and remove its temp dir; never raises. Returns {"stopped", "left",
+    "error"}, where `left` is every rsync pid still on the peer, reported as a FACT: another
+    may legitimately be running, but ours must not be, and "stopped" is False if it is."""
     out: Dict[str, Any] = {"stopped": False, "left": [], "error": ""}
     try:
         proc = subprocess.run(
@@ -2477,13 +2155,9 @@ def provision_work_split(
     max_workers: int = FAST_MAX_WORKERS,
     files: Optional[List[Tuple[int, str]]] = None,
 ) -> List[List[str]]:
-    """Disjoint, byte-balanced subsets of the regular files under `root`.
-
-    Largest file first onto the lightest worker, so a sharded GGUF spreads its shards
-    and a venv's 55k small files fill in around them. A single file is a single
-    worker: rsync cannot split one file across streams. Never more than
-    `max_workers` subsets, and every regular file lands in exactly one of them.
-    """
+    """Disjoint, byte-balanced subsets of the regular files under `root`: largest file onto
+    the lightest worker, so a sharded GGUF spreads and small files fill in around it. One
+    file is one worker, because rsync cannot split a single file across streams."""
     files = _regular_files(root) if files is None else list(files)
     if not files:
         return []
@@ -2521,9 +2195,7 @@ def _fast_bulk_copy(
             listing = osp.join(tmp, f"files{i}")
             with open(listing, "wb") as fh:
                 fh.write(b"\0".join(p.encode("utf-8", "surrogateescape") for p in bucket) + b"\0")
-            # -W: whole files. On a re-provision of a changed shard the delta algorithm
-            # would read the old file on the peer and checksum on both ends, which is
-            # slower than the wire here.
+            # -W whole files: the delta algorithm checksums on both ends, slower than this wire.
             cmds.append(
                 [
                     "rsync",
@@ -2566,25 +2238,9 @@ def provision_peer(
     force: bool = False,
     no_fast: bool = False,
 ) -> Dict[str, Any]:
-    """Copy the environment and warm caches to the peer over the fast link.
-
-    Two failures this prevents, both of which cost hours in testing and neither of which
-    reports itself:
-
-    * a peer missing the venv's system headers, or the venv entirely -- the head then blocks
-      601 s and dies with `DistStoreError: 1/2 clients joined`, never surfacing the worker's
-      real error;
-    * a peer missing a warm cache -- it silently rebuilds from scratch, which presents as a
-      17-minute hang in CUDA graph capture with no message beyond
-      "No available shared memory broadcast block found in 60 seconds".
-
-    rsync rather than reinstall: identical bytes, no dependency-resolution drift between the
-    two nodes, and it runs at link speed rather than internet speed.
-
-    Bulk bytes go through the rail daemon when `fast_path_decision` allows it (see the
-    notes above FAST_ENV); the ssh rsync below then runs unchanged as the finaliser, and
-    alone whenever the daemon is refused or fails. `no_fast` forces ssh only.
-    """
+    """Copy the environment and warm caches to the peer. rsync rather than reinstall: identical
+    bytes, no dependency drift, at link speed. Bulk bytes go through the rail daemon when
+    ``fast_path_decision`` allows it, and the ssh rsync is always the finaliser."""
     results: Dict[str, Any] = {
         "copied": [],
         "skipped": [],
@@ -2593,10 +2249,8 @@ def provision_peer(
         "refused": "",
         "peer_gpu": None,
         "delete": delete,
-        # How the bytes moved: "used" once any path went through the daemon, "reason"
-        # when it did not, "errors" per path that fell back to ssh mid-way, "stop" is
-        # what stop_peer_rsync_daemon reported, "retries" counts worker reconnects
-        # after a stalled flow, "timings" is (label, mode, bytes, seconds, workers).
+        # "errors" are paths that fell back to ssh mid-way, "retries" counts worker
+        # reconnects after a stalled flow, "timings" is (label, mode, bytes, seconds, workers).
         "fast": {
             "used": False,
             "reason": "",
@@ -2634,8 +2288,6 @@ def provision_peer(
             continue
         targets.append((path, label, local))
 
-    # One daemon for the whole command, one module per destination root. A dry run
-    # starts nothing on the peer: it reads nothing there and writes nothing.
     daemon: Optional[Dict[str, Any]] = None
     fast = results["fast"]
     if targets and not dry_run:
@@ -2650,10 +2302,8 @@ def provision_peer(
         else:
             fast["reason"] = decision["reason"]
 
-    # The daemon must not outlive this call: not on an error, not on Ctrl-C, and not on
-    # SIGTERM, whose default disposition would skip the `finally`. Turned into
-    # KeyboardInterrupt for the duration and restored after. Only the main thread may
-    # set handlers; elsewhere the `finally` alone has to do.
+    # The daemon must not outlive this call, and SIGTERM's default disposition would skip
+    # the `finally`. Only the main thread may set handlers; elsewhere `finally` alone does.
     prev_term = None
     if daemon is not None:
         try:
@@ -2671,26 +2321,33 @@ def provision_peer(
                     mode = "fast"
                     fast["used"] = True
                 else:
-                    # The ssh pass below resumes whatever the workers left; no bytes
-                    # are lost, only time.
+                    # The ssh pass below resumes whatever the workers left; only time is lost.
                     fast["errors"].append((label, err))
-            # rsync creates only the LAST component of the destination, so a peer that
-            # does not yet have the parent fails with `mkdir "<dest>" failed: No such
-            # file or directory`. That is the normal case for the thing this command is
-            # for: pairing a brand-new second Spark, which has no ~/.unsloth/studio yet.
-            # Create the parent remotely first. `~` is rewritten to "$HOME" because a
-            # quoted ~ does not expand, and it must expand on the PEER, whose home may
-            # differ from ours.
+            # rsync creates only the LAST component of the destination, so a brand-new peer
+            # with no ~/.unsloth/studio fails; create the parent remotely first.
             remote_parent = _peer_path(osp.dirname(path))
-            # Trailing slashes matter: copy the CONTENTS into the same path on the peer.
-            # --delete is OFF by default: a stale extra file on the peer costs disk,
-            # while a deleted live one takes a running interpreter out from under a job
-            # mid-flight.
+            # `--rsync-path` runs on the PEER before rsync starts, so `--dry-run` does not
+            # suppress it: a dry run was creating the directories it was only meant to report.
+            # Under a dry run the wrapper is dropped, and a missing parent is reported as
+            # something the real run would create rather than as a failure, since with nothing
+            # on the far side there is also nothing for rsync to compare against.
+            if dry_run:
+                if not _peer_dir_exists(peer_ip, user, remote_parent):
+                    results["skipped"].append((label, f"would create {remote_parent}"))
+                    results["timings"].append(
+                        (label, mode, moved, time.monotonic() - started, workers),
+                    )
+                    continue
+                rsync_path = "rsync"
+            else:
+                rsync_path = f'mkdir -p "{remote_parent}" && rsync'
+            # --delete is OFF by default: a stale file costs disk, while deleting a live one
+            # takes a running interpreter out from under a job mid-flight.
             cmd = [
                 "rsync",
                 "-a",
                 "--rsync-path",
-                f'mkdir -p "{remote_parent}" && rsync',
+                rsync_path,
                 "-e",
                 "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
                 local + "/",
@@ -2798,21 +2455,16 @@ def _cmd_provision(
     return 0
 
 
-# Measured on this hardware; see DGX_SPARK_DETAILS.md. A Spark reports 121.69 GiB usable
-# (130.66 GB decimal) -- "128GB" is 128 GiB physical with ~6.3 GiB firmware-reserved.
+# 128 GiB physical minus ~6.3 GiB firmware-reserved.
 SPARK_USABLE_GIB = 121.69
-# Room a served model needs beyond its weights: KV cache, compute buffers, fragmentation.
-# The 235B measured 736+768 MiB of KV and 208 MiB/node of compute buffers at modest context,
-# but context dominates and grows fast, so this is deliberately not tight.
+# KV cache, compute buffers and fragmentation beyond the weights. Context dominates and
+# grows fast, so this is deliberately not tight.
 SERVE_OVERHEAD_GIB = 8.0
 
 
 def model_size_gib(target: str) -> Optional[float]:
-    """Best-effort size of a model, from a file, a directory, or the HF cache.
-
-    Returns None rather than guessing when it cannot tell -- a wrong size here would
-    produce confidently wrong deployment advice, which is worse than no advice.
-    """
+    """Best-effort size of a model, from a file, a directory, or the HF cache. None rather
+    than a guess: a wrong size produces confidently wrong deployment advice."""
     path = osp.expanduser(target)
     if osp.isfile(path):
         return osp.getsize(path) / 2**30
@@ -2826,8 +2478,7 @@ def model_size_gib(target: str) -> Optional[float]:
                     except OSError:
                         pass
         return total / 2**30 if total else None
-    # A repo id: look for it in the HF cache rather than hitting the network, which is
-    # unusable from these machines anyway (~20 KB/s).
+    # A repo id: read the HF cache rather than the network, which is ~20 KB/s here.
     cache = osp.expanduser("~/.cache/huggingface/hub")
     slug = "models--" + target.replace("/", "--")
     root = osp.join(cache, slug)
@@ -2849,50 +2500,22 @@ def model_size_gib(target: str) -> Optional[float]:
     return None
 
 
-# ── What each parallelism axis actually buys, measured ───────────────────────
-# Llama-3.3-70B fp8 served across TWO Sparks, against the same model on ONE Spark.
-# Concurrency is requests in flight; the number is end-to-end speedup.
-#
-#   axis                       c=1    c=2    c=4    c=8   median TPOT
-#   tensor-parallel (TP=2)    2.09x  2.13x  2.10x  1.97x  332.7ms -> 162.4ms
-#   pipeline-parallel (PP=2)  1.08x  1.11x  1.09x  1.07x  ~320ms  -> ~320ms  (FLAT)
-#   replicas (2 copies)       1.00x per request; AGGREGATE only (measured below)
-#   layer-split a model that already fits on one node   decode 0.85x to 1.01x (never a win)
-#
-# The whole planner follows from those four rows:
-#   * TP is the ONLY axis that makes a single request faster.
-#   * PP moves tokens through more silicon but does not shorten the critical path
-#     of one token, so its TPOT is flat -- PP is for CAPACITY, never for latency.
-#   * replicas raise aggregate throughput and change per-request latency not at all.
-#   * splitting a model that fits never speeds up decode; it is a capacity feature
-#     and a prefill feature (see REPLICAS_DECODE_SPEEDUP and its neighbours).
+# Llama-3.3-70B fp8 on two Sparks against one. TP is the ONLY axis that makes a single
+# request faster; PP moves tokens through more silicon without shortening one token's
+# critical path, so its TPOT is FLAT and PP buys capacity, never latency; replicas change
+# per-request latency not at all.
 TP_SPEEDUP_2 = {1: 2.09, 2: 2.13, 4: 2.10, 8: 1.97}
 PP_SPEEDUP_2 = {1: 1.08, 2: 1.11, 4: 1.09, 8: 1.07}
 TP_TPOT_MS_2 = (332.7, 162.4)
 PP_TPOT_MS_2 = (320.0, 320.0)
-# Splitting a model that ALREADY FITS on one node. This was a flat 0.92x loss, and that is
-# still what you get from a llama.cpp whose RPC backend predates ggml-org/llama.cpp#18626
-# ("rpc: implement event and async backend APIs", merged 2026-08-26). Without it the RPC
-# backend advertises neither async nor events, ggml_backend_sched therefore refuses to
-# pipeline across RPC devices, and the two halves run strictly one after the other.
+# Splitting a model that ALREADY FITS: still a flat loss on a llama.cpp whose RPC backend
+# predates ggml-org/llama.cpp#18626, because without it the backend advertises neither async
+# nor events, so ggml_backend_sched refuses to pipeline and the halves run serially.
 LAYER_SPLIT_FITTING_SPEEDUP = 0.92
 
-# WITH that commit the answer stops being a constant and becomes a function of prompt length,
-# because what overlaps is prefill. Measured end to end on two Sparks, Qwen3-27B Q4_K_XL,
-# same binary both arms, so the only variable is whether the model is split:
-#
-#   prompt tokens |  c=1    c=4    c=8
-#           128   | 0.94x  0.95x  0.95x
-#           256   | 0.98x  1.00x  1.00x     <- break-even
-#           512   | 0.96x  1.05x  1.07x
-#          1024   | 1.02x  1.12x  1.17x
-#          2048   | 1.07x  1.23x  1.29x
-#          4096   | 1.11x  1.35x  1.45x
-#
-# Decode is 0.93-0.98x throughout and cannot be otherwise: a layer split moves the same
-# weight bytes per token, so the whole gain is prefill and the whole question is prompt
-# length. Below ~256 tokens splitting costs 2-6%; above ~1024 it wins, and the win grows with
-# both prompt length and concurrency.
+# WITH #18626 the answer becomes a function of prompt length, because what overlaps is
+# prefill: decode cannot improve, since a split moves the same weight bytes per token.
+# Below ~256 tokens splitting costs a few percent; above ~1024 it wins.
 LAYER_SPLIT_ASYNC_RPC_SPEEDUP = {
     128: {1: 0.94, 4: 0.95, 8: 0.95},
     256: {1: 0.98, 4: 1.00, 8: 1.00},
@@ -2909,13 +2532,9 @@ def layer_split_speedup(
     concurrency = 1,
     async_rpc = False,
 ):
-    """End-to-end speedup from splitting a model that already fits on one node.
-
-    `async_rpc=False` is the conservative default and reports the flat 0.92x, because that is
-    what a stock fork build still does. Pass True only for a build carrying #18626. Returns
-    the nearest measured row at or below `prompt_tokens` rather than interpolating: these are
-    six measured points, not a fitted curve, and pretending otherwise would invent precision.
-    """
+    """End-to-end speedup from splitting a model that already fits on one node. `async_rpc`
+    stays False unless the build carries #18626. Returns the nearest measured row at or below
+    `prompt_tokens`: these are measured points, not a fitted curve, so nothing is interpolated."""
     if not async_rpc:
         return LAYER_SPLIT_FITTING_SPEEDUP
     if prompt_tokens is None:
@@ -2930,39 +2549,11 @@ def layer_split_speedup(
     return by_c[near]
 
 
-# ── Replicas versus layer split for a model that FITS, measured ──────────────
-# Qwen3.8-27B-UD-Q4_K_XL (16.4 GiB) served by llama.cpp b10796 on two DGX Sparks
-# (GB10, aarch64, 121 GiB each, cabled over ConnectX-7), measured 2026-09-04 with
-# UNCAPPED clocks, closed-loop concurrent clients and 128 generated tokens per
-# request. Every ratio is aggregate DECODE tok/s against the same model on ONE
-# Spark. That is a different question from LAYER_SPLIT_ASYNC_RPC_SPEEDUP above,
-# which is end to end request throughput with prefill included; both tables are
-# right about what they measure.
-#
-#   prompt 512   users |  1 Spark | 2 replicas | layer split || replicas | split
-#                    1 |   12.0   |    12.0    |    11.3     ||  1.00x   | 0.95x
-#                    2 |   21.2   |    23.8    |    21.0     ||  1.13x   | 0.99x
-#                    4 |   39.0   |    44.0    |    35.8     ||  1.13x   | 0.92x
-#                    8 |   59.7   |    77.8    |    51.0     ||  1.30x   | 0.85x
-#                   16 |   68.1   |   119.4    |    64.2     ||  1.75x   | 0.94x
-#                   32 |   70.9   |   135.7    |    71.7     ||  1.91x   | 1.01x
-#
-#   prompt 2048  users |    1      2      4      8     16     32
-#           replicas   |  1.01   1.38   1.30   1.81   1.99   2.38
-#           split      |  0.94   0.96   0.88   0.96   1.06   1.12
-#
-# The two split figures above 1.0 at prompt 2048 are not decode wins: the single
-# node control was prefill-contended there. Measured decode-only, the split is
-# 0.95x. Layer split PREFILL is 1.7x to 1.85x. Memory per node at 16 users, prompt
-# 512: single 22.6 GiB; replicas 19.3 GiB on each node; split 10.9 + 11.8 GiB.
-#
-# What follows from the table:
-#   * a layer split never speeds up decode at any user count. It is a capacity
-#     feature (model larger than one node) and a prefill feature;
-#   * two replicas are the throughput winner whenever model plus KV fits on one
-#     node and 8 or more users are concurrent;
-#   * below 8 users a second copy buys 1.00x to 1.13x, and at 1 user nothing helps
-#     except vLLM tensor parallel (TP_SPEEDUP_2).
+# Aggregate DECODE tok/s on two Sparks against one; TOPOLOGY_MEASUREMENT names the run. A
+# different question from LAYER_SPLIT_ASYNC_RPC_SPEEDUP, which includes prefill. A layer
+# split never speeds up decode at any user count: it is a capacity and prefill feature. Two
+# replicas win throughput once model plus KV fits on one node and 8+ users are concurrent;
+# below 8 a second copy buys little, and at 1 user only tensor parallel helps.
 TOPOLOGY_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL on llama.cpp b10796, two DGX Sparks, 2026-09-04, uncapped clocks"
 )
@@ -3244,12 +2835,10 @@ def _measured_cell(table: Dict[int, Dict[int, float]], prompt_tokens: int, users
 
 
 def replicas_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
-    """Aggregate decode gain of two replicas over one Spark, at the nearest measured point."""
     return _measured_cell(REPLICAS_DECODE_SPEEDUP, prompt_tokens, users)
 
 
 def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
-    """Aggregate decode ratio of a layer split over one Spark, for a model that fits."""
     return _measured_cell(LAYER_SPLIT_DECODE_SPEEDUP, prompt_tokens, users)
 
 
@@ -3354,37 +2943,24 @@ def recommend_topology(
     per_node_free_bytes: float,
     prefill_heavy: bool = False,
 ) -> Dict[str, Any]:
-    """Which of single / replicas / layer_split to serve a GGUF with, and why. Pure.
-
-    The rules, from the measurements above:
-
-    * a model that does not fit on one node is a ``layer_split``: the only option,
-      and the one place the second GPU pays on decode: with the fork's pipeline groups
-      the pair measured 1.31x to 1.37x of the one-context split and 1.12x to 1.13x of
-      one Spark at 32 to 128 rows (PIPELINE_GROUPS_SPLIT_SPEEDUP); the one-context
-      split stays at 0.85x to 1.01x;
-    * a model that fits, with 8 or more concurrent users, is ``replicas``;
-    * a model that fits, with fewer users, is ``single``: leave the second node idle,
-      because a second copy buys 1.00x to 1.13x and nothing helps one user except
-      tensor parallel, which llama.cpp does not do;
-    * ``layer_split`` is never recommended for a model that fits UNLESS the caller
-      says the work is prefill-heavy long-prompt work, where the split's 1.7x to
-      1.85x prefill outweighs its 0.95x decode. Even then, at 8 or more users the
-      replicas win end to end (1.81x against 0.96x at prompt 2048, 8 users).
-
-    Memory is checked with the KV of every concurrent user included, so a model that
-    fits alone but not with its users' KV is routed to replicas (each node carries
-    half the users) or, failing that, to a layer split. Returns a dict with
-    ``topology``, a one-paragraph ``reason``, the measured ``speedup`` where one
-    exists, and the byte counts it decided on.
-    """
+    """Which of single / replicas / layer_split to serve a GGUF with, and why. Pure. Memory is
+    checked with every concurrent user's KV included, so a model that fits alone but not with
+    its users' KV goes to replicas or, failing that, to a split. ``layer_split`` is never
+    chosen for a model that FITS unless the caller says the work is prefill-heavy."""
     users = max(1, int(users or 1))
     prompt_tokens = max(1, int(prompt_tokens or 512))
     model_bytes = max(0.0, float(model_bytes or 0))
     kv_each = max(0.0, float(kv_bytes_per_user or 0))
     free = float(per_node_free_bytes or 0)
     single_need = model_bytes + kv_each * users
-    replica_need = model_bytes + kv_each * ((users + 1) // 2)
+    # Full users, not half. A replica node runs its own complete server, and the launcher hands
+    # each one the same --parallel and context as the primary while the router declares the
+    # slots on both, so every node allocates KV for the whole user count. Budgeting half was
+    # optimistic in exactly the window this branch exists to rescue -- full-user KV does not fit
+    # one node, half-user KV does -- and on 121.69 GiB shared between CPU and GPU that is an
+    # OOM rather than a slowdown. Pricing it honestly declines a throughput optimisation
+    # instead, which is the right way round.
+    replica_need = model_bytes + kv_each * users
     fits_model = model_bytes <= free
     out: Dict[str, Any] = {
         "topology": "single",
@@ -3441,36 +3017,27 @@ def recommend_topology(
         )
         return out
     if single_need > free:
-        if replica_need <= free:
-            out.update(
-                topology = "replicas",
-                speedup = replicas_speedup(prompt_tokens, users),
-                reason = (
-                    f"the model fits, but with KV for {users} users it needs "
-                    f"{single_need / gib:.1f} GiB against {free / gib:.1f} GiB free. Two "
-                    f"replicas carry half the users each ({replica_need / gib:.1f} GiB per "
-                    f"node) and measured {replicas_speedup(prompt_tokens, users):.2f}x "
-                    f"aggregate decode at {users} users."
-                ),
-            )
-        else:
-            out.update(
-                topology = "layer_split",
-                prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
-                pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
-                reason = (
-                    f"the model fits, but model plus KV for {users} users "
-                    f"({single_need / gib:.1f} GiB) exceeds one node even when halved "
-                    f"across replicas ({replica_need / gib:.1f} GiB against "
-                    f"{free / gib:.1f} GiB free), so only a layer split, which spreads the KV "
-                    f"with the layers, has the room. "
-                    + pipeline_groups_note()
-                    + " "
-                    + split_mtp_note()
-                ),
-                split_mtp = split_mtp_wins(users),
-                split_mtp_note = split_mtp_note(),
-            )
+        # No replicas branch here, and that is the point: a replica node runs its own full
+        # server, and the launcher gives it the same context and --parallel as the primary
+        # while the router declares the slots on both, so a replica needs exactly what a single
+        # node needs. Replicas buy throughput for a model that already fits, never capacity.
+        out.update(
+            topology = "layer_split",
+            prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
+            reason = (
+                f"the model fits, but model plus KV for {users} users "
+                f"({single_need / gib:.1f} GiB) exceeds one node's {free / gib:.1f} GiB, and a "
+                f"replica is no smaller because each one holds a full copy and KV for every "
+                f"user. Only a layer split, which spreads the KV with the layers, has the "
+                f"room. Capacity, not speed: "
+                + pipeline_groups_note()
+                + " "
+                + split_mtp_note()
+            ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
+        )
         return out
     if prefill_heavy and users < REPLICAS_MIN_USERS:
         out.update(
@@ -3544,8 +3111,7 @@ def recommend_topology(
 
 
 REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
-# Training, GPipe pipeline parallel with M=4 microbatches, 2 nodes:
-# 3024 tok/s against a 2032 tok/s single-node control.
+# GPipe pipeline parallel, M=4 microbatches, 2 nodes: 3024 vs 2032 tok/s single-node.
 TRAIN_PP_SPEEDUP_2 = 1.49
 
 # Data parallel against pipeline parallel on the same rows and loss, the control being the same
@@ -3803,13 +3369,9 @@ def expected_gain(
     concurrency: int = 1,
     prompt_tokens: int = 512,
 ) -> Dict[str, Any]:
-    """What to expect from an axis at N nodes -- measured where measured, honest elsewhere.
-
-    Everything in the table above was measured at exactly TWO Sparks. Reporting a
-    scaled number for N>2 as though it were measured would be the same class of
-    mistake this module refuses everywhere else, so ``measured`` is part of the
-    answer and the note says plainly that three Sparks were never benchmarked here.
-    """
+    """What to expect from an axis at N nodes. Every constant here was measured at exactly
+    TWO Sparks, so ``measured`` is part of the answer rather than a scaled number for N>2
+    presented as if it had been benchmarked."""
     out: Dict[str, Any] = {
         "axis": axis,
         "n_nodes": n_nodes,
@@ -3921,7 +3483,6 @@ def expected_gain(
 
 
 def _nodes_needed(size_gib: float, budget: float) -> int:
-    """Fewest nodes whose combined budget holds the model."""
     if budget <= 0:
         return 1
     count = int(size_gib / budget)
@@ -3935,7 +3496,6 @@ def _serve_commands(
     n_nodes: int,
     model: str = "<model>",
 ) -> List[str]:
-    """The concrete command for an axis. Names a model so it can be pasted."""
     env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
     if axis == "tensor-parallel":
         return [
@@ -3946,13 +3506,14 @@ def _serve_commands(
             f"--distributed-executor-backend ray",
         ]
     if axis == "replicas":
-        backends = ",".join(
+        # spark_lb takes backends as positional, space-separated tokens.
+        backends = " ".join(
             f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080" for i in range(n_nodes)
         )
         return [
             env,
             f"unsloth spark serve --model {model} --engines 1     # run on EACH Spark",
-            f"python -m studio.spark_lb --backends {backends}     # one front door",
+            f"python -m studio.spark_lb {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
         return [
@@ -3962,7 +3523,7 @@ def _serve_commands(
             f"--distributed-executor-backend ray",
         ]
     if axis == "single":
-        return [f"unsloth serve --model {model}"]
+        return [f"unsloth spark serve --model {model} --engines 1"]
     return []
 
 
@@ -3978,31 +3539,10 @@ def plan_deployment(
     prefill_heavy: bool = False,
     kv_gib_per_user: float = 0.0,
 ) -> Dict[str, Any]:
-    """Recommend a topology AND an axis from model size, node count and intent.
-
-    Measured behaviour, not theory. Two facts drive everything:
-
-    * a model that FITS on one Spark never decodes faster layer-split across two:
-      0.85x to 1.01x measured from 1 to 32 users (LAYER_SPLIT_DECODE_SPEEDUP). A split
-      buys capacity and prefill (1.7x to 1.85x), never decode. For 8 or more users two
-      replicas measured 1.30x to 1.91x aggregate instead (REPLICAS_DECODE_SPEEDUP).
-    * TP is the only axis that shortens a single request (2.09x on two Sparks);
-      PP's median TPOT is flat, and replicas raise aggregate throughput only.
-
-    ``serving`` carries the llama.cpp specific answer from ``recommend_topology()``
-    for a model that fits across the cluster: ``prompt_tokens`` (default 512),
-    ``prefill_heavy`` and ``kv_gib_per_user`` feed it and change nothing else.
-
-    ``topology`` is a MEMORY-FIT class and keeps its historical vocabulary --
-    ``replicas`` / ``single-or-replicas`` / ``layer-split`` / ``too-large`` /
-    ``single`` / ``unknown``. ``axis`` is the new, orthogonal answer: which
-    parallelism to actually use. They are different questions: a 70B fp8 that fits
-    on one node is topology ``single-or-replicas``, and its axis is
-    ``tensor-parallel`` if you want latency and ``replicas`` if you want throughput.
-
-    Node count comes from ``n_nodes`` when given, else from the legacy
-    ``two_sparks`` bool, which keeps working exactly as before.
-    """
+    """Recommend a topology AND an axis from model size, node count and intent. ``topology`` is
+    a MEMORY-FIT class keeping its historical vocabulary; ``axis`` is the orthogonal question
+    of which parallelism to use. A 70B that fits on one node is ``single-or-replicas`` with
+    axis ``tensor-parallel`` for latency or ``replicas`` for throughput."""
     budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
     if n_nodes is None:
         nodes = 1 if two_sparks is None else (2 if two_sparks else 1)
@@ -4023,8 +3563,7 @@ def plan_deployment(
         "concurrency": concurrency,
     }
 
-    # Never guess. A wrong size produces confidently wrong deployment advice, and a
-    # user cannot tell that apart from right advice until the run fails.
+    # Never guess: wrong advice is indistinguishable from right advice until the run fails.
     if size_gib is None:
         out.update(
             topology = "unknown",
@@ -4043,7 +3582,6 @@ def plan_deployment(
     out["min_nodes"] = min_nodes
     out["fits_one_node"] = fits_one
 
-    # ── One node ─────────────────────────────────────────────────────────────
     if nodes < 2:
         out.update(
             topology = "single",
@@ -4067,7 +3605,6 @@ def plan_deployment(
         out["command"] = "\n".join(out["commands"])
         return out
 
-    # ── Two or more nodes: memory-fit class first ────────────────────────────
     if size_gib > nodes * budget:
         topology = "too-large"
     elif not fits_one:
@@ -4089,12 +3626,8 @@ def plan_deployment(
             prefill_heavy = prefill_heavy,
         )
 
-    # `summary` answers ONLY "what fits where". Every statement about which axis to
-    # use lives in `recommendation`. They used to overlap, and the overlap read as the
-    # tool contradicting itself: for a 70B the summary named the llama.cpp layer split
-    # while the recommendation named tensor parallel (2.09x), both true of different
-    # axes but printed as though they were one answer. A caller can now print both,
-    # in either order, and get one coherent paragraph.
+    # `summary` answers ONLY "what fits where"; every statement about which axis to use lives
+    # in `recommendation`. Overlapping them reads as the tool contradicting itself.
     copies = int(budget // size_gib) if size_gib > 0 else 0
     if topology == "replicas":
         out["summary"] = (
@@ -4122,7 +3655,6 @@ def plan_deployment(
             f"GiB usable). At least {min_nodes} nodes would be needed, or a smaller quant."
         )
 
-    # ── Then the axis, which is what the intent actually decides ─────────────
     if topology == "too-large":
         out.update(axis = "none", expected = expected_gain("none", 1, concurrency), commands = [])
         out["recommendation"] = (
@@ -4130,8 +3662,7 @@ def plan_deployment(
             f"{budget:.0f} GiB. Add nodes until you have {min_nodes}, or quantise smaller."
         )
     elif not fits_one:
-        # It must be sharded to run at all. TP is the axis that is both possible
-        # and fast; PP/layer-split is the fallback when the engine cannot TP.
+        # It must be sharded to run at all; PP/layer-split is the fallback if TP is absent.
         shard_nodes = min(nodes, max(2, min_nodes))
         out.update(
             axis = "tensor-parallel",
@@ -4263,7 +3794,6 @@ def _cmd_plan(
 
 
 def _cmd_peers(check: bool = True) -> int:
-    """List every Spark we can see, in the order the planner will rank them."""
     if not is_dgx_spark():
         print("Not a DGX Spark; no peers to look for.")
         return 0
@@ -4282,9 +3812,7 @@ def _cmd_peers(check: bool = True) -> int:
             f"    node {peer['index']}  {peer['short']:<16} {peer['address']:<18} "
             f"{state}  ({peer['source']})"
         )
-    # mDNS answers with whatever interface advertised, which is usually Wi-Fi, not the
-    # 200 Gb/s rail. Say so rather than letting someone paste a 1 Gb/s address into a
-    # distributed launch and wonder why NCCL is slow.
+    # mDNS answers with whatever interface advertised, usually Wi-Fi, not the 200 Gb/s rail.
     rail_peer = peer_ip_for()
     if rail_peer:
         print("")
@@ -4299,18 +3827,9 @@ def _cmd_peers(check: bool = True) -> int:
     return 0
 
 
-# Measured on GB10, identical weights and one GEMM shape, only the kernel changing. The
-# spread is far larger than any checkpoint difference, and it inverts with batch size -- so a
-# single "best kernel" does not exist, and picking by workload is worth up to 6.2x.
-#
-#   kernel        acts    M=1        M=4096
-#   marlin        A16     429 us     29257 us /  50 TF
-#   fi_cutlass    A4      447 us      4727 us / 309 TF
-#   vllm_cutlass  A4      486 us      4511 us / 324 TF
-#   fi_b12x       A4      484 us      4548 us / 321 TF
-#   bf16          A16    1544 us     15339 us /  95 TF
-#
-# Crossover sits between M=32 and M=256, matching the memory/compute roofline knee at M~436.
+# Measured on GB10, identical weights and one GEMM shape, only the kernel changing. No
+# single "best kernel" exists: the ranking INVERTS with batch size, worth up to 6.2x, and the
+# crossover sits between M=32 and M=256, matching the roofline knee at M~436.
 NVFP4_KERNELS = {
     "decode": {
         "backend": "marlin",
@@ -4341,12 +3860,9 @@ NVFP4_KERNELS = {
 
 
 def recommend_kernels(workload: str = "mixed") -> Dict[str, Any]:
-    """Kernel choice for an NVFP4 model on GB10, by workload.
-
-    There is no single right answer: the fastest decode kernel is the slowest prefill kernel
-    by 6.5x. vLLM's auto-selection picks reasonably for decode, so the actionable case is a
-    prefill-heavy or long-prompt workload, where an explicit flag is worth multiples.
-    """
+    """Kernel choice for an NVFP4 model on GB10, by workload. The fastest decode kernel is
+    the slowest prefill kernel; vLLM auto-selects well for decode, so the actionable case is
+    prefill-heavy work, where the explicit flag is worth multiples."""
     out: Dict[str, Any] = {"workload": workload}
     if workload in NVFP4_KERNELS:
         out.update(NVFP4_KERNELS[workload])
@@ -4400,36 +3916,25 @@ def training_memory_estimate(
     vocab: int = 128256,
     checkpointed: bool = True,
 ) -> Dict[str, Any]:
-    """Per-node memory for a layer-split training step, before it is attempted.
-
-    This exists because the failure it prevents is severe and slow: a 70B arm loaded 66 GiB
-    of weights, spent an hour materialising, then exhausted the node's memory on activations
-    and left it **unreachable over ssh** -- the kernel and NIC stayed healthy while userspace
-    could no longer fork, which needs a power cycle to clear. Discovering "this does not fit"
-    an hour in, by taking a machine down, is the worst possible way to find out.
-
-    Deliberately rough and deliberately pessimistic. The point is to refuse the obviously
-    impossible, not to predict the last gigabyte.
-    """
+    """Per-node memory for a layer-split training step, before it is attempted. The failure
+    it prevents is severe: a 70B arm spent an hour materialising, exhausted the node on
+    activations and left it UNREACHABLE over ssh (userspace could no longer fork), needing a
+    power cycle. Deliberately pessimistic: it refuses the impossible, not the last GiB."""
     weights = size_gib / world
-    # Adam: fp32 master + two moments. LoRA trains a tiny fraction, so this is bounded by
-    # trainable params rather than total -- but a full finetune pays all of it.
+    # Adam: fp32 master + two moments. LoRA trains a tiny fraction; a full finetune pays all.
     optimizer_full = weights * 6.0
     optimizer_lora = weights * 0.02
     mb_rows = max(batch // max(microbatches, 1), 1)
     own_layers = max(layers // world, 1)
-    # Residual stream per layer per in-flight microbatch, bf16. Checkpointing keeps one
-    # layer's internals live instead of all of them, but still stores every boundary.
+    # Residual stream per layer per in-flight microbatch, bf16.
     per_layer = mb_rows * seq * hidden * 2 / 2**30
     live_microbatches = microbatches if not checkpointed else min(microbatches, 2)
     activations = per_layer * own_layers * live_microbatches
     if not checkpointed:
         activations *= 4.0  # attention + MLP intermediates kept for the backward pass
-    # The LAST stage additionally holds logits, and for a large vocabulary that single tensor
-    # can dominate everything else: cross-entropy is computed in fp32, so a 128k-vocab model
-    # at 1024 tokens per microbatch is 0.5 GiB per microbatch in logits alone, plus the same
-    # again for its gradient. Ignoring this is why a naive estimate says a configuration fits
-    # when the final stage is the one that runs out.
+    # The LAST stage also holds logits, computed in fp32, and for a large vocabulary that one
+    # tensor dominates. Ignoring it is why a naive estimate says a run fits and the final
+    # stage is the one that runs out.
     logits_gib = (mb_rows * seq * vocab * 4 / 2**30) * live_microbatches * 2
     activations_last_stage = activations + logits_gib
     budget = SPARK_USABLE_GIB - 6.0  # driver, CUDA context, fragmentation
@@ -4500,15 +4005,10 @@ def _cmd_estimate(
 
 
 def _consented(assume_yes: bool, prompt: str) -> bool:
-    """Explicit yes, an interactive yes, or no. Never a default yes.
-
-    Anything that writes to another machine or rewrites saved state has to be asked
-    for. A command someone runs to SEE what it would do must not do it: the failure
-    that motivated this rule was an `rsync --delete` of the studio venv onto a peer
-    that was at that moment running a job out of it, reached by simply calling the
-    setup entry point. Without a TTY and without an explicit flag the answer is no,
-    so no automation, CI job or agent can trip it by accident.
-    """
+    """Explicit yes, an interactive yes, or no. Never a default yes. The failure that
+    motivated this was an `rsync --delete` of the studio venv onto a peer running a job out
+    of it, reached by calling the setup entry point. No TTY and no flag means no, so no
+    automation can trip it by accident."""
     if assume_yes:
         return True
     try:
@@ -4522,18 +4022,13 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
             return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
     except (AttributeError, ValueError, EOFError, KeyboardInterrupt, OSError):
         return False
-    # stdout is a terminal but stdin is not: this is `curl ... | sh`, where the shell
-    # script itself occupies stdin. install.sh handles the same situation by reading
-    # /dev/tty (its `_can_read_tty`), so do exactly that rather than declining a
-    # question the user is sitting in front of. If /dev/tty cannot be opened -- a
-    # container, cron, CI -- that is a real "no terminal" and the answer stays no.
+    # stdout is a terminal but stdin is not: `curl ... | sh`, where the script occupies
+    # stdin. Read /dev/tty as install.sh does; if that fails it is a real "no terminal".
     try:
         with open("/dev/tty", "r", encoding = "utf-8") as tty:
             print(f"{prompt} [y/N] ", end = "", flush = True)
             return (tty.readline() or "").strip().lower() in ("y", "yes")
     except (OSError, EOFError, KeyboardInterrupt):
-        # No prompt was printed if /dev/tty could not be opened, so there is no
-        # dangling line to close -- and stdout may not be writable either.
         return False
 
 
@@ -4584,10 +4079,8 @@ def _cmd_setup(
     print(f"    ping -c3 {peer_plan[0]['address']}")
     print("    unsloth spark status")
 
-    # Provisioning prevents two failures that both present as hangs with no diagnostic
-    # (601 s DistStoreError from a missing venv, 17-minute graph-capture hang from a cold
-    # cache) -- but it WRITES TO ANOTHER MACHINE, so it is never automatic. Printing the
-    # plan is free; performing it needs a yes.
+    # Provisioning WRITES TO ANOTHER MACHINE, so it is never automatic: printing the plan is
+    # free, performing it needs a yes.
     peer_now = peer_ip_for()
     changes = [f"rewrite {config_path()} with the plan above"]
     if peer_now:
@@ -4611,22 +4104,25 @@ def _cmd_setup(
         print("  Re-run with --yes to apply, or --dry-run to see it again.")
         return 0
 
+    provision_failures = False
     if peer_now:
         print(f"\n  Peer {peer_now} -- copying environment and caches over the ConnectX link:")
         res = provision_peer(peer_now)
         if res["refused"]:
             print(f"    REFUSED: {res['refused']}")
             print("    Nothing was copied. Re-run `unsloth spark provision` when it is idle.")
+            provision_failures = True
         for label, _ in res["copied"]:
             print(f"    ok      {label}")
         for label, why in res["failed"]:
             print(f"    FAILED  {label}: {why}")
         if res["failed"]:
             print("    Re-run later with: unsloth spark provision")
+            provision_failures = True
     else:
         print("\n  Once the peer is reachable, run: unsloth spark provision")
 
-    save_config(
+    saved = save_config(
         {
             "enabled": True,
             "planned": True,
@@ -4638,7 +4134,14 @@ def _cmd_setup(
             "nccl_env": nccl_env(rails),
         }
     )
+    if not saved:
+        return 1
     print(f"\nSaved plan to {config_path()}")
+    # A copy that was attempted and failed leaves the peer without the environment, so the
+    # installer and `spark up` must not read this as a finished setup. An unreachable peer is
+    # different: that is the documented "provision it later" path and stays a success.
+    if provision_failures:
+        return 1
     return 0
 
 
@@ -4650,27 +4153,11 @@ def _cmd_serve(
     engines: int = 2,
     slots: int = 16,
 ) -> int:
-    """Serve a GGUF across BOTH Sparks, using the layout that actually wins.
-
-    Measured on this hardware, and the reason this prints what it prints:
-
-      one engine, layer-split, a model that fits   decode 0.85x to 1.01x (1 to 32 users)
-      TWO engines, each split, requests alternated 1.35x a single Spark
-      two independent replicas, one per Spark      1.30x / 1.75x / 1.91x at 8 / 16 / 32 users
-      prefill, `-ub 512` + CUDA_SCALE_LAUNCH_QUEUES=4x   1.51x
-
-    A single split engine never decodes faster than one Spark: the split moves the
-    same weight bytes per token and the nodes take turns on the graph. Two independent
-    engines give the pair data-independent work, which is the same structure vLLM and
-    SGLang require to fill a pipeline. A single autoregressive stream can never be
-    pipelined -- token t+1 depends on token t.
-
-    So use one split engine only when the model does not fit on one Spark (121.69
-    GiB); for anything that fits, replicas win from 8 users up and a single Spark is
-    as good below that. Before a split is printed, both nodes' llama.cpp bundles are
-    compared and any running RPC server is asked its protocol version, because a
-    peer on a different bundle fails at load with "RPC server version mismatch".
-    """
+    """Serve a GGUF across BOTH Sparks, using the layout that actually wins. A single split
+    engine never decodes faster than one Spark: the nodes take turns on the graph, and a
+    single autoregressive stream cannot be pipelined because token t+1 depends on token t.
+    Two independent engines give the pair data-independent work, so split only when the model
+    does not fit. Bundles are compared before a split is printed."""
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0
@@ -4684,20 +4171,15 @@ def _cmd_serve(
     peer_ip = plan["peer_ip"]
     engines = max(1, engines)
 
-    # Decide the topology from the model rather than making the user know the rule. The
-    # rule is not guessable: a model that FITS on one Spark never decodes faster
-    # layer-split across two (0.85x to 1.01x measured), so splitting is for capacity
-    # and prefill only, and the right answer flips at the point where two copies stop
-    # fitting.
+    # Decide the topology from the model: the rule is not guessable, and the right answer
+    # flips at the point where two copies stop fitting.
     size = model_size_gib(model)
     advice = plan_deployment(size, two_sparks = True, concurrency = slots)
     bin_dir = Path(binary).parent
     peer_bin_dir = _peer_relative_path(bin_dir)
     if advice["topology"] == "replicas":
-        # Emit the layout that actually wins rather than advising and then printing a
-        # worse one. Independent replicas never touch the wire during decode: each Spark
-        # runs at full local memory bandwidth, and the only coordination is a
-        # request-level round-robin on the CPU.
+        # Independent replicas never touch the wire during decode: each Spark runs at full
+        # local memory bandwidth, coordinated only by a request-level round-robin.
         local_port, peer_port = port + 1, port + 2
         print(f"  model    : {model}  ({size:.1f} GiB)")
         print("  topology : INDEPENDENT REPLICAS -- one full model per Spark, no RPC")
@@ -4728,8 +4210,8 @@ def _cmd_serve(
         print(f"  Clients talk to port {port}. Nothing crosses the wire during decode.")
         return 0
     elif advice["topology"] in ("layer-split", "single-or-replicas") and engines > 1:
-        # Two split engines need two full copies of the weights; that is exactly what
-        # does not fit here, so silently obeying --engines 2 would OOM mid-load.
+        # Two split engines need two full copies of the weights, so obeying --engines 2 here
+        # would OOM mid-load.
         print(f"  {model} is {size:.1f} GiB -- two copies do not fit across the pair.")
         print("  Forcing --engines 1 (layer split). This buys capacity, not speed.")
         print("")
@@ -4738,10 +4220,8 @@ def _cmd_serve(
         print(f"  {advice['summary']}")
         return 1
 
-    # Both nodes must speak the same RPC protocol, and that is pinned by the build:
-    # b10796 speaks 6.0, the bundles before it 5.1. Check the bundles and ask any
-    # server that is already listening, before printing a launch that would fail at
-    # load with "RPC server version mismatch".
+    # Both nodes must speak the same RPC protocol, and the build pins it; check before
+    # printing a launch that would fail at load.
     preflight = rpc_protocol_preflight(peer_ip, rpc_port)
     for note in preflight["notes"]:
         print(f"  note: {note}")
@@ -4790,32 +4270,16 @@ def _cmd_serve(
     return 0
 
 
-# ── Distributed TRAINING across both Sparks (torchrun + DDP) ─────────────────
-# What is and is not possible, because the distinction trips people up:
-#
-#   device_map="balanced"  -- NO. That splits layers across GPUs *inside one
-#                             process*. Each Spark is a separate host with a
-#                             single GB10, so there is nothing to split across.
-#   DDP (torchrun)         -- YES. Replicate the model on both, all-reduce the
-#                             gradients. Buys THROUGHPUT, not capacity: the model
-#                             must still fit on one Spark. Measured 1.71x.
-#   FSDP (accelerate)      -- would buy capacity by sharding parameters, but is
-#                             not something Unsloth supports today (see #4858),
-#                             and GB10's lack of GPUDirect RDMA makes the
-#                             per-step shard traffic expensive (~2.8 GB/s).
-#
-# For capacity, use llama.cpp RPC for inference (see rpc_cluster_plan) rather than
-# expecting training to shard.
+# device_map="balanced" does NOT work here: it splits layers across GPUs inside one process,
+# and each Spark is a separate host with a single GB10. DDP over torchrun does work and buys
+# throughput, not capacity (the model must still fit on one Spark). FSDP would buy capacity
+# but Unsloth does not support it (#4858). For capacity, use llama.cpp RPC for inference.
 
 
 def _not_a_spark_plan(what: str) -> Dict[str, Any]:
-    """The refusal every *_launch_plan returns off a Spark.
-
-    Shaped exactly like a failed plan so callers need no special case: `ok` False and
-    a `problems` list they already print. Guarding here rather than only in the CLI
-    matters because these are importable functions -- `studio.spark_cluster` is called
-    directly by the installer and by `unsloth run`, not only through `main()`.
-    """
+    """The refusal every *_launch_plan returns off a Spark, shaped like a failed plan so
+    callers need no special case. Guarded here, not only in the CLI, because these are
+    importable and the installer calls them directly rather than through `main()`."""
     return {
         "ok": False,
         "problems": [f"not a DGX Spark, so there is no peer to {what}"],
@@ -4828,7 +4292,6 @@ def _not_a_spark_plan(what: str) -> Dict[str, Any]:
 
 
 def train_launch_plan(script: str, port: int = 29500) -> Dict[str, Any]:
-    """torchrun commands for a two-Spark DDP run, plus the env both nodes need."""
     if not is_dgx_spark():
         return _not_a_spark_plan("train against")
     peer = peer_ip_for()
@@ -4857,13 +4320,9 @@ def pipeline_launch_plan(
     *,
     extra: str = "",
 ) -> Dict[str, Any]:
-    """torchrun commands for a layer-split (pipeline-parallel) run across the Sparks.
-
-    Distinct from `train_launch_plan`, which is DDP: DDP replicates the model and buys
-    throughput, so the model must still fit on ONE Spark. This splits the decoder stack
-    across the nodes, which buys *capacity* -- it is the only way to train a model larger
-    than a single Spark's ~117 GiB.
-    """
+    """torchrun commands for a layer-split (pipeline-parallel) run. Unlike `train_launch_plan`
+    (DDP, which replicates and needs the model to fit on ONE Spark) this splits the decoder
+    stack, and is the only way to train a model larger than a single Spark."""
     if not is_dgx_spark():
         return _not_a_spark_plan("split a model across")
     peer = peer_ip_for()
@@ -4875,7 +4334,9 @@ def pipeline_launch_plan(
     if not peer or not local:
         return {"ok": False, "problems": ["no configured peer rail (run `unsloth spark setup`)"]}
     base = f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} " f"--master_port={port}"
-    target = f"-m studio.spark_pipeline --model {model}"
+    # Quoted: both commands are printed for a shell and `--run` feeds them to one, so a local
+    # checkpoint path with a space would otherwise split into several arguments.
+    target = f"-m studio.spark_pipeline --model {shlex.quote(model)}"
     if extra:
         target = f"{target} {extra}"
     return {
@@ -4889,23 +4350,31 @@ def pipeline_launch_plan(
     }
 
 
-def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.log") -> int:
-    """Actually launch a layer-split run on both Sparks.
+def _local_launch(command: str) -> str:
+    """Run rank 0 out of the managed venv. `~/.local/bin/unsloth` is only a symlink to the
+    venv's console script, so it never puts the venv's `bin` on PATH and a bare `torchrun`
+    is usually not found; the peer command already sources `activate` for the same reason."""
+    torchrun = _studio_root() / "unsloth_studio" / "bin" / "torchrun"
+    if torchrun.exists() and command.startswith("torchrun "):
+        return f"{shlex.quote(str(torchrun))} {command[len('torchrun '):]}"
+    return command
 
-    The peer is started with `ssh -f` and its own log file. Both details matter: without
-    `-f`, ssh holds the launcher open and the head rank never starts; and without a log
-    redirect the peer's errors are lost entirely, because the head only ever reports
-    `DistStoreError: Timed out ... 1/2 clients joined` and never says why its peer left.
-    """
+
+def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.log") -> int:
+    """Actually launch a layer-split run on both Sparks. Without `ssh -f` the launcher is
+    held open and the head rank never starts; without the peer log its errors are lost, since
+    the head only ever reports `DistStoreError: 1/2 clients joined`."""
     user = _ssh_user()
     activate = venv_activate()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
+    # `cd $HOME`, not the local cwd: provisioning copies the venv and the caches, never the
+    # project directory, so the same absolute path need not exist on the peer.
     remote = (
-        f"cd {os.getcwd()} && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
+        f"cd \"$HOME\" && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
         f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null &"
     )
     try:
-        subprocess.run(
+        peer = subprocess.run(
             [
                 "ssh",
                 "-f",
@@ -4922,13 +4391,17 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     except Exception as exc:
         print(f"  could not start the peer stage: {exc}")
         return 1
+    # `ssh -f` backgrounds only AFTER authentication, so auth/routing failures land here. Without
+    # this rank 1 never exists and rank 0 just waits out the rendezvous timeout.
+    if peer.returncode != 0:
+        print(f"  could not start the peer stage: ssh exited {peer.returncode}")
+        return 1
     print(f"  peer stage started; its log is {log_peer} on {plan['peer_ip']}")
-    import time
 
     time.sleep(6)  # let the peer reach the rendezvous first
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
-    return subprocess.run(plan["node0"], shell = True, env = child_env).returncode
+    return subprocess.run(_local_launch(plan["node0"]), shell = True, env = child_env).returncode
 
 
 def _cmd_pipeline(
@@ -4947,8 +4420,7 @@ def _cmd_pipeline(
         return 1
 
     data_parallel = "--data-parallel" in extra.split()
-    # A layer split is for capacity. Warn when it is not needed, because a model that fits
-    # on one Spark trains faster there than split across two.
+    # A model that fits on one Spark trains faster there than split across two.
     size = model_size_gib(model)
     if data_parallel and size is not None:
         budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
@@ -5207,7 +4679,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.script:
             print("train needs --script <train.py>, or --layer-split <model>")
             return 2
-        return _cmd_train(args.script)
+        return _cmd_train(args.script, port = args.master_port)
     if args.command == "setup":
         return _cmd_setup(
             assume_yes = args.yes,

@@ -432,6 +432,21 @@ def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     assert run._addresses_collide(recorded, "localhost", 8889) is True
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows socket semantics")
+def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
+    # Python HTTP servers commonly enable SO_REUSEADDR. On Windows, putting the
+    # same option on the probe lets its bind succeed even while that server is
+    # listening; uvicorn then fails later with WinError 10048 instead of using
+    # the existing 8888-8908 fallback.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.
@@ -442,7 +457,10 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
         assert run._addresses_collide(recorded, literal, 8889) is True
 
 
-def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("occupied", [False, True])
+def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
     sockets = []
 
@@ -450,14 +468,15 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         def __init__(self, family):
             self.family = family
             self.closed = False
+            self.options = []
             sockets.append(self)
 
-        def setsockopt(self, *_args):
-            pass
+        def setsockopt(self, *args):
+            self.options.append(args)
 
         def bind(self, sockaddr):
             bind_attempts.append((self.family, sockaddr))
-            if self.family == socket.AF_INET6:
+            if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
 
         def close(self):
@@ -467,8 +486,8 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8888)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8888, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0)),
         ],
     )
     monkeypatch.setattr(
@@ -477,12 +496,18 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         lambda family, _socktype, _proto: _ProbeSocket(family),
     )
 
-    assert run._is_port_free("dual-wildcard.test", 8888) is False
+    assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
     assert bind_attempts == [
-        (socket.AF_INET, ("0.0.0.0", 8888)),
-        (socket.AF_INET6, ("::", 8888, 0, 0)),
+        (socket.AF_INET, ("127.0.0.1", 8888)),
+        (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
     assert all(probe.closed for probe in sockets)
+    for probe in sockets:
+        assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
+            platform != "win32"
+        )
+        if probe.family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+            assert (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1) in probe.options
 
 
 def test_a_multi_address_record_matches_either_literal(tmp_path):

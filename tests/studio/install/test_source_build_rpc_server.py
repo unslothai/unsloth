@@ -1,25 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The llama.cpp source-build fallback ships ggml-rpc-server (setup.sh / setup.ps1).
 
-The prebuilt bundles install the RPC server (install_llama_prebuilt.py
-runtime_patterns_for_choice), but when the installer falls back to building llama.cpp
-from source the scripts configured without GGML_RPC and never built the target, so a
-source-built install had no RPC server and the two-Spark layer split
-(studio/spark_cluster.py rpc_server_binary()) could not run on it.
-
-Both scripts now pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build
-the RPC server best-effort after llama-server and llama-quantize: "ggml-rpc-server"
-upstream, "rpc-server" on older trees, read from the tree, and a tree without either
-never fails the build. RDMA is off on every platform: that is what every shipped prebuilt
-is built with, and it avoids the hard runtime dependency on libibverbs and libnl that
-ggml-rpc otherwise picks up whenever libibverbs happens to be installed on the build
-host (it auto-enables the transport when it finds a verbs library: libibverbs on every
-DGX Spark, librdma on Apple). macOS additionally checks after the build that the cache
-kept it off and nothing links librdma, the gate the fork's unsloth-prebuilt-macos.yml
-runs, because a Mac with the RDMA framework would otherwise link /usr/lib/librdma.dylib
-into libggml-rpc and the whole install then fails to load on a Mac without it.
-
-llama-server and llama-quantize stay the required targets; the RPC server is neither a
-health requirement nor a validation gate.
+Both scripts pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build the RPC
+server best-effort, from a target name read out of the tree, so a tree without one never
+fails the build. RDMA is off on EVERY platform: ggml-rpc auto-enables the transport whenever
+it finds a verbs library on the build host, which would give the artifact a hard runtime
+dependency on libibverbs/libnl (or, on a Mac, link /usr/lib/librdma.dylib and fail to load on
+any Mac without it). llama-server and llama-quantize stay the required targets; the RPC
+server is neither a health requirement nor a validation gate.
 """
 
 import importlib.util
@@ -73,30 +63,21 @@ def _ps1_step_f(text: str) -> str:
     return text[start:end]
 
 
-# ── setup.sh: configure ──
-
-
 class TestSetupShConfigure:
     def test_rpc_on_and_rdma_off_are_set_once_before_the_cpu_fallback_copy(self):
-        """Both flags on the shared CMAKE_ARGS, before CPU_FALLBACK_CMAKE_ARGS copies
-        it: every configure (CUDA, ROCm, Metal, CPU, and each CPU fallback) then
-        carries them. RDMA off everywhere, not only on macOS: it is what every shipped
-        prebuilt is built with, and it avoids the hard runtime dependency on libibverbs
-        and libnl that ggml-rpc otherwise picks up whenever libibverbs happens to be
-        installed on the build host (it is on every DGX Spark)."""
+        """Both flags on the shared CMAKE_ARGS, BEFORE CPU_FALLBACK_CMAKE_ARGS copies it, so
+        every configure carries them."""
         block = _source_build_block(_sh())
         assert block.count("-DGGML_RPC=ON") == 1
         assert block.count("-DGGML_RPC_RDMA=OFF") == 1
         flags = 'CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"'
         assert block.index(flags) < block.index(CPU_FALLBACK_COPY)
-        # Not inside any platform branch: the flags sit between the base line and the
-        # Darwin deployment-target block.
+        # Not inside any platform branch.
         base = block.index('CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release')
         darwin = block.index('if [ "$_HOST_SYSTEM" = "Darwin" ]; then')
         assert base < block.index(flags) < darwin
 
     def test_backend_selection_is_untouched(self):
-        """CUDA, HIP, Metal and the Metal CPU fallback lines exactly as before."""
         block = _source_build_block(_sh())
         assert (
             'CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"'
@@ -110,13 +91,8 @@ class TestSetupShConfigure:
         assert 'CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"' in block
 
 
-# ── setup.sh: targets ──
-
-
 class TestSetupShTargets:
     def test_rpc_server_follows_every_visual_server_build(self):
-        """Both extra-target sites (main build, smoke-test CPU fallback) build the RPC
-        server right after the visual server, with the matching label."""
         lines = _source_build_block(_sh()).splitlines()
         visual = [
             i
@@ -167,8 +143,6 @@ class TestSetupShTargets:
         assert "grep -qi 'librdma'" not in gate
 
 
-# ── setup.sh: the helpers, run ──
-
 _PRELUDE = textwrap.dedent(
     """
     set -euo pipefail
@@ -202,8 +176,6 @@ _STUB_OTOOL = "#!/bin/bash\nprintf '%s\\n' \"${OTOOL_OUT:-}\"\n"
 
 @pytest.fixture
 def sh_env(tmp_path):
-    """A llama.cpp tree with the current RPC tool, a build dir with an RDMA=OFF cache,
-    and stub cmake/otool on PATH that log their calls."""
     tree = tmp_path / "tree"
     (tree / "tools" / "rpc").mkdir(parents = True)
     (tree / "tools" / "rpc" / "CMakeLists.txt").write_text("set(TARGET ggml-rpc-server)\n")
@@ -314,7 +286,6 @@ class TestSetupShHelpersRun:
 
     @pytest.mark.parametrize("cache", ["GGML_RPC_RDMA:BOOL=OFF", "GGML_RPC_RDMA:UNINITIALIZED=OFF"])
     def test_gate_accepts_an_off_cache_of_either_type(self, sh_env, cache):
-        """An older tree without the option keeps the -D value as UNINITIALIZED."""
         tree, _log, env = sh_env
         (tree / "build" / "CMakeCache.txt").write_text(cache + "\n")
         result = _run_helpers(env, f"_llama_macos_rdma_gate_ok '{tree}/build'; echo gate=$?")
@@ -373,9 +344,6 @@ class TestSetupShHelpersRun:
         assert "BUILD_OK=false" in result.stdout
 
 
-# ── setup.ps1 ──
-
-
 class TestSetupPs1:
     def test_rpc_on_and_rdma_off_are_common_flags(self):
         """Once each, between the shared flags and the CUDA selection, so both the CUDA
@@ -428,7 +396,6 @@ class TestSetupPs1:
         assert "return 'ggml-rpc-server'" in body and "return 'rpc-server'" in body
 
     def test_summary_looks_in_the_release_dir(self):
-        """build\\bin\\Release is where rpc_server_binary() looks on Windows."""
         text = _ps1()
         assert 'Join-Path $BuildDir "bin\\Release\\$rpcName.exe"' in text
         assert "@('ggml-rpc-server', 'rpc-server')" in text
@@ -466,9 +433,6 @@ class TestSetupPs1:
         )
         assert result.returncode == 0, result.stderr
         assert f"<{expected}>" in result.stdout
-
-
-# ── the two scripts agree, and the RPC server is never required ──
 
 
 def test_both_scripts_resolve_the_same_names():
@@ -515,3 +479,125 @@ def test_rpc_server_is_not_a_health_requirement():
             groups = module.runtime_payload_health_groups(kind, source_label = source_label)
             required = {entry for group in groups for entry in group}
             assert not (required & names), (kind, source_label, required & names)
+
+
+# ── the upgrade path ────────────────────────────────────────────────────────────
+# A clean install builds the RPC server; an EXISTING install at the canonical
+# location is reused verbatim, which is right for llama-server and wrong for RPC.
+# Before this, such an upgrade silently ended up with no ggml-rpc-server at all.
+
+UPGRADE_FUNCTIONS = (
+    "_llama_rpc_server_target",
+    "_has_local_rpc_server",
+    "_backfill_local_rpc_server",
+)
+
+
+def _upgrade_harness(tmp_path: Path, *, tree: Path, cmake_writes: str | None) -> str:
+    """Run `_backfill_local_rpc_server` for real, with cmake and the reporters stubbed."""
+    text = _sh()
+    body = "\n".join(_bash_function(text, name) for name in UPGRADE_FUNCTIONS)
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir(exist_ok = True)
+    cmake = fake_bin / "cmake"
+    if cmake_writes is None:
+        cmake.write_text("#!/bin/sh\nexit 1\n", encoding = "utf-8")
+    else:
+        cmake.write_text(
+            "#!/bin/sh\n"
+            f'mkdir -p "{tree}/build/bin"\n'
+            f'printf x > "{tree}/build/bin/{cmake_writes}"\n'
+            f'chmod +x "{tree}/build/bin/{cmake_writes}"\n'
+            "exit 0\n",
+            encoding = "utf-8",
+        )
+    cmake.chmod(0o755)
+    script = textwrap.dedent(
+        f"""
+        set -u
+        C_WARN=""
+        NCPU=1
+        step() {{ echo "STEP $1 $2"; }}
+        substep() {{ echo "SUBSTEP $1"; }}
+        verbose_substep() {{ echo "VERBOSE $1"; }}
+        run_quiet_no_exit() {{ shift; "$@" >/dev/null 2>&1; }}
+        PATH="{fake_bin}:$PATH"
+        {body}
+        _backfill_local_rpc_server "{tree}"
+        echo "PRESENT=$(_has_local_rpc_server "{tree}" && echo yes || echo no)"
+        """
+    )
+    return subprocess.run([BASH, "-c", script], capture_output = True, text = True, check = True).stdout
+
+
+def _old_install(
+    tmp_path: Path,
+    *,
+    configured: bool = True,
+    rpc_target: bool = True,
+) -> Path:
+    """An install from before the RPC server was built: llama-server and nothing else new."""
+    tree = tmp_path / "llama.cpp"
+    (tree / "build" / "bin").mkdir(parents = True)
+    server = tree / "build" / "bin" / "llama-server"
+    server.write_text("binary", encoding = "utf-8")
+    server.chmod(0o755)
+    if configured:
+        (tree / "build" / "CMakeCache.txt").write_text("GGML_RPC:BOOL=ON\n", encoding = "utf-8")
+    if rpc_target:
+        (tree / "tools" / "rpc").mkdir(parents = True)
+        (tree / "tools" / "rpc" / "CMakeLists.txt").write_text(
+            "add_executable(ggml-rpc-server rpc-server.cpp)\n", encoding = "utf-8"
+        )
+    return tree
+
+
+def test_reusing_an_existing_install_backfills_the_rpc_server(tmp_path) -> None:
+    """The upgrade case, which a fresh-install test cannot reach."""
+    tree = _old_install(tmp_path)
+    assert not (tree / "build" / "bin" / "ggml-rpc-server").exists()
+
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "PRESENT=yes" in out, out
+    assert "STEP rpc-server built (ggml-rpc-server)" in out, out
+
+
+def test_an_install_that_already_has_it_is_left_alone(tmp_path) -> None:
+    """No rebuild, no output: reuse must stay reuse when there is nothing to add."""
+    tree = _old_install(tmp_path)
+    existing = tree / "build" / "bin" / "ggml-rpc-server"
+    existing.write_text("binary", encoding = "utf-8")
+    existing.chmod(0o755)
+
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "PRESENT=yes" in out, out
+    assert "SUBSTEP" not in out, out
+
+
+def test_a_failed_backfill_says_so_and_keeps_the_reused_build(tmp_path) -> None:
+    tree = _old_install(tmp_path)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "PRESENT=no" in out, out
+    assert "RPC serving will be unavailable" in out, out
+    assert (tree / "build" / "bin" / "llama-server").exists(), "the reused build was damaged"
+
+
+def test_an_unconfigured_tree_points_at_the_way_out(tmp_path) -> None:
+    tree = _old_install(tmp_path, configured = False)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "UNSLOTH_LLAMA_FORCE_COMPILE=1" in out, out
+
+
+def test_a_tree_with_no_rpc_target_is_not_an_error(tmp_path) -> None:
+    """Older llama.cpp has no RPC tool at all; that is a skip, not a warning."""
+    tree = _old_install(tmp_path, rpc_target = False)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "VERBOSE no RPC server target" in out, out
+
+
+def test_the_reuse_branch_actually_calls_the_backfill() -> None:
+    """The function is only worth having if the reuse path reaches it."""
+    text = _sh()
+    start = text.index("already holds a build; reusing it")
+    window = text[start : start + 400]
+    assert "_backfill_local_rpc_server" in window, window

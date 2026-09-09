@@ -216,17 +216,10 @@ def requested_device_map(device_map):
     return device_map
 
 
-# ── DGX Spark: a multi-device device_map cannot span two Sparks ──────────────
-# Two cabled Sparks are two hosts with one GB10 each, so `torch.cuda.device_count()`
-# is 1 on both. A multi-device map ("balanced", "auto", ...) therefore has nothing to
-# split across and silently collapses onto cuda:0 -- the user asked for model
-# splitting and got none, with no message. Say so, and name the mechanism that does
-# work (FSDP under torchrun shards parameters across ranks; llama.cpp RPC splits a
-# GGUF for inference).
-#
-# Everything here is behind a gate that costs a non-Spark host two string compares
-# and no I/O, and the whole notice is skipped unless the user actually asked for a
-# multi-device map on a single-GPU box.
+# Two cabled Sparks are two hosts with one GB10 each, so `device_count()` is 1 on both and a
+# multi-device map ("balanced", "auto") has nothing to split across: it silently collapses
+# onto cuda:0, giving the user no splitting and no message. Say so, and name what does work.
+# The gate costs a non-Spark host two string compares and no I/O.
 _MULTI_DEVICE_MAPS = frozenset(
     {"balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced"}
 )
@@ -234,7 +227,6 @@ _SPARK_NOTICE_SHOWN = [False]
 
 
 def _is_dgx_spark():
-    """True only on a DGX Spark. Two comparisons before any file is touched."""
     import platform
 
     if platform.system() != "Linux" or platform.machine() not in ("aarch64", "arm64"):
@@ -277,10 +269,8 @@ def notify_device_map_cannot_span_sparks(device_map):
     try:
         _notify_device_map_cannot_span_sparks(device_map)
     except Exception:
-        # This is a cosmetic notice sitting on the model-load path of every platform we
-        # support. Nothing it can discover is worth failing a load that would otherwise
-        # have succeeded, so it fails silent rather than propagating. The cheap gates
-        # below are still checked first, so the try costs nothing on the common path.
+        # A cosmetic notice on every platform's model-load path: nothing it discovers is
+        # worth failing a load that would otherwise succeed, so it fails silent.
         pass
 
 
@@ -334,7 +324,8 @@ def planner_quantization_kwargs(
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
         except Exception:
             # Built on every quantized load, planning or not, so an older unsloth_zoo must not turn a 4bit load
-            # into an ImportError. One without the shared list predates the planner that consumes it.
+            # into an ImportError. One without the shared list predates the planner that consumes it, so this
+            # plan was going to decline anyway.
             return kwargs
         kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
     return kwargs

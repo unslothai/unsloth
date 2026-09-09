@@ -3,21 +3,11 @@
 
 """Merge the per-stage adapters from a layer-split run back into one usable checkpoint.
 
-A `spark train --layer-split` run leaves `stage0/`, `stage1/`, ... each holding only the LoRA
-weights for the layers that stage owned. That is two half-models and nothing a user can load,
-which made the whole training path a dead end at the last step.
-
-Merging is a *union*, not an average, and that is a property of how the stages are built:
-`build_stage_model` replaces foreign layers with `torch.nn.Identity()` rather than deleting
-them, so every stage keeps the original layer numbering and an Identity carries no LoRA
-weights. Stage 0's tensors are therefore exactly the layers stage 1 lacks. If that ever stops
-being true this module refuses rather than guessing -- an averaged or half-populated adapter
-would load fine and quietly produce a worse model, which is the failure mode worth spending
-code to prevent.
-
-Deliberately dependency-light: `safetensors` and `json` only, no torch, no peft, no
-transformers. Merging a checkpoint should not require a GPU or a 2 GB import, and this file is
-imported by the CLI on every platform.
+Merging is a UNION, not an average: `build_stage_model` replaces foreign layers with
+`Identity()` rather than deleting them, so layer numbering is preserved and the stages' key
+sets are disjoint by construction. If that stops holding this refuses rather than guessing,
+because a half-populated adapter loads fine and quietly produces a worse model.
+Dependency-light on purpose: the CLI imports this on every platform.
 """
 
 from __future__ import annotations
@@ -30,11 +20,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ADAPTER_BIN = "adapter_model.safetensors"
 ADAPTER_CFG = "adapter_config.json"
+# Written per stage and expected to differ: the merged adapter is the union of the stages,
+# so a per-stage module list says nothing about a config mismatch.
+_CFG_IGNORED = frozenset()
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
 
 
 def stage_dirs(root: str) -> List[str]:
-    """Return stage directories in rank order. Numeric sort, so stage10 follows stage9."""
     if not osp.isdir(root):
         raise RuntimeError(f"not a directory: {root}")
     found = []
@@ -63,7 +55,6 @@ def layer_of(key: str) -> Optional[int]:
 
 
 def inspect_stage(path: str) -> Dict[str, Any]:
-    """Read one stage's tensors and report which layers it actually carries."""
     from safetensors import safe_open  # local: keep module import cheap
 
     blob = osp.join(path, ADAPTER_BIN)
@@ -84,8 +75,8 @@ def plan_merge(root: str) -> Dict[str, Any]:
     stages = [inspect_stage(p) for p in stage_dirs(root)]
     problems: List[str] = []
 
-    # Overlap: two stages claiming one layer means the split was not what we think it was,
-    # and a union would silently keep whichever we wrote last.
+    # Two stages claiming one layer means the split is not what we think, and a union would
+    # silently keep whichever was written last.
     seen: Dict[int, str] = {}
     for st in stages:
         for n in st["layers"]:
@@ -95,6 +86,17 @@ def plan_merge(root: str) -> Dict[str, Any]:
                     f"{osp.basename(st['path'])} -- stages must own disjoint layers"
                 )
             seen[n] = st["path"]
+
+    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank that died
+    # before saving passed the directory check and merged half a model. Reported here rather
+    # than raised in discovery so `force` can still override it, the same escape the other
+    # refusals have: a deliberate one-rank run is degenerate but not forbidden.
+    if len(stages) < 2:
+        problems.append(
+            f"only {osp.basename(stages[0]['path'])} is present, and a layer split has at least "
+            f"two stages. Copy the other stage directories from the peer, or re-run the training "
+            f"if a rank failed before saving"
+        )
 
     # Gaps: contiguous coverage from 0 is what stage_layers() guarantees.
     covered = sorted(seen)
@@ -106,8 +108,8 @@ def plan_merge(root: str) -> Dict[str, Any]:
     if covered and covered[0] != 0:
         problems.append(f"layers 0..{covered[0]-1} are in no stage")
 
-    # Key collisions outside the layer stack (embeddings, lm_head) are a genuine ambiguity:
-    # every stage holds those modules, so we cannot tell a trained copy from an untouched one.
+    # Every stage holds the non-layer modules, so a trained copy is indistinguishable from an
+    # untouched one: a genuine ambiguity, not a tie to break.
     non_layer: Dict[str, List[str]] = {}
     for st in stages:
         for k in st["keys"]:
@@ -134,7 +136,6 @@ def merge(
     *,
     force: bool = False,
 ) -> Dict[str, Any]:
-    """Write one adapter combining every stage. Refuses unless `plan_merge` is clean."""
     from safetensors import safe_open
     from safetensors.torch import save_file
 
@@ -153,8 +154,7 @@ def merge(
         with safe_open(osp.join(st["path"], ADAPTER_BIN), framework = "pt") as f:
             for k in f.keys():
                 n = layer_of(k)
-                # For non-layer keys every stage holds a copy; keep the FIRST and record it,
-                # rather than letting the last writer win invisibly.
+                # Keep the FIRST copy and record it, not letting the last writer win invisibly.
                 if k in tensors and n is None:
                     continue
                 if k in tensors and n is not None and not force:
@@ -165,14 +165,32 @@ def merge(
     os.makedirs(out, exist_ok = True)
     save_file(tensors, osp.join(out, ADAPTER_BIN))
 
-    # Carry stage 0's adapter_config verbatim: LoRA rank/alpha/targets are identical across
-    # stages by construction, and rewriting it risks inventing a config nobody trained with.
-    src_cfg = osp.join(plan["stages"][0]["path"], ADAPTER_CFG)
-    if osp.isfile(src_cfg):
-        with open(src_cfg, encoding = "utf-8") as f:
-            cfg = json.load(f)
-        with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
-            json.dump(cfg, f, indent = 2)
+    # Identical across stages within one run, but a stale stage left over from an earlier run
+    # passes the layer-coverage check and would then be read through stage 0's rank, alpha and
+    # target modules. Compare them all and refuse rather than write a config nobody trained with.
+    cfgs = []
+    for st in plan["stages"]:
+        path = osp.join(st["path"], ADAPTER_CFG)
+        if not osp.isfile(path):
+            raise RuntimeError(
+                f"{path} is missing, so this stage's rank, alpha and target modules cannot be "
+                f"checked against the others. Merging would apply stage 0's config to it."
+            )
+        with open(path, encoding = "utf-8") as f:
+            cfgs.append((path, json.load(f)))
+    for path, cfg in cfgs[1:]:
+        differing = sorted(
+            k
+            for k in set(cfg) | set(cfgs[0][1])
+            if cfg.get(k) != cfgs[0][1].get(k) and k not in _CFG_IGNORED
+        )
+        if differing:
+            raise RuntimeError(
+                f"{path} disagrees with {cfgs[0][0]} on {differing}. These stages are not from "
+                f"one run; merging them would read later stages through the wrong config."
+            )
+    with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
+        json.dump(cfgs[0][1], f, indent = 2)
 
     return {
         "out": out,

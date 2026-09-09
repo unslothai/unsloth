@@ -3,35 +3,19 @@
 
 """`unsloth spark` -- own one DGX Spark, or several, without knowing any of this.
 
-The entry point is `unsloth spark up`. It looks at the machine, works out which of
-the several possible situations this is (one Spark? a cable but no pairing? a paired
-peer that is powered off? a degraded link? missing kernels?) and either does the next
-thing or names the ONE command that does. Everything else in this group -- status,
-setup, env, serve, train, provision, plan, kernels, estimate, doctor -- stays exactly
-as it was, for people who already know which one they want.
+The entry point is `unsloth spark up`: it works out which situation the machine is in and
+either does the next thing or names the ONE command that does. Two counter-intuitive facts
+drive most of the output, which is why the CLI states them rather than assuming anyone
+infers them: the biggest measured win needs NO second machine (choosing the NVFP4 kernel by
+workload), and a second Spark does not make a model that already FITS decode faster.
 
-Two facts drive most of the output, and both are counter-intuitive enough that the
-CLI states them rather than assuming anyone will infer them:
-
-  * The biggest measured win on this hardware needs NO second machine. Choosing the
-    NVFP4 kernel by workload is 6.2x on prefill (CUTLASS 309 TF/s vs Marlin 50 TF/s
-    at M=4096). Most Spark owners have exactly one Spark, so this is surfaced in
-    `status`, in `doctor`, and in `up` whenever the kernel is not installed.
-  * A second Spark does not make a model that already fits decode faster. Layer-
-    splitting such a model measures 0.85x to 1.01x across 1 to 32 users -- never a
-    win; a split is for capacity and for prefill. What a second Spark does buy for a
-    model that fits is throughput at load: two replicas measured 1.30x at 8 users,
-    1.75x at 16 and 1.91x at 32, and 1.00x to 1.13x below 8. So the planner recommends
-    replicas from 8 users up, one Spark below that, and a split only for a model that
-    does not fit or for prefill-heavy long-prompt work.
-
-Nothing here imports torch, transformers, vllm or numpy at module scope, and nothing
-touches the network unless the machine is a DGX Spark with a cabled peer. On a Mac,
-a Windows laptop, an AMD box or any x86 Linux machine, every command prints one line
-and exits 0.
+Nothing here imports torch, transformers, vllm or numpy at module scope, and nothing touches
+the network unless this is a DGX Spark with a cabled peer.
 """
 
 from __future__ import annotations
+
+import shlex
 
 import typer
 
@@ -41,52 +25,34 @@ spark_app = typer.Typer(
 )
 
 
-# ── Measured numbers ─────────────────────────────────────────────────────────
-# The authoritative copies live in studio.spark_cluster (TP_SPEEDUP_2, PP_SPEEDUP_2,
-# TP_TPOT_MS_2, LAYER_SPLIT_FITTING_SPEEDUP...) and every planner number printed by
-# `plan` comes from there via expected_gain(), so nothing in this file can drift out
-# of step with the planner. What is kept here is only what the module does not model:
-# the kernel result, which is a single-node fact and not a cluster topology, and the
-# prefill/TTFT split, which is what someone deciding whether to BUY a second Spark
-# actually needs to know.
+# Every planner number printed by `plan` comes from studio.spark_cluster via expected_gain(),
+# so nothing here can drift from the planner. Only what that module does not model is kept
+# here: the kernel result (a single-node fact) and the prefill/TTFT split.
 PREFILL_KERNEL_SPEEDUP = 6.2  # CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096
 
-# Llama-3.3-70B fp8, two Sparks (tensor parallel) versus one. Printed where the
-# question is "is a second Spark worth it", because the answer is very unevenly
-# distributed across workloads and the average of these two numbers helps nobody.
+# Llama-3.3-70B fp8, two Sparks (tensor parallel) versus one. The gain is unevenly spread
+# across workloads, so both ends are printed rather than an average.
 PREFILL_TOKS = (166, 643)  # tok/s, 3.87x
 TTFT_MS = (3085, 797)  # median TTFT, 3.87x
 TPOT_ONE_SPARK_MS = 332.7
 TPOT_TP2_MS = 162.4  # decode, 2.09x
 
-# A "128 GB" Spark is 128 GiB of which about 6.3 GiB is firmware-reserved. Users read
-# 128 on the box, size a model against it, and get an OOM they cannot explain, so the
-# real number is printed wherever memory is discussed.
+# A "128 GB" Spark is 128 GiB with ~6.3 GiB firmware-reserved. Sizing a model against the
+# marketed figure is an OOM nobody can explain, so the real number is always printed.
 MARKETED_GIB = 128.0
 USABLE_GIB_FALLBACK = 121.69
 
-# The kernel that the 6.2x depends on, and the version pin it needs. nvidia-cutlass-dsl
-# 4.7.0 fails the b12x family with an internal DSL compiler error, which disables the
-# kernel family built for this GPU -- so a wrong version is worth flagging separately
-# from a missing one.
+# nvidia-cutlass-dsl 4.7.0 fails the b12x family with an internal DSL compiler error, which
+# disables the kernel family built for this GPU, so a wrong version is flagged separately.
 CUTLASS_PIN = "4.6.2"
-# flashinfer-jit-cache is the half people miss, and it is the expensive half to miss.
-# Without it FlashInfer JIT-compiles its kernels on first use: ~430 s of cold start, and on a
-# Spark the compile itself OOMs (cicc at 7-9 GiB across 20 cores -> `ninja: exit 137`) unless
-# MAX_JOBS is throttled. The prebuilt wheel removes both. It is NOT on PyPI -- that 404s --
-# so it needs FlashInfer's own index, which carries a cu130 aarch64 build matching this
-# hardware exactly (verified resolvable: flashinfer-jit-cache 0.6.18+cu130).
-#
-# NEVER add flashinfer-cubin: it is ~6.8 GB of prebuilt cubins this GPU cannot load.
-# nvidia-cutlass-dsl is pinned at 4.6.2 because 4.7.0 breaks b12x on sm_121 with a DSL
-# compiler ICE; 4.7.1 exists but is unverified on GB10.
+# Without flashinfer-jit-cache, FlashInfer JIT-compiles on first use and the compile itself
+# OOMs on a Spark unless MAX_JOBS is throttled. It is NOT on PyPI (that 404s), so it needs
+# FlashInfer's own index, which carries the matching cu130 aarch64 build.
+# NEVER add flashinfer-cubin: ~6.8 GB of prebuilt cubins this GPU cannot load.
 KERNEL_INSTALL = (
     'pip install flashinfer-python "nvidia-cutlass-dsl==4.6.2" && '
     "pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/"
 )
-
-
-# ── Small output helpers (plain ASCII, no colour, no unicode width) ──────────
 
 
 def _say(line: str = "") -> None:
@@ -103,10 +69,8 @@ def _field(name: str, value: str) -> None:
     _say(f"  {name:<14} {value}")
 
 
-# ── Defensive access to studio.spark_cluster ─────────────────────────────────
-# Another agent is generalising that module from "two Sparks" to N. Everything below
-# reads it through getattr and signature inspection, so this file works against both
-# the current and the generalised API, and never imports a symbol that may not exist.
+# studio.spark_cluster is read through getattr and signature inspection throughout, so this
+# file works against both its pair-only and its N-node API and never imports a missing symbol.
 
 
 def _cluster():
@@ -115,7 +79,6 @@ def _cluster():
 
 
 def _cluster_or_none():
-    """The module, or None with a message printed. Never raises."""
     try:
         return _cluster()
     except Exception as exc:  # pragma: no cover - import guard
@@ -144,14 +107,9 @@ def _serve_budget(sc) -> float:
 
 
 def _max_nodes(sc) -> int:
-    """The largest cluster this build will PLAN ADDRESSING for.
-
-    Not the same question as how many Sparks can be seen. Two Sparks are cabled
-    QSFP-to-QSFP and need no switch; three or more cannot be, so the flat one-/24-
-    per-rail plan is only correct on a switched fabric and the module refuses to emit
-    it otherwise. Read from the module rather than hardcoded here, so a change there
-    cannot leave this file quietly lying.
-    """
+    """The largest cluster this build will PLAN ADDRESSING for, which is NOT how many Sparks
+    can be seen. Read from the module rather than hardcoded, so a change there cannot leave
+    this file quietly lying."""
     for name in (
         "MAX_PLANNABLE_NODES",
         "MAX_CLUSTER_NODES",
@@ -175,12 +133,8 @@ def _plan_deployment(
     prompt_tokens: int = 512,
     prefill_heavy: bool = False,
 ):
-    """Call plan_deployment against whichever signature the module currently has.
-
-    The N-node signature takes intent and concurrency; the older one took a bare
-    ``two_sparks`` bool. Both are supported, because a CLI that raises TypeError after
-    an upgrade is a worse outcome than one that gives a slightly plainer answer.
-    """
+    """Call plan_deployment against whichever signature the module currently has. A CLI that
+    raises TypeError after an upgrade is worse than one giving a plainer answer."""
     fn = getattr(sc, "plan_deployment", None)
     if fn is None:
         return None
@@ -213,28 +167,16 @@ def _plan_deployment(
 
 
 def _require_spark(sc, what: str) -> None:
-    """Exit cleanly off a DGX Spark, before delegating anything that assumes one.
-
-    `serve` and `train` in studio.spark_cluster go straight to rail discovery without a
-    detection gate -- harmless on a laptop, where the sysfs walk finds nothing, but this
-    layer should not depend on that. A clear sentence and exit 0 is the contract for
-    every command in this group on every other machine.
-    """
+    """Exit cleanly off a DGX Spark before delegating anything that assumes one. A clear
+    sentence and exit 0 is the contract for every command in this group on any other machine."""
     if not _on_spark(sc):
         _say(f"Not a DGX Spark; {what}")
         raise typer.Exit(0)
 
 
-# ── Kernel readiness: the 6.2x that needs no second machine ──────────────────
-
-
 def _kernel_state() -> dict:
-    """Is the prefill kernel installed in THIS interpreter?
-
-    Uses importlib.metadata rather than importing anything: asking whether flashinfer
-    is installed must not cost what importing it costs, and this runs on the `status`
-    path that people run casually.
-    """
+    """Is the prefill kernel installed in THIS interpreter? Uses importlib.metadata rather
+    than importing anything: this is on the casual `status` path."""
     from importlib.metadata import version, PackageNotFoundError
 
     def _v(name: str):
@@ -247,10 +189,8 @@ def _kernel_state() -> dict:
 
     flashinfer = _v("flashinfer-python") or _v("flashinfer")
     cutlass = _v("nvidia-cutlass-dsl")
-    # The jit cache is a SEPARATE package and is the one people miss. flashinfer alone works
-    # but compiles its kernels on first use: ~430 s of cold start, and the compile itself OOMs
-    # on a Spark unless MAX_JOBS is throttled. Reporting "installed" while it is absent would
-    # hide the slowest part of a first run behind a green tick.
+    # A SEPARATE package: reporting "installed" without it hides the slowest part of a first
+    # run behind a green tick.
     jit_cache = _v("flashinfer-jit-cache")
     state = {
         "flashinfer": flashinfer,
@@ -258,15 +198,15 @@ def _kernel_state() -> dict:
         "jit_cache": jit_cache,
         "vllm": _v("vllm"),
         "pin_wrong": bool(cutlass) and cutlass != CUTLASS_PIN,
-        # Only meaningful once flashinfer itself is present.
         "jit_cache_missing": bool(flashinfer) and not jit_cache,
     }
-    state["ok"] = bool(flashinfer) and not state["pin_wrong"] and bool(jit_cache)
+    # cutlass == pin, not "not pin_wrong": an ABSENT cutlass leaves pin_wrong false, which
+    # reported the prefill kernel ready while the fast path could not run.
+    state["ok"] = bool(flashinfer) and cutlass == CUTLASS_PIN and bool(jit_cache)
     return state
 
 
 def _kernel_banner(state: dict | None = None) -> bool:
-    """Print the 6.2x prefill message if the kernel is missing. True if printed."""
     state = state if state is not None else _kernel_state()
     if state["ok"]:
         return False
@@ -286,9 +226,7 @@ def _kernel_banner(state: dict | None = None) -> bool:
         _say("  Then serve with:")
         _say("    --linear-backend flashinfer_cutlass")
     elif state.get("jit_cache_missing"):
-        # flashinfer is here but its prebuilt kernels are not, so the kernels still work --
-        # they are just compiled on demand. A distinct message, because "install flashinfer"
-        # is unhelpful advice to someone who already has it.
+        # A distinct message: "install flashinfer" is unhelpful to someone who has it.
         _say("  flashinfer is installed but flashinfer-jit-cache is NOT.")
         _say("  The kernels still work; they are compiled on FIRST USE instead:")
         _say("    ~430 s of cold start, and on a Spark the compile itself OOMs")
@@ -312,25 +250,21 @@ def _kernel_banner(state: dict | None = None) -> bool:
     return True
 
 
-# ── Situation detection ──────────────────────────────────────────────────────
-
-
 def _peer_reachable(
     host: str,
     port: int = 22,
     timeout: float = 3.0,
 ) -> bool | None:
-    """Can we open a TCP connection to the peer? None when we cannot tell.
-
-    A bounded connect, never a ping and never an ssh: this must not hang, must not
-    prompt for a password, and must not depend on a tool Windows does not ship. It is
-    only ever called on a DGX Spark that has a configured rail, so no other platform
-    makes a network call at all.
-    """
+    """Can we open a TCP connection to the peer? None when we cannot tell. A bounded connect,
+    never a ping and never an ssh: it must not hang, prompt, or need a tool Windows lacks."""
     import socket
     try:
         with socket.create_connection((host, port), timeout = timeout):
             return True
+    except ConnectionRefusedError:
+        # Something answered to say no, so the host is up and only sshd is down. Reporting this
+        # as unreachable sends the user looking at cables, power and the GPU instead.
+        return True
     except OSError:
         return False
     except Exception:  # pragma: no cover - defensive
@@ -338,12 +272,9 @@ def _peer_reachable(
 
 
 def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
-    """Whether the peer already has the Unsloth venv. None when we cannot tell.
-
-    Worth one bounded ssh, because a peer without it does not fail loudly: the head
-    rank blocks at the rendezvous for 601 seconds and then reports
-    `DistStoreError: 1/2 clients joined`, which names neither the peer nor the venv.
-    """
+    """Whether the peer already has the Unsloth venv. None when we cannot tell. Worth one
+    bounded ssh: without it the head rank blocks 601 s and reports only
+    `DistStoreError: 1/2 clients joined`, naming neither the peer nor the venv."""
     import os
     import shutil
     import subprocess
@@ -351,8 +282,8 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     if not shutil.which("ssh"):  # Windows, or a stripped image
         return None
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
-    # Resolved, not assumed: UNSLOTH_STUDIO_HOME moves the venv, and testing the default
-    # path then reports the peer as unprovisioned when it is fine, or fine when it is not.
+    # Resolved, not assumed: UNSLOTH_STUDIO_HOME moves the venv, so the default path reports
+    # the peer unprovisioned when it is fine, or fine when it is not.
     try:
         from studio.spark_cluster import venv_activate
         _venv = venv_activate().rsplit("/bin/activate", 1)[0]
@@ -393,7 +324,6 @@ def _situation(
     discover_timeout: float = 3.0,
     probe: bool = True,
 ) -> dict:
-    """Everything `up` needs to decide, gathered once and cheaply."""
     info = {
         "state": "not_spark",
         "cable": False,
@@ -428,8 +358,6 @@ def _situation(
         if info["local_ip"]:
             break
 
-    # Discovery is N-aware where the module is; a build without it simply reports the
-    # pair, which is still correct for the pair.
     discovered = {}
     try:
         import inspect
@@ -442,9 +370,7 @@ def _situation(
     except Exception:
         discovered = {}
     info["peers"] = list(discovered.get("peers") or discovered.get("mdns_peers") or [])
-    # How many Sparks are visible at all, versus how many are actually paired into a
-    # cluster. These are different numbers and conflating them is how someone ends up
-    # planning for three nodes that share no fabric.
+    # Visible is not the same as paired: conflating them plans for nodes that share no fabric.
     info["seen"] = int(discovered.get("n_nodes") or (len(info["peers"]) + 1))
     configured = info["state"] == "configured" and bool(info["peer_ip"])
     info["nodes"] = max(2, min(info["seen"], info["max_nodes"])) if configured else 1
@@ -477,9 +403,8 @@ def _report_inventory(sc, sit: dict) -> None:
         )
         _field("peer seen", f"{name} at {addr} -- {reach}")
     if sit.get("peer_ip"):
-        # Deliberately separate from the discovered address. mDNS answers over whatever
-        # interface advertised, which is usually Wi-Fi; using that address for NCCL or
-        # rsync would quietly bypass the 200GbE link the pairing exists to provide.
+        # Separate from the discovered address: mDNS answers over whatever advertised, usually
+        # Wi-Fi, which would quietly bypass the link the pairing exists to provide.
         _field("fast link", f"{sit['peer_ip']} -- use THIS for NCCL, ray and rsync")
     _field(
         "cluster",
@@ -505,9 +430,6 @@ def _report_inventory(sc, sit: dict) -> None:
             _say("  none, so it refuses rather than emitting one.")
         _say("  Unpaired Sparks are still useful: run one model each behind")
         _say("  `python -m studio.spark_lb`, which fans out to as many backends as given.")
-
-
-# ── The guided entry point ───────────────────────────────────────────────────
 
 
 def _next_steps(sit: dict) -> None:
@@ -551,7 +473,6 @@ def up(
     kernels = _kernel_state()
     state = sit["state"]
 
-    # ── One Spark, no cable: the common case, and the one with the biggest win ──
     if not sit["cable"]:
         _heading("Status")
         _say("  One Spark, no second one cabled. Nothing to pair, and nothing is wrong.")
@@ -564,9 +485,6 @@ def up(
             _say("        already in place, then run `unsloth spark up` again.")
             _say("        (Hot-plugging the cable can leave the ConnectX-7 throttled, which")
             _say("         looks like a slow link and needs another reboot to clear.)")
-        # The buying question a lone owner actually has, answered with the measurement
-        # rather than with "it depends". The gain is very unevenly distributed across
-        # workloads, and the average of the two numbers helps nobody.
         _say("")
         _say("  Would a second Spark be worth it? It depends on your prompts, more than")
         _say("  most people expect. Measured on Llama-3.3-70B fp8, two Sparks vs one:")
@@ -590,7 +508,6 @@ def up(
             _next_steps(sit)
         raise typer.Exit(0)
 
-    # ── Cable present but never paired ──
     if state != "configured":
         _heading("Status")
         _say("  A QSFP cable is connected, but the two Sparks are not paired yet.")
@@ -610,8 +527,7 @@ def up(
         _say("NEXT: unsloth spark setup")
         if check:
             raise typer.Exit(1)
-        # Never silently: setup mutates the peer, so it needs a yes that was actually
-        # given. --yes is that yes; a prompt is that yes; a pipe is not.
+        # setup mutates the peer, so it needs a yes actually given: --yes or a prompt, never a pipe.
         import sys
 
         agreed = yes or (
@@ -638,7 +554,6 @@ def up(
             _say("NEXT: unsloth spark up   (re-run once the rails carry addresses)")
             raise typer.Exit(1)
 
-    # ── Paired. Is the peer actually there? ──
     peer = sit["peer_ip"]
     _heading("Peer")
     reach = _peer_reachable(peer) if peer else None
@@ -665,7 +580,6 @@ def up(
     else:
         _field("peer", f"{peer} -- reachable")
 
-    # ── Peer reachable: is it provisioned? ──
     venv = _peer_has_venv(peer) if (peer and reach) else None
     if venv is False:
         _field("peer env", "MISSING the Unsloth venv")
@@ -702,7 +616,6 @@ def up(
     else:
         _field("peer env", "could not check (no ssh on this machine)")
 
-    # ── Everything structural is in place ──
     _heading("Ready")
     _say(f"  {sit['nodes']} Sparks, paired, peer reachable.")
     _say("")
@@ -740,9 +653,6 @@ def up(
     raise typer.Exit(0)
 
 
-# ── Existing subcommands, unchanged in behaviour ─────────────────────────────
-
-
 @spark_app.callback(invoke_without_command = True)
 def _default(ctx: typer.Context) -> None:
     """Run the guided setup when no subcommand is given."""
@@ -765,10 +675,6 @@ def status(
     can. It drives ib_write_bw on both nodes and takes a few seconds.
     """
     rc = _cluster().main(["status"] + (["--benchmark"] if benchmark else []))
-    # Appended, not woven in: `status` keeps printing exactly what it printed before,
-    # and this adds the one thing a single-Spark owner most needs to hear. Most Spark
-    # owners have exactly one Spark, and the 6.2x prefill kernel is a larger win than
-    # a second machine would have been.
     sc = _cluster_or_none()
     if sc is not None and _on_spark(sc):
         _kernel_banner()
@@ -873,6 +779,12 @@ def serve(
         "engine never beats one Spark on decode (0.85x to 1.01x measured).",
     ),
     slots: int = typer.Option(16, "--slots", help = "Server slots per engine."),
+    rpc_port: int = typer.Option(
+        None,
+        "--rpc-port",
+        help = "Port for the peer's RPC server. The preflight names this "
+        "option when the default is taken by something else.",
+    ),
 ) -> None:
     """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.
 
@@ -908,6 +820,7 @@ def serve(
                 "--slots",
                 str(slots),
             ]
+            + (["--rpc-port", str(rpc_port)] if rpc_port is not None else [])
         )
     )
 
@@ -980,8 +893,15 @@ def train(
         "against a 121.69 GiB node.",
     ),
     steps: int = typer.Option(20, "--steps"),
-    batch: int = typer.Option(8, "--batch", help = "Global batch per step."),
+    # Must stay a multiple of --microbatches: spark_pipeline rejects the pair after the load.
+    batch: int = typer.Option(32, "--batch", help = "Global batch per step."),
     seq: int = typer.Option(512, "--seq"),
+    data: str = typer.Option(
+        "", "--data", help = "jsonl with {q, a} rows. Without it the run trains on random ids."
+    ),
+    save: str = typer.Option(
+        "", "--save", help = "Directory for this stage's weights. Without it they are discarded."
+    ),
     full_finetune: bool = typer.Option(False, "--full-finetune"),
     master_port: int = typer.Option(29500, "--master-port"),
     run: bool = typer.Option(
@@ -1039,6 +959,12 @@ def train(
     if data_parallel:
         layer_split = data_parallel
     if layer_split:
+        if batch % microbatches:
+            typer.echo(
+                f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "
+                "the pipeline rejects the pair only after loading the model."
+            )
+            raise typer.Exit(2)
         extra = [
             f"--microbatches {microbatches}",
             f"--schedule {schedule}",
@@ -1047,6 +973,10 @@ def train(
             f"--batch {batch}",
             f"--seq {seq}",
         ]
+        if data:
+            extra.append(f"--data {shlex.quote(data)}")
+        if save:
+            extra.append(f"--save {shlex.quote(save)}")
         if shard_load:
             extra.append("--shard-load")
         if grad_checkpoint:
@@ -1069,7 +999,11 @@ def train(
         if run:
             argv.append("--run")
         raise typer.Exit(sc.main(argv))
-    raise typer.Exit(sc.main(["train", "--script", script]))
+    if run:
+        # _cmd_train only prints; accepting --run here would report success and launch nothing.
+        typer.echo("--run works with --layer-split only. For --script, run the printed commands.")
+        raise typer.Exit(2)
+    raise typer.Exit(sc.main(["train", "--script", script, "--master-port", str(master_port)]))
 
 
 @spark_app.command("doctor")
@@ -1083,6 +1017,11 @@ def doctor(
     skip_parity: bool = typer.Option(
         False, "--skip-parity", help = "Do not run the cross-node parity check."
     ),
+    skip_fastpath: bool = typer.Option(
+        False,
+        "--skip-fastpath",
+        help = "Do not compare the two nodes' fast-path packages and kernels.",
+    ),
 ) -> None:
     """Measure the link and diagnose the two DGX Spark hardware faults.
 
@@ -1094,13 +1033,18 @@ def doctor(
     and has the opposite remedy: a GPU whose compute engine is dead (cuInit returns
     100, dmesg shows 0xbadf5600) needs a PLAIN REBOOT, and a module reload will not do.
 
+    It also compares the two nodes' fast-path stack. A node missing `causal_conv1d` and
+    `flash-linear-attention` ran Qwen3.5 LoRA training here at 1183 tok/s against the
+    other node's 2593, on a byte-identical cell with identical clocks and NCCL, and
+    nothing raised: the pair just moved at the slower node's pace.
+
     It also compares the two nodes' capability gates. A gate that differs between ranks
     -- `which(nvcc)` finding CUDA on one node's PATH and not the other's is the case that
     cost this project the most -- changes which collectives each rank executes, and a
     collective entered by only some ranks does not raise. It waits, for 1800 s, and then
     reports a gloo transport error that names nothing related to the cause.
     """
-    from unsloth_cli.commands.doctor import _workload_guidance, check_parity
+    from unsloth_cli.commands.doctor import _workload_guidance, check_fastpath, check_parity
 
     sc = _cluster_or_none()
     if sc is None:
@@ -1115,14 +1059,17 @@ def doctor(
     parity_rc = 0
     if peer_ip and not skip_parity:
         parity_rc = check_parity(peer_ip, deep = deep)
+    fastpath_rc = 0
+    if peer_ip and not skip_fastpath:
+        fastpath_rc = check_fastpath(peer_ip)
     if parity_only:
         _workload_guidance()
         _kernel_banner()
-        raise typer.Exit(1 if parity_rc else 0)
+        raise typer.Exit(1 if (parity_rc or fastpath_rc) else 0)
     rc = sc.main(["doctor"])
     _workload_guidance()
     _kernel_banner()
-    raise typer.Exit(rc or (1 if parity_rc else 0))
+    raise typer.Exit(rc or (1 if (parity_rc or fastpath_rc) else 0))
 
 
 @spark_app.command("provision")
@@ -1162,10 +1109,6 @@ def provision(
     raise typer.Exit(_cluster().main(argv))
 
 
-# ── The planner ──────────────────────────────────────────────────────────────
-
-# The intents the module understands, plus "auto" which this layer resolves for
-# someone who has not thought about it yet.
 _FALLBACK_INTENTS = ("latency", "throughput", "capacity")
 
 
@@ -1204,7 +1147,6 @@ def _print_wrapped(
     indent: str = "  ",
     width: int = 78,
 ) -> None:
-    """Wrap to a fixed width. Plain ASCII, no colour, no terminal queries."""
     import textwrap
     for line in textwrap.wrap(text, width = width - len(indent)) or [""]:
         _say(indent + line)
@@ -1273,9 +1215,8 @@ def plan(
     except Exception:
         size = None
 
-    # "auto" is resolved here rather than in the module: latency is what someone who
-    # has not thought about it usually means, and capacity is the only honest answer
-    # when the thing does not fit at all.
+    # "auto" resolves here: latency is what an unthought-about request usually means, and
+    # capacity is the only honest answer when the model does not fit at all.
     budget = _serve_budget(sc)
     resolved = choice
     if resolved == "auto":
@@ -1331,11 +1272,8 @@ def plan(
         raise typer.Exit(1)
 
     _heading("Recommendation")
-    # One voice. `summary` is the memory-fit narrative and, for a model that needs both
-    # nodes, it names the llama.cpp layer-split; `recommendation` names tensor parallel.
-    # Both are true of different engines, but printing them as consecutive paragraphs
-    # reads as the tool contradicting itself, so the axis answer wins and the fit
-    # narrative is shown only when there is no axis answer (an older build).
+    # One voice: `summary` and `recommendation` are true of different engines, and printing
+    # both reads as the tool contradicting itself, so the axis answer wins.
     if result.get("recommendation"):
         _print_wrapped(str(result["recommendation"]))
     elif result.get("summary"):
@@ -1344,10 +1282,8 @@ def plan(
     for line in _expected_line(result.get("expected")):
         _say(line)
 
-    # The one place the measured number can mislead: every cross-node figure in this
-    # project came from Llama-3.3-70B fp8, which does NOT fit on one Spark. Quoting
-    # 2.09x for a model that does fit would present a number measured on a different
-    # regime as though it applied here.
+    # Every cross-node figure here came from a model that does NOT fit on one Spark, so
+    # quoting it for a model that does fit would apply a different regime's measurement.
     if result.get("axis") == "tensor-parallel" and result.get("fits_one_node"):
         _say("")
         _print_wrapped(
@@ -1369,8 +1305,6 @@ def plan(
             "work, where prefill measured 1.7x to 1.85x."
         )
 
-    # The llama.cpp specific layout: single, replicas or layer split, from the
-    # measured table, keyed by the concurrency and prompt length given.
     serving = result.get("serving")
     if isinstance(serving, dict) and serving.get("topology"):
         _say("")
@@ -1394,8 +1328,6 @@ def plan(
         for line in _expected_line(result.get("fallback_expected")):
             _say(line)
 
-    # The one thing the planner cannot know: whether the kernel that is worth more than
-    # any of this is installed.
     if nodes > sit["nodes"]:
         _say("")
         _print_wrapped(

@@ -3,22 +3,12 @@
 
 """Round-robin front end for several llama.cpp engines spread over two DGX Sparks.
 
-The reason this exists is a measured result. A single model layer-split across two Sparks
-runs at **0.92x one Spark** -- the two nodes take turns, so the split buys capacity and
-costs throughput. But running *two* independent engines, each split across both nodes, and
-alternating requests between them reaches **1.35x one Spark** (124.4 vs 92.4 tok/s at 32
-concurrent requests, against 70.3 for two engines confined to one node).
-
-That is the same trick vLLM and SGLang use. Their pipeline schedulers need at least
-`pp_size` *data-independent* batches in flight (vLLM's `EngineCore.batch_queue`, SGLang's
-`running_mbs`), because a single autoregressive stream cannot be pipelined at all -- token
-t+1 depends on token t. Two engines supply that independence without any change to
-llama.cpp, whose RPC path cannot host two contexts in one process (a process-global socket
-singleton, an unlocked send path, and a serial accept loop).
-
-Balancing is per *connection*, not per request, so a streaming response is never split
-across engines and no HTTP parsing is needed -- bytes are forwarded verbatim in both
-directions.
+One model layer-split across two Sparks loses throughput because the nodes take turns; two
+independent engines alternating requests beat a single Spark. That is vLLM's and SGLang's
+trick: a pipeline needs `pp_size` DATA-INDEPENDENT batches in flight, because a single
+autoregressive stream cannot be pipelined at all -- token t+1 depends on token t. llama.cpp's
+RPC path cannot host two contexts in one process, so two engines it is. Balancing is per
+CONNECTION, so a streaming response is never split and no HTTP parsing is needed.
 """
 
 from __future__ import annotations
@@ -48,12 +38,22 @@ async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 
 def _handler(backends: List[Tuple[str, int]], rr):
     async def handle(client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
-        host, port = backends[next(rr) % len(backends)]
-        try:
-            up_r, up_w = await asyncio.open_connection(host, port)
-        except OSError:
-            # One engine down should not take the front end with it; drop this
-            # connection and let the client retry onto the next backend.
+        # Round robin picks where to START, not the only backend to try. Failing the request
+        # outright meant one dead engine killed every Nth connection, which is the opposite of
+        # what this front end exists for: with two replicas, half of them. Healthy engines are
+        # unaffected, since the first attempt is the one round robin already chose.
+        start = next(rr)
+        up_r = up_w = None
+        for offset in range(len(backends)):
+            host, port = backends[(start + offset) % len(backends)]
+            try:
+                up_r, up_w = await asyncio.open_connection(host, port)
+                break
+            except OSError:
+                continue
+        if up_w is None:
+            # Every engine is down, so there is nothing to serve and the client is told at once
+            # rather than left waiting.
             client_w.close()
             return
         await asyncio.gather(_pump(client_r, up_w), _pump(up_r, client_w))

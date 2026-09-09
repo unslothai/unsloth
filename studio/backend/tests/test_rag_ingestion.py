@@ -114,8 +114,12 @@ def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
     deleted = {}
     doc_id_known = threading.Event()
 
-    def delete_document_then_embed(texts, model_name):
-        vectors = real_embed_all(texts, model_name)
+    def delete_document_then_embed(
+        texts,
+        model_name,
+        on_progress = None,
+    ):
+        vectors = real_embed_all(texts, model_name, on_progress)
         doc_id_known.wait(30)
         conn = rag_db.get_connection()
         try:

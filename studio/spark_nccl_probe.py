@@ -3,18 +3,11 @@
 
 """Measure real NCCL all-reduce bandwidth between two DGX Sparks.
 
-Run under torchrun on both nodes; rank 0 prints one machine-readable line:
+Run under torchrun on both nodes; rank 0 prints `SPARK_NCCL_BUSBW <GB/s> <ms>`.
 
-    SPARK_NCCL_BUSBW <GB/s> <ms>
-
-Why this exists rather than trusting `ib_write_bw`: on GB10 the raw RDMA number stays
-healthy (~24.5 GB/s) even when NCCL has collapsed to ~3 GB/s. We hit exactly that, and
-chased it for a long time, because every layer we could measure cheaply looked fine. Only
-a real collective shows the fault, so that is what this runs.
-
-Deliberately not a general benchmark: one message size, few iterations, no warmup beyond
-what is needed to build the communicator. It has to be quick enough to sit behind a
-`unsloth spark doctor` that someone runs while wondering why training is slow.
+Not `ib_write_bw`: on GB10 the raw RDMA number stays healthy even when NCCL has collapsed,
+so only a real collective shows the fault. Not a general benchmark either -- one message
+size and few iterations, so it can sit behind a `doctor` someone runs impatiently.
 """
 
 from __future__ import annotations
@@ -50,8 +43,7 @@ def main() -> int:
 
     if rank == 0:
         gib = buf.numel() * 4 / 2**30
-        # Standard nccl-tests bus-bandwidth convention, so the number is directly
-        # comparable to published all_reduce figures.
+        # The nccl-tests bus-bandwidth convention, so this is comparable to published figures.
         busbw = gib * 2 * (world - 1) / world / per_iter
         print(f"SPARK_NCCL_BUSBW {busbw:.2f} {per_iter * 1000:.1f}", flush = True)
 

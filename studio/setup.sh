@@ -578,12 +578,10 @@ _llama_build_jobs() {
         "$(_usable_ram_mb)"
 }
 
-# Echo the RPC server target of the llama.cpp tree at $1: "ggml-rpc-server"
-# (the current upstream name), "rpc-server" on older trees, nothing when the
-# tree has no RPC tool. Read from the tree rather than from
-# `cmake --build --target help`: the Visual Studio generator has no help
-# target, so setup.ps1 Get-LlamaRpcServerTarget reads the same two files and
-# the two scripts stay in step.
+# "ggml-rpc-server", "rpc-server" on older trees, nothing when the tree has no
+# RPC tool. Read from the tree, not `cmake --build --target help`, because the
+# Visual Studio generator has no help target: setup.ps1 reads the same two
+# files, so the two scripts stay in step.
 _llama_rpc_server_target() {
     local _cml
     for _cml in "$1/tools/rpc/CMakeLists.txt" "$1/examples/rpc/CMakeLists.txt"; do
@@ -598,12 +596,57 @@ _llama_rpc_server_target() {
     return 0
 }
 
-# macOS only. Every configure passes -DGGML_RPC_RDMA=OFF; return 1 when the
-# cache did not keep it OFF or something under $1/bin still links librdma,
-# the two things the fork's unsloth-prebuilt-macos.yml asserts. Such a build
-# dies at load on a Mac without /usr/lib/librdma.dylib, llama-server
-# included, because libggml links libggml-rpc. No `grep -q` on the otool
-# pipeline: under pipefail an early exit would turn a hit into a pass.
+# Does this tree already carry an RPC server binary, in any layout the backend
+# resolves? Same directories rpc_server_binary() searches, in the same order.
+_has_local_rpc_server() {
+    local _d _n
+    for _d in "$1/build/bin" "$1/build/bin/Release" "$1/bin" "$1"; do
+        for _n in ggml-rpc-server rpc-server; do
+            if [ -x "$_d/$_n" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# An install made before this tree built ggml-rpc-server has llama-server and
+# nothing else new. Reusing it verbatim is right for llama-server and wrong for
+# RPC: the upgrade silently ends up without the binary, and nothing says so. Add
+# JUST that target to the build directory that is already configured there. This
+# is the canonical Unsloth-owned location, so building into it is allowed, and no
+# other target is touched. Best-effort throughout: a tree with no RPC target, or a
+# link that fails, leaves the reused build exactly as it was.
+_backfill_local_rpc_server() {
+    local _dir=$1 _target
+    if _has_local_rpc_server "$_dir"; then
+        return 0
+    fi
+    _target="$(_llama_rpc_server_target "$_dir")"
+    if [ -z "$_target" ]; then
+        verbose_substep "no RPC server target in this llama.cpp tree; skipping"
+        return 0
+    fi
+    if [ ! -f "$_dir/build/CMakeCache.txt" ]; then
+        substep "the reused build has no $_target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
+        return 0
+    fi
+    substep "the reused build has no $_target; building it in place..."
+    if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$NCPU"; then
+        if _has_local_rpc_server "$_dir"; then
+            step "rpc-server" "built ($_target)"
+            return 0
+        fi
+    fi
+    substep "could not add $_target to the reused build; RPC serving will be unavailable" "$C_WARN"
+    return 0
+}
+
+# macOS only: return 1 when the cache did not keep -DGGML_RPC_RDMA=OFF or
+# something under $1/bin still links librdma. Such a build dies at load on any
+# Mac without /usr/lib/librdma.dylib, llama-server included, because libggml
+# links libggml-rpc. No `grep -q` on the otool pipeline: under pipefail an
+# early exit would turn a hit into a pass.
 _llama_macos_rdma_gate_ok() {
     local _build=$1 _linked=""
     grep -qE '^GGML_RPC_RDMA:(BOOL|UNINITIALIZED)=OFF$' "$_build/CMakeCache.txt" 2>/dev/null || return 1
@@ -613,12 +656,10 @@ _llama_macos_rdma_gate_ok() {
     [ -z "$_linked" ]
 }
 
-# Best-effort build of the RPC server into $_BUILD_TMP/build/bin, run after
-# llama-server and llama-quantize. $1 is the step-label suffix ("" or
-# " (cpu fallback)"). It never fails the build: a tree without the tool, or a
-# failed link, leaves what was built. On macOS a build that leaked librdma is
-# redone without GGML_RPC (see _llama_macos_rdma_gate_ok); only a failed
-# llama-server rebuild there sets BUILD_OK=false, as any failed build does.
+# Best-effort: it never fails the build, since a tree without the tool or a
+# failed link leaves what was built. On macOS a build that leaked librdma is
+# redone without GGML_RPC, and only a failed llama-server rebuild there sets
+# BUILD_OK=false, as any failed build does.
 _llama_build_rpc_server() {
     local _label=$1 _target _args
     _target="$(_llama_rpc_server_target "$_BUILD_TMP")"
@@ -646,8 +687,8 @@ _llama_build_rpc_server() {
 }
 
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
-# llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
-# installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
+# the first GPU forward pass JIT-compiles CUDA kernels and stalls installs for
+# minutes on Blackwell. Same env as install_llama_prebuilt.py.
 _staged_validation_enabled() {
     local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
     # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
@@ -842,6 +883,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -859,6 +901,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -871,6 +917,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
@@ -1008,6 +1058,37 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+
+# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
+# block there, including the write probe and the unwind on failure.
+#
+# This script is also the standalone entry point: `unsloth studio update` runs it
+# directly, without install.sh, so an export made only there covers the first install and
+# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
+# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
+# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
+# one run rather than fixed. Pointing at the same path also means the update reuses the
+# cache the install filled instead of refetching it.
+#
+# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
+# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$-derived name: this branch exists for a cache directory another
+    # account can write, and there a predictable path can be pre-created as a symlink,
+    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
+    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
+    # to create IS the writability answer this probe wanted.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
@@ -1915,6 +1996,30 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # Same shape, same reason: a venv installed before the tokenizers pin can
+        # hold a tokenizers the installed transformers rejects at import, which
+        # takes down every `import transformers` and so the whole MLX stack, while
+        # $_PKG_NAME itself is current. Without this the fast path reports "up to
+        # date" and repairs nothing. Ask the metadata, not an import: the import is
+        # what is broken. Any unreadable half exits 1 and changes nothing.
+        if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
@@ -2524,8 +2629,17 @@ EOF
     else
         step "gpu" "AMD ROCm"
     fi
+    # Only claim a path that is really there, matching install.sh. /opt/rocm is a
+    # FALLBACK, not a detection, so a runtime-only ROCm host reaches here with nothing at
+    # it -- and this script runs after install.sh on every install and alone on every
+    # `unsloth studio update`, so leaving it unconditional here meant the run still ended
+    # by advertising the directory install.sh had just stopped claiming.
     _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_setup_rocm_root"
+    if [ -d "$_setup_rocm_root" ]; then
+        substep "ROCm: $_setup_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
+    fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
@@ -2564,6 +2678,7 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
+_LLAMA_KEEP_PREBUILT_ACTIVE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2654,6 +2769,71 @@ _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
 }
 
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
+# The Docker Studio build sets it -- no GPU is visible there, so detection installs a CPU bundle over the baked CUDA one.
+_keep_installed_gpu_prebuilt() {
+    local install_dir=$1 requested_tag=$2 repo=$3 release_pin=${4:-}
+    case "$(printf '%s' "${UNSLOTH_LLAMA_KEEP_PREBUILT:-}" | awk '{$1=$1; print tolower($0)}')" in
+        1|true|yes|on) ;;
+        *) return 1 ;;
+    esac
+    # An explicitly requested backend must still be installed, or fail loudly, never kept over.
+    [ -z "${_explicit_llama_source_backend:-}" ] || return 1
+    _has_local_llama_server "$install_dir" || return 1
+    [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+
+requested = sys.argv[2].strip()
+repo = sys.argv[3].strip()
+release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
+GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
+# Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
+backend = str(payload.get("backend") or "").strip().lower()
+platform_kind = str(payload.get("platform") or payload.get("install_kind") or "").strip().lower()
+if payload.get("force_cpu") is True:
+    raise SystemExit(1)
+if backend not in GPU_TOKENS and not any(token in platform_kind for token in GPU_TOKENS):
+    raise SystemExit(1)
+if repo and str(payload.get("published_repo") or "").strip() != repo:
+    raise SystemExit(1)
+
+
+def base_build(tag: str) -> str:
+    """b10840 out of b10840-mix-d5c17a0, so the marker's normalized "tag" still matches."""
+    match = re.match(r"b(\d+)", tag.strip())
+    return f"b{match.group(1)}" if match else tag.strip()
+
+
+recorded = {str(payload.get(key) or "").strip() for key in ("release_tag", "tag", "upstream_tag")}
+recorded.discard("")
+if not recorded:
+    raise SystemExit(1)
+# UNSLOTH_LLAMA_RELEASE_TAG names one published release, so only that exact release_tag can be kept.
+if release_pin and str(payload.get("release_tag") or "").strip() != release_pin:
+    raise SystemExit(1)
+if requested and requested.lower() != "latest":
+    if re.fullmatch(r"b\d+", requested):
+        # A bare base build pin is satisfied by any mix release cut from that build.
+        if requested not in {base_build(t) for t in recorded}:
+            raise SystemExit(1)
+    elif requested not in recorded:
+        # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
@@ -2695,6 +2875,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if _has_local_llama_server "$LLAMA_CPP_DIR"; then
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
             _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _backfill_local_rpc_server "$LLAMA_CPP_DIR"
             _LOCAL_LLAMA_CPP_LINKED=true
             _NEED_LLAMA_SOURCE_BUILD=false
             _SKIP_PREBUILT_INSTALL=true
@@ -2761,6 +2942,10 @@ elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     substep "prebuilt install skipped -- falling back to source build"
+elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
+    step "llama.cpp" "keeping the installed GPU prebuilt (UNSLOTH_LLAMA_KEEP_PREBUILT=1)"
+    print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    _LLAMA_KEEP_PREBUILT_ACTIVE=true
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
@@ -3105,22 +3290,13 @@ else
         if [ "$BUILD_OK" = true ]; then
             # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
             CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
-            # GGML_RPC=ON configures the RPC server target, which
-            # _llama_build_rpc_server builds best-effort after llama-server: it
-            # is the peer half of the two-Spark layer split, and
-            # studio/spark_cluster.py rpc_server_binary() looks for it in
-            # build/bin. The prebuilt bundles ship it already
-            # (install_llama_prebuilt.py runtime_patterns_for_choice).
-            # GGML_RPC_RDMA=OFF on every platform: it is what every shipped
-            # prebuilt is built with, and it avoids the hard runtime
-            # dependency on libibverbs and libnl that ggml-rpc otherwise picks
-            # up whenever libibverbs happens to be installed on the build host
-            # (it auto-enables the transport when it finds a verbs library:
-            # libibverbs on every DGX Spark, librdma on Apple). On macOS it
-            # would also link /usr/lib/librdma.dylib, absent on consumer Macs;
-            # _llama_macos_rdma_gate_ok checks after the build that the pin
-            # held. Both set before CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS
-            # so a CPU fallback build carries them too.
+            # GGML_RPC_RDMA=OFF on EVERY platform: ggml-rpc auto-enables the
+            # transport whenever it finds a verbs library on the build host,
+            # which would give the artifact a hard runtime dependency on
+            # libibverbs/libnl, or on macOS link /usr/lib/librdma.dylib, absent
+            # on consumer Macs. Both flags are set before
+            # CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS, so a CPU fallback
+            # build carries them too.
             CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -3518,6 +3694,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
+        && [ "$_LLAMA_KEEP_PREBUILT_ACTIVE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
@@ -3696,13 +3873,27 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
     # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
     # InstallingContent renders verbatim, so the user actually reads the limitation.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     case "${UNSLOTH_TAURI_MODE:-0}" in
         1|true)
             printf '[TAURI:PROGRESS] %s\n' \
                 "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable"
             ;;
         *)
             setup_fail 1 "llama.cpp setup did not produce a usable server"
             ;;
+    esac
+fi
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in
+        1|true) printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable" ;;
     esac
 fi
