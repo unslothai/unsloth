@@ -766,7 +766,9 @@ def _redact(text: str) -> str:
 
 
 def _failure_text(result: subprocess.CompletedProcess, limit: int) -> str:
-    return _redact(_combined(result).strip()[-limit:]) or f"uv exited {result.returncode}"
+    # Redacted first, truncated second: a tail cut through a long userinfo token would
+    # keep the token and the @host while losing the scheme the pattern anchors on.
+    return _redact(_combined(result)).strip()[-limit:] or f"uv exited {result.returncode}"
 
 
 def _timed_out(exc: BaseException) -> bool:
@@ -924,7 +926,12 @@ def run(
     # Built here rather than after the disk check: the uv search reads the same
     # environment the child will run under, so it has to exist by now.
     child_env = dict(env) if env is not None else dict(os.environ)
-    uv, searched_for_uv = locate_uv(child_env)
+    # The budget starts here, before uv is looked for: a fallback candidate that hangs on
+    # --version is a uv call like any other, and it used to get the full subprocess
+    # timeout per candidate before the deadline existed.
+    deadline = time.monotonic() + BUDGET_SECONDS
+    with _within_budget(deadline):
+        uv, searched_for_uv = locate_uv(child_env)
     if uv is None:
         # Name the places, so a machine that has uv somewhere else says so in one
         # line instead of leaving the reader to guess what "not available" means.
@@ -980,7 +987,6 @@ def run(
 
     # 2. Resolve. The plan is what the update's core step would do, asked of the
     #    live venv so anything already satisfied is absent from it.
-    deadline = time.monotonic() + BUDGET_SECONDS
     # The installer's own branch, read from the venv the update will run against.
     no_torch = _no_torch(venv)
     step("prefetch resolving core packages")
@@ -1037,7 +1043,7 @@ def _run_prefetch(
     planned = parse_dry_run_plan(core_output)
     if not plan_is_readable(core_output, planned):
         raise PrefetchError(
-            "could not read the core plan uv printed: " + _redact(core_output.strip()[-800:])
+            "could not read the core plan uv printed: " + _redact(core_output).strip()[-800:]
         )
 
     installed_backend = _installed_version("unsloth")

@@ -1073,3 +1073,35 @@ def test_index_credentials_never_reach_the_failure_text(managed, monkeypatch):
     payload = _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
     reason = payload["requirements"]["studio.txt"]["skipped_reason"]
     assert "s3cret" not in reason and "t0k3n" not in reason and "<redacted>" in reason
+
+
+def test_a_long_credential_survives_no_truncation(managed, monkeypatch):
+    """Redaction runs on the whole output before the display limit: a tail cut through a
+    long token used to keep the token and the @host while losing the scheme."""
+    token = "x" * 1200
+    stderr = f"error: Failed to fetch: `https://user:{token}@index.example/simple`"
+    monkeypatch.setattr(_studio_prefetch, "_run", lambda cmd, env: _completed(1, stderr = stderr))
+    with pytest.raises(_studio_prefetch.PrefetchError) as failure:
+        _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    assert token[:40] not in str(failure.value)
+    assert "<redacted>@index.example" in str(failure.value)
+
+
+def test_the_uv_search_runs_inside_the_budget(managed, monkeypatch):
+    """A fallback candidate that hangs on --version is a uv call like any other."""
+    seen = []
+    monkeypatch.setattr(_studio_prefetch.shutil, "which", lambda name: None)
+    candidate_dir = managed / "bin"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / UV_NAME
+    candidate.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(_studio_prefetch, "_uv_search_dirs", lambda env: [candidate_dir])
+
+    def observe(cmd, env):
+        seen.append(_studio_prefetch._RUN_DEADLINE)
+        return _completed(1)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", observe)
+    with pytest.raises(_studio_prefetch.PrefetchSkipped):
+        _studio_prefetch.run(studio_home = managed, echo = lambda line: None)
+    assert seen and all(deadline is not None for deadline in seen)

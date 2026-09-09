@@ -803,19 +803,9 @@ pub async fn start_backend_update(
     // Held until this command returns, which is after the update has finished: from
     // here on `is_update_running` answers yes, so a prefetch arriving while the old
     // prefetch or the backend is still being stopped is refused rather than started
-    // beside the update.
-    let _reservation = update::reserve_update_start(update_state.inner())?;
-
-    // The real update takes the runtime gate the prefetch deliberately does not,
-    // so the two would not deadlock -- but they would both be resolving against
-    // the same index and writing the same cache, and the update is the one the
-    // user is waiting on. Stop the background work first and let it be redone.
-    if update::is_prefetch_running(&prefetch_state) {
-        info!("Stopping the background prefetch before the update");
-        if let Err(error) = update::stop_prefetch(&prefetch_state) {
-            warn!("Could not stop the background prefetch: {error}");
-        }
-    }
+    // beside the update. Taken under the one start lock the prefetch start uses too,
+    // and the running prefetch is stopped under it.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())?;
 
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
@@ -859,19 +849,17 @@ pub async fn start_prefetch_update(
     {
         return Err("Cannot prepare an update while installation is in progress.".to_string());
     }
-    // A real update owns the environment and the cache; preparing beside it would
-    // download what it is installing.
-    if update::is_update_running(&update_state) {
-        return Err("Update is already running.".to_string());
-    }
-    if update::is_prefetch_running(&prefetch_state) {
-        return Err(update::PREFETCH_BUSY.to_string());
-    }
+    // Claimed under the same start lock the update takes, so neither can slip between
+    // the other's check and its reservation. Owned by the runner for the whole prefetch.
+    let reservation = update::begin_prefetch(prefetch_state.inner(), update_state.inner())?;
 
     let state = prefetch_state.inner().clone();
-    tokio::task::spawn_blocking(move || update::run_prefetch_update(app, state, shell_version))
-        .await
-        .map_err(|e| format!("Prefetch task panicked: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        let _held = reservation;
+        update::run_prefetch_update(app, state, shell_version)
+    })
+    .await
+    .map_err(|e| format!("Prefetch task panicked: {e}"))?
 }
 
 /// Stop a running prefetch. Nothing to undo: the cache keeps whatever it fetched.
@@ -943,6 +931,7 @@ pub async fn start_managed_repair(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
     force_installer: Option<bool>,
@@ -961,13 +950,11 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Repair is already running.".to_string());
-    }
+    // The repair rewrites the managed venv and uses the same uv cache, so a prefetch
+    // resolving against that venv is stopped and kept out for the whole repair, as the
+    // update does. Held until this command returns.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())
+        .map_err(|_| "Repair is already running.".to_string())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 

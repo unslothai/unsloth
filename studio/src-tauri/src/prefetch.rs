@@ -43,6 +43,18 @@ struct PrefetchMarker {
     /// cache. A marker from a build that did not record one is checked for payload only.
     #[serde(default)]
     core_plan: Option<std::collections::BTreeMap<String, String>>,
+    /// `_studio_prefetch`'s per-requirement-file records: `{"pins": {...}}` for a file
+    /// whose wheels were fetched. A pin cleaned from the cache is a download at restart.
+    #[serde(default)]
+    requirements: Option<std::collections::BTreeMap<String, RequirementRecord>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RequirementRecord {
+    #[serde(default)]
+    pins: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    skipped_reason: Option<String>,
 }
 
 /// `none` no prefetch on disk; `ready` everything it planned is cached; `noop`
@@ -175,6 +187,30 @@ fn cache_holds_plan(cache_dir: &Path, plan: &std::collections::BTreeMap<String, 
         .all(|(name, version)| cache_holds_wheel(cache_dir, name, version))
 }
 
+/// Every wheel the marker says it fetched: the core plan and each requirement file's
+/// pins. A file recorded with a skipped_reason fetched nothing and is not held to
+/// anything; `uv cache clean <package>` on any fetched pin makes the marker stale.
+fn cache_holds_marker(cache_dir: &Path, marker: &PrefetchMarker) -> bool {
+    if let Some(plan) = marker.core_plan.as_ref() {
+        if !cache_holds_plan(cache_dir, plan) {
+            return false;
+        }
+    }
+    if let Some(requirements) = marker.requirements.as_ref() {
+        for record in requirements.values() {
+            if record.skipped_reason.is_some() {
+                continue;
+            }
+            if let Some(pins) = record.pins.as_ref() {
+                if !cache_holds_plan(cache_dir, pins) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 pub fn status(home: &Path) -> PrefetchStatus {
     let Some(marker) = read_marker(home) else {
         return PrefetchStatus {
@@ -193,11 +229,7 @@ pub fn status(home: &Path) -> PrefetchStatus {
     let cache_cold = marker.state != "noop"
         && marker.cache_dir.as_deref().is_some_and(|dir| {
             let cache = Path::new(dir);
-            !cache_has_packages(cache)
-                || marker
-                    .core_plan
-                    .as_ref()
-                    .is_some_and(|plan| !cache_holds_plan(cache, plan))
+            !cache_has_packages(cache) || !cache_holds_marker(cache, &marker)
         });
     let state = if marker.schema != MARKER_SCHEMA || !known || expired || cache_cold {
         "stale"
@@ -434,6 +466,51 @@ mod tests {
         assert_eq!(status(&home).state, "stale");
         // No plan recorded: payload alone still answers.
         write_prefetch(&home, marker(serde_json::Value::Null), true);
+        assert_eq!(status(&home).state, "ready");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    /// The requirement files' pins are fetched wheels too, and `uv cache clean
+    /// diffusers` removes one of them as readily as it removes unsloth.
+    #[test]
+    fn a_requirement_pin_cleaned_from_the_cache_is_stale() {
+        let home = temp_home("req-cleaned");
+        let cache = warm_cache(&home);
+        let marker = |requirements: serde_json::Value| {
+            serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "backend_version": "2026.9.2",
+                "shell_version": "0.1.900-beta",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+                "core_plan": {"unsloth": "2026.9.2"},
+                "requirements": requirements,
+            })
+        };
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"studio.txt": {"pins": {"diffusers": "0.40.0"}}})),
+            true,
+        );
+        assert_eq!(status(&home).state, "stale");
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("ghi789")
+                .join("diffusers-0.40.0.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(status(&home).state, "ready");
+        // A file left to swap time fetched nothing and is held to nothing.
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({
+                "studio.txt": {"pins": {"diffusers": "0.40.0"}},
+                "base.txt": {"pins": {"numpy": "9.9.9"}, "skipped_reason": "resolve failed: x"}
+            })),
+            true,
+        );
         assert_eq!(status(&home).state, "ready");
         fs::remove_dir_all(home.parent().unwrap()).unwrap();
     }

@@ -47,6 +47,57 @@ pub fn reserve_update_start(state: &UpdateState) -> Result<UpdateStartReservatio
     Ok(UpdateStartReservation(state.clone()))
 }
 
+/// One lock for every start: the update's and the prefetch's reservations are taken
+/// under it, so two commands on different Tauri workers cannot each pass the other's
+/// check before either has claimed its slot.
+static START_LOCK: Mutex<()> = Mutex::new(());
+
+/// Reserve the update slot and stop a running prefetch, atomically with respect to
+/// `begin_prefetch`: from the moment this returns, `is_update_running` answers yes and no
+/// prefetch is running or can start. Used by the update and the managed repair alike,
+/// both of which rewrite the environment the prefetch resolves against.
+pub fn begin_update(
+    update_state: &UpdateState,
+    prefetch_state: &PrefetchState,
+) -> Result<UpdateStartReservation, String> {
+    let _starts = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let reservation = reserve_update_start(update_state)?;
+    // The real update takes the runtime gate the prefetch deliberately does not, so the
+    // two would not deadlock -- but they would both be resolving against the same index
+    // and writing the same cache, and the update is the one the user is waiting on.
+    // Stop the background work first and let it be redone.
+    if is_prefetch_running(prefetch_state) {
+        info!("Stopping the background prefetch before the update");
+        if let Err(error) = stop_prefetch(prefetch_state) {
+            warn!("Could not stop the background prefetch: {error}");
+        }
+    }
+    Ok(reservation)
+}
+
+/// Reserve the prefetch slot unless an update is running or starting, atomically with
+/// respect to `begin_update`. The reservation is held by the runner for the whole
+/// prefetch, so `is_prefetch_running` is true from here until it ends.
+pub fn begin_prefetch(
+    prefetch_state: &PrefetchState,
+    update_state: &UpdateState,
+) -> Result<UpdateStartReservation, String> {
+    let _starts = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // A real update owns the environment and the cache; preparing beside it would
+    // download what it is installing.
+    if is_update_running(update_state) {
+        return Err("Update is already running.".to_string());
+    }
+    if is_prefetch_running(prefetch_state) {
+        return Err(PREFETCH_BUSY.to_string());
+    }
+    reserve_update_start(&prefetch_state.process).map_err(|_| PREFETCH_BUSY.to_string())
+}
+
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
 
 pub fn new_update_state() -> UpdateState {
@@ -945,6 +996,29 @@ mod tests {
         drop(reservation);
         assert!(!is_update_running(&state));
         assert!(reserve_update_start(&state).is_ok());
+    }
+
+    /// Each start excludes the other from the moment it is claimed, whichever comes first.
+    #[test]
+    fn an_update_start_and_a_prefetch_start_exclude_each_other() {
+        let update = new_update_state();
+        let prefetch = new_prefetch_state();
+        let held = begin_update(&update, &prefetch).expect("nothing running");
+        assert_eq!(
+            begin_prefetch(&prefetch, &update).err().as_deref(),
+            Some("Update is already running.")
+        );
+        drop(held);
+        let held = begin_prefetch(&prefetch, &update).expect("update released");
+        assert!(is_prefetch_running(&prefetch));
+        assert!(begin_prefetch(&prefetch, &update).is_err());
+        // The update wins: it stops the prefetch (nothing to stop here) and reserves.
+        let update_held = begin_update(&update, &prefetch).expect("update outranks a prefetch");
+        assert!(is_update_running(&update));
+        drop(held);
+        drop(update_held);
+        assert!(!is_update_running(&update));
+        assert!(!is_prefetch_running(&prefetch));
     }
 
     /// A directory that looks enough like a managed install for

@@ -3250,7 +3250,13 @@ def _with_prefetched_core_pins(env: Optional[dict]) -> Optional[dict]:
     cache_dir = ((env or os.environ).get("UV_CACHE_DIR") or "").strip()
     if python is None or not cache_dir:
         return env
-    if not _studio_prefetch.marker_is_current(marker, python = str(python), cache_dir = cache_dir):
+    # The floor too: a marker an older shell left behind names pins below what this
+    # shell requires, and the offline retry would install them in place of
+    # unsloth>=<floor> and call the update done.
+    floor = (os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION") or "").strip()
+    if not _studio_prefetch.marker_is_current(
+        marker, floor = floor, python = str(python), cache_dir = cache_dir
+    ):
         return env
     pins = _studio_prefetch.prefetched_core_pins(marker)
     if not pins:

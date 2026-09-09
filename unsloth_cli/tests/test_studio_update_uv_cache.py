@@ -950,3 +950,20 @@ def test_no_prefetch_at_all_names_nothing(monkeypatch, tmp_path, caches):
     _fill(studio_cache)
     seen = _run_posix(monkeypatch, tmp_path)
     assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+
+
+def test_a_prefetch_below_the_shells_floor_names_nothing(monkeypatch, tmp_path, caches):
+    """A marker an older shell left behind names pins below what this shell requires;
+    the offline retry would install them in place of unsloth>=floor."""
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python)
+    monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.9.6")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+    monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.9.5")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UNSLOTH_PREFETCHED_CORE_PINS"] == "unsloth==2026.9.5 unsloth-zoo==2026.9.4"
