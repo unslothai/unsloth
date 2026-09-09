@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { toolArgText } from "./tool-arg-text.ts";
+import type { ToolCallMessagePartStatus } from "@assistant-ui/react";
 
 export interface EditFileSummary {
   path: string;
@@ -66,4 +67,11 @@ export function editFileResultIsError(resultText: string): boolean {
 
 export function editFileResultWasDeclined(resultText: string): boolean {
   return resultText.trim() === "The user declined to run this tool call.";
+}
+
+export function editFileIncompleteTitle(
+  status?: ToolCallMessagePartStatus,
+): string | null {
+  if (status?.type !== "incomplete") return null;
+  return status.reason === "cancelled" ? "Edit cancelled" : "Edit incomplete";
 }

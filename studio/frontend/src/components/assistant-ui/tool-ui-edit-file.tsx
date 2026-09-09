@@ -16,6 +16,7 @@ import { memo, type ComponentProps } from "react";
 
 import {
   editFileChangeLabel,
+  editFileIncompleteTitle,
   editFileResultIsError,
   editFileResultWasDeclined,
   summarizeEditFileArgs,
@@ -24,6 +25,7 @@ import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackArgs,
+  ToolFallbackError,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
@@ -66,12 +68,16 @@ const EditFileToolUIImpl: ToolCallMessagePartComponent = ({
   const isRunning = status?.type === "running";
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const output = result == null ? "" : stringifyToolResult(result);
-  const failed = !isRunning && editFileResultIsError(output);
-  const displayStatus: ToolCallMessagePartStatus | undefined = failed
-    ? { type: "incomplete", reason: "error" }
-    : status;
-  const title =
-    !isRunning && editFileResultWasDeclined(output)
+  const incompleteTitle = editFileIncompleteTitle(status);
+  const failed =
+    !isRunning && (editFileResultIsError(output) || incompleteTitle !== null);
+  const displayStatus: ToolCallMessagePartStatus | undefined =
+    failed && !incompleteTitle
+      ? { type: "incomplete", reason: "error" }
+      : status;
+  const title = incompleteTitle
+    ? `${incompleteTitle}: ${path}`
+    : !isRunning && editFileResultWasDeclined(output)
       ? `Edit declined: ${path}`
       : completedEditTitle(summary.mode, path, isRunning, failed);
 
@@ -86,6 +92,7 @@ const EditFileToolUIImpl: ToolCallMessagePartComponent = ({
         icon={failed ? undefined : FileTextIcon}
       />
       <ToolFallbackContent>
+        <ToolFallbackError status={displayStatus} />
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           <div className="grid gap-1 text-xs">
             <div className="flex min-w-0 gap-2">

@@ -7,11 +7,19 @@ import test from "node:test";
 
 import {
   editFileChangeLabel,
+  editFileIncompleteTitle,
   editFileResultIsError,
   editFileResultWasDeclined,
   summarizeEditFileArgs,
 } from "../src/components/assistant-ui/edit-file-tool-summary.ts";
-import { canRememberToolApproval } from "../src/components/assistant-ui/tool-approval-policy.ts";
+import {
+  canApproveToolArguments,
+  canRememberToolApproval,
+} from "../src/components/assistant-ui/tool-approval-policy.ts";
+import {
+  MAX_SERIALISED_LENGTH,
+  toolArgText,
+} from "../src/components/assistant-ui/tool-arg-text.ts";
 
 const EDIT_FILE_CARD_RE = /edit_file:\s*EditFileToolUIConfirmable/;
 const UNSUPPORTED_BLOCKED_RE = /Unsupported operations stay blocked/;
@@ -23,6 +31,43 @@ test("mutating local tools require approval for each call", () => {
     assert.equal(canRememberToolApproval(toolName), false, toolName);
   }
   assert.equal(canRememberToolApproval("web_search"), true);
+});
+
+test("truncated or unrepresentable edit requests cannot be approved", () => {
+  const small = {
+    path: "file.py",
+    edits: [{ old_string: "", new_string: "x" }],
+  };
+  assert.equal(canApproveToolArguments("edit_file", small), true);
+  assert.equal(toolArgText(small), JSON.stringify(small));
+  const large = {
+    ...small,
+    edits: [{ new_string: "x".repeat(MAX_SERIALISED_LENGTH) }],
+  };
+  assert.equal(toolArgText(large).endsWith("…"), true);
+  assert.equal(canApproveToolArguments("edit_file", large), false);
+  const cycle: { self?: unknown } = {};
+  cycle.self = cycle;
+  assert.equal(canApproveToolArguments("edit_file", cycle), false);
+  assert.equal(canApproveToolArguments("edit_file", undefined), false);
+  assert.equal(canApproveToolArguments("web_search", large), true);
+});
+
+test("incomplete edit statuses cannot render as successful edits", () => {
+  assert.equal(
+    editFileIncompleteTitle({ type: "incomplete", reason: "cancelled" }),
+    "Edit cancelled",
+  );
+  assert.equal(
+    editFileIncompleteTitle({
+      type: "incomplete",
+      reason: "error",
+      error: "connection lost",
+    }),
+    "Edit incomplete",
+  );
+  assert.equal(editFileIncompleteTitle({ type: "complete" }), null);
+  assert.equal(editFileIncompleteTitle({ type: "running" }), null);
 });
 
 test("edit_file approval summary distinguishes create and replace requests", () => {

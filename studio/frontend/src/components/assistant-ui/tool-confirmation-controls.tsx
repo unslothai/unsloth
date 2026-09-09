@@ -17,7 +17,7 @@ import type {
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { useCallback, useEffect, useState } from "react";
-import { canRememberToolApproval } from "./tool-approval-policy";
+import { canApproveToolArguments, canRememberToolApproval } from "./tool-approval-policy";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -33,11 +33,13 @@ import { canRememberToolApproval } from "./tool-approval-policy";
 export function ToolConfirmationControls({
   toolCallId,
   toolName,
+  args,
   result,
   status,
 }: {
   toolCallId?: string;
   toolName: string;
+  args?: unknown;
   result: unknown;
   status?: ToolCallMessagePartStatus;
 }) {
@@ -53,6 +55,7 @@ export function ToolConfirmationControls({
   );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   const canRememberApproval = canRememberToolApproval(toolName);
+  const canApproveArguments = canApproveToolArguments(toolName, args);
   const autoAllowed = useChatRuntimeStore(
     (s) =>
       canRememberApproval &&
@@ -74,6 +77,7 @@ export function ToolConfirmationControls({
   const resolve = useCallback(
     async (decision: "allow" | "deny") => {
       if (!toolCallId || !confirmation) return;
+      if (decision === "allow" && !canApproveArguments) return;
       setPending(decision);
       setFailed(false);
       try {
@@ -97,7 +101,7 @@ export function ToolConfirmationControls({
         setPending(null);
       }
     },
-    [toolCallId, confirmation, clearToolConfirmation],
+    [toolCallId, confirmation, clearToolConfirmation, canApproveArguments],
   );
 
   // Tools the user marked "Always allow" (this session) approve themselves.
@@ -142,7 +146,7 @@ export function ToolConfirmationControls({
       void resolve("allow");
     },
     {
-      enabled: keyboardReady,
+      enabled: keyboardReady && canApproveArguments,
       // Enter belongs to the composer while it has focus.
       skipInTextFields: true,
     },
@@ -173,7 +177,7 @@ export function ToolConfirmationControls({
     <div className="flex flex-wrap items-center gap-2 pt-1">
       <Button
         size="xs"
-        disabled={pending !== null}
+        disabled={pending !== null || !canApproveArguments}
         onClick={() => void resolve("allow")}
       >
         Allow
@@ -204,6 +208,11 @@ export function ToolConfirmationControls({
           Could not send your decision. Try again.
         </span>
       ) : null}
+      {!canApproveArguments ? (
+        <span className="text-xs text-destructive">
+          This edit cannot be displayed completely. Deny it and request smaller edits.
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -217,6 +226,7 @@ export function withToolConfirmation(
       <ToolConfirmationControls
         toolCallId={props.toolCallId}
         toolName={props.toolName}
+        args={props.args}
         result={props.result}
         status={props.status}
       />

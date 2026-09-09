@@ -12,7 +12,7 @@ import type { ToolCallMessagePartStatus } from "@assistant-ui/react";
  * in Chrome and hundreds of megabytes of DOM in Safari. Measured at 100k nesting
  * levels: Chrome produced 600,002 characters, Firefox and Safari threw.
  */
-const MAX_SERIALISED_LENGTH = 100_000;
+export const MAX_SERIALISED_LENGTH = 100_000;
 
 /**
  * A tool-call argument as text, whatever the model actually sent.
