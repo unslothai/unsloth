@@ -4238,7 +4238,14 @@ def test_model_download_progress_counts_a_hub_download_the_load_attached_to(monk
 def test_model_download_progress_polls_a_namespace_less_base_the_load_reports(monkeypatch):
     reads = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/active-downloads"):
             return _load_listing("gpt2")
         reads.append(url)

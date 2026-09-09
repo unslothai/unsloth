@@ -392,7 +392,12 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
-def _load_download_repos(mc, load_in_4bit: bool, backend, companions = ()) -> list[str]:
+def _load_download_repos(
+    mc,
+    load_in_4bit: bool,
+    backend,
+    companions = (),
+) -> list[str]:
     from hub.utils.paths import is_valid_repo_id
     from utils.paths import is_local_path
     from utils.security.file_security import load_scan_target

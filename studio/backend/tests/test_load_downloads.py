@@ -95,7 +95,9 @@ def test_cancelling_a_load_owned_job_is_refused(registry, monkeypatch):
 
 def test_shutdown_leaves_no_cancel_marker_for_a_load_placeholder(registry, monkeypatch):
     markers = []
-    monkeypatch.setattr(download_registry, "persist_cancel_marker", lambda *args, **kwargs: markers.append(args[1]))
+    monkeypatch.setattr(
+        download_registry, "persist_cancel_marker", lambda *args, **kwargs: markers.append(args[1])
+    )
     load_downloads.claim_load_downloads(["owner/adapter", "owner/base"])
     assert registry.claim("owner/other::", "http", repo_type = "model", repo_id = "owner/other")[0]
 
