@@ -984,7 +984,9 @@ def env_launch_files(env: Optional[Dict[str, str]]) -> List[str]:
         raw = str((env or {}).get(name) or "").strip()
         if not raw:
             continue
-        for piece in sidecar_operand_paths(raw) if name != "LLAMA_ARG_CHAT_TEMPLATE_FILE" else [raw]:
+        for piece in (
+            sidecar_operand_paths(raw) if name != "LLAMA_ARG_CHAT_TEMPLATE_FILE" else [raw]
+        ):
             path = piece if osp.isabs(piece) else osp.join(os.getcwd(), piece)
             if osp.isfile(path) and path not in out:
                 out.append(path)

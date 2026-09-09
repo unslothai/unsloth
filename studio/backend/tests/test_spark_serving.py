@@ -2605,7 +2605,11 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
         async def die_after_the_probe(self):
             self.alive = not self._dies
 
-    async def pid_is_live(peer, remote, timeout = 20.0):
+    async def pid_is_live(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         return 0, "PIDLIVE\n", ""
 
     monkeypatch.setattr(ss, "ssh_run", pid_is_live)
@@ -4106,11 +4110,17 @@ def test_a_dead_child_behind_a_slow_reaper_does_not_claim_the_port(monkeypatch):
     # failed bind the ssh process can still look alive here while the child is already gone and
     # a stranger owns the port. Adopting that listener attaches a split to a foreign rpc-server,
     # or routes replica traffic to whatever model it holds.
-    assert ss.PEER_OWNERSHIP_SETTLE_S < ss.PEER_REAP_POLL_S, (
-        "the settle is shorter than the reap interval, which is why the local view is not enough"
-    )
+    assert (
+        ss.PEER_OWNERSHIP_SETTLE_S < ss.PEER_REAP_POLL_S
+    ), "the settle is shorter than the reap interval, which is why the local view is not enough"
 
-    async def always_open(host, port, timeout, *, cancelled = None):
+    async def always_open(
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         return True
 
     monkeypatch.setattr(ss, "wait_for_port", always_open)
@@ -4124,7 +4134,11 @@ def test_a_dead_child_behind_a_slow_reaper_does_not_claim_the_port(monkeypatch):
 
     asked = []
 
-    async def pid_is_gone(peer, remote, timeout = 20.0):
+    async def pid_is_gone(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         asked.append(remote)
         return 0, "PIDGONE\n", ""
 
@@ -4133,7 +4147,11 @@ def test_a_dead_child_behind_a_slow_reaper_does_not_claim_the_port(monkeypatch):
     assert asked and asked[0].startswith("kill -0 4242")
 
     # An unanswerable probe reads as not ours, which is the safe direction.
-    async def ssh_broken(peer, remote, timeout = 20.0):
+    async def ssh_broken(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         raise OSError("no route to host")
 
     monkeypatch.setattr(ss, "ssh_run", ssh_broken)
@@ -4147,7 +4165,11 @@ def test_a_peer_that_already_exited_is_not_signalled_by_pid(monkeypatch):
     # relaunch path calls stop() FIRST, after a backoff of up to 45 seconds.
     sent = []
 
-    async def record(peer, remote, timeout = 20.0):
+    async def record(
+        peer,
+        remote,
+        timeout = 20.0,
+    ):
         sent.append(remote)
         return 0, "", ""
 
@@ -4231,9 +4253,7 @@ def test_a_load_no_topology_can_hold_is_refused_before_the_model_work(
     assert run(ss.before_load(_FakeRequest(str(model)), 4)) is not None
 
 
-def test_environment_only_launch_files_are_preflighted_on_the_peer(
-    cluster, monkeypatch, tmp_path
-):
+def test_environment_only_launch_files_are_preflighted_on_the_peer(cluster, monkeypatch, tmp_path):
     # replica_env forwards LLAMA_ARG_MMPROJ, LLAMA_ARG_SPEC_DRAFT_MODEL and
     # LLAMA_ARG_CHAT_TEMPLATE_FILE to the peer, so a projector, drafter or template can reach the
     # replica without appearing in argv. Preflighting argv alone meant a missing one cost the
@@ -4392,9 +4412,7 @@ def test_a_refused_oversized_load_leaves_the_running_topology_exactly_as_it_was(
     assert state.router is not None, "and the live router must be untouched"
 
 
-def test_a_completed_load_does_not_leave_a_snapshot_to_be_restored(
-    cluster, monkeypatch, tmp_path
-):
+def test_a_completed_load_does_not_leave_a_snapshot_to_be_restored(cluster, monkeypatch, tmp_path):
     # _pre_load_state described the topology BEFORE the load that has now finished. Any later
     # path that returns before taking a fresh one -- the pass-through refusal, for instance --
     # would have load_failed restore that stale description over a live topology: a split or

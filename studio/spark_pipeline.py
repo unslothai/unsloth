@@ -1727,7 +1727,11 @@ def fast_path_warning(
     )
 
 
-def check_fast_path(model_name: str, log = print, use_cpu: bool = False) -> Optional[str]:
+def check_fast_path(
+    model_name: str,
+    log = print,
+    use_cpu: bool = False,
+) -> Optional[str]:
     """Advisory only: warn when this interpreter will take the slow attention path. Wrapped so
     that no failure here can stop a training run, and asks transformers the same question
     transformers asks itself, so it cannot fire on a model with no fast path to lose."""
@@ -1741,9 +1745,7 @@ def check_fast_path(model_name: str, log = print, use_cpu: bool = False) -> Opti
         model_type = getattr(AutoConfig.from_pretrained(model_name), "model_type", None)
         if not model_type:
             return None
-        module = importlib.import_module(
-            f"transformers.models.{model_type}.modeling_{model_type}"
-        )
+        module = importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
         available = getattr(module, "is_fast_path_available", None)
         if available is not None:
             available = bool(available)

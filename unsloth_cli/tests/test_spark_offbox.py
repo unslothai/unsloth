@@ -2335,9 +2335,21 @@ def test_layer_split_launch_carries_every_flag_that_changes_the_run(monkeypatch)
     seen, result = _run_spark_cli(
         monkeypatch,
         [
-            "train", "--layer-split", "some/model",
-            "--microbatches", "32", "--batch", "64", "--seq", "512",
-            "--schedule", "1f1b", "--steps", "10", "--grad-checkpoint", "--shard-load",
+            "train",
+            "--layer-split",
+            "some/model",
+            "--microbatches",
+            "32",
+            "--batch",
+            "64",
+            "--seq",
+            "512",
+            "--schedule",
+            "1f1b",
+            "--steps",
+            "10",
+            "--grad-checkpoint",
+            "--shard-load",
         ],
     )
     assert result.exit_code == 0, result.output
