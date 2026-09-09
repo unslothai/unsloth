@@ -705,6 +705,41 @@ def with_replica_env(argv: List[str], env: Dict[str, str]) -> List[str]:
     return ["env"] + [f"{name}={value}" for name, value in sorted(env.items())] + list(argv)
 
 
+PEER_BUSY_PROBE_TIMEOUT_S = 8
+
+
+async def peer_gpu_conflict(peer: str, *, own_pids: Sequence[int] = ()) -> Optional[str]:
+    """Why the peer's GPU is not free to take, or None.
+
+    A remote topology puts a second process on the peer's GPU, and it is priced against the
+    whole node budget, so a resident training run or somebody else's llama-server means one of
+    the two hits an out-of-memory or spends the load in unified-memory contention. The planner
+    has no way to know that; ``spark_cluster.peer_gpu_busy`` does.
+
+    KNOWN busy only, which is a deliberate departure from that probe's fail-closed contract.
+    Failing closed is right for the ``rsync --delete`` it was written for, where being wrong
+    destroys someone's work. Here being wrong the same way turns every slow ssh into silently
+    serving on one node, so an unanswered probe leaves the behaviour exactly as it was before
+    this check existed. Our own peer process does not count against us."""
+    sc = _cluster()
+    probe = getattr(sc, "peer_gpu_busy", None)
+    if not callable(probe):
+        return None
+    try:
+        result = await asyncio.to_thread(probe, peer, PEER_BUSY_PROBE_TIMEOUT_S)
+    except Exception as exc:
+        logger.info("spark serving: could not check the peer GPU: %s", exc)
+        return None
+    if not result.get("known") or not result.get("busy"):
+        return None
+    mine = {int(pid) for pid in own_pids if pid}
+    theirs = [p for p in result.get("processes", []) if int(p.get("pid", 0)) not in mine]
+    if not theirs:
+        return None
+    used = ", ".join(f"pid {p.get('pid')} holding {p.get('used_mib')} MiB" for p in theirs)
+    return f"the peer GPU is already in use ({used})"
+
+
 def redacted_argv(argv: List[str]) -> List[str]:
     out = list(argv)
     for index, arg in enumerate(out):
@@ -1945,6 +1980,15 @@ class SparkServing:
             self.plan = plan
             self.reason = str(plan.get("reason", ""))
             return _with_rpc_args(request)
+        # Before anything is torn down or started: an rpc-server on a GPU that is already
+        # holding somebody's work puts one of the two into an out-of-memory, and the plan was
+        # priced against the whole node budget. Our own is excluded, since a reuse that got
+        # this far has already been refused above.
+        busy = await peer_gpu_conflict(
+            peer, own_pids = [running.remote_pid] if running is not None else []
+        )
+        if busy:
+            return _fall_back(f"layer split needs the peer GPU but {busy}")
         if running is not None:
             await self.detach()
 
@@ -2181,6 +2225,14 @@ class SparkServing:
                     f"copy it over the cluster link (rsync -a <file> {peer}:<same path>) to "
                     f"enable replicas"
                 ),
+            )
+            logger.warning("spark serving: %s", self.reason)
+            return
+        busy = await peer_gpu_conflict(peer)
+        if busy:
+            self.topology, self.reason = (
+                "single",
+                f"replicas need the peer GPU but {busy}",
             )
             logger.warning("spark serving: %s", self.reason)
             return

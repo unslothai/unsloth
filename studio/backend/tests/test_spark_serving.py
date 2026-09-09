@@ -2571,3 +2571,77 @@ def test_a_replica_with_nothing_in_the_environment_is_launched_unchanged(
 
     run(ss.after_load(_FakeBackend(12345, str(model)), 16))
     assert started and started[0].argv[0] != "env"
+
+
+def test_a_peer_gpu_holding_someone_elses_work_is_left_alone(cluster, monkeypatch, tmp_path):
+    # A remote topology is priced against the whole node budget, so a resident training run
+    # means one of the two ends up out of memory.
+    cluster.peer_gpu_busy = lambda peer, timeout = 25: {
+        "busy": True,
+        "known": True,
+        "processes": [{"pid": 4242, "used_mib": 90000}],
+        "reason": "1 compute process(es) resident",
+    }
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+
+    cluster.topology = "replicas"
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+    run(ss.after_load(_FakeBackend(12345, str(model)), 16))
+    assert not started, "nothing was launched on the busy peer"
+    assert ss.state().topology == "single"
+    assert "already in use" in ss.state().reason and "4242" in ss.state().reason
+
+
+
+def test_a_split_does_not_start_an_rpc_server_on_a_busy_peer_gpu(cluster, monkeypatch, tmp_path):
+    cluster.peer_gpu_busy = lambda peer, timeout = 25: {
+        "busy": True,
+        "known": True,
+        "processes": [{"pid": 4242, "used_mib": 90000}],
+        "reason": "1 compute process(es) resident",
+    }
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+
+    request = _FakeRequest(str(model))
+    assert run(ss.before_load(request, 4)) is request
+    assert not started and ss.state().topology == "single"
+    assert "already in use" in ss.state().reason
+
+
+def test_a_peer_gpu_probe_that_cannot_answer_changes_nothing(cluster, monkeypatch, tmp_path):
+    # peer_gpu_busy fails CLOSED, which is right for the rsync it was written for and wrong
+    # here: refusing on an unanswered probe turns a slow ssh into serving on one node.
+    cluster.peer_gpu_busy = lambda peer, timeout = 25: {
+        "busy": True,
+        "known": False,
+        "processes": [],
+        "reason": "could not reach the peer to check its GPU",
+    }
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert started and ss.state().topology == "layer_split"
+    assert "--rpc" in (out.llama_extra_args or [])
+
+
+def test_our_own_peer_process_does_not_count_as_the_gpu_being_busy(cluster, monkeypatch):
+    cluster.peer_gpu_busy = lambda peer, timeout = 25: {
+        "busy": True,
+        "known": True,
+        "processes": [{"pid": 777, "used_mib": 50000}],
+        "reason": "1 compute process(es) resident",
+    }
+    assert run(ss.peer_gpu_conflict("127.0.0.1")) is not None
+    assert run(ss.peer_gpu_conflict("127.0.0.1", own_pids = [777])) is None
