@@ -1243,3 +1243,18 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     marker.unlink()
     M._write_metadata_payload(install_dir, {"kind": "node"})
     assert chowned == []
+
+
+def test_a_busy_install_lock_is_not_a_verified_match(tmp_path, monkeypatch):
+    """Another installer that held the lock for the whole wait may be replacing the tree
+    this run verified; the pre-lock answer must not stand in for the locked re-check."""
+    def busy(_path):
+        raise M.BusyInstallConflict("held elsewhere")
+
+    monkeypatch.setattr(M, "install_lock", busy)
+    assert (
+        M._record_runtime_verification_under_lock(
+            tmp_path, object(), {"version": "v22.0.0"}, version = "v22.0.0", npm_major = 10
+        )
+        is False
+    )

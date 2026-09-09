@@ -875,6 +875,11 @@ def _record_runtime_verification_under_lock(
             if any(current.get(key) != meta.get(key) for key in ("version", "sha256", "asset")):
                 return False
             record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
+    except BusyInstallConflict:
+        # Another installer held the lock for the whole wait, and may be replacing the
+        # tree this run just verified: not a match, so the caller's locked re-check
+        # decides rather than the pre-lock answer.
+        return False
     except Exception:  # noqa: BLE001
         pass
     return True

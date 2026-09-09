@@ -6700,8 +6700,18 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
         "detect_torch_cuda_runtime_preference",
         lambda _host: SimpleNamespace(runtime_line = "cuda13", selection_log = []),
     )
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12", "cuda13"], {}))
+    monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is True
     assert M._runtime_preference_moved({"runtime_line": "cuda13"}, host) is False
+    # A preference the selectors cannot act on (no such runtime on disk, or a driver
+    # that cannot run it) is ignored by them, and is not movement here either.
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12", "cuda13"], {}))
+    monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12"])
+    assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
+    monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
     # A non-CUDA install, or a preference torch cannot state, keeps the fast path.
     assert M._runtime_preference_moved({"runtime_line": "vulkan"}, host) is False
     monkeypatch.setattr(

@@ -7516,11 +7516,31 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
     preferred = detect_torch_cuda_runtime_preference(host).runtime_line
     if not preferred or preferred == recorded_line:
         return False
+    # A preference the selectors cannot act on is ignored by them (they keep the line
+    # the host can run) and must be ignored here too, or every update would take the
+    # full path and land on the same install.
+    if not _runtime_line_selectable(host, preferred):
+        return False
     log(
         f"kept install rejected: torch now prefers the {preferred} runtime line, "
         f"the install is {recorded_line}"
     )
     return True
+
+
+def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
+    """Whether the CUDA selectors could pick *line* here: its runtime is on disk and the
+    driver can run it, the two filters they apply before ordering."""
+    try:
+        if host.is_linux:
+            detected = detected_linux_runtime_lines()[0]
+            compatible = compatible_linux_runtime_lines(host)
+        else:
+            detected = detected_windows_runtime_lines()[0]
+            compatible = compatible_windows_runtime_lines(host)
+    except Exception:  # noqa: BLE001 - an unreadable host answers "cannot tell", which is not movement
+        return False
+    return line in detected and line in compatible
 
 
 def _expected_release_tag_without_plan(
