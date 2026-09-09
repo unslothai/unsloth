@@ -19,6 +19,12 @@ on:
     # Let the source split qualify on its author's fork before upstream
     # maintainers approve the pull_request runs.
     branches: [main, 'codex/project-shutdown-cleanup-*']
+    paths:
+      - 'studio/backend/run.py'
+      - 'studio/backend/utils/process_lifetime.py'
+      - 'studio/backend/tests/test_studio_pid_files.py'
+      - 'studio/backend/tests/test_process_lifetime.py'
+      - '.github/workflows/studio-shutdown-recovery-ci.yml'
   workflow_dispatch:
 
 concurrency:
