@@ -580,7 +580,13 @@ def _patch_remote(
     async def fake_stop(self, timeout = 10.0):
         return None
 
-    async def fake_wait(host, port, timeout, *, cancelled = None):
+    async def fake_wait(
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         # Honours the cancel check the same way the real one does, so a test can drive a
         # cancelled attach through this double.
         if cancelled is not None and cancelled():
@@ -2051,7 +2057,13 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
 def _port_answers(first: bool, *, then: bool):
     state = {"n": 0}
 
-    async def _answer(host, port, timeout, *, cancelled = None):
+    async def _answer(
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         state["n"] += 1
         return first if state["n"] == 1 else then
 
@@ -2543,7 +2555,13 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     # cannot be recovered.
     monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.01)
 
-    async def always_open(host, port, timeout, *, cancelled = None):
+    async def always_open(
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         return True
 
     monkeypatch.setattr(ss, "wait_for_port", always_open)
@@ -2565,7 +2583,13 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
 
     doomed = _Doomed()
 
-    async def open_then_kill(host, port, timeout, *, cancelled = None):
+    async def open_then_kill(
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         doomed.alive = False
         return True
 
@@ -2603,7 +2627,14 @@ def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, mon
         stopped.append(self.name)
         return await real_stop(self, timeout = timeout)
 
-    async def cancel_while_waiting(process, host, port, timeout, *, cancelled = None):
+    async def cancel_while_waiting(
+        process,
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
@@ -2628,7 +2659,14 @@ def test_a_replica_port_taken_by_a_stranger_is_not_routed_to(cluster, monkeypatc
         monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
     )
 
-    async def not_ours(process, host, port, timeout, *, cancelled = None):
+    async def not_ours(
+        process,
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
         return False
 
     monkeypatch.setattr(ss, "wait_for_own_port", not_ours)
@@ -3448,9 +3486,7 @@ def test_a_replica_is_given_a_model_load_deadline_not_the_rpc_servers():
     assert "PEER_START_TIMEOUT_S)" not in src, "the replica must not use the rpc-server deadline"
 
 
-def test_a_replica_does_not_get_back_a_setting_the_primary_scrubbed(
-    cluster, monkeypatch, tmp_path
-):
+def test_a_replica_does_not_get_back_a_setting_the_primary_scrubbed(cluster, monkeypatch, tmp_path):
     # The primary is spawned with a CONDITIONALLY sanitized copy of the environment, and the
     # scrubs go well past DENIED_ENV_VARS: disable_vision drops LLAMA_ARG_MMPROJ and
     # _MMPROJ_URL, a CPU-forced replay drops LLAMA_ARG_OVERRIDE_TENSOR and the tensor split,
@@ -3481,9 +3517,9 @@ def test_a_replica_does_not_get_back_a_setting_the_primary_scrubbed(
     run(ss.after_load(backend, 16))
     assert started, "the peer llama-server was launched"
     peer_argv = started[0].argv
-    assert not any("LLAMA_ARG_MMPROJ" in a for a in peer_argv), (
-        "the peer got back a projector the primary was launched without"
-    )
+    assert not any(
+        "LLAMA_ARG_MMPROJ" in a for a in peer_argv
+    ), "the peer got back a projector the primary was launched without"
     assert "LLAMA_ARG_CTX_SIZE=8192" in peer_argv, "the peer must run the primary's context"
     assert "LLAMA_ARG_CTX_SIZE=131072" not in peer_argv
     # Still carried across, so this is not just dropping everything.

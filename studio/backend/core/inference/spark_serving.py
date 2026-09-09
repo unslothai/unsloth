@@ -448,7 +448,6 @@ def _pick_variant(variants: Any, wanted: str) -> Any:
             return None
         try:
             from utils.models.model_config import _pick_best_gguf
-
             best = _pick_best_gguf([str(getattr(v, "filename", "")) for v in variants])
         except Exception:
             best = None
@@ -464,7 +463,9 @@ def _pick_variant(variants: Any, wanted: str) -> Any:
 
 
 def remote_gguf_size_bytes(
-    model_path: str, variant: Optional[str], hf_token: Optional[str] = None
+    model_path: str,
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
 ) -> Optional[int]:
     """What a not-yet-downloaded GGUF will weigh, from the hub's own file metadata.
 
@@ -2186,7 +2187,11 @@ class PeerProcess:
 
 
 async def wait_for_port(
-    host: str, port: int, timeout: float, *, cancelled: Optional[Callable[[], bool]] = None
+    host: str,
+    port: int,
+    timeout: float,
+    *,
+    cancelled: Optional[Callable[[], bool]] = None,
 ) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -3333,7 +3338,12 @@ async def before_load(
     return await st.before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
 
 
-async def after_load(llama_backend: Any, n_parallel: int, *, cancel_event: Any = None) -> None:
+async def after_load(
+    llama_backend: Any,
+    n_parallel: int,
+    *,
+    cancel_event: Any = None,
+) -> None:
     if not enabled():
         return
     st = state()
