@@ -371,6 +371,7 @@ def _select_torchao_spec(torch_version: str | None) -> str:
 # >=2.11, hence the open floor. Mirrors pyproject's audio-torch2xx and import_fixes.
 _TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
 _TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
+# install.sh also supports torch 2.4; leave torchcodec alone there rather than pinning its untested 0.0.3 line.
 _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     12: _TORCHCODEC_ABI_STABLE_SPEC,
     11: "torchcodec>=0.11.0,<0.12.0",

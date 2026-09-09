@@ -274,6 +274,18 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_shell_torch_floor_intentionally_precedes_torchcodec():
+    ips = _load_install_python_stack()
+    source = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
+    floors = re.findall(r'TORCH_CONSTRAINT="torch>=2\.(\d+),', source)
+    assert floors, "install.sh torch constraints were not found"
+    shell_floor = min(map(int, floors))
+    codec_floor = min(ips._TORCHCODEC_TORCH_SPECS)
+    assert (shell_floor, codec_floor) == (4, 5), "revisit the documented torchcodec opt-out"
+    assert ips._select_torchcodec_spec(f"2.{shell_floor}.0") is None
+    assert ips._select_torchcodec_spec(f"2.{codec_floor}.0") is not None
+
+
 def test_select_torchcodec_spec_skips_older_torch():
     ips = _load_install_python_stack()
     for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):
