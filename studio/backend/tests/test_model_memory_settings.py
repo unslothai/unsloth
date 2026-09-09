@@ -2607,7 +2607,6 @@ class TestDirectIoIsVisibleToTheReloadComparator:
     @staticmethod
     def _no_reserve(monkeypatch):
         import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
 
@@ -2619,9 +2618,7 @@ class TestDirectIoIsVisibleToTheReloadComparator:
 
     def test_a_default_mmap_launch_needs_a_reload_where_dio_applies(self, monkeypatch):
         self._no_reserve(monkeypatch)
-        assert not memory_state_satisfies_settings(
-            (False, False), False, False, False, True
-        )
+        assert not memory_state_satisfies_settings((False, False), False, False, False, True)
 
     def test_a_streaming_launch_is_satisfied(self, monkeypatch):
         self._no_reserve(monkeypatch)
@@ -2639,17 +2636,13 @@ class TestDirectIoIsVisibleToTheReloadComparator:
 
     def test_a_reservation_still_loses(self, monkeypatch):
         self._no_reserve(monkeypatch)
-        assert not memory_state_satisfies_settings(
-            (False, True), True, False, True, True
-        )
+        assert not memory_state_satisfies_settings((False, True), True, False, True, True)
 
 
 class TestNoReserveRequiresDio:
     def test_every_leg_is_required(self, monkeypatch):
         monkeypatch.setattr(_lsa.sys, "platform", "win32")
-        assert _lsa.no_reserve_requires_dio(
-            supports_load_mode = True, gpu_offload_confirmed = True
-        )
+        assert _lsa.no_reserve_requires_dio(supports_load_mode = True, gpu_offload_confirmed = True)
         assert not _lsa.no_reserve_requires_dio(
             supports_load_mode = False, gpu_offload_confirmed = True
         )
@@ -2657,9 +2650,7 @@ class TestNoReserveRequiresDio:
             supports_load_mode = True, gpu_offload_confirmed = False
         )
         monkeypatch.setattr(_lsa.sys, "platform", "linux")
-        assert not _lsa.no_reserve_requires_dio(
-            supports_load_mode = True, gpu_offload_confirmed = True
-        )
+        assert not _lsa.no_reserve_requires_dio(supports_load_mode = True, gpu_offload_confirmed = True)
 
 
 class TestTheLaunchWithdrawsTheManagedDio:
@@ -2673,7 +2664,6 @@ class TestTheLaunchWithdrawsTheManagedDio:
     def _load_model_source():
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-
         return inspect.getsource(LlamaCppBackend.load_model)
 
     def test_the_fit_on_retry_drops_it(self):
@@ -2751,12 +2741,14 @@ class TestTheLaunchProbesVulkanWhenDioDependsOnIt:
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends",
+            LlamaCppBackend,
+            "_installed_ggml_backends",
             staticmethod(lambda binary = None: frozenset({"base", "cpu"})),
         )
         assert not LlamaCppBackend._build_offers_gpu_backend("llama-server")
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends",
+            LlamaCppBackend,
+            "_installed_ggml_backends",
             staticmethod(lambda binary = None: frozenset({"base", "cpu", "vulkan"})),
         )
         assert LlamaCppBackend._build_offers_gpu_backend("llama-server")
@@ -2772,16 +2764,13 @@ class TestAnExplicitLoaderChoiceIsNotAStandingReload:
     @staticmethod
     def _no_reserve(monkeypatch):
         import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
 
     def test_a_per_model_mmap_leaves_the_launch_satisfied(self, monkeypatch):
         self._no_reserve(monkeypatch)
         monkeypatch.setattr(_lsa.sys, "platform", "win32")
-        assert _lsa.managed_dio_applies(
-            supports_load_mode = True, gpu_offload_confirmed = True, env = {}
-        )
+        assert _lsa.managed_dio_applies(supports_load_mode = True, gpu_offload_confirmed = True, env = {})
         chain = [*_lsa.MANAGED_DIO_FLAGS, "--load-mode", "mmap"]
         applicable = _lsa.resolve_effective_direct_io(chain, {})
         assert applicable is False
@@ -2878,7 +2867,6 @@ class TestEveryRungThatGivesUpTheOffloadWithdrawsTheDio:
     def _load_model_source():
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-
         return inspect.getsource(LlamaCppBackend.load_model)
 
     def test_all_four_rungs_are_covered(self):
@@ -2945,7 +2933,6 @@ class TestWithdrawingTheDioClearsPolicyActivity:
 def _llama_cpp_mod():
     """The real module, for helpers the launch reads directly."""
     import core.inference.llama_cpp as m
-
     return m
 
 
@@ -3088,7 +3075,6 @@ class TestAnUnansweredVulkanProbeDeclines:
 
     def test_no_rows_declines(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: [])
         )
@@ -3122,7 +3108,9 @@ class TestAnUnansweredVulkanProbeDeclines:
         arm = src[src.index("_mem_gpu_offload_confirmed = bool(") :]
         arm = arm[: arm.index("_mem_managed, _mem_extras = apply_model_memory_policy(")]
         compact = "".join(arm.split())
-        assert "notis_vulkan_backendorself._vulkan_offload_is_discrete(binary,gpu_indices)" in compact
+        assert (
+            "notis_vulkan_backendorself._vulkan_offload_is_discrete(binary,gpu_indices)" in compact
+        )
 
 
 class TestAnUnreadableBundleIsNotACpuOnlyBuild:
@@ -3131,18 +3119,18 @@ class TestAnUnreadableBundleIsNotACpuOnlyBuild:
 
     def test_no_sidecars_defers_to_the_device_check(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends",
+            LlamaCppBackend,
+            "_installed_ggml_backends",
             staticmethod(lambda binary = None: frozenset()),
         )
         assert LlamaCppBackend._build_offers_gpu_backend("llama-server")
 
     def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends",
+            LlamaCppBackend,
+            "_installed_ggml_backends",
             staticmethod(lambda binary = None: frozenset({"base", "cpu"})),
         )
         assert not LlamaCppBackend._build_offers_gpu_backend("llama-server")

@@ -8368,7 +8368,11 @@ class LlamaCppBackend:
                 backends.add(backend)
         return frozenset(backends)
 
-    def _record_memory_state(self, argv, env = None,) -> None:
+    def _record_memory_state(
+        self,
+        argv,
+        env = None,
+    ) -> None:
         """Record the ``(mlock, reserves_ram)`` a launch really runs with, and
         whether it streams, from ONE parse. A dozen paths record a state; a
         second parse at each of them would drift from this one."""
@@ -8376,7 +8380,12 @@ class LlamaCppBackend:
         self._memory_state = (mlock, reserves_ram)
         self._memory_direct_io = direct_io
 
-    def _drop_managed_dio(self, argv, reason: str, clear_record: bool = True):
+    def _drop_managed_dio(
+        self,
+        argv,
+        reason: str,
+        clear_record: bool = True,
+    ):
         """Take the no-reserve DirectIO pair back out of an argv whose placement
         is no longer the confirmed full offload it was chosen for.
 
@@ -23520,13 +23529,16 @@ class LlamaCppBackend:
                 _mem_dio_placement_unlooked = bool(
                     _mem_dio_possible and is_vulkan_backend and not _mem_probe_for_dio
                 )
-                self._memory_dio_applicable = managed_dio_applies(
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                    gpu_offload_confirmed = (
-                        _mem_gpu_offload_confirmed or _mem_dio_placement_unlooked
-                    ),
-                    env = _fit_load_mode_env_view,
-                ) and _mem_dio_survives_chain
+                self._memory_dio_applicable = (
+                    managed_dio_applies(
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        gpu_offload_confirmed = (
+                            _mem_gpu_offload_confirmed or _mem_dio_placement_unlooked
+                        ),
+                        env = _fit_load_mode_env_view,
+                    )
+                    and _mem_dio_survives_chain
+                )
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -23686,9 +23698,7 @@ class LlamaCppBackend:
                 _mem_managed_is_effective = bool(_mem_managed) and (
                     tuple(_mem_managed) != MANAGED_DIO_FLAGS or _mem_dio_survives_chain
                 )
-                self._memory_policy_active = (
-                    _mem_managed_is_effective or _mem_policy_touched_extras
-                )
+                self._memory_policy_active = _mem_managed_is_effective or _mem_policy_touched_extras
                 self._memory_policy_extras_touched = _mem_policy_touched_extras
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
@@ -25318,9 +25328,7 @@ class LlamaCppBackend:
                             )
                             # In argv order -- extras first, then the appended
                             # lock -- because the resolver is last-wins too.
-                            self._record_memory_state(
-                                list(_mem_extras) + list(_retry_managed), env
-                            )
+                            self._record_memory_state(list(_mem_extras) + list(_retry_managed), env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "
                                 "recomputed Model Memory (%s).",
@@ -25700,9 +25708,7 @@ class LlamaCppBackend:
                                     # Same as the no-flash rung: the record follows the
                                     # argv, or a stale "reserving" spends a full reload
                                     # the running server already satisfies.
-                                    self._record_memory_state(
-                                        _stripped_cpu_projector_cmd, env
-                                    )
+                                    self._record_memory_state(_stripped_cpu_projector_cmd, env)
                                     logger.info(
                                         "Load mode: dropping the fit's --load-mode none "
                                         "for the CPU-projector retry; it moves the "

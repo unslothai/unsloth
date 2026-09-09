@@ -959,9 +959,7 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable, direct_io, dio_applicable = (
-        _active_launch_placement()
-    )
+    state, policy_active, mlock_applicable, direct_io, dio_applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
         return False
 
@@ -986,9 +984,7 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     """
     if not want_mlock:
         return False
-    state, _policy_active, _applicable, _direct_io, _dio_applicable = (
-        _active_launch_placement()
-    )
+    state, _policy_active, _applicable, _direct_io, _dio_applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])

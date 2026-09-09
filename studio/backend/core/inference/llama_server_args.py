@@ -1204,9 +1204,7 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
 MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
 
 
-def no_reserve_requires_dio(
-    *, supports_load_mode: bool, gpu_offload_confirmed: bool
-) -> bool:
+def no_reserve_requires_dio(*, supports_load_mode: bool, gpu_offload_confirmed: bool) -> bool:
     """Whether "Don't reserve system RAM" owes this launch ``--load-mode dio``.
 
     Windows keeps the whole GGUF mapping resident after a full offload, because
