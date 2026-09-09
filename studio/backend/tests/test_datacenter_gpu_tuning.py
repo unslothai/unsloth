@@ -700,3 +700,59 @@ def test_iommu_unreadable_types_are_unknown(tmp_path):
     # Pre-5.x kernels expose groups without a `type` file: unknown, not "safe".
     root = _iommu_tree(tmp_path, {0: None, 1: None})
     assert _REAL_IOMMU_IS_TRANSLATING(root) is None
+
+
+# ---------------------------------------------------------------------------
+# Gaps found in review of the #10613 fix. Each is xfail(strict=True): the
+# assertion states the behaviour we want, so the test PASSES while the gap is
+# open and FAILS loudly the moment someone closes it without updating this file.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict = True,
+    reason = "#10613 gap: UNSLOTH_DISABLE_DC_P2P=1 vetoes the DEFAULT but does not "
+             "remove an inherited GGML_CUDA_P2P, so ggml still sees the variable "
+             "and peer copies stay ON despite the user disabling them.",
+)
+def test_disable_dc_p2p_should_also_drop_an_inherited_truthy_value(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    env = {"GGML_CUDA_P2P": "1"}
+    LlamaCppBackend._apply_datacenter_env(env, [0, 1])
+    # Presence is truth upstream, so "disabled" has to mean absent.
+    assert "GGML_CUDA_P2P" not in env
+
+
+@pytest.mark.xfail(
+    strict = True,
+    reason = "#10613 gap: _apply_datacenter_env trusts the call site to have run "
+             "_sanitize_p2p_env first. Called directly with a falsy value it "
+             "setdefault()s over it, leaving GGML_CUDA_P2P=0 present, which ggml "
+             "reads as ON while the log line reads as off.",
+)
+def test_apply_env_should_not_leave_a_falsy_value_present_when_called_directly(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    env = {"GGML_CUDA_P2P": "0"}
+    LlamaCppBackend._apply_datacenter_env(env, [0, 1])
+    assert "GGML_CUDA_P2P" not in env
+
+
+@pytest.mark.xfail(
+    strict = True,
+    reason = "#10613 gap: the sanitizer runs only in load_model. The STT sidecar "
+             "and the RAG embedding server build their child env from "
+             "dict(os.environ) and spawn llama-server on the GPU without it, so a "
+             "user's GGML_CUDA_P2P=0 enables peer copies in those children.",
+)
+def test_every_llama_server_env_builder_should_sanitize_p2p(monkeypatch):
+    from utils.native_path_leases import child_env_without_native_path_secret
+
+    monkeypatch.setenv("GGML_CUDA_P2P", "0")
+    # The base every llama-server env builder starts from, including the two
+    # sidecars, neither of which calls _sanitize_p2p_env.
+    assert "GGML_CUDA_P2P" not in child_env_without_native_path_secret()
