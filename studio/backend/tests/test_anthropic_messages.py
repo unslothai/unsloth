@@ -216,8 +216,7 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
-    # Inkling's dial is numeric: _coerce_reasoning_effort rewrites the "none"
-    # sentinel to 0 on the way out, so zero has to read as off too.
+    # Inkling: _coerce_reasoning_effort rewrites the "none" sentinel to 0, so 0 reads as off.
     class _NumericEffortBackend(_Backend):
         def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
             return {"reasoning_effort": 0.0 if reasoning_effort == "none" else 0.2}

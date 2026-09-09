@@ -4211,10 +4211,9 @@ def _anthropic_preserve_thinking(llama_backend, payload) -> bool:
 def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     """Whether the resolved template kwargs leave thinking on.
 
-    Effort-dial templates think at every level except "none" -- which Inkling's
-    numeric dial spells as 0, since _coerce_reasoning_effort rewrites the
-    sentinel before it gets here. With no explicit kwargs the model was launched
-    on the template's own default, so that decides.
+    Effort dials think at every level except "none", which Inkling's
+    _coerce_reasoning_effort rewrites to numeric 0. With no kwargs the model
+    runs on the default it was launched with.
     """
     if "enable_thinking" in resolved:
         return bool(resolved["enable_thinking"])
@@ -27858,7 +27857,7 @@ def _responses_should_parse_think_markers(
             return True
         if not getattr(llama_backend, "supports_reasoning", False):
             return False
-        # Same rule as _think_parsing_expected: decide from the resolved template kwargs.
+        # Same rule as _think_parsing_expected: decide from the resolved kwargs.
         resolved = (
             _reasoning_template_kwargs(
                 llama_backend,
