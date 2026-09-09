@@ -60,10 +60,11 @@ class _State:
     # Names bound straight to a field of something else, so `{% set role =
     # message.role %}` still reads as a role check when the comparison uses `role`.
     origins: dict = field(default_factory = dict)
-    # Keys holding a mapping the template built, mapped to the field names that
-    # mapping was written with. Answers both `{% for name in by_name %}` walking keys
-    # and whether a get/pop default can be reached.
-    mappings: dict = field(default_factory = dict)
+    # Keys holding a literal the template wrote, mapped to that literal's node. One
+    # record answers three questions: is this a mapping (so a loop walks its keys),
+    # which keys does it have (so a get/pop default may be unreachable), and is it
+    # empty (so a loop over it never runs).
+    literals: dict = field(default_factory = dict)
     # Set when the path hit break, so a literal loop stops simulating further items
     # for it. `continue` only ends the current iteration, so it is tracked apart:
     # the path skips the rest of the body but still sees the next item.
@@ -81,7 +82,7 @@ class _State:
             self.constructed.copy(),
             self.consts.copy(),
             self.origins.copy(),
-            self.mappings.copy(),
+            self.literals.copy(),
             self.terminated,
             self.continued,
             self.budget,
@@ -237,6 +238,11 @@ def _assume(node, truth, state):
         ]
     result = state.copy()
     result.facts[repr(node)] = (truth, _names(node))
+    # `{% if tools == [] %}` and `{% if tools is none %}` prove the catalog itself
+    # falsy on the taken branch, which is what tells an emission of it apart from a
+    # real schema. Recorded against the reference, not only the whole condition.
+    for reference in _proves_empty(node):
+        result.facts[repr(reference)] = (not truth, _names(reference))
     return [result]
 
 
@@ -251,7 +257,7 @@ def _signature(state):
         frozenset(state.constructed),
         frozenset((name, repr(value)) for name, value in state.consts.items()),
         frozenset(state.origins.items()),
-        frozenset((name, members) for name, members in state.mappings.items()),
+        frozenset((name, id(node)) for name, node in state.literals.items()),
         state.terminated,
         state.continued,
     )
@@ -284,6 +290,20 @@ def _collapse(states, live):
     return list(seen.values()) if len(seen) < len(states) else states
 
 
+def _proves_empty(node):
+    """References this condition shows to be empty when it holds."""
+    if isinstance(node, nodes.Test) and node.name in ("none", "undefined"):
+        return [node.node] if isinstance(node.node, (nodes.Name, nodes.Getattr)) else []
+    if isinstance(node, nodes.Compare) and len(node.ops) == 1 and node.ops[0].op == "eq":
+        for left, right in (
+            (node.expr, node.ops[0].expr),
+            (node.ops[0].expr, node.expr),
+        ):
+            if isinstance(left, (nodes.Name, nodes.Getattr)) and _empty_literal(right):
+                return [left]
+    return []
+
+
 def _forget(key, state):
     state.facts = {
         expression: fact for expression, fact in state.facts.items() if key[0] not in fact[1]
@@ -301,6 +321,11 @@ def _select(paths, member):
 def _empty_slice(node):
     """`tools[0:0]` renders an empty list whatever the catalog holds."""
     if not (isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Slice)):
+        return False
+    if node.arg.step is not None and not (
+        isinstance(node.arg.step, nodes.Const) and node.arg.step.value > 0
+    ):
+        # A negative or unknown step reverses or unsettles the ordering below.
         return False
     start, stop = node.arg.start, node.arg.stop
     start_value = 0 if start is None else (start.value if isinstance(start, nodes.Const) else None)
@@ -348,11 +373,23 @@ def _negated_guard(node, state):
         return True
     if isinstance(node, nodes.Test) and node.name in ("none", "undefined"):
         return _tool_reference(node.node, state)
-    if isinstance(node, nodes.Compare) and len(node.ops) == 1 and node.ops[0].op == "eq":
-        return any(
-            (_tool_reference(a, state) or _counts_tools(a, state)) and _empty_literal(b)
-            for a, b in ((node.expr, node.ops[0].expr), (node.ops[0].expr, node.expr))
-        )
+    if isinstance(node, nodes.Compare) and len(node.ops) == 1:
+        operand = node.ops[0]
+        if operand.op == "eq":
+            return any(
+                (_tool_reference(a, state) or _counts_tools(a, state)) and _empty_literal(b)
+                for a, b in ((node.expr, operand.expr), (operand.expr, node.expr))
+            )
+        if operand.op == "ne":
+            # `{% if message.role != 'tool' %}plain{% else %}...` is the same role
+            # check with its arms the other way round.
+            return any(
+                (_field(role) == "role" or _origin_field(role, state) == "role")
+                and not _template_built(role, state)
+                and (literal := _as_const(value, state)) is not None
+                and literal.value == "tool"
+                for role, value in ((node.expr, operand.expr), (operand.expr, node.expr))
+            )
     return False
 
 
@@ -471,6 +508,10 @@ def _raises(node, state = None):
         return _raises(node.node, state)
     if isinstance(node, nodes.Concat):
         return any(_raises(item, state) for item in node.nodes)
+    if isinstance(node, (nodes.List, nodes.Tuple)):
+        return any(_raises(item, state) for item in node.items)
+    if isinstance(node, nodes.Dict):
+        return any(_raises(pair.key, state) or _raises(pair.value, state) for pair in node.items)
     if isinstance(node, nodes.Call):
         # Arguments are evaluated before the call, so one that raises aborts it.
         if any(_raises(argument, state) for argument in node.args) or any(
@@ -499,7 +540,7 @@ def _always_raises(body, state):
 def _is_payload(node):
     if isinstance(node, (nodes.Not, nodes.Test, nodes.Compare)):
         return False
-    if isinstance(node, nodes.Filter) and node.name in ("length", "count"):
+    if isinstance(node, nodes.Filter) and not _keeps_content(node):
         return False
     if isinstance(node, nodes.TemplateData):
         return bool(node.data.strip())
@@ -581,6 +622,12 @@ def _value_aliases(value, state, active):
         # the fallback reads `copy` as a data field and loses everything under it.
         if value.node.attr == "copy" and not value.args and not value.kwargs:
             return _value_aliases(value.node.node, state, active)
+        if value.node.attr in ("values", "items") and not value.args:
+            # A view over the mapping's values: the key is gone, the position is
+            # unknown, and items() wraps each value as the second half of a pair.
+            paths = _value_aliases(value.node.node, state, active)
+            tail = (1,) if value.node.attr == "items" else ()
+            return {(_UNKNOWN, *tail, *suffix[1:]) for suffix in paths if suffix}
         if value.node.attr == "get" and value.args:
             member = value.args[0].value if isinstance(value.args[0], nodes.Const) else _UNKNOWN
             result = _select(_value_aliases(value.node.node, state, active), member)
@@ -740,11 +787,14 @@ def _bind(
             if isinstance(value, (nodes.Name, nodes.Getattr, nodes.Getitem))
             else None
         )
-        members = _mapping_keys(value)
-        if members is None:
-            state.mappings.pop(key, None)
+        literal = value if _is_literal(value) else None
+        if literal is None and isinstance(value, nodes.Name):
+            # `{% set b = a %}` is the same object, so it is the same literal.
+            literal = state.literals.get((value.name,))
+        if literal is None:
+            state.literals.pop(key, None)
         else:
-            state.mappings[key] = members
+            state.literals[key] = literal
         if isinstance(value, nodes.Const):
             # `{% set ns.role = 'tool' %}` writes a literal, so the field is the
             # template's own and a role check on it means nothing.
@@ -805,6 +855,22 @@ def _with_macro(state, name, macro):
     return narrowed
 
 
+def _indexed_member(value):
+    """The member a constant subscript of a literal collection selects, or None."""
+    if not isinstance(value.arg, nodes.Const):
+        return None
+    if isinstance(value.node, (nodes.List, nodes.Tuple)):
+        index = value.arg.value
+        if isinstance(index, int) and -len(value.node.items) <= index < len(value.node.items):
+            return value.node.items[index]
+        return None
+    if isinstance(value.node, nodes.Dict):
+        for pair in value.node.items:
+            if isinstance(pair.key, nodes.Const) and pair.key.value == value.arg.value:
+                return pair.value
+    return None
+
+
 def _macro_group(entry):
     """A macro table entry as a tuple: an expression may have selected several."""
     if entry is None:
@@ -827,7 +893,11 @@ def _macro_sources(value):
     if isinstance(value, (nodes.List, nodes.Tuple)):
         return [name for item in value.items for name in _macro_sources(item)]
     if isinstance(value, nodes.Getitem):
-        # `{% set render = [show][0] %}`: a lookup table of formatters.
+        # `{% set render = [show][0] %}`: a lookup table of formatters. A constant
+        # index picks one entry, so the others are not callees at all.
+        chosen = _indexed_member(value)
+        if chosen is not None:
+            return _macro_sources(chosen)
         return _macro_sources(value.node)
     if isinstance(value, nodes.Dict):
         return [name for pair in value.items for name in _macro_sources(pair.value)]
@@ -949,9 +1019,12 @@ def _mutate(call, state, active):
     if method != "clear" and removed is None and not paths:
         return
     if method == "clear" or removed is _UNKNOWN:
+        state.literals.pop(key, None)
         _replace(state.aliases, key, set())
     elif removed is not None:
-        # pop/remove/discard take the value back out, so its provenance goes too.
+        # pop/remove/discard take the value back out, so its provenance goes too, and
+        # the record of which keys this literal has is no longer accurate.
+        state.literals.pop(key, None)
         _replace(state.aliases, (*key, removed), set())
         if isinstance(removed, int) and not isinstance(removed, bool):
             # A list closes the gap, so everything after the hole moves down one.
@@ -999,6 +1072,18 @@ def _unknown_callee(call, state):
     return not (isinstance(call.node, nodes.Name) and call.node.name in state.macros)
 
 
+def _dict_call(value):
+    return (
+        isinstance(value, nodes.Call)
+        and isinstance(value.node, nodes.Name)
+        and value.node.name == "dict"
+    )
+
+
+def _is_literal(value):
+    return isinstance(value, (nodes.Dict, nodes.List, nodes.Tuple)) or _dict_call(value)
+
+
 def _mapping_keys(value):
     """The field names a mapping literal was written with, or None if this is not one.
 
@@ -1009,13 +1094,15 @@ def _mapping_keys(value):
         return frozenset(
             pair.key.value for pair in value.items if isinstance(pair.key, nodes.Const)
         )
-    if (
-        isinstance(value, nodes.Call)
-        and isinstance(value.node, nodes.Name)
-        and value.node.name == "dict"
-    ):
+    if _dict_call(value):
         return frozenset(keyword.key for keyword in value.kwargs)
     return None
+
+
+def _is_empty_literal(value):
+    if _dict_call(value):
+        return not value.kwargs and not value.args
+    return _is_literal(value) and not value.items
 
 
 def _definitely_has(node, member, state):
@@ -1030,9 +1117,9 @@ def _definitely_has(node, member, state):
     key = _reference_key(node)
     if key is None:
         return False
-    if member in state.mappings.get(key, ()):
-        return True
-    return key in state.constructed and (*key, member) in state.constructed
+    # Only the literals record: `constructed` also holds members of literals that a
+    # destructive call has since emptied, which would answer this stale.
+    return member in (_mapping_keys(state.literals.get(key)) or ())
 
 
 def _removed_key(method, call):
@@ -1071,6 +1158,10 @@ def _scan_if(node, state, active, guarded, tail):
     for branch in [node, *node.elif_]:
         next_remaining = []
         for current in remaining:
+            # Evaluating the condition runs whatever is in it - a mutator, or a macro
+            # that writes to an outer namespace - before either arm is chosen.
+            _value_aliases(branch.test, current, active)
+            _mutate(branch.test, current, active)
             for positive in _assume(branch.test, True, current):
                 emits, states = _scan(
                     branch.body,
@@ -1101,13 +1192,18 @@ def _scan_loop(node, state, active, guarded, tail):
     inner_tail = tail | _names(node)
     literal = isinstance(node.iter, (nodes.List, nodes.Tuple))
     values = node.iter.items if literal else [None]
+    if not literal:
+        # `{% set xs = [] %}{% for x in xs %}` never runs its body either.
+        bound = state.literals.get(_reference_key(node.iter))
+        if bound is not None and _is_empty_literal(bound):
+            literal, values = True, []
     states = [state]
     finished = []
     if not values:
         emits, children = _scan(node.else_, state.copy(scoped = True), active, guarded, inner_tail)
         return emits, [_export_scope(state, child) for child in children]
     else_reachable = True
-    for value in values:
+    for position, value in enumerate(values):
         results = []
         for parent in states:
             local = parent.copy(scoped = True)
@@ -1115,8 +1211,8 @@ def _scan_loop(node, state, active, guarded, tail):
                 # `{% for key in {'x': tools} %}` walks the keys, not the values, so
                 # nothing under the mapping reaches the target. The mapping may have
                 # been given a name first, which `state.mappings` records.
-                over_keys = isinstance(node.iter, nodes.Dict) or (
-                    _reference_key(node.iter) in parent.mappings
+                over_keys = _mapping_keys(node.iter) is not None or (
+                    _mapping_keys(parent.literals.get(_reference_key(node.iter))) is not None
                 )
                 _bind_paths(
                     node.target,
@@ -1136,7 +1232,6 @@ def _scan_loop(node, state, active, guarded, tail):
                 # loop.first %}` never runs its body. With a filter the position
                 # describes the accepted sequence, not the source, so it stays
                 # unknown rather than being read off the source index.
-                position = values.index(value)
                 for member, truth in (
                     ("first", position == 0),
                     ("last", position == len(values) - 1),
@@ -1299,10 +1394,18 @@ def _scan(
             elif isinstance(node, nodes.FilterBlock):
                 # The block's own filter decides what survives: `{% filter first %}`
                 # emits one character of the catalog, which is no schema at all.
-                if _keeps_content(node.filter):
-                    emits, _ = _scan(node.body, current.copy(scoped = True), active, guarded, rest)
-                    if emits:
-                        return True, []
+                filtered, produced = _scan(
+                    node.body, current.copy(scoped = True), active, guarded, rest
+                )
+                # The body runs whatever the filter then does with its output, so
+                # namespace writes inside it escape.
+                for child in produced:
+                    exported = _export_scope(current, child)
+                    current.aliases.clear()
+                    current.aliases.update(exported.aliases)
+                    current.mutated.update(exported.mutated)
+                if filtered and _keeps_content(node.filter):
+                    return True, []
             elif isinstance(node, nodes.AssignBlock):
                 # `{% set catalog|length %}` binds the filtered result, so a filter
                 # that keeps nothing of the catalog leaves nothing to find.

@@ -1307,3 +1307,70 @@ def test_a_macro_branching_internally_over_approximates_for_its_caller():
         "{{ load() }}{% if not flag %}{{ ns.catalog|tojson }}{% endif %}"
     )
     assert template_supports_tools(template) is True
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # 3972440546: a destructive call makes the key set unknown again.
+        (
+            "{% set d={'label':'x'} %}{% do d.pop('label') %}{{ d.get('label', tools)|tojson }}",
+            True,
+        ),
+        ("{% set d={'label':'x'} %}{{ d.get('label', tools)|tojson }}", False),
+        # 3972440554: a literal record follows the name it was assigned to.
+        ("{% set a={'x':tools} %}{% set b=a %}{% for k in b %}{{ k }}{% endfor %}", False),
+        # 3972440560: a constant index picks one member, not the whole collection.
+        (
+            "{% macro plain() %}text{% endmacro %}{% macro show() %}{{ tools|tojson }}"
+            "{% endmacro %}{% set render=[plain,show][0] %}{{ render() }}",
+            False,
+        ),
+        (
+            "{% macro plain() %}text{% endmacro %}{% macro show() %}{{ tools|tojson }}"
+            "{% endmacro %}{% set render=[plain,show][1] %}{{ render() }}",
+            True,
+        ),
+        # 3972440564: a condition is evaluated before either arm is chosen.
+        ("{% set c=[] %}{% if c.append(tools) %}{% endif %}{{ c|tojson }}", True),
+        # 3972440571: duplicate literal items keep their own positions.
+        ("{% for x in [1,1] %}{% if loop.last %}{{ tools|tojson }}{% endif %}{% endfor %}", True),
+        (
+            "{% for x in [1] %}{% if not loop.first %}{{ tools|tojson }}{% endif %}{% endfor %}",
+            False,
+        ),
+        # 3972440579: a named empty literal never runs its loop body.
+        ("{% set xs=[] %}{% for x in xs %}{{ tools|tojson }}{% endfor %}", False),
+        ("{% set xs=[1] %}{% for x in xs %}{{ tools|tojson }}{% endfor %}", True),
+        # 3972440587: every reducing filter drops the catalog, not just length/count.
+        ("{{ tools|wordcount }}", False),
+        ("{{ tools|tojson }}", True),
+        # 3972440595: a negated role check puts the tool branch in the else arm.
+        ("{% if message.role != 'tool' %}plain{% else %}{{ message.content }}{% endif %}", True),
+        ("{% if message.role != 'user' %}plain{% else %}{{ message.content }}{% endif %}", False),
+        # 3972440599: a guard that proves the catalog empty by comparison.
+        ("{% if tools == [] %}{{ tools|tojson }}{% endif %}", False),
+        ("{% if tools is none %}{{ tools|tojson }}{% endif %}", False),
+        ("{% if tools != [] %}{{ tools|tojson }}{% endif %}", True),
+        ("{% if tools == [] %}plain{% else %}You may use tools.{% endif %}", True),
+        # 3972440602: a negative step reverses the ordering.
+        ("{{ tools[1:0:-1]|tojson }}", True),
+        ("{{ tools[0:0]|tojson }}", False),
+        # 3972440612: a filter block runs its body, so writes inside it escape.
+        (
+            "{% set ns=namespace(catalog=[]) %}{% filter upper %}{% set ns.catalog=tools %}"
+            "{% endfilter %}{{ ns.catalog|tojson }}",
+            True,
+        ),
+        ("{% filter first %}{{ tools|tojson }}{% endfilter %}", False),
+        ("{% filter upper %}{{ tools|tojson }}{% endfilter %}", True),
+        # 3972440619: every element of a literal container is evaluated first.
+        ("{{ {'error': raise_exception('x'), 'catalog': tools}|tojson }}", False),
+        # 3972440628: items() and values() are views onto the mapping's values.
+        ("{% set d={'catalog':tools} %}{% for k,v in d.items() %}{{ v|tojson }}{% endfor %}", True),
+        ("{% set d={'catalog':tools} %}{% for v in d.values() %}{{ v|tojson }}{% endfor %}", True),
+        ("{% set d={'label':'x'} %}{% for v in d.values() %}{{ v }}{% endfor %}", False),
+    ],
+)
+def test_round_eighteen_paths(template, expected):
+    assert template_supports_tools(template) is expected
