@@ -596,6 +596,52 @@ _llama_rpc_server_target() {
     return 0
 }
 
+# Does this tree already carry an RPC server binary, in any layout the backend
+# resolves? Same directories rpc_server_binary() searches, in the same order.
+_has_local_rpc_server() {
+    local _d _n
+    for _d in "$1/build/bin" "$1/build/bin/Release" "$1/bin" "$1"; do
+        for _n in ggml-rpc-server rpc-server; do
+            if [ -x "$_d/$_n" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# An install made before this tree built ggml-rpc-server has llama-server and
+# nothing else new. Reusing it verbatim is right for llama-server and wrong for
+# RPC: the upgrade silently ends up without the binary, and nothing says so. Add
+# JUST that target to the build directory that is already configured there. This
+# is the canonical Unsloth-owned location, so building into it is allowed, and no
+# other target is touched. Best-effort throughout: a tree with no RPC target, or a
+# link that fails, leaves the reused build exactly as it was.
+_backfill_local_rpc_server() {
+    local _dir=$1 _target
+    if _has_local_rpc_server "$_dir"; then
+        return 0
+    fi
+    _target="$(_llama_rpc_server_target "$_dir")"
+    if [ -z "$_target" ]; then
+        verbose_substep "no RPC server target in this llama.cpp tree; skipping"
+        return 0
+    fi
+    if [ ! -f "$_dir/build/CMakeCache.txt" ]; then
+        substep "the reused build has no $_target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
+        return 0
+    fi
+    substep "the reused build has no $_target; building it in place..."
+    if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$NCPU"; then
+        if _has_local_rpc_server "$_dir"; then
+            step "rpc-server" "built ($_target)"
+            return 0
+        fi
+    fi
+    substep "could not add $_target to the reused build; RPC serving will be unavailable" "$C_WARN"
+    return 0
+}
+
 # macOS only: return 1 when the cache did not keep -DGGML_RPC_RDMA=OFF or
 # something under $1/bin still links librdma. Such a build dies at load on any
 # Mac without /usr/lib/librdma.dylib, llama-server included, because libggml
@@ -2829,6 +2875,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if _has_local_llama_server "$LLAMA_CPP_DIR"; then
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
             _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _backfill_local_rpc_server "$LLAMA_CPP_DIR"
             _LOCAL_LLAMA_CPP_LINKED=true
             _NEED_LLAMA_SOURCE_BUILD=false
             _SKIP_PREBUILT_INSTALL=true

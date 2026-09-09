@@ -479,3 +479,122 @@ def test_rpc_server_is_not_a_health_requirement():
             groups = module.runtime_payload_health_groups(kind, source_label = source_label)
             required = {entry for group in groups for entry in group}
             assert not (required & names), (kind, source_label, required & names)
+
+
+# ── the upgrade path ────────────────────────────────────────────────────────────
+# A clean install builds the RPC server; an EXISTING install at the canonical
+# location is reused verbatim, which is right for llama-server and wrong for RPC.
+# Before this, such an upgrade silently ended up with no ggml-rpc-server at all.
+
+UPGRADE_FUNCTIONS = (
+    "_llama_rpc_server_target",
+    "_has_local_rpc_server",
+    "_backfill_local_rpc_server",
+)
+
+
+def _upgrade_harness(tmp_path: Path, *, tree: Path, cmake_writes: str | None) -> str:
+    """Run `_backfill_local_rpc_server` for real, with cmake and the reporters stubbed."""
+    text = _sh()
+    body = "\n".join(_bash_function(text, name) for name in UPGRADE_FUNCTIONS)
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir(exist_ok = True)
+    cmake = fake_bin / "cmake"
+    if cmake_writes is None:
+        cmake.write_text("#!/bin/sh\nexit 1\n", encoding = "utf-8")
+    else:
+        cmake.write_text(
+            "#!/bin/sh\n"
+            f'mkdir -p "{tree}/build/bin"\n'
+            f'printf x > "{tree}/build/bin/{cmake_writes}"\n'
+            f'chmod +x "{tree}/build/bin/{cmake_writes}"\n'
+            "exit 0\n",
+            encoding = "utf-8",
+        )
+    cmake.chmod(0o755)
+    script = textwrap.dedent(
+        f"""
+        set -u
+        C_WARN=""
+        NCPU=1
+        step() {{ echo "STEP $1 $2"; }}
+        substep() {{ echo "SUBSTEP $1"; }}
+        verbose_substep() {{ echo "VERBOSE $1"; }}
+        run_quiet_no_exit() {{ shift; "$@" >/dev/null 2>&1; }}
+        PATH="{fake_bin}:$PATH"
+        {body}
+        _backfill_local_rpc_server "{tree}"
+        echo "PRESENT=$(_has_local_rpc_server "{tree}" && echo yes || echo no)"
+        """
+    )
+    return subprocess.run(
+        [BASH, "-c", script], capture_output = True, text = True, check = True
+    ).stdout
+
+
+def _old_install(tmp_path: Path, *, configured: bool = True, rpc_target: bool = True) -> Path:
+    """An install from before the RPC server was built: llama-server and nothing else new."""
+    tree = tmp_path / "llama.cpp"
+    (tree / "build" / "bin").mkdir(parents = True)
+    server = tree / "build" / "bin" / "llama-server"
+    server.write_text("binary", encoding = "utf-8")
+    server.chmod(0o755)
+    if configured:
+        (tree / "build" / "CMakeCache.txt").write_text("GGML_RPC:BOOL=ON\n", encoding = "utf-8")
+    if rpc_target:
+        (tree / "tools" / "rpc").mkdir(parents = True)
+        (tree / "tools" / "rpc" / "CMakeLists.txt").write_text(
+            "add_executable(ggml-rpc-server rpc-server.cpp)\n", encoding = "utf-8"
+        )
+    return tree
+
+
+def test_reusing_an_existing_install_backfills_the_rpc_server(tmp_path) -> None:
+    """The upgrade case, which a fresh-install test cannot reach."""
+    tree = _old_install(tmp_path)
+    assert not (tree / "build" / "bin" / "ggml-rpc-server").exists()
+
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "PRESENT=yes" in out, out
+    assert "STEP rpc-server built (ggml-rpc-server)" in out, out
+
+
+def test_an_install_that_already_has_it_is_left_alone(tmp_path) -> None:
+    """No rebuild, no output: reuse must stay reuse when there is nothing to add."""
+    tree = _old_install(tmp_path)
+    existing = tree / "build" / "bin" / "ggml-rpc-server"
+    existing.write_text("binary", encoding = "utf-8")
+    existing.chmod(0o755)
+
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "PRESENT=yes" in out, out
+    assert "SUBSTEP" not in out, out
+
+
+def test_a_failed_backfill_says_so_and_keeps_the_reused_build(tmp_path) -> None:
+    tree = _old_install(tmp_path)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "PRESENT=no" in out, out
+    assert "RPC serving will be unavailable" in out, out
+    assert (tree / "build" / "bin" / "llama-server").exists(), "the reused build was damaged"
+
+
+def test_an_unconfigured_tree_points_at_the_way_out(tmp_path) -> None:
+    tree = _old_install(tmp_path, configured = False)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "UNSLOTH_LLAMA_FORCE_COMPILE=1" in out, out
+
+
+def test_a_tree_with_no_rpc_target_is_not_an_error(tmp_path) -> None:
+    """Older llama.cpp has no RPC tool at all; that is a skip, not a warning."""
+    tree = _old_install(tmp_path, rpc_target = False)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
+    assert "VERBOSE no RPC server target" in out, out
+
+
+def test_the_reuse_branch_actually_calls_the_backfill() -> None:
+    """The function is only worth having if the reuse path reaches it."""
+    text = _sh()
+    start = text.index("already holds a build; reusing it")
+    window = text[start : start + 400]
+    assert "_backfill_local_rpc_server" in window, window
