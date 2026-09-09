@@ -1755,12 +1755,25 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
             _worker_state.stop_event = stop_event
             while not stop_event.is_set():
                 try:
-                    for account in job_accounts():
-                        run_as(account, _initialize_account_sync, project_exists, recover = True)
-                    break
+                    accounts = job_accounts()
                 except Exception:
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
+                    continue
+                initialized = 0
+                for account in accounts:
+                    try:
+                        run_as(account, _initialize_account_sync, project_exists, recover = True)
+                        initialized += 1
+                    except Exception:
+                        # One unreadable account database must not keep the worker out of the loop.
+                        logger.warning(
+                            "linked-folder worker initialization failed for one account",
+                            exc_info = True,
+                        )
+                if initialized or not accounts:
+                    break
+                stop_event.wait(1.0)
             while not stop_event.is_set():
                 try:
                     job = _next_account_job()
@@ -1790,10 +1803,18 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 _wake.clear()
                 if not stop_event.is_set():
                     try:
-                        for account in job_accounts():
-                            run_as(account, _initialize_account_sync, project_exists)
+                        accounts = job_accounts()
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)
+                        accounts = []
+                    for account in accounts:
+                        try:
+                            run_as(account, _initialize_account_sync, project_exists)
+                        except Exception:
+                            logger.warning(
+                                "linked-folder periodic scheduling failed for one account",
+                                exc_info = True,
+                            )
     finally:
         _worker_state.stop_event = None
         with _thread_lock:
@@ -1920,7 +1941,12 @@ def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
 
 def _next_account_job():
     for account in job_accounts():
-        job = run_as(account, _next_job)
+        try:
+            job = run_as(account, _next_job)
+        except Exception:
+            # The order is stable, so one corrupt database would shadow every account behind it.
+            logger.warning("linked-folder queue selection failed for one account", exc_info = True)
+            continue
         if job:
             return (account, *job)
     return None

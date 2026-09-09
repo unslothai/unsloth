@@ -117,3 +117,48 @@ def test_retiring_an_account_mid_sync_keeps_the_shared_folder_worker_alive(
         release.set()
         folder_sync._wake.set()
         worker.join(30)
+
+
+def _corrupt_rag_db(account) -> None:
+    """Replace the account's rag.db with bytes SQLite refuses to open."""
+    from utils.paths import storage_roots as roots
+
+    path = run_as(account, roots.rag_db_path)
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(b"not a sqlite database" * 64)
+
+
+@requires_sqlite_vec
+def test_a_corrupt_account_database_does_not_hide_the_next_accounts_jobs(two_accounts):
+    _link(BOB, two_accounts[BOB.account_id], "bob")
+    _corrupt_rag_db(ALICE)
+
+    selected = folder_sync._next_account_job()
+
+    assert selected is not None, "a corrupt account database hid every job behind it"
+    assert selected[0].account_id == BOB.account_id
+
+
+@requires_sqlite_vec
+def test_the_shared_worker_still_syncs_accounts_behind_a_corrupt_database(two_accounts):
+    _, bob_job = _link(BOB, two_accounts[BOB.account_id], "bob")
+    _corrupt_rag_db(ALICE)
+
+    stop = threading.Event()
+    worker = threading.Thread(target = folder_sync._worker, args = (stop,), daemon = True)
+    worker.start()
+    try:
+        deadline = time.time() + 60
+        status = None
+        while time.time() < deadline:
+            status = run_as(BOB, folder_sync.get_job, bob_job)["status"]
+            if status in ("completed", "failed"):
+                break
+            folder_sync._wake.set()
+            time.sleep(0.2)
+        assert worker.is_alive(), "a corrupt account database killed the shared worker"
+        assert status == "completed", f"the healthy account never synced: {status}"
+    finally:
+        stop.set()
+        folder_sync._wake.set()
+        worker.join(30)

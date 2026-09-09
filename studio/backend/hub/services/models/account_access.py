@@ -102,9 +102,8 @@ _generation_lock = threading.Lock()
 
 @contextmanager
 def media_generation(modality: str):
-    if not policy.installation_is_multi_user():
-        yield
-        return
+    """Recorded on one-account installs too: a first managed account created mid-generation
+    must still see this work as foreign. Same-account entries never read as foreign."""
     account_id = current_account_id()
     with _generation_lock:
         counts = _generation_accounts.setdefault(modality, {})
@@ -128,10 +127,8 @@ _generation_holders: dict[str, list[str]] = {}
 
 @contextmanager
 def media_generation_slot(modality: str):
-    """Entered once the backend slot is held, so a queued request is not the running one."""
-    if not policy.installation_is_multi_user():
-        yield
-        return
+    """Entered once the backend slot is held, so a queued request is not the running one.
+    Recorded on one-account installs too, for the reason ``media_generation`` gives."""
     account_id = current_account_id()
     with _generation_lock:
         _generation_holders.setdefault(modality, []).append(account_id)

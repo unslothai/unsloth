@@ -156,3 +156,21 @@ def test_a_clip_started_on_the_openai_route_belongs_to_that_account_too(backend)
         assert client.get(progress).json() == {"loaded": True, "yours": False}
         assert client.post(cancel).json() == {"cancelled": False}
     assert backend.cancelled == []
+
+
+def test_the_installation_owner_does_not_see_a_managed_accounts_clip(backend):
+    """The owner administers the machine, which does not extend to another account's prompt."""
+    from utils.account_context import OWNER
+
+    generate = "/api/inference/video/generate"
+    progress = "/api/inference/video/generate-progress"
+    cancel = "/api/inference/video/generate/cancel"
+
+    with _client(BOB) as client:
+        assert client.post(generate, json = {"prompt": "p", "steps": 5}).status_code == 200
+        assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
+
+    with _client(OWNER) as client:
+        assert client.get(progress).json() == {"loaded": True, "yours": False}
+        assert client.post(cancel).json() == {"cancelled": False}
+    assert backend.cancelled == []

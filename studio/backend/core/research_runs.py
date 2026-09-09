@@ -1291,7 +1291,12 @@ class ResearchSupervisor:
 
     def _claim_account_run(self):
         for account in job_accounts():
-            run = run_as(account, db.claim_next, self.worker_id)
+            try:
+                run = run_as(account, db.claim_next, self.worker_id)
+            except Exception:
+                # The order is stable, so one corrupt database would shadow every account behind it.
+                logger.exception("research.claim_failed_for_account")
+                continue
             if run is not None:
                 return account, run
         return None, None

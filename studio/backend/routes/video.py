@@ -431,21 +431,31 @@ def _note_generation_account() -> None:
         _generation_account = current_account().account_id
 
 
+def _reserved_generation_account(backend) -> Optional[str]:
+    reserved = getattr(backend, "generate_job_account", None)
+    return reserved() if callable(reserved) else None
+
+
 def _generation_started_by(backend) -> Optional[str]:
     """The backend's own reservation wins: it is taken before begin_generate returns."""
-    reserved = getattr(backend, "generate_job_account", None)
-    reserved = reserved() if callable(reserved) else None
+    reserved = _reserved_generation_account(backend)
     if reserved is not None:
         return reserved
     with _generation_lock:
         return _generation_account
 
 
-def _generation_hidden(backend) -> bool:
-    started_by = _generation_started_by(backend)
+_UNREAD = object()
+
+
+def _generation_hidden(backend, started_by = _UNREAD) -> bool:
+    """A caller that acts on the reservation passes the read it will act on."""
+    if started_by is _UNREAD:
+        started_by = _generation_started_by(backend)
     if started_by is not None:
+        # The owner included: administering the machine covers a resident model, not a clip's prompt.
         from utils.account_context import current_account
-        return account_access.managed_account() and started_by != current_account().account_id
+        return started_by != current_account().account_id
     return account_access.resident_hidden("video") or (
         account_access.managed_account()
         and account_access.resident_hidden("video", backend.status().get("repo_id"))
@@ -618,14 +628,18 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    if _generation_hidden(backend):
+    # One read serves the check and the recheck: begin_generate runs on a worker thread, so a
+    # second read could name a successor and hand it back as expected_account.
+    reserved = _reserved_generation_account(backend)
+    if reserved is not None:
+        started_by = reserved
+    else:
+        with _generation_lock:
+            started_by = _generation_account
+    if _generation_hidden(backend, started_by):
         return {"cancelled": False}
-    if _generation_started_by(backend) is None and account_access.foreign_work_active():
+    if started_by is None and account_access.foreign_work_active():
         return {"cancelled": False}
-    # The job can finish and another account reserve between the check above and the worker
-    # thread below, so the backend rechecks under its lock.
-    reserved = getattr(backend, "generate_job_account", None)
-    reserved = reserved() if callable(reserved) else None
     if reserved is None:
         cancelled = await asyncio.to_thread(backend.cancel_generate)
     else:

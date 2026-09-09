@@ -700,6 +700,23 @@ def test_research_claim_uses_the_database_of_each_account(monkeypatch):
     assert current_account() == OWNER
 
 
+def test_research_claim_skips_an_account_whose_database_fails(monkeypatch):
+    import sqlite3
+
+    from core import research_runs
+
+    monkeypatch.setattr(research_runs, "job_accounts", lambda: [ALICE, BOB])
+
+    def claim(worker_id):
+        if current_account() == ALICE:
+            raise sqlite3.DatabaseError("file is not a database")
+        return {"id": "bob-run"}
+
+    monkeypatch.setattr(research_runs.db, "claim_next", claim)
+    supervisor = research_runs.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    assert supervisor._claim_account_run() == (BOB, {"id": "bob-run"})
+
+
 def test_folder_sync_claim_carries_account_data(monkeypatch):
     from core.rag import folder_sync
 
