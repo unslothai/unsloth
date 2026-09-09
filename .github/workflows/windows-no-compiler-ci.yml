@@ -30,6 +30,13 @@
 # enforcing, since a hosted runner has neither. It proves that the shipped
 # install path spawns no compiler and drops no temporary DLL, which is the shape
 # that was reported.
+#
+# Which revision of studio/setup.ps1 each leg measures is also part of that scope.
+# The installer delegates setup to the managed CLI, so a default run executes the
+# setup.ps1 inside the released package, not the one in the checkout. The shell leg
+# is therefore a measurement of the release; the desktop leg passes --local, which
+# overlays the checkout as an editable install, and refuses to report a result
+# unless the overlay is in the log.
 
 name: Windows No Compiler CI
 
@@ -181,10 +188,19 @@ jobs:
           # desktop mode refuses it; running only that left a compile reached through a
           # Tauri-only branch invisible to a job whose whole claim is the desktop shape.
           # So both modes run, and the home is unpinned here rather than the mode changed.
+          #
+          # --local, which is the only thing that makes this leg measure the setup.ps1 in
+          # THIS checkout. Without it the installer installs the released unsloth and
+          # delegates setup to the copy inside that release (install.ps1 hands the work to
+          # the managed CLI), so a PR touching only studio/setup.ps1 triggered this workflow
+          # and then measured a different revision of the file it changed. --local overlays
+          # the checkout as an editable install, so the delegated `studio setup` runs the
+          # bytes under review. The gate below is what proves the overlay took; a run that
+          # fell back to the release is void here, not clean.
           $desktop = {
               Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-                  -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --no-torch *>&1 |
+                  -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --local --no-torch *>&1 |
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
               $exit = $LASTEXITCODE
               $global:LASTEXITCODE = 0
@@ -205,6 +221,19 @@ jobs:
                   throw ("the desktop-mode install stopped before it reached any install " +
                          "work (exit $exit), so this measurement is void rather than clean.")
               }
+              # And that the checkout is what setup ran from. This line is printed by the
+              # installer's --local overlay step; without it the delegated setup came out of
+              # the released package and this leg measured someone else's file.
+              if ($log -notmatch 'overlaying local repo') {
+                  throw ("the local overlay never ran (exit $exit), so the setup.ps1 that " +
+                         "executed was not the one in this checkout. Void, not clean.")
+              }
+              # Which revision, recorded rather than asserted, so the artifact says what was
+              # measured instead of leaving it to be inferred from the commit.
+              $setup = Join-Path $env:GITHUB_WORKSPACE 'studio\setup.ps1'
+              "path=$setup" | Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8
+              "sha256=$((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash)" |
+                  Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8 -Append
           }
           $seen = Invoke-WithCompilerWatch -Name 'installer-tauri' -Action $desktop `
               -EvidenceRoot $env:UNSLOTH_EVIDENCE

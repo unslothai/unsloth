@@ -1798,8 +1798,12 @@ function New-StudioEmittedNativeType {
         # blittable and every caller initialises it first, so the marshaller pins and
         # writes back either way, but the metadata is what a reader and any future
         # marshalling change go by, so it says what the declaration said.
-        foreach ($position in @($import.Out)) {
-            if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
+        # ContainsKey, not a bare property read: most imports have no Out key and reading a
+        # missing one is fatal under a caller's Set-StrictMode. setup.ps1 sets none of its own.
+        if ($import.ContainsKey("Out")) {
+            foreach ($position in @($import.Out)) {
+                if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
+            }
         }
     }
     $null = $builder.CreateType()

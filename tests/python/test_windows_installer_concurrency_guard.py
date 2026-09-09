@@ -91,6 +91,7 @@ _FINAL_PATH_CHAIN = (
     "Initialize-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
     "Test-StudioCanDefineNativeTypes",
+    "Test-StudioEmitInChildProcess",
     "New-StudioDynamicAssembly",
     "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType",
@@ -1115,8 +1116,8 @@ def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
 
 @pytest.mark.parametrize(
     "helpers",
-    [_mutex_helpers, _process_helpers],
-    ids = ["mutex", "process"],
+    [_mutex_helpers, _process_helpers, _final_path_helpers],
+    ids = ["mutex", "process", "final-path"],
 )
 def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     """Every installer function these harnesses reach must be in the harness.

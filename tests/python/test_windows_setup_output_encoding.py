@@ -602,6 +602,7 @@ def _console_less_probe(path: Path) -> str:
     # ran. Anything the sliced functions call has to be sliced with them.
     for name in (
         "Test-StudioCanDefineNativeTypes",
+        "Test-StudioEmitInChildProcess",
         "New-StudioDynamicAssembly",
         "New-StudioEmittedNativeType",
         "Write-StudioLine",

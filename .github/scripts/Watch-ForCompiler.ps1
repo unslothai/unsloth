@@ -74,6 +74,62 @@ function Get-StudioTempArtifacts {
     return ,[string[]]$found
 }
 
+function Get-StudioProcessImageName {
+    <#
+    .SYNOPSIS
+    The image a 4688 record says was created, from the record's own field.
+    .DESCRIPTION
+    NewProcessName, read out of the event XML by name rather than by position, since
+    the position is a property of the schema and this has to keep meaning the same
+    thing if the schema gains a field. Nothing else in the record is consulted: the
+    rendered message also contains the command line, so matching the message scores
+    `cmd.exe /c echo csc.exe` as a compiler, which is a false report of the one thing
+    this job exists to detect.
+    #>
+    param([Parameter(Mandatory = $true)]$Event)
+
+    try {
+        $xml = [xml]$Event.ToXml()
+        foreach ($field in $xml.Event.EventData.Data) {
+            if ($field.Name -eq 'NewProcessName') { return [string]$field.'#text' }
+        }
+    } catch { }
+    return ''
+}
+
+function Select-StudioCompilerHits {
+    <#
+    .SYNOPSIS
+    The records among $Events whose created image is a compiler.
+    .DESCRIPTION
+    Separate from the query so it can be exercised without a Security log, which is
+    the only way to test the classification anywhere but a Windows runner that has
+    just compiled something.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Events)
+
+    $hits = @()
+    foreach ($record in $Events) {
+        $image = Get-StudioProcessImageName -Event $record
+        if ([string]::IsNullOrEmpty($image)) { continue }
+        # Split explicitly rather than through [System.IO.Path]::GetFileName, which splits on
+        # the separators of the HOST it runs on: under a Linux pwsh, which is where the
+        # classification is tested, a backslash is an ordinary character and the whole path
+        # came back as the leaf. The records are always Windows paths whatever reads them.
+        $leaf = ($image -split '[\\/]')[-1]
+        foreach ($name in $script:CompilerNames) {
+            if ($leaf -eq $name) {
+                $rendered = ''
+                try { $rendered = [string]$record.Message } catch { }
+                $hits += ("{0:o} {1} :: {2}" -f $record.TimeCreated, $image,
+                    ($rendered -replace '\s+', ' '))
+                break
+            }
+        }
+    }
+    return ,[string[]]$hits
+}
+
 function Get-StudioCompilerEvents {
     <#
     .SYNOPSIS
@@ -109,25 +165,32 @@ function Get-StudioCompilerEvents {
             EndTime   = $Until
         } -ErrorAction Stop
     } catch [System.Exception] {
-        # No matching events is an exception from Get-WinEvent, not an empty set,
-        # and it is the expected result for a clean run. A real failure to read
-        # the log would surface as the positive control finding nothing, which is
-        # a hard failure there, so it cannot pass silently.
-        return @()
+        # No matching events is an exception from Get-WinEvent, not an empty set, and on a
+        # clean run that is the expected result. A log this cannot READ throws the same way,
+        # and swallowing both made an unreadable Security log indistinguishable from a clean
+        # measurement: the job would print "no compiler" having seen nothing at all. The
+        # positive control does not cover this, because it runs in an earlier step and says
+        # nothing about whether the log was still readable during the two measurements.
+        #
+        # So the two are separated structurally rather than by matching the message text,
+        # which is localised: ask the log for any one record at all. If that succeeds the log
+        # is readable and the filter genuinely matched nothing; if it fails too, this
+        # measurement is void and the caller must not report it as clean.
+        # Bound before the probe below, whose own catch rebinds $_.
+        $reason = $_.Exception.Message
+        $readable = $false
+        try {
+            $null = Get-WinEvent -LogName 'Security' -MaxEvents 1 -ErrorAction Stop
+            $readable = $true
+        } catch { }
+        if (-not $readable) {
+            throw ("the Security log could not be read, so this run measured nothing. " +
+                   "Treat it as void rather than as clean. Underlying error: $reason")
+        }
+        return ,[string[]]@()
     }
 
-    $hits = @()
-    foreach ($event in $events) {
-        $message = $event.Message
-        if ([string]::IsNullOrEmpty($message)) { continue }
-        foreach ($name in $script:CompilerNames) {
-            if ($message -match [regex]::Escape($name)) {
-                $hits += ("{0:o} {1}" -f $event.TimeCreated, ($message -replace '\s+', ' '))
-                break
-            }
-        }
-    }
-    return $hits
+    return Select-StudioCompilerHits -Events @($events)
 }
 
 function Invoke-WithCompilerWatch {
@@ -157,7 +220,11 @@ function Invoke-WithCompilerWatch {
     $before = New-Object 'System.Collections.Generic.HashSet[string]' (
         [string[]](Get-StudioTempArtifacts), [StringComparer]::OrdinalIgnoreCase)
     # A second back, so a process created in the same tick as the timestamp is not
-    # filtered out by a strictly-later comparison inside Get-WinEvent.
+    # filtered out by a strictly-later comparison inside Get-WinEvent. Stated exactly,
+    # since the sweep above runs before this: the window still reaches one second into
+    # the tail of that sweep, so a compiler the machine started in that last second is
+    # counted. The trade is deliberate and it errs towards a false alarm, which fails a
+    # measurement loudly, rather than towards dropping a real compile.
     $since = (Get-Date).AddSeconds(-1)
 
     $failure = $null

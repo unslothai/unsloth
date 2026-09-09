@@ -2036,6 +2036,36 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
     ), "GetConsoleMode lost its Out position"
 
 
+# Almost every import declares no Out position, and reading a hashtable key that is not
+# there is fatal under Set-StrictMode -Version Latest, which raises PropertyNotFound rather
+# than returning $null. install.ps1 sets strict mode Off for itself, but setup.ps1 sets none
+# at all, so whatever the caller has is what runs, and a profile with strict mode on would
+# have taken out every emitted type. The emitter asks ContainsKey first, the way it already
+# does for the CharSet key, and this runs the whole emitter under the strictest setting.
+@requires_pwsh
+@pytest.mark.parametrize("script", ["install", "setup"])
+def test_an_import_without_an_out_position_survives_strict_mode(script: str):
+    source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
+    result = _run_powershell(
+        "\n".join(
+            [
+                "Set-StrictMode -Version Latest",
+                '$ErrorActionPreference = "Stop"',
+                _one_function(source, "New-StudioDynamicAssembly"),
+                _one_function(source, "New-StudioEmittedNativeType"),
+                # No Out key, and no Ansi key either: both reads have to be guarded.
+                '$ok = New-StudioEmittedNativeType -TypeName "UnslothStrictModeProbe" -Imports @(',
+                '    @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]',
+                "       Args = @([IntPtr]) }",
+                ")",
+                'Write-Output "OK:$ok"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert _lines(result, "OK:") == ["OK:True"]
+
+
 @requires_pwsh
 def test_a_published_type_counts_even_when_creation_threw():
     """CreateType can publish the type and then fail on the way back.
