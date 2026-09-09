@@ -169,3 +169,79 @@ def test_a_readable_busy_peer_is_still_busy(monkeypatch) -> None:
     out = _probe(cluster, monkeypatch, "pid, used_memory\n4242, 40000 MiB\nRC=0\n")
     assert out["busy"] is True and out["known"] is True, out
     assert out["processes"] == [{"pid": 4242, "used_mib": 40000}], out
+
+
+# ── the NCCL probe must not leave a rank running on the peer ────────────────────
+# The peer rank is launched detached with setsid/nohup. Every way the local side can end after
+# that left it in rendezvous or NCCL timeout handling, still holding the 1 GiB probe buffer, and
+# the next provisioning run then correctly refuses the peer as busy over a probe nobody wants.
+
+
+class _Probe:
+    """Records commands and fails whichever stage the test asks it to."""
+
+    def __init__(self, *, fail: str = ""):
+        self.calls: list = []
+        self.fail = fail
+
+    def __call__(self, cmd, *a, **k):
+        self.calls.append(cmd)
+        text = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
+        if self.fail == "launch" and "setsid" in text:
+            raise OSError("ssh failed")
+        if self.fail == "local" and isinstance(cmd, str) and "node_rank=0" in text:
+            raise subprocess.TimeoutExpired(cmd, 5)
+        stdout = ""
+        if isinstance(cmd, str) and "node_rank=0" in text and self.fail != "silent":
+            stdout = "SPARK_NCCL_BUSBW 21.4\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout = stdout, stderr = "")
+
+    def cleaned_up(self) -> bool:
+        return any(
+            "spark_nccl_probe.pid" in (c if isinstance(c, str) else " ".join(map(str, c)))
+            and "kill" in (c if isinstance(c, str) else " ".join(map(str, c)))
+            for c in self.calls
+        )
+
+
+def _measure(cluster, monkeypatch, tmp_path, probe):
+    monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
+    monkeypatch.setattr(cluster, "venv_activate", lambda: str(tmp_path / "activate"))
+    monkeypatch.setattr(cluster.subprocess, "run", probe)
+    monkeypatch.setattr(cluster.time, "sleep", lambda s: None, raising = False)
+    return cluster.nccl_bandwidth("192.0.2.7", "192.0.2.1")
+
+
+@pytest.mark.parametrize("fail", ["", "local", "silent"])
+def test_the_peer_rank_is_stopped_however_the_measurement_ends(
+    monkeypatch, tmp_path, fail: str
+) -> None:
+    """Success, a local timeout, and a run that produced no reading at all."""
+    cluster = _cluster()
+    probe = _Probe(fail = fail)
+    _measure(cluster, monkeypatch, tmp_path, probe)
+    assert probe.cleaned_up(), f"fail={fail!r}: the peer rank was left running"
+
+
+def test_the_stop_uses_the_recorded_pid_not_a_name_match() -> None:
+    """A pattern kill on a shared machine can take out something else that matches."""
+    cluster = _cluster()
+    sent = []
+    import subprocess as sp
+
+    class _R:
+        def __call__(self, cmd, *a, **k):
+            sent.append(" ".join(str(c) for c in cmd))
+            return sp.CompletedProcess(cmd, 0)
+
+    cluster.subprocess.run = _R()
+    assert cluster.stop_peer_nccl_probe("192.0.2.7", "someuser", []) is True
+    joined = " ".join(sent)
+    assert "spark_nccl_probe.pid" in joined and "kill -TERM" in joined, joined
+    assert "pkill" not in joined and "killall" not in joined, joined
+
+
+def test_the_launch_records_a_pid_to_stop() -> None:
+    """Without it there is nothing to kill and the cleanup is decorative."""
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
+    assert "echo $! > " in source and "spark_nccl_probe.pid" in source

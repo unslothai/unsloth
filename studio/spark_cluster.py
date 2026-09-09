@@ -1340,10 +1340,13 @@ def nccl_bandwidth(
     # Non-interactive ssh has no venv on PATH: without this, torchrun is missing on the
     # peer, so it never starts and the local side hangs at the rendezvous.
     activate = venv_activate()
+    # The pid is recorded so every exit below can stop this rank. setsid makes it a process
+    # group leader, so the negative kill takes the torchrun children with it.
     peer_cmd = (
         f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
         f"exec env {common} --node_rank=1 {remote_probe}' "
-        f"> /tmp/spark_nccl_probe.log 2>&1 < /dev/null &"
+        f"> {_NCCL_PROBE_LOG} 2>&1 < /dev/null & "
+        f"echo $! > {_NCCL_PROBE_PID}"
     )
     try:
         subprocess.run(
@@ -1353,27 +1356,61 @@ def nccl_bandwidth(
             timeout = 30,
         )
     except Exception:
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
         return None
     import time
 
-    time.sleep(4)  # let the peer's rendezvous come up before we dial in
+    # Every path from here on stops the peer rank. Without this a local timeout, a torchrun
+    # that never starts, or an exit during the collective left it detached in rendezvous or
+    # NCCL timeout handling, still holding the 1 GiB probe buffer, and the next provisioning
+    # run correctly refuses the peer as busy on the strength of a probe nobody is using.
     try:
-        out = subprocess.run(
-            f"env {common} --node_rank=0 {local_probe}",
-            shell = True,
-            capture_output = True,
-            text = True,
-            timeout = timeout,
-        )
-    except Exception:
+        time.sleep(4)  # let the peer's rendezvous come up before we dial in
+        try:
+            out = subprocess.run(
+                f"env {common} --node_rank=0 {local_probe}",
+                shell = True,
+                capture_output = True,
+                text = True,
+                timeout = timeout,
+            )
+        except Exception:
+            return None
+        for line in (out.stdout or "").splitlines():
+            if line.startswith("SPARK_NCCL_BUSBW"):
+                try:
+                    return float(line.split()[1])
+                except (IndexError, ValueError):
+                    return None
         return None
-    for line in (out.stdout or "").splitlines():
-        if line.startswith("SPARK_NCCL_BUSBW"):
-            try:
-                return float(line.split()[1])
-            except (IndexError, ValueError):
-                return None
-    return None
+    finally:
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
+
+
+_NCCL_PROBE_LOG = "/tmp/spark_nccl_probe.log"
+_NCCL_PROBE_PID = "/tmp/spark_nccl_probe.pid"
+
+
+def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
+    """Stop the detached probe rank on the peer, by the pid it recorded for us.
+
+    By pid, never by name: a pattern kill on a shared machine can take out something else that
+    happens to match. A dead pid makes this a no-op, so it is safe on the success path too."""
+    command = (
+        f'p=$(cat {_NCCL_PROBE_PID} 2>/dev/null); '
+        f'if [ -n "$p" ]; then kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; fi; '
+        f'rm -f {_NCCL_PROBE_PID}'
+    )
+    try:
+        subprocess.run(
+            ["ssh", *ssh_opts, f"{user}@{peer_ip}", command],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 20,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
