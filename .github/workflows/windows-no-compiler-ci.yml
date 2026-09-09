@@ -93,7 +93,12 @@ jobs:
 
           $state = auditpol /get /subcategory:"Process Creation"
           $state | Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\auditpol.txt"
-          if ($state -notmatch 'Success') {
+          # Joined to one string, and matched on the subcategory line rather than the bare
+          # word. auditpol returns an ARRAY of lines, and -notmatch on an array is a filter,
+          # not a test: it returns the elements that do not match, so on a runner where
+          # auditing turned on correctly it still returned the three header lines, and a
+          # non-empty array is truthy. This threw on every healthy machine.
+          if (($state | Out-String) -notmatch 'Process Creation\s+Success') {
               throw "process creation auditing did not turn on; this job cannot measure anything"
           }
 
