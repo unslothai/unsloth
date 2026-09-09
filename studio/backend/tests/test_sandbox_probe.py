@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import inspect
 import os
+import pathlib
+import re
 import subprocess
 import sys
 
@@ -59,6 +61,11 @@ def _passthrough(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
 _CONFINE_WRAPPER = """import builtins, os, sys
 WORK = os.path.realpath({workdir!r})
+# Both spellings, because on macOS the probe base is under /tmp, which is a
+# symlink to /private/tmp. With RESOLVE off the guard compares the path AS
+# WRITTEN, so resolving only one side made the double refuse its own workdir and
+# the probe stopped before it reached the symlink leg it exists to exercise.
+WORK_AS_GIVEN = os.path.abspath({workdir!r})
 LEAK_WRITES = {leak_writes!r}
 RESOLVE = {resolve!r}
 _host_open = builtins.open
@@ -72,8 +79,9 @@ def _confined(file, *args, **kwargs):
         target = os.path.realpath(file) if RESOLVE else os.fspath(file)
     except (TypeError, ValueError):
         target = None
-    outside = (
-        isinstance(target, str) and target != WORK and not target.startswith(WORK + os.sep)
+    outside = isinstance(target, str) and not any(
+        target == root or target.startswith(root + os.sep)
+        for root in (WORK, WORK_AS_GIVEN)
     )
     if outside:
         mode = args[0] if args else kwargs.get("mode", "r")
@@ -428,3 +436,50 @@ def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
     assert "AF_UNIX" in with_scope
     without = sandbox_probe._payload("/work", "/sentinel", "/escape", "/outside", False, None)
     assert "abstract" not in without
+
+
+def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(tmp_path, monkeypatch):
+    """macOS puts the probe base under /tmp, which is a symlink to /private/tmp,
+    and this test's double compares the path as written. Resolving only one side
+    made it refuse its own workdir, so the probe failed before reaching the leg
+    above and reported a confinement error for a path-spelling reason."""
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    real_mkdtemp = sandbox_probe.tempfile.mkdtemp
+
+    def through_the_symlink(prefix = None, dir = None):
+        made = real_mkdtemp(prefix = prefix, dir = str(alias))
+        return made.replace(str(real), str(alias))
+
+    monkeypatch.setattr(sandbox_probe.tempfile, "mkdtemp", through_the_symlink)
+    assert str(alias.resolve()) != str(alias)  # the premise, not an assumption
+    available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
+    assert available is False
+    assert "symlink" in reason, reason
+    available, reason = sandbox_probe.probe(_Backend("confining", _confining))
+    assert available is True, reason
+
+
+def test_the_landlock_helper_imports_where_it_will_never_be_used():
+    """ctypes.CDLL(None) means "the running process" only where dlopen has that
+    convention. On Windows ctypes tests the name for a path separator first and
+    raises TypeError, which the import guard did not catch, so importing this
+    Linux-only helper aborted collection on a platform that never calls it."""
+    source = pathlib.Path(sandbox_landlock.__file__).read_text(encoding = "utf-8")
+    guard = re.search(r"except \(([^)]*)\):[^\n]*\n(?:\s*#[^\n]*\n)*\s*_libc = None", source)
+    assert guard, "the CDLL(None) import guard moved; this test no longer checks it"
+    assert "TypeError" in guard.group(1), guard.group(1)
+    # Every entry point has to survive _libc being None, or the guard only moves
+    # the failure from import to first use.
+    real = sandbox_landlock._libc
+    sandbox_landlock._libc = None
+    sandbox_landlock.abstract_scope_supported.cache_clear()
+    try:
+        assert sandbox_landlock.abstract_scope_supported() is False
+        sandbox_landlock.apply_abstract_scope()  # a no-op, not a crash
+        sandbox_landlock.with_abstract_scope(None)()
+    finally:
+        sandbox_landlock._libc = real
+        sandbox_landlock.abstract_scope_supported.cache_clear()

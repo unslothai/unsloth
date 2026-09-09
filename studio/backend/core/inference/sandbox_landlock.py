@@ -30,7 +30,11 @@ try:
     # deadlock on a lock a thread held at fork time.
     _libc = ctypes.CDLL(None, use_errno = True)
     _libc.syscall.restype = ctypes.c_long
-except OSError:  # pragma: no cover - a libc that will not load
+except (OSError, TypeError, AttributeError):  # pragma: no cover
+    # TypeError is Windows: CDLL(None) means "the running process" only where
+    # dlopen has that convention, and ctypes there tests the name for a
+    # separator before anything else. Importing this module raised, which is not
+    # something a Linux-only helper should do on a platform that never calls it.
     _libc = None
 
 

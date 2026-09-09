@@ -197,13 +197,16 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     # while passing on Linux. What the assertion is for is per-CALL behaviour, so
     # a warm-up is what separates the two: a genuine per-call spawn survives it,
     # which is how the extra fork this test caught before was found.
+    # Both kinds, since the terminal path initialises its own shell lookup and a
+    # python-only warm-up left that inside the window.
     tools._python_exec("pass", None, 60, _SESSION)
+    tools._bash_exec("true", None, 60, _SESSION)
 
     seen = []
     real = subprocess.Popen
 
     def capture(argv, **kwargs):
-        seen.append(kwargs.get("preexec_fn"))
+        seen.append((argv, kwargs.get("preexec_fn")))
         return real(argv, **kwargs)
 
     subprocess.Popen = capture
@@ -212,7 +215,11 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    assert len(seen) == 2 and all(preexec is not None for preexec in seen)
+    # The argv is in the message because a count alone cannot say WHICH extra
+    # spawn appeared, and this only ever fails on a runner nobody can attach to.
+    assert len(seen) == 2, [argv for argv, _ in seen]
+    assert all(preexec is not None for _, preexec in seen)
+    seen = [preexec for _, preexec in seen]
     # Asked by result, not identity: an isolated launch composes the plan's
     # pre-exec with the backend's, so the object differs either way.
     for preexec in seen:
