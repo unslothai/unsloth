@@ -6560,6 +6560,44 @@ def persisted_marker_backend_request(backend_request: str | None, choice: AssetC
     return backend_request
 
 
+def host_profile(host: HostInfo) -> dict[str, Any]:
+    """The hardware facts the backend routing reads, in a shape a marker can hold.
+
+    Recorded so a later run can ask the one question the recorded request cannot answer:
+    is this still the box the bundle was chosen for. `backend_request` records what was
+    ASKED ("auto" on every automatic install), not what detection replied, and the
+    release tag does not move when the hardware does -- so without this an automatic
+    install keeps its CPU bundle after a GPU is added, keeps its CUDA bundle after the
+    driver or the card is removed, and keeps a coverage bundle after a card outside its
+    supported_sms replaces the old one, in every case until the fork happens to publish
+    a new release.
+
+    Only fields the selectors branch on, and only JSON-native types: a tuple reads back
+    from JSON as a list, and a profile that never compares equal to itself would take
+    the full path on every update forever. Computed from the ROUTED host, so the
+    comparison is made against the same HostInfo the selection was made from.
+    """
+
+    def _sorted_labels(values: "Iterable[Any] | None") -> list[str]:
+        # nvidia-smi and the ROCm probes list one row per GPU; two identical cards in
+        # either order describe the same host.
+        return sorted({str(value).strip() for value in (values or []) if str(value).strip()})
+
+    return {
+        "has_usable_nvidia": bool(host.has_usable_nvidia),
+        "driver_cuda_version": (
+            list(host.driver_cuda_version) if host.driver_cuda_version else None
+        ),
+        "compute_caps": _sorted_labels(host.compute_caps),
+        "has_rocm": bool(host.has_rocm),
+        "rocm_gfx_target": host.rocm_gfx_target or None,
+        "rocm_gfx_targets": _sorted_labels(host.rocm_gfx_targets),
+        "has_intel_gpu": bool(host.has_intel_gpu),
+        "has_amd_gpu_without_rocm": bool(host.has_amd_gpu_without_rocm),
+        "macos_version": list(host.macos_version) if host.macos_version else None,
+    }
+
+
 def write_prebuilt_metadata(
     install_dir: Path,
     *,
@@ -6593,6 +6631,13 @@ def write_prebuilt_metadata(
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     _persisted_backend = persisted_llama_backend(llama_backend, choice)
+    # An install kind with no allowlist raises rather than returning nothing, and a
+    # metadata write is not the place to turn a successful install into a fallback: the
+    # binary tier alone is still honest evidence, so record that and move on.
+    try:
+        _runtime_patterns: list[str] | None = runtime_patterns_for_choice(choice)
+    except PrebuiltFallback:
+        _runtime_patterns = None
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -6651,12 +6696,17 @@ def write_prebuilt_metadata(
         # existing_install_current_without_plan has to do before it reaches the network.
         "runtime_sha256": choice.runtime_sha256,
         "install_fingerprint": fingerprint,
-        # size + sha256 of the binaries a reuse decision would otherwise have to RUN.
+        # size + sha256 of the binaries a reuse decision would otherwise have to RUN,
+        # plus size + mtime_ns of every other file this bundle's copy allowlist matched.
         # `llama-server --version` loads the CUDA runtime, which on macOS and Windows is
         # most of what re-validating a prebuilt install costs on every update; hashing
         # them is ~100 ms and answers the same question -- are these the bytes we
         # installed. Absent on a pre-PR marker, which then takes the full path once.
-        "runtime_files": runtime_file_records(install_dir, host),
+        "runtime_files": runtime_file_records(install_dir, host, _runtime_patterns),
+        # The box this bundle was chosen for. Absent means "written before this key
+        # existed", which the no-network re-check reads as "cannot say" and answers by
+        # taking the full path -- see host_profile.
+        **({"host_profile": host_profile(host)} if host is not None else {}),
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -6749,6 +6799,8 @@ def _marker_selection_patch(
     persist_llama_backend: str | None,
     ggml_tree: str | None,
     rocm_gfx: str | None,
+    install_dir: Path | None = None,
+    host: HostInfo | None = None,
 ) -> dict:
     """The fields a reused install must still take from this run.
 
@@ -6757,6 +6809,11 @@ def _marker_selection_patch(
     choice behind it is unchanged: someone can switch a CUDA install to CPU and land
     on the very bundle detection would have picked, and only these fields stop the
     next update from routing it straight back.
+
+    It is also the only place that ever re-examines a bundle without reinstalling it,
+    which makes it the only place that can catch an OLD marker up to the evidence the
+    no-network re-check needs. Hence *install_dir* and *host*: see the backfill at the
+    end.
     """
     patch: dict = {}
     if bool(marker.get("force_cpu")) != persist_force_cpu:
@@ -6796,6 +6853,33 @@ def _marker_selection_patch(
     # Set, never cleared: reuse needs a fingerprint match, so a pair-less bundle matches.
     if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
         patch["runtime_asset"] = choice.runtime_name
+    # Catch an older marker up to what the no-network re-check needs. Without these three
+    # keys _marker_install_fingerprint and _runtime_files_match both fail closed and
+    # host_profile is unanswerable, so an install made before this PR would take the
+    # slow path on EVERY update rather than once -- which is most of what the PR set out
+    # to remove. This run has just proved the bundle on disk is the one it would install,
+    # so the records it writes describe a tree it verified.
+    #
+    # ADDED only, never corrected: a key already present was written by a run that knew
+    # what it meant, and overwriting it from a reused bundle would re-bless bytes this
+    # run did not hash.
+    if "runtime_sha256" not in marker:
+        # None is the honest value for a bundle with no paired runtime archive, and it
+        # is what expected_install_fingerprint hashed, so it must be recorded as null
+        # rather than left absent.
+        patch["runtime_sha256"] = choice.runtime_sha256
+    if install_dir is not None and not isinstance(marker.get("runtime_files"), dict):
+        try:
+            backfill_patterns: list[str] | None = runtime_patterns_for_choice(choice)
+        except PrebuiltFallback:
+            backfill_patterns = None
+        records = runtime_file_records(install_dir, host, backfill_patterns)
+        # An empty record is not evidence, and writing one would make the next run's
+        # fail-closed check pass on nothing.
+        if records:
+            patch["runtime_files"] = records
+    if host is not None and not isinstance(marker.get("host_profile"), dict):
+        patch["host_profile"] = host_profile(host)
     return patch
 
 
@@ -6808,6 +6892,7 @@ def sync_marker_selection(
     persist_llama_backend: str | None = None,
     ggml_tree: str | None = None,
     rocm_gfx: str | None = None,
+    host: HostInfo | None = None,
 ) -> None:
     """Record this run's selection on a marker whose bundle was reused unchanged.
 
@@ -6832,6 +6917,8 @@ def sync_marker_selection(
         persist_llama_backend = persist_llama_backend,
         ggml_tree = ggml_tree,
         rocm_gfx = rocm_gfx,
+        install_dir = install_dir,
+        host = host,
     )
     if not patch:
         return
@@ -6848,7 +6935,9 @@ def sync_marker_selection(
             "a later update may not re-assert this choice"
         )
         return
-    log(f"existing install reused; recorded {patch} from this run")
+    # Keys, not values: the backfill above can carry a runtime_files record per file in
+    # the bundle, and a Windows CUDA install has dozens.
+    log(f"existing install reused; recorded {sorted(patch)} from this run")
 
 
 def expected_install_fingerprint(
@@ -7141,27 +7230,82 @@ def _runtime_record_paths(install_dir: Path, host: "HostInfo | None" = None) -> 
     return paths
 
 
+def _stat_record(path: Path) -> "dict[str, Any] | None":
+    """size + mtime_ns for one regular file, or None when it is neither."""
+    try:
+        if not path.is_file():
+            return None
+        info = path.stat()
+    except OSError:
+        return None
+    return {"size": info.st_size, "mtime_ns": info.st_mtime_ns}
+
+
 def runtime_file_records(
-    install_dir: Path, host: "HostInfo | None" = None
+    install_dir: Path,
+    host: "HostInfo | None" = None,
+    patterns: "list[str] | None" = None,
 ) -> "dict[str, dict[str, Any]]":
-    """size + sha256 of each runtime binary present, keyed by path inside the install."""
+    """What the runtime is made of, in a form a later run can re-check without running it.
+
+    Two tiers, because the two halves of a bundle fail differently:
+
+      * the binaries a reuse decision would otherwise START get size + sha256. Their
+        bytes decide whether the install runs at all, and three files is ~100 ms.
+      * every other file the bundle's own copy allowlist matches gets size + mtime_ns,
+        stat only. _runtime_payload_has globs for EXISTENCE, so a truncated
+        libggml-cuda.so, ggml-cuda.dll or cudart DLL passes it -- and those shared
+        libraries are where most of a CUDA bundle's bytes live, which is exactly the
+        shape a full disk or an interrupted extract leaves behind. A size comparison
+        catches it for the price of a stat; hashing 300 MB of kernels on every update
+        would not be worth it.
+
+    *patterns* comes from runtime_patterns_for_install_kind for the bundle being
+    installed; without it only the binary tier is recorded, which is what the callers
+    that have no bundle in hand (a bare re-record) can honestly say.
+    """
     records: dict[str, dict[str, Any]] = {}
+    runtime_dir = install_runtime_dir(install_dir, host) if host is not None else None
+    if patterns and runtime_dir is not None:
+        for pattern in patterns:
+            try:
+                matches = sorted(runtime_dir.glob(pattern))
+            except OSError:
+                continue
+            for candidate in matches:
+                record = _stat_record(candidate)
+                if record is None:
+                    continue
+                try:
+                    relative = candidate.relative_to(install_dir).as_posix()
+                except ValueError:
+                    continue
+                records[relative] = record
+    # Last, so a binary matched by the sweep above is upgraded to the hashed tier
+    # rather than left at size-only.
     for candidate in _runtime_record_paths(install_dir, host):
         try:
             relative = candidate.relative_to(install_dir).as_posix()
         except ValueError:
             continue
+        record = _stat_record(candidate)
+        if record is None:
+            continue
         try:
-            info = candidate.stat()
-            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            record["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
         except OSError:
             continue
-        records[relative] = {"size": info.st_size, "sha256": digest}
+        records[relative] = record
     return records
 
 
 def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, Any]") -> bool:
-    """Whether every recorded runtime binary is still byte-for-byte what was installed.
+    """Whether every recorded runtime file is still the file that was installed.
+
+    Sizes for everything, digests for the binaries that carry one (see
+    runtime_file_records for why the split). mtime_ns is recorded but deliberately NOT
+    compared: a restore from backup, an rsync or a container layer rewrites it without
+    changing a byte, and the answer to a mismatch here is a 200-400 MB re-download.
 
     Fails CLOSED, unlike the payload scans: this is the evidence that replaces actually
     starting the binaries, so an empty or unreadable record is not proof of anything.
@@ -7179,7 +7323,8 @@ def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, A
             if info.st_size != expected.get("size"):
                 log(f"kept install rejected: {relative} is {info.st_size} bytes")
                 return False
-            if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected.get("sha256"):
+            digest = expected.get("sha256")
+            if digest is not None and hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
                 log(f"kept install rejected: {relative} does not match the recorded digest")
                 return False
         except OSError as exc:
@@ -7237,6 +7382,57 @@ def prebuilt_full_check_requested() -> bool:
     )
 
 
+def _newest_release_tag_from_releases(releases: "Iterable[Any]") -> "str | None":
+    """The newest published release tag by published_at, the ordering _select uses.
+
+    Mirrors iter_release_payloads_by_time's sort (release_time_sort_key, drafts and
+    prereleases dropped) so the two cannot answer differently from the same payload.
+    """
+    published = [
+        release
+        for release in releases
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and not release.get("prerelease")
+        and isinstance(release.get("tag_name"), str)
+        and release.get("tag_name")
+    ]
+    if not published:
+        return None
+    return max(published, key = release_time_sort_key)["tag_name"]
+
+
+def _api_newest_release_tag(repo: str) -> "str | None":
+    """The API's notion of latest: one api.github.com page, published_at ordering."""
+    try:
+        return _newest_release_tag_from_releases(github_releases(repo, max_pages = 1))
+    except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
+        log(f"could not resolve the latest release from the GitHub API ({exc})")
+        return None
+
+
+def _memoized_api_newest_release_tag(repo: str) -> "str | None":
+    """The API's notion of latest, but only when this process already has the payload.
+
+    _METADATA_MEMO is populated only inside _cached_metadata_fetches (--resolve-backends
+    planning several options from one snapshot); on the install path it is None and this
+    answers None without touching the network. Free when it is there, and there is no
+    reason to prefer the cheaper, staler answer over one already in hand.
+    """
+    memo = _METADATA_MEMO
+    if not memo:
+        return None
+    prefix = f"https://api.github.com/repos/{repo}/releases?"
+    releases: list[Any] = []
+    for key, payload in memo.items():
+        if not (isinstance(key, tuple) and len(key) == 2 and key[0] == "json"):
+            continue
+        url = key[1]
+        if isinstance(url, str) and url.startswith(prefix) and isinstance(payload, list):
+            releases.extend(payload)
+    return _newest_release_tag_from_releases(releases) if releases else None
+
+
 def _expected_release_tag_without_plan(
     marker: "dict[str, Any]", llama_tag: str, published_repo: str, published_release_tag: str
 ) -> "str | None":
@@ -7249,6 +7445,20 @@ def _expected_release_tag_without_plan(
         the fork publishes one release per upstream build;
       * "latest" costs ONE HEAD on github.com/<repo>/releases/latest -- no
         api.github.com call, so no rate limit, and no manifest or checksum download.
+
+    KNOWN AND ACCEPTED LAG, for "latest" only. The HEAD follows /releases/latest, which
+    GitHub resolves by make_latest / created_at. The normal macOS path deliberately
+    turns the download-host resolver off (allow_download_host_fast_path = not
+    host.is_macos, so it can walk back past a prebuilt whose minimum OS is too new) and
+    orders releases by published_at instead. The two disagree when a release is created
+    before, but published after, another -- e.g. a re-published or back-dated release.
+    In that window this check can report "current" for an install _select would have
+    moved off. The consequence is one deferred update, never a wrong install: the very
+    next run whose pointer has caught up does the move, and every OTHER guard here
+    (fingerprint, host profile, payload) still holds. Paying an api.github.com call on
+    every update to close it would reintroduce the rate limit this path exists to avoid.
+    Two things narrow it anyway, below: an explicit request for the API path gets the
+    API's answer, and a payload this process already fetched is compared for free.
     """
     pinned = (published_release_tag or "").strip()
     if pinned:
@@ -7262,14 +7472,27 @@ def _expected_release_tag_without_plan(
             return None
         recorded_release = marker.get("release_tag")
         return recorded_release if isinstance(recorded_release, str) else None
+    repo = published_repo or DEFAULT_PUBLISHED_REPO
     if not _download_host_resolve_enabled():
-        # The caller asked for the API path, which is the one this exists to avoid.
-        return None
+        # The caller asked for the API path. Answering None here would make the escape
+        # hatch mean "never skip", which is not what it says; answer with the notion of
+        # latest the run it just asked for would use.
+        return _api_newest_release_tag(repo)
     try:
-        return _download_host_latest_release_tag(published_repo or DEFAULT_PUBLISHED_REPO)
+        resolved = _download_host_latest_release_tag(repo)
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not resolve the latest release without the API ({exc})")
         return None
+    if not resolved:
+        return None
+    cached = _memoized_api_newest_release_tag(repo)
+    if cached is not None and cached != resolved:
+        log(
+            f"/releases/latest points at {resolved} but the newest published release in "
+            f"{repo} is {cached}; using the published_at answer this run already has"
+        )
+        return cached
+    return resolved
 
 
 def _diffusion_visual_server_missing_for_marker(
@@ -7310,6 +7533,37 @@ def _diffusion_visual_server_missing_for_marker(
     return True
 
 
+def _marker_backend_fits_host(marker: "dict[str, Any]", host: HostInfo) -> bool:
+    """Whether the marker's own backend/request pair is one this platform can hold.
+
+    Two assertions, both cheap and both about the MARKER rather than the disk:
+
+      * self-consistency. write_prebuilt_metadata records backend_request through
+        persisted_marker_backend_request, which stores "auto" whenever the request and
+        the bundle that landed disagree. So a marker naming a concrete request must name
+        the same backend, or it was not written by this installer -- and the rest of this
+        check reads those two fields to decide it need do no work.
+      * platform fit. backend_for_install_kind maps kinds to backends; a backend with no
+        kind on this platform (a "cuda" marker on macOS, a copied install directory)
+        cannot describe a bundle this run would produce, and _kept_install_payload_is_healthy
+        answers True vacuously for it because there is no shared payload to require.
+    """
+    recorded_backend = marker_backend(marker)
+    if recorded_backend is None:
+        return False
+    recorded_request = marker.get("backend_request")
+    if (
+        isinstance(recorded_request, str)
+        and recorded_request not in ("", "auto")
+        and recorded_request != recorded_backend
+    ):
+        return False
+    platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
+    return any(
+        kind.startswith(platform_prefix) for kind in install_kinds_for_backend(recorded_backend)
+    )
+
+
 def existing_install_current_without_plan(
     install_dir: Path,
     *,
@@ -7318,6 +7572,9 @@ def existing_install_current_without_plan(
     published_release_tag: str,
     backend_request: str,
     force_cpu: bool,
+    override_has_rocm: bool = False,
+    override_rocm_gfx: str | None = None,
+    route: "BackendRoute | None" = None,
 ) -> bool:
     """Whether the install on disk is already the one this run would produce.
 
@@ -7326,10 +7583,24 @@ def existing_install_current_without_plan(
     starts llama-server and loads the CUDA runtime -- 13-63 s on macOS, ~5 s on Windows,
     every update, to arrive back where it started.
 
-    Every check is on-disk evidence or a tag comparison. Nothing here reasons about what
-    a bundle SHOULD contain: that is existing_install_matches_choice's job, and it needs
-    the plan. This one only asserts that the recorded install is intact and that the
-    release it names is the release this run would ask for.
+    Every check is on-disk evidence, a local hardware probe, or a tag comparison. Nothing
+    here reasons about what a bundle SHOULD contain: that is existing_install_matches_choice's
+    job, and it needs the plan. This one asserts that the recorded install is intact, that
+    the HOST is still the host it was chosen for, and that the release it names is the
+    release this run would ask for.
+
+    The host half is not optional. The recorded request is "auto" on every automatic
+    install, so on its own it says a CPU bundle is still right after a GPU is added, a
+    CUDA bundle is still right after the card or the driver is gone, and a coverage
+    bundle is still right for a card outside its supported_sms -- and since the tag does
+    not move when hardware does, that verdict would stand until the fork published a new
+    release. So the host is re-derived here through route_backend_request, the same
+    no-network routing _select uses (identical overrides, identical cpu mechanism), and
+    compared against the profile the install recorded. A marker with no host_profile --
+    every one written before this existed -- cannot answer and takes the full path.
+
+    See _expected_release_tag_without_plan for the one thing this deliberately does NOT
+    close: the documented "latest" pointer lag.
     """
     if prebuilt_full_check_requested():
         return False
@@ -7337,8 +7608,6 @@ def existing_install_current_without_plan(
     if not marker:
         return False
     # (1) the marker describes an install this run would have made.
-    if (marker.get("published_repo") or "") != (published_repo or DEFAULT_PUBLISHED_REPO):
-        return False
     if not isinstance(marker.get("install_fingerprint"), str):
         return False
     # An explicit --force-cpu or --llama-backend still wins: a request that differs from
@@ -7348,17 +7617,46 @@ def existing_install_current_without_plan(
         return False
     if bool(marker.get("force_cpu")) != bool(force_cpu):
         return False
-    # (2) the release this run would ask for is the release that is installed.
+    # (2) the hardware. Local probes only, and before the HEAD below, so a box whose GPU
+    # changed does not pay a network round trip to find out it must reinstall anyway.
+    # The caller passes the route it is about to hand _select, so the probes run once per
+    # update rather than once here and once again on the way to the selector.
+    if route is None:
+        route = route_backend_request(
+            backend = backend_request,
+            published_repo = published_repo,
+            published_release_tag = published_release_tag,
+            override_has_rocm = override_has_rocm,
+            override_rocm_gfx = override_rocm_gfx,
+            cpu_mechanism = force_cpu,
+        )
+    host = route.host
+    # The ROUTED repo and tag, not the caller's: routing sends a Linux arm64 Vulkan host
+    # to the upstream repo, and the marker records where the bundle actually came from.
+    if (marker.get("published_repo") or "") != (route.published_repo or DEFAULT_PUBLISHED_REPO):
+        return False
+    if not _marker_backend_fits_host(marker, host):
+        return False
+    recorded_profile = marker.get("host_profile")
+    if not isinstance(recorded_profile, dict):
+        # Written before host_profile existed. Nothing on disk says which box chose this
+        # bundle, so the honest answer is "cannot tell" -- and the full path below both
+        # re-decides it and, through sync_marker_selection, records the profile so this
+        # is paid once rather than every update.
+        return False
+    if recorded_profile != host_profile(host):
+        log("kept install rejected: this host no longer matches the one it was installed for")
+        return False
+    # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(
-        marker, llama_tag, published_repo, published_release_tag
+        marker, llama_tag, route.published_repo, route.published_release_tag
     )
     if not expected_release or expected_release != marker.get("release_tag"):
         return False
-    # (3) the marker was written whole by this installer, so its fields can be trusted.
+    # (4) the marker was written whole by this installer, so its fields can be trusted.
     if _marker_install_fingerprint(marker) != marker.get("install_fingerprint"):
         return False
-    host = detect_host()
-    # (4) the tree is the shape the marker's backend implies, and is executable.
+    # (5) the tree is the shape the marker's backend implies, and is executable.
     if not _install_tree_is_usable(install_dir, host):
         return False
     if not _kept_install_payload_is_healthy(install_dir, host):
@@ -7377,7 +7675,7 @@ def existing_install_current_without_plan(
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:  # noqa: BLE001
         return False
-    # (5) and the bytes are the ones that were installed.
+    # (6) and the bytes are the ones that were installed.
     if not _runtime_files_match(install_dir, host, marker):
         return False
     # The one backfill that is not a release change, so it has to be asked separately.
@@ -9073,20 +9371,28 @@ def install_prebuilt(
             # problem a source build only makes worse, so those stay EXIT_ERROR
             # alongside resolver bugs. ENOSPC still reaches EXIT_NO_SPACE via
             # _environment_fatal_reason in __main__.
-            def _select(requested_backend: str | None) -> BackendSelection:
+            def _select(
+                requested_backend: str | None, route: BackendRoute | None = None
+            ) -> BackendSelection:
                 nonlocal host
                 # Routing is deliberately outside the conversion below: it makes no
                 # network call, so letting it be caught here would report a bug in
                 # host detection as a release-listing failure and source build over
                 # it.
-                route = route_backend_request(
-                    backend = requested_backend,
-                    published_repo = published_repo,
-                    published_release_tag = published_release_tag,
-                    override_has_rocm = override_has_rocm,
-                    override_rocm_gfx = override_rocm_gfx,
-                    cpu_mechanism = force_cpu,
-                )
+                #
+                # A route the caller already computed is reused rather than recomputed:
+                # routing runs nvidia-smi and the ROCm probes, and the no-network
+                # re-check below needs the same answer, so an update that finds a new
+                # release would otherwise probe this host twice.
+                if route is None:
+                    route = route_backend_request(
+                        backend = requested_backend,
+                        published_repo = published_repo,
+                        published_release_tag = published_release_tag,
+                        override_has_rocm = override_has_rocm,
+                        override_rocm_gfx = override_rocm_gfx,
+                        cpu_mechanism = force_cpu,
+                    )
                 host = route.host
                 try:
                     return select_backend_install(
@@ -9116,6 +9422,18 @@ def install_prebuilt(
             # bundle on disk, and then re-validates it by starting llama-server, which
             # loads the CUDA runtime. Measured at 13-63 s per macOS update and ~5 s per
             # Windows one, for no change. The check below costs one HEAD on github.com.
+            #
+            # Routed once, here, and handed to both: the re-check has to compare the same
+            # host profile the install was recorded from, and _select would repeat the
+            # hardware probes for the same answer.
+            initial_route = route_backend_request(
+                backend = backend,
+                published_repo = published_repo,
+                published_release_tag = published_release_tag,
+                override_has_rocm = override_has_rocm,
+                override_rocm_gfx = override_rocm_gfx,
+                cpu_mechanism = force_cpu,
+            )
             if existing_install_current_without_plan(
                 install_dir,
                 llama_tag = llama_tag,
@@ -9128,10 +9446,11 @@ def install_prebuilt(
                 # CHANGE the install, so it must not match.
                 backend_request = backend,
                 force_cpu = force_cpu,
+                route = initial_route,
             ):
                 return
             try:
-                selection = _select(backend)
+                selection = _select(backend, initial_route)
             except BackendUnavailable:
                 if backend_mandatory:
                     # The caller named this backend, so installing a different one
@@ -9165,6 +9484,10 @@ def install_prebuilt(
                     persist_llama_backend = persisted_llama_backend(persist_llama_backend, reused),
                     ggml_tree = recorded_ggml_tree(plan.approved_checksums, reused),
                     rocm_gfx = persist_rocm_gfx,
+                    # The routed host this reuse was decided on, so a marker written
+                    # before the no-network re-check existed gains its host_profile and
+                    # runtime_files here rather than never.
+                    host = host,
                 )
 
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
