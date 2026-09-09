@@ -3196,6 +3196,42 @@ def _unsloth_floating_point_ops(self, inputs):
     return 6 * inputs[main_input].numel() * cached[1]
 
 
+def patch_bnb_optimizer_step_sync():
+    """bitsandbytes' `Optimizer8bit.step` calls `torch.cuda.synchronize()` after every single
+    parameter update (`bitsandbytes/optim/optimizer.py: sync_gpu(p)`), 256 full device drains
+    per optimizer step for a LoRA model. The sync exists for paged optimizers, whose state
+    lives in unified memory; the plain 8-bit optimizers launch ordinary CUDA kernels on the
+    current stream and need none. Keep the sync for paged optimizers, drop it otherwise.
+    """
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    if Optimizer8bit is None or getattr(Optimizer8bit.step, "_unsloth_no_sync", False):
+        return
+    if not hasattr(bnb_optimizer, "sync_gpu"):
+        return
+    original_step = Optimizer8bit.step
+    real_sync_gpu = bnb_optimizer.sync_gpu
+
+    def _no_sync(t):
+        return None
+
+    @functools.wraps(original_step)
+    def step(self, closure = None):
+        if getattr(self, "is_paged", False):
+            return original_step(self, closure)
+        bnb_optimizer.sync_gpu = _no_sync
+        try:
+            return original_step(self, closure)
+        finally:
+            bnb_optimizer.sync_gpu = real_sync_gpu
+
+    step._unsloth_no_sync = True
+    Optimizer8bit.step = step
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3309,6 +3345,8 @@ def patch_gradient_accumulation_fix(Trainer):
 
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
+
+    patch_bnb_optimizer_step_sync()
 
     # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
     if getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
