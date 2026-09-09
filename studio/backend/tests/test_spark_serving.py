@@ -117,6 +117,10 @@ def cluster(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     ss.reset_for_tests()
+    # Rail discovery is cached with a TTL so the polled status endpoint does not walk sysfs on
+    # the event loop every time. That cache is module state, and these tests reconfigure the
+    # cluster between cases, so it is dropped here rather than left to leak across them.
+    ss.reset_peer_discovery_cache()
     monkeypatch.setattr(ss, "_CLUSTER", stub)
     monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", True)
     monkeypatch.delenv(ss.ENV_TOGGLE, raising = False)
@@ -246,10 +250,14 @@ def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch):
 
 
 def test_off_by_default_everywhere_but_a_paired_spark(cluster, monkeypatch):
+    # Rail discovery is cached for _PEER_DISCOVERY_TTL_S, so a peer that appears or disappears
+    # mid-test has to say so. Real cabling does not change between two statements; this does.
     assert ss.enabled()
     cluster.peer = None
+    ss.reset_peer_discovery_cache()
     assert not ss.enabled(), "a Spark with no configured peer stays single"
     cluster.peer = "192.168.200.13"
+    ss.reset_peer_discovery_cache()
     cluster.spark = False
     assert not ss.enabled(), "not a Spark: nothing runs"
     cluster.spark = True
@@ -572,7 +580,11 @@ def _patch_remote(
     async def fake_stop(self, timeout = 10.0):
         return None
 
-    async def fake_wait(host, port, timeout):
+    async def fake_wait(host, port, timeout, *, cancelled = None):
+        # Honours the cancel check the same way the real one does, so a test can drive a
+        # cancelled attach through this double.
+        if cancelled is not None and cancelled():
+            return False
         return port_opens
 
     monkeypatch.setattr(ss, "ssh_run", fake_ssh_run)
@@ -2039,7 +2051,7 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
 def _port_answers(first: bool, *, then: bool):
     state = {"n": 0}
 
-    async def _answer(host, port, timeout):
+    async def _answer(host, port, timeout, *, cancelled = None):
         state["n"] += 1
         return first if state["n"] == 1 else then
 
@@ -2068,16 +2080,75 @@ def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
         async def start(self):
             pass
 
+    class _Backend:
+        def __init__(self, healthy, primary):
+            self.healthy, self.primary = healthy, primary
+
+    class _Router:
+        def __init__(self, healthy):
+            self.backends = [_Backend(True, True), _Backend(healthy, False)]
+
     real_sleep = asyncio.sleep
     monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
-    state.peer_process = _Proc()
+    proc = _Proc()
+    state.peer_process = proc
     state.attached_backend = object()
+    # Recovery is the ROUTER seeing the peer answer, not the peer merely being alive three
+    # seconds later, so the budget only resets when there is a healthy non-primary backend.
+    state.router = _Router(True)
     state.relaunch_attempts = len(ss.RELAUNCH_BACKOFF_S) - 1
 
     asyncio.run(state._relaunch_peer())
 
     assert state.relaunch_attempts == 0
     assert not state.relaunch_gave_up
+
+
+def test_a_peer_that_never_becomes_healthy_spends_the_relaunch_budget(monkeypatch):
+    # A large model spends minutes inside load_model before it can OOM, so a peer that dies
+    # there is alive at the three second settle EVERY time. Resetting the budget on that alone
+    # meant the three attempt bound was never reached: the peer reloaded and failed forever,
+    # paying for the whole load each cycle. Recovery has to be the router seeing it answer.
+    import asyncio
+
+    state = ss.SparkServing()
+
+    class _Proc:
+        name, peer, returncode, remote_pid = "llama-server", "peer", 1, 7
+        tail: list = []
+        started_at = 1.0
+        alive = True
+
+        async def stop(self, timeout = None):
+            pass
+
+        async def start(self):
+            pass
+
+    class _Backend:
+        def __init__(self, healthy, primary):
+            self.healthy, self.primary = healthy, primary
+
+    class _Router:
+        # The primary is healthy throughout; only the peer never comes up. A check that looked
+        # at "any healthy backend" rather than a non-primary one would pass on this forever.
+        backends = [_Backend(True, True), _Backend(False, False)]
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+    monkeypatch.setattr(ss, "RELAUNCH_HEALTHY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(ss, "RELAUNCH_HEALTH_POLL_S", 0.01)
+    state.peer_process = _Proc()
+    state.attached_backend = object()
+    state.router = _Router()
+
+    asyncio.run(state._relaunch_peer())
+
+    assert state.relaunch_gave_up, "the budget is spent, not reset, by a peer that never answers"
+    assert state.relaunch_attempts == len(ss.RELAUNCH_BACKOFF_S)
+    events = [entry.get("event") for entry in state.relaunch_log]
+    assert "recovered" not in events
+    assert events.count("relaunched but never healthy") == len(ss.RELAUNCH_BACKOFF_S)
 
 
 def test_load_failed_keeps_a_topology_whose_model_is_still_loaded():
@@ -2425,7 +2496,7 @@ def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatc
     monkeypatch.setattr(
         ss,
         "remote_gguf_size_bytes",
-        lambda path, variant: asked.append(path) or 200 * 1024**3,
+        lambda path, variant, token = None: asked.append(path) or 200 * 1024**3,
     )
 
     cluster.topology = "layer_split"
@@ -2443,7 +2514,7 @@ def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, mon
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     _patch_remote(monkeypatch)
-    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
 
     cluster.topology = "layer_split"  # the planner would split, if it were ever asked
     request = _FakeRequest("unsloth/Huge-GGUF")
@@ -2472,7 +2543,7 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     # cannot be recovered.
     monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.01)
 
-    async def always_open(host, port, timeout):
+    async def always_open(host, port, timeout, *, cancelled = None):
         return True
 
     monkeypatch.setattr(ss, "wait_for_port", always_open)
@@ -2494,7 +2565,7 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
 
     doomed = _Doomed()
 
-    async def open_then_kill(host, port, timeout):
+    async def open_then_kill(host, port, timeout, *, cancelled = None):
         doomed.alive = False
         return True
 
@@ -2504,7 +2575,9 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     # Already gone before the first probe: not asked about at all.
     probed = []
     monkeypatch.setattr(
-        ss, "wait_for_port", lambda h, p, t: probed.append(1) or always_open(h, p, t)
+        ss,
+        "wait_for_port",
+        lambda h, p, t, **kw: probed.append(1) or always_open(h, p, t, **kw),
     )
     dead = _Doomed()
     dead.alive = False
@@ -2530,7 +2603,7 @@ def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, mon
         stopped.append(self.name)
         return await real_stop(self, timeout = timeout)
 
-    async def cancel_while_waiting(process, host, port, timeout):
+    async def cancel_while_waiting(process, host, port, timeout, *, cancelled = None):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
@@ -2555,7 +2628,7 @@ def test_a_replica_port_taken_by_a_stranger_is_not_routed_to(cluster, monkeypatc
         monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
     )
 
-    async def not_ours(process, host, port, timeout):
+    async def not_ours(process, host, port, timeout, *, cancelled = None):
         return False
 
     monkeypatch.setattr(ss, "wait_for_own_port", not_ours)
@@ -2846,7 +2919,7 @@ def test_a_forced_split_does_not_apply_to_a_load_that_is_not_a_gguf(cluster, mon
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-cache"))
     cluster.topology = "single"
     _calls, started = _patch_remote(monkeypatch)
-    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
 
     request = _FakeRequest("meta-llama/Llama-3.1-8B-Instruct")
     assert run(ss.before_load(request, 4)) is request
@@ -3373,3 +3446,172 @@ def test_a_replica_is_given_a_model_load_deadline_not_the_rpc_servers():
     src = inspect.getsource(ss.SparkServing._start_replicas)
     assert "PEER_REPLICA_START_TIMEOUT_S" in src
     assert "PEER_START_TIMEOUT_S)" not in src, "the replica must not use the rpc-server deadline"
+
+
+def test_a_replica_does_not_get_back_a_setting_the_primary_scrubbed(
+    cluster, monkeypatch, tmp_path
+):
+    # The primary is spawned with a CONDITIONALLY sanitized copy of the environment, and the
+    # scrubs go well past DENIED_ENV_VARS: disable_vision drops LLAMA_ARG_MMPROJ and
+    # _MMPROJ_URL, a CPU-forced replay drops LLAMA_ARG_OVERRIDE_TENSOR and the tensor split,
+    # the memory fit drops _CTX_SIZE, _THREADS, _KV_UNIFIED, _N_PARALLEL and _FLASH_ATTN.
+    # Rebuilding the replica's environment from os.environ handed every one of them back to
+    # the peer, so the peer loaded a projector the primary had refused and the router then
+    # alternated between two servers that were not the same server.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "mmproj.gguf"))
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "131072")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q8_0")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    backend = _FakeBackend(12345, str(model))
+    # What the primary was ACTUALLY spawned with: vision off, and a context the fit shrank.
+    backend._launched_env = {
+        "PATH": os.environ.get("PATH", ""),
+        "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+        "LLAMA_ARG_CTX_SIZE": "8192",
+    }
+    backend.launched_env = dict(backend._launched_env)
+
+    run(ss.after_load(backend, 16))
+    assert started, "the peer llama-server was launched"
+    peer_argv = started[0].argv
+    assert not any("LLAMA_ARG_MMPROJ" in a for a in peer_argv), (
+        "the peer got back a projector the primary was launched without"
+    )
+    assert "LLAMA_ARG_CTX_SIZE=8192" in peer_argv, "the peer must run the primary's context"
+    assert "LLAMA_ARG_CTX_SIZE=131072" not in peer_argv
+    # Still carried across, so this is not just dropping everything.
+    assert "LLAMA_ARG_CACHE_TYPE_K=q8_0" in peer_argv
+
+
+def test_a_backend_that_cannot_say_still_gets_the_old_environment_behaviour(
+    cluster, monkeypatch, tmp_path
+):
+    # Not every caller has a recorded launch environment (an older backend, a partial double).
+    # Falling back to os.environ is what this did before and is strictly better than nothing.
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    backend = _FakeBackend(12345, str(model))
+    assert getattr(backend, "launched_env", None) is None
+    run(ss.after_load(backend, 16))
+    assert "LLAMA_ARG_CACHE_TYPE_V=q8_0" in started[0].argv
+
+
+def test_the_hub_is_asked_with_the_requests_own_token(monkeypatch):
+    # A private or gated repo answers an anonymous query with an authorization failure, which
+    # is swallowed as "size unknown" and plans single -- and then the authenticated loader
+    # downloads the model anyway, so a repo larger than one Spark reaches the one topology
+    # that cannot hold it. The failure looks exactly like being offline.
+    import sys
+    import types
+
+    seen = []
+
+    class _Variant:
+        filename, size_bytes = "model-Q4_K_M.gguf", 200 * 1024**3
+
+    module = types.ModuleType("utils.models.model_config")
+
+    def _list(repo_id, hf_token = None):
+        seen.append((repo_id, hf_token))
+        if not hf_token:
+            raise PermissionError("gated repo")
+        return ([_Variant()], False)
+
+    module.list_gguf_variants = _list
+    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
+
+    assert ss.remote_gguf_size_bytes("private/Huge-GGUF", None) is None
+    assert ss.remote_gguf_size_bytes("private/Huge-GGUF", None, "hf_tok") == 200 * 1024**3
+    assert seen == [("private/Huge-GGUF", None), ("private/Huge-GGUF", "hf_tok")]
+
+
+def test_the_planner_forwards_the_requests_token_to_the_hub(cluster, monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+
+    seen = []
+    monkeypatch.setattr(
+        ss,
+        "remote_gguf_size_bytes",
+        lambda path, variant, token = None: seen.append(token) or 200 * 1024**3,
+    )
+    cluster.topology = "layer_split"
+    request = _FakeRequest("private/Huge-GGUF")
+    request.hf_token = "hf_tok"
+    run(ss.before_load(request, 4))
+    assert seen == ["hf_tok"], "the request's token has to reach the sizing query"
+
+
+def test_a_cancel_during_replica_startup_stops_waiting_and_leaves_nothing_behind(
+    cluster, monkeypatch, tmp_path
+):
+    # A scoped unload arriving mid-load only SETS the event. Nothing here read it, so a cancel
+    # during replica startup was ignored for up to PEER_REPLICA_START_TIMEOUT_S -- 600 seconds
+    # -- while the unload it triggered had already returned "unloaded". The request then went
+    # on to attach a peer to a backend the caller had been told was gone.
+    import threading
+
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    # port_opens is True on purpose: the wait would SUCCEED if the cancel were not read, so
+    # this fails against the old code by attaching rather than by timing out.
+    _calls, started = _patch_remote(monkeypatch)
+
+    cancel = threading.Event()
+    cancel.set()
+
+    backend = _FakeBackend(12345, str(model))
+    run(ss.after_load(backend, 16, cancel_event = cancel))
+
+    assert started, "the peer llama-server was launched before the cancel was noticed"
+    assert ss.state().topology == "single"
+    assert ss.state().peer_process is None, "a cancelled attach must not leave the peer running"
+    assert ss.state().router is None
+    assert ss.route_base_url(backend) is None
+    assert "cancel" in ss.state().reason.lower()
+    # The event does not outlive the load it belongs to.
+    assert ss.state()._cancel_event is None
+
+
+def test_rail_discovery_is_not_walked_again_on_every_status_poll(cluster, monkeypatch):
+    # enabled() reaches peer_ip_for(), which walks sysfs and forks `ip`: 16.2 ms, measured, and
+    # the status endpoint is declared async, so every poll spent it on the event loop and
+    # stalled whatever was streaming beside it. current_topology already sidesteps this; the
+    # dedicated status endpoint cannot, because answering "not enabled" is the point of it.
+    calls = []
+    real = cluster.peer_ip_for
+
+    def counting(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    cluster.peer_ip_for = counting
+    ss.reset_peer_discovery_cache()
+
+    assert ss.enabled()
+    assert len(calls) == 1
+    for _ in range(20):
+        assert ss.enabled()
+    assert len(calls) == 1, "the rails were re-walked on a repeat poll"
+
+    # Not cached for the process lifetime: a cable plugged in later is still picked up.
+    ss.reset_peer_discovery_cache()
+    assert ss.enabled()
+    assert len(calls) == 2

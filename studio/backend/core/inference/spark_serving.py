@@ -34,7 +34,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from core.inference.spark_router import CONVERSATION_FIELD, Backend, SparkRouter
 
@@ -140,6 +140,12 @@ GROUPS_DRAFTER_PROBE_TIMEOUT_S = 30.0
 _GROUPS_REFUSAL_TEXT = "is not supported together with"
 _PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
+# How long a relaunched peer has to become healthy before the attempt is counted as failed.
+# Generous on purpose: this is a whole model load on the peer, the same wait the first launch
+# is given (PEER_REPLICA_START_TIMEOUT_S), and being wrong here spends a relaunch attempt on a
+# peer that was merely slow.
+RELAUNCH_HEALTHY_TIMEOUT_S = 600.0
+RELAUNCH_HEALTH_POLL_S = 2.0
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
 # A replica is a llama-server, not an rpc-server: it reads the whole model before it binds.
 # PEER_START_TIMEOUT_S was being used for it too, which is the case its own comment above
@@ -196,12 +202,40 @@ def is_spark() -> bool:
         return False
 
 
+# Rail discovery walks sysfs and forks `ip`, measured at 16.2 ms on a paired Spark, and
+# ``enabled()`` is on the status endpoint the UI polls: uncached, every poll of a route
+# declared ``async`` spends that on the event loop, stalling whatever generation is
+# streaming beside it. ``current_topology`` sidesteps it with a cheap check; the dedicated
+# status endpoint cannot, because answering "not enabled" is the whole point of it off a
+# Spark. Cached with a TTL rather than for the process lifetime so a cable plugged in after
+# startup is still picked up, without a restart, within a minute.
+_PEER_DISCOVERY_TTL_S = 60.0
+_peer_discovery_cache: Optional[Tuple[float, Optional[str]]] = None
+
+
+def reset_peer_discovery_cache() -> None:
+    """Forget the discovered peer, so the next call re-walks the rails. For tests, and for
+    anything that knows the cabling just changed."""
+    global _peer_discovery_cache
+    _peer_discovery_cache = None
+
+
 def peer_address() -> Optional[str]:
     override = (os.environ.get(ENV_PEER) or "").strip()
     if override:
         return override
     if not is_spark():
         return None
+    global _peer_discovery_cache
+    cached = _peer_discovery_cache
+    if cached is not None and (time.monotonic() - cached[0]) < _PEER_DISCOVERY_TTL_S:
+        return cached[1]
+    found = _discover_peer_address()
+    _peer_discovery_cache = (time.monotonic(), found)
+    return found
+
+
+def _discover_peer_address() -> Optional[str]:
     sc = _cluster()
     try:
         peer = sc.peer_ip_for()
@@ -410,7 +444,9 @@ def _pick_variant(variants: Any, wanted: str) -> Any:
     return None
 
 
-def remote_gguf_size_bytes(model_path: str, variant: Optional[str]) -> Optional[int]:
+def remote_gguf_size_bytes(
+    model_path: str, variant: Optional[str], hf_token: Optional[str] = None
+) -> Optional[int]:
     """What a not-yet-downloaded GGUF will weigh, from the hub's own file metadata.
 
     Without a size the planner answers ``single``, which is correct for a guess but is also
@@ -421,7 +457,13 @@ def remote_gguf_size_bytes(model_path: str, variant: Optional[str]) -> Optional[
     split is planned in the same request.
 
     Network, and optional in every sense: offline, gated, rate-limited or simply unavailable
-    all fall back to the sizeless answer that was there before."""
+    all fall back to the sizeless answer that was there before.
+
+    ``hf_token`` is the request's own token, and it is not optional in the way the rest of this
+    is. A private or gated repo answers the anonymous query with an authorization failure, which
+    lands in the ``except`` below as ``None`` and plans ``single`` -- and then the authenticated
+    loader downloads the model anyway, so a repo larger than one Spark reaches the one topology
+    that cannot hold it. The failure is silent and looks exactly like being offline."""
     if not model_path or "/" not in model_path or osp.isabs(model_path):
         return None
     try:
@@ -429,7 +471,7 @@ def remote_gguf_size_bytes(model_path: str, variant: Optional[str]) -> Optional[
     except Exception:
         return None
     try:
-        variants, _has_vision = list_gguf_variants(model_path)
+        variants, _has_vision = list_gguf_variants(model_path, hf_token)
         chosen = _pick_variant(variants, str(variant).strip().casefold() if variant else "")
         if chosen is None:
             return None
@@ -2078,9 +2120,13 @@ class PeerProcess:
         }
 
 
-async def wait_for_port(host: str, port: int, timeout: float) -> bool:
+async def wait_for_port(
+    host: str, port: int, timeout: float, *, cancelled: Optional[Callable[[], bool]] = None
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            return False
         try:
             _r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout = 2.0)
             w.close()
@@ -2096,7 +2142,14 @@ async def wait_for_port(host: str, port: int, timeout: float) -> bool:
 PEER_OWNERSHIP_SETTLE_S = 1.5
 
 
-async def wait_for_own_port(process: "PeerProcess", host: str, port: int, timeout: float) -> bool:
+async def wait_for_own_port(
+    process: "PeerProcess",
+    host: str,
+    port: int,
+    timeout: float,
+    *,
+    cancelled: Optional[Callable[[], bool]] = None,
+) -> bool:
     """Wait until ``process`` is answering on ``port``, not merely until something is.
 
     An occupied port answers on the first probe while the child that could not bind it exits,
@@ -2109,7 +2162,7 @@ async def wait_for_own_port(process: "PeerProcess", host: str, port: int, timeou
     bind error has time to become an exit."""
     if not process.alive:
         return False
-    if not await wait_for_port(host, port, timeout):
+    if not await wait_for_port(host, port, timeout, cancelled = cancelled):
         return False
     if PEER_OWNERSHIP_SETTLE_S > 0:
         await asyncio.sleep(PEER_OWNERSHIP_SETTLE_S)
@@ -2137,6 +2190,7 @@ class SparkServing:
         self.attached_port: Optional[int] = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
+        self._cancel_event: Any = None
         self.relaunch_log: List[Dict[str, Any]] = []
         self.peer_model_present: Optional[bool] = None
         self._pre_load_state: Optional[tuple] = None
@@ -2259,7 +2313,12 @@ class SparkServing:
                 # lets a model larger than one Spark be split on its FIRST load rather than
                 # after a single-node launch that cannot fit. Asked once: its answer also
                 # settles whether this request is a GGUF load at all.
-                remote_size = await asyncio.to_thread(remote_gguf_size_bytes, model_path, variant)
+                remote_size = await asyncio.to_thread(
+                    remote_gguf_size_bytes,
+                    model_path,
+                    variant,
+                    getattr(request, "hf_token", None),
+                )
                 size = remote_size
             # max_seq_length 0 means "let the backend size it", so after_load re-plans with
             # the context actually allocated.
@@ -2513,7 +2572,9 @@ class SparkServing:
             # Not wait_for_port: an occupied port answers on the first probe while the child
             # that could not bind it exits, and adopting that listener leaves the split
             # attached to a server nothing here manages.
-            ready = await wait_for_own_port(process, peer, port, PEER_START_TIMEOUT_S)
+            ready = await wait_for_own_port(
+                process, peer, port, PEER_START_TIMEOUT_S, cancelled = self._cancelled
+            )
         except BaseException:
             # Readiness is the long wait here, so it is where a cancelled load lands. Without
             # this the rpc-server survives the cancellation holding the port, and the next
@@ -2646,6 +2707,12 @@ class SparkServing:
                 self.topology, self.reason = "single", "no peer address"
                 return
             await self._start_replicas(llama_backend, peer, plan, slots)
+            if self._cancelled():
+                # The cancel may have landed after the peer came up. Nothing is going to use
+                # this topology -- the unload it belongs to has already reported back -- and a
+                # peer llama-server left running holds its share of a 121.69 GiB node.
+                await self.detach()
+                self.topology, self.reason = "single", "the load was cancelled"
         except Exception as exc:
             self.last_error = f"after_load: {exc}"[:300]
             logger.warning(
@@ -2785,8 +2852,18 @@ class SparkServing:
             logger.warning("spark serving: %s", self.reason)
             return
         peer_port = int(port)
+        # The environment the PRIMARY was actually spawned with, not this process's. The two are
+        # not the same: the launch scrubs a copy conditionally, well beyond DENIED_ENV_VARS --
+        # LLAMA_ARG_MMPROJ and _MMPROJ_URL under disable_vision, LLAMA_ARG_OVERRIDE_TENSOR,
+        # _TENSOR_SPLIT and _SPLIT_MODE on a CPU-forced replay, _CTX_SIZE, _THREADS,
+        # _KV_UNIFIED, _N_PARALLEL and _FLASH_ATTN under the memory fit. Rebuilding from
+        # os.environ puts every one of them back on the peer, so the replica loads a projector
+        # the primary refused or sizes a cache the plan never priced, and the router alternates
+        # between two servers that are no longer the same server. Falls back to os.environ when
+        # the backend cannot say, which is what this did before.
         peer_argv = with_replica_env(
-            replica_argv(argv, binary = binary, host = peer, port = peer_port), replica_env()
+            replica_argv(argv, binary = binary, host = peer, port = peer_port),
+            replica_env(getattr(llama_backend, "launched_env", None) or None),
         )
         log_dir = _log_dir()
         self.peer = peer
@@ -2800,7 +2877,11 @@ class SparkServing:
             # listening there is admitted as a healthy backend otherwise, and generation
             # traffic goes to whatever model it is holding.
             if not await wait_for_own_port(
-                self.peer_process, peer, peer_port, PEER_REPLICA_START_TIMEOUT_S
+                self.peer_process,
+                peer,
+                peer_port,
+                PEER_REPLICA_START_TIMEOUT_S,
+                cancelled = self._cancelled,
             ):
                 tail = list(self.peer_process.tail)[-3:]
                 await self.peer_process.stop()
@@ -2966,17 +3047,64 @@ class SparkServing:
                 continue
             # Settle: an immediate exit means the peer refuses (port busy, OOM).
             await asyncio.sleep(3.0)
-            if process.alive:
-                logger.info(
-                    "spark serving: peer %s relaunched (remote pid %s)",
-                    process.name,
-                    process.remote_pid,
+            if not process.alive:
+                continue
+            logger.info(
+                "spark serving: peer %s relaunched (remote pid %s)",
+                process.name,
+                process.remote_pid,
+            )
+            # The budget bounds one crash loop, not the process lifetime: without this a peer
+            # that restarts cleanly three times over days is then never recovered again. But
+            # "alive after three seconds" is not recovery. A large model spends minutes in
+            # load_model before it can OOM, so a peer that dies there is alive at the three
+            # second mark every single time, the budget resets every single time, and the
+            # three attempt bound is never reached: the peer reloads and fails forever, each
+            # cycle paying for the whole load. Recovery is the router seeing it answer, which
+            # is the same condition the traffic is gated on, so a peer that never becomes
+            # healthy spends the budget and stops.
+            if not await self._await_peer_healthy(process, RELAUNCH_HEALTHY_TIMEOUT_S):
+                self.relaunch_log.append(
+                    {"at": time.time(), "event": "relaunched but never healthy"}
                 )
-                # The budget bounds one crash loop, not the process lifetime: without this a peer
-                # that restarts cleanly three times over days is then never recovered again.
-                self.relaunch_attempts = 0
-                self.relaunch_log.append({"at": time.time(), "event": "recovered"})
-                return
+                continue
+            self.relaunch_attempts = 0
+            self.relaunch_log.append({"at": time.time(), "event": "recovered"})
+            return
+
+    def _cancelled(self) -> bool:
+        """Whether the load this orchestration belongs to has been cancelled.
+
+        A scoped unload arriving mid-load only sets the event; nothing here used to read it, so
+        a cancel during replica startup was ignored for up to PEER_REPLICA_START_TIMEOUT_S while
+        the unload it triggered had already reported ``unloaded`` -- and then this attached a
+        peer to a backend the caller had been told was gone."""
+        event = self._cancel_event
+        try:
+            return bool(event is not None and event.is_set())
+        except Exception:
+            return False
+
+    async def _await_peer_healthy(self, process: Any, timeout: float) -> bool:
+        """Whether the router sees this peer answering within *timeout*.
+
+        The router health-probes every backend it holds; this only reads the verdict rather
+        than probing separately, so recovery is judged by the same signal that decides whether
+        traffic is sent there. A peer that dies while waiting, or a router that goes away under
+        us, is not healthy and says so at once instead of burning the timeout."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if self.attached_backend is None or process is not self.peer_process:
+                return False  # detached, or this relaunch has been superseded
+            if not process.alive:
+                return False
+            router = self.router
+            if router is None:
+                return False
+            if any(b.healthy and not b.primary for b in getattr(router, "backends", ())):
+                return True
+            await asyncio.sleep(RELAUNCH_HEALTH_POLL_S)
+        return False
 
     async def detach(self) -> None:
         """Stop the router, the supervisor and the peer process. Idempotent."""
@@ -3090,16 +3218,25 @@ async def before_load(
     n_parallel: int,
     *,
     inherited_extra_args: Optional[List[str]] = None,
+    cancel_event: Any = None,
 ) -> Any:
     if not enabled():
         return request
-    return await state().before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
+    st = state()
+    st._cancel_event = cancel_event
+    return await st.before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
 
 
-async def after_load(llama_backend: Any, n_parallel: int) -> None:
+async def after_load(llama_backend: Any, n_parallel: int, *, cancel_event: Any = None) -> None:
     if not enabled():
         return
-    await state().after_load(llama_backend, n_parallel)
+    st = state()
+    if cancel_event is not None:
+        st._cancel_event = cancel_event
+    try:
+        await st.after_load(llama_backend, n_parallel)
+    finally:
+        st._cancel_event = None
 
 
 async def load_failed() -> None:

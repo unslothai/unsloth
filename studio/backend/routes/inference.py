@@ -13966,6 +13966,7 @@ async def _run_tracked_load_model_impl(
             request,
             _spark_slots,
             inherited_extra_args = _spark_inherited_extra_args(request),
+            cancel_event = attempt.cancel_event,
         )
         try:
             response = await _load_model_impl(
@@ -13981,7 +13982,9 @@ async def _run_tracked_load_model_impl(
             # A failed or cancelled load leaves nothing for the peer to serve.
             await spark_serving.load_failed()
             raise
-        await spark_serving.after_load(get_llama_cpp_backend(), _spark_slots)
+        await spark_serving.after_load(
+            get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
+        )
         return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():

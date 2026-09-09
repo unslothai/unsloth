@@ -6765,6 +6765,13 @@ class LlamaCppBackend:
         return self._extra_args_requested_source
 
     @property
+    def launched_env(self) -> Optional[dict[str, str]]:
+        """The environment the running llama-server was actually spawned with, or ``None``
+        before any spawn. A copy, so a reader cannot mutate the record."""
+        env = getattr(self, "_launched_env", None)
+        return dict(env) if env else None
+
+    @property
     def context_length(self) -> Optional[int]:
         """Return the effective context length the server is running at."""
         return self._effective_context_length or self._context_length
@@ -18701,6 +18708,12 @@ class LlamaCppBackend:
         # with --mmproj stripped), redacting the API key.
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
+        # What the child ACTUALLY runs with, after every scrub this launch applied. Nothing
+        # local reads it; it is for anyone who has to reproduce this server elsewhere -- the
+        # Spark replica, whose peer is launched from this argv and would otherwise rebuild its
+        # environment from os.environ and put the scrubbed settings back. Recorded next to the
+        # spawn so it cannot describe a different launch than the one that happened.
+        self._launched_env = dict(env)
         self._process = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -24165,6 +24178,7 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
+                        self._launched_env = dict(env)  # see the note at the other spawn
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
