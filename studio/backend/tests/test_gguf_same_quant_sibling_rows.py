@@ -717,9 +717,7 @@ def test_a_bare_pin_still_names_the_sole_root_build():
     # Two ROOT builds still tie, and still refuse.
     assert resolve_variant_alias(["m-Q4_K_M-mtp", "m-Q4_K_M-fp16"], "Q4_K_M") is None
     # Nothing at the root: the sole path-qualified key answers, as it did before.
-    assert resolve_variant_alias(["distilled/model-Q4_K_M"], "Q4_K_M") == (
-        "distilled/model-Q4_K_M"
-    )
+    assert resolve_variant_alias(["distilled/model-Q4_K_M"], "Q4_K_M") == ("distilled/model-Q4_K_M")
     # An exact key always wins over the alias tier.
     assert resolve_variant_alias(["Q4_K_M", "distilled/model-Q4_K_M"], "Q4_K_M") == "Q4_K_M"
 
@@ -775,9 +773,7 @@ def test_two_spellings_of_one_build_do_not_run_as_sibling_quants():
     )
     assert ok is False and why == "running", why
     # A real sibling quant is still admitted concurrently.
-    ok, _ = registry.claim(
-        f"{repo}::q8_0", "http", repo_type = "model", repo_id = repo, variant = "q8_0"
-    )
+    ok, _ = registry.claim(f"{repo}::q8_0", "http", repo_type = "model", repo_id = repo, variant = "q8_0")
     assert ok is True
 
 
@@ -796,7 +792,13 @@ def test_the_requirement_cache_answers_the_spelling_it_was_asked():
     calls = {"n": 0}
     real_fetch = service._fetch_gguf_variant_requirements
 
-    def _counting_fetch(repo_id, hf_token = None, *, _siblings = siblings, **kwargs):
+    def _counting_fetch(
+        repo_id,
+        hf_token = None,
+        *,
+        _siblings = siblings,
+        **kwargs,
+    ):
         calls["n"] += 1
         return real_fetch(repo_id, hf_token, siblings = _siblings)
 

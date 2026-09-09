@@ -895,9 +895,7 @@ def resolve_variant_alias(keys: Iterable[str], wanted: str) -> Optional[str]:
         if accepts_bare_quant_alias(original) and bare_quant_alias(original).lower() == target
     ]
     if len(matches) > 1:
-        matches = [
-            key for key in matches if "/" not in _forward_slashed(key)
-        ] or matches
+        matches = [key for key in matches if "/" not in _forward_slashed(key)] or matches
     return matches[0] if len(matches) == 1 else None
 
 

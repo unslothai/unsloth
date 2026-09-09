@@ -289,8 +289,7 @@ def _state_spellings_for_delete(target_repo, variant: str) -> set[str]:
     owners = {
         key
         for key in keys
-        if key == bare
-        or (accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == bare)
+        if key == bare or (accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == bare)
     }
     if owners == {wanted}:
         spellings.add(bare)

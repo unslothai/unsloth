@@ -1645,9 +1645,7 @@ class DownloadRegistry:
                     and other_metadata.repo_type == "model"
                     and bool(other_metadata.variant)
                     and other_metadata.transport == transport
-                    and not variant_spellings_may_name_one_build(
-                        variant, other_metadata.variant
-                    )
+                    and not variant_spellings_may_name_one_build(variant, other_metadata.variant)
                 )
                 if concurrent_gguf_variants:
                     continue

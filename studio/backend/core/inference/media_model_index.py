@@ -233,9 +233,7 @@ def _add_gguf_picks(
     for quant, variant in openable.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant
         spellings = [quant]
-        spellings += [
-            alias for alias, owners in alias_owners.items() if owners == [quant]
-        ]
+        spellings += [alias for alias, owners in alias_owners.items() if owners == [quant]]
         _register(
             index,
             [f"{key}:{spelling}" for key in keys for spelling in spellings],
