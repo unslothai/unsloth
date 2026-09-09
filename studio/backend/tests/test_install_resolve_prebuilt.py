@@ -13,14 +13,16 @@ because nothing in-tree mirrors it, and skips when that release is unreachable.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import dataclasses
 import importlib
 import json
+import ntpath
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -3077,8 +3079,14 @@ def test_a_relative_device_registration_is_not_guessed_at(monkeypatch):
 
 @pytest.mark.parametrize(
     "name, entry",
-    [("Properties", "denied"), ("0000", {"DriverDesc": ("Some other adapter", 1)})],
-    ids = ["restricted-subkey", "unregistered-adapter"],
+    [
+        ("Properties", "denied"),
+        ("0000", {"DriverDesc": ("Some other adapter", 1)}),
+        # A digit-named instance, so this one reaches OpenKey and raises there;
+        # "Properties" is filtered by isdigit before any key is opened.
+        ("0002", "denied"),
+    ],
+    ids = ["restricted-subkey", "unregistered-adapter", "denied-instance"],
 )
 def test_other_registry_entries_do_not_hide_a_manifest(monkeypatch, _present_manifest, name, entry):
     devices = {
@@ -3191,11 +3199,18 @@ class _FakeCfgMgr:
         by_class,
         fail_at = None,
         driver_of = None,
+        # device id -> (CM_Get_DevNode_Status, problem number). Absent means healthy.
+        status_of = None,
+        # Ids that appear only once the list has been sized, i.e. a device that
+        # arrives mid-enumeration and makes the block outgrow the buffer.
+        arriving = None,
     ):
         # class guid -> device ids; device id -> CM_DRP_DRIVER value.
         self._by_class = by_class
         self._fail_at = fail_at
         self._driver_of = driver_of or {}
+        self._status_of = status_of or {}
+        self._arriving = list(arriving or [])
         self.calls = []
 
     def _result(self, call):
@@ -3203,17 +3218,36 @@ class _FakeCfgMgr:
 
     def CM_Get_Device_ID_List_SizeW(self, size_ptr, guid, flags):
         self.calls.append(("size", guid, flags))
-        ids = self._by_class.get(guid, [])
+        ids = list(self._by_class.get(guid, []))
         # Include each ID's terminator and the final NUL.
         size_ptr[0] = sum(len(entry) + 1 for entry in ids) + 1
         return self._result("size")
 
     def CM_Get_Device_ID_ListW(self, guid, buffer, length, flags):
         self.calls.append(("list", guid, flags))
-        block = "".join(entry + "\0" for entry in self._by_class.get(guid, [])) + "\0"
-        for index, char in enumerate(block[:length]):
+        # Anything queued joins the class now, i.e. after the caller sized its buffer
+        # from a list that did not contain it yet.
+        if self._arriving:
+            self._by_class[guid] = list(self._by_class.get(guid, [])) + self._arriving
+            self._arriving = []
+        ids = list(self._by_class.get(guid, []))
+        block = "".join(entry + "\0" for entry in ids) + "\0"
+        if len(block) > length:
+            # The real API refuses an undersized buffer rather than truncating.
+            return ilp._CR_BUFFER_SMALL
+        for index, char in enumerate(block):
             buffer[index] = char
         return self._result("list")
+
+    def CM_Get_DevNode_Status(self, status_ptr, problem_ptr, devinst, flags):
+        device_id = list(self._driver_of)[int(devinst.value) - 1]
+        self.calls.append(("status", device_id))
+        if self._fail_at == "status":
+            return _CR_FAILURE
+        status, problem = self._status_of.get(device_id, (0, 0))
+        status_ptr[0] = status
+        problem_ptr[0] = problem
+        return ilp._CR_SUCCESS
 
     def CM_Locate_DevNodeW(self, devinst_ptr, device_id, flags):
         self.calls.append(("locate", device_id))
@@ -3234,7 +3268,7 @@ class _FakeCfgMgr:
         return self._result("property")
 
 
-_CR_FAILURE = 0x0000000D  # CR_FAILURE; any non-zero is a failed CM_ call.
+_CR_FAILURE = 0x00000013  # cfg.h CR_FAILURE; any non-zero is a failed CM_ call.
 _DISPLAY_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -3310,3 +3344,349 @@ def test_the_presence_probe_answers_none_when_the_walk_raises(monkeypatch):
 
     _with_cfgmgr(monkeypatch, _Exploding())
     assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) is None
+
+
+# ---------------------------------------------------------------------------
+# The probe at Windows' own widths
+# ---------------------------------------------------------------------------
+
+
+class _Utf16Buffer:
+    """create_unicode_buffer over Windows' 2-byte code units.
+
+    Indexing matches a ctypes unicode buffer: an int index is one character, a
+    slice keeps embedded NULs, and .value stops at the first NUL.
+    """
+
+    def __init__(self, length):
+        self._units = [0] * length
+
+    def __len__(self):
+        return len(self._units)
+
+    def __setitem__(self, index, char):
+        self._units[index] = ord(char)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return "".join(chr(unit) for unit in self._units[index])
+        return chr(self._units[index])
+
+    @property
+    def value(self):
+        out = []
+        for unit in self._units:
+            if unit == 0:
+                break
+            out.append(chr(unit))
+        return "".join(out)
+
+
+class _Windows32Bit:
+    """DWORD, ULONG and DEVINST are all a 32-bit unsigned, pointers are not."""
+
+    def __init__(self, value = 0):
+        self.value = int(value) & 0xFFFFFFFF
+
+
+class _WindowsPointer:
+    def __init__(self, box):
+        self.box = box
+
+    def __getitem__(self, _index):
+        return self.box.value
+
+    def __setitem__(self, _index, value):
+        self.box.value = value
+
+
+class _WindowsWcharT:
+    """Only ever handed to sizeof, which answers 2 on Windows and 4 here."""
+
+
+class _WindowsCfgMgr(_FakeCfgMgr):
+    """_FakeCfgMgr speaking the units the API documents, not this host's.
+
+    CM_Get_DevNode_Registry_PropertyW sizes its buffer in BYTES
+    (_Out_writes_bytes_opt_(*pulLength) PVOID Buffer), which is twice the
+    element count under a 2-byte wchar_t. ``under_allocated`` records a caller
+    that got the conversion wrong; assert it from OUTSIDE the probe, which
+    catches Exception around the whole walk and would read a failed assert as a
+    clean skip.
+    """
+
+    under_allocated = False
+
+    def CM_Get_DevNode_Registry_PropertyW(self, devinst, prop, kind, buffer, size_ptr, flags):
+        device_id = list(self._driver_of)[int(devinst.value) - 1]
+        driver = self._driver_of[device_id]
+        wanted = (len(driver) + 1) * 2 if driver else 0
+        if buffer is None:
+            size_ptr[0] = wanted
+            return ilp._CR_SUCCESS
+        if len(buffer) * 2 < wanted:
+            self.under_allocated = True
+            return _CR_FAILURE
+        for index, char in enumerate(driver):
+            buffer[index] = char
+        buffer[len(driver)] = "\0"
+        return self._result("property")
+
+
+@contextlib.contextmanager
+def _windows_widths(cfgmgr):
+    """Run the probe as Windows runs it: 2-byte wchar_t, 32-bit scalars.
+
+    _FakeCfgMgr answers through native ctypes, where sizeof(c_wchar) is 4 on
+    Linux and 2 on Windows and create_unicode_buffer counts Python characters.
+    The byte-to-element conversion in _windows_present_class_instances is
+    therefore only ever exercised at the runner's width, so a green suite says
+    nothing about the arithmetic that actually ships. The probe imports ctypes
+    inside the function, so swapping sys.modules is enough and nothing outside
+    this block is affected.
+    """
+    shim = ModuleType("ctypes")
+    wintypes = ModuleType("ctypes.wintypes")
+    wintypes.ULONG = _Windows32Bit
+    wintypes.DWORD = _Windows32Bit
+    shim.wintypes = wintypes
+    shim.c_wchar = _WindowsWcharT
+    shim.sizeof = lambda obj: 2 if obj is _WindowsWcharT else ctypes.sizeof(obj)
+    shim.pointer = _WindowsPointer
+    shim.create_unicode_buffer = _Utf16Buffer
+    shim.WinDLL = lambda _name: cfgmgr
+    saved = sys.modules["ctypes"]
+    sys.modules["ctypes"] = shim
+    try:
+        yield
+    finally:
+        sys.modules["ctypes"] = saved
+
+
+def test_the_driver_property_survives_a_two_byte_wchar():
+    # "{4d36e968-...}\0000" is 43 characters, i.e. 88 bytes on Windows. Dividing
+    # that by this host's 4-byte wchar_t would allocate 23 elements, the callee
+    # would refuse the undersized buffer, and the instance the fix exists to find
+    # would be dropped: Automatic would stay on ROCm exactly as before.
+    driver = _DISPLAY_GUID + "\\0000"
+    fake = _WindowsCfgMgr(
+        {_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0"]},
+        driver_of = {"PCI\\VEN_1002&DEV_1586\\0": driver},
+    )
+    with _windows_widths(fake):
+        answer = ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY)
+    assert fake.under_allocated is False, "the byte length was read as an element count"
+    assert answer == {"0000"}
+
+
+def test_the_device_id_list_is_sized_in_characters_not_bytes():
+    # CM_Get_Device_ID_ListW's BufferLen is a CHARACTER count
+    # (_Out_writes_(BufferLen) PZZWSTR), so the size query's answer is passed
+    # through unscaled. Two ids plus their terminators exercise the split.
+    fake = _WindowsCfgMgr(
+        {_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0", "PCI\\VEN_1002&DEV_7448\\1"]},
+        driver_of = {
+            "PCI\\VEN_1002&DEV_1586\\0": _DISPLAY_GUID + "\\0000",
+            "PCI\\VEN_1002&DEV_7448\\1": _DISPLAY_GUID + "\\0003",
+        },
+    )
+    with _windows_widths(fake):
+        answer = ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY)
+    assert answer == {"0000", "0003"}
+
+
+def test_the_forced_loader_list_reads_neither_the_registry_nor_cfgmgr():
+    # Asserting the returned paths alone would still pass if the override were
+    # applied after a full device walk, which on a real host is two CfgMgr32
+    # enumerations and two class-key walks per call.
+    class _CountingWinreg(_FakeIcdWinreg):
+        def __init__(self):
+            super().__init__({}, None)
+            self.reads = 0
+
+        def OpenKey(self, parent, name):
+            self.reads += 1
+            return super().OpenKey(parent, name)
+
+    winreg = _CountingWinreg()
+    fake = _FakeCfgMgr({_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0"]})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ilp.sys, "platform", "win32")
+        patch.setitem(sys.modules, "winreg", winreg)
+        patch.setattr(ctypes, "WinDLL", lambda _name: fake, raising = False)
+        patch.setenv("VK_DRIVER_FILES", __file__)
+        assert ilp._amd_vulkan_icd_manifest_paths() == [__file__]
+    assert winreg.reads == 0
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Registration paths, spelled the way Windows spells them
+# ---------------------------------------------------------------------------
+
+
+class _WindowsPaths:
+    """os as the probe sees it on Windows, over a fixed set of existing files."""
+
+    def __init__(self, existing):
+        self.existing = set(existing)
+        self.pathsep = ";"
+        self.environ = os.environ
+        self.path = SimpleNamespace(
+            isabs = ntpath.isabs,
+            isfile = lambda name: name in self.existing,
+            dirname = ntpath.dirname,
+            join = ntpath.join,
+        )
+
+
+@pytest.mark.parametrize(
+    "value, taken",
+    [
+        (r"C:\Windows\System32\DriverStore\amd-vulkan64.json", True),
+        (r"\\?\C:\Windows\System32\amd-vulkan64.json", True),
+        (r"\\host\share\amd-vulkan64.json", True),
+        ("amd-vulkan64.json", False),
+        (r"..\amd-vulkan64.json", False),
+        (r"FileRepository\amd-vulkan64.json", False),
+        ("   ", False),
+    ],
+)
+def test_a_registration_is_taken_only_when_windows_calls_it_absolute(monkeypatch, value, taken):
+    # tmp_path is POSIX here, so every other test in this file exercises
+    # os.path.isabs as posixpath, which answers False for "C:\..." and True for
+    # "/...". Neither spelling is what a real VulkanDriverName holds.
+    monkeypatch.setattr(ilp, "os", _WindowsPaths({value.strip()}))
+    got = ilp._windows_vulkan_driver_value_paths(
+        _FakeIcdWinreg, value, _FakeIcdWinreg.REG_SZ
+    )
+    assert got == ([value.strip()] if taken else [])
+
+
+def test_a_multi_sz_registration_keeps_only_the_absolute_entries_that_exist(monkeypatch):
+    here = r"C:\Windows\System32\amd-vulkan64.json"
+    gone = r"C:\Windows\System32\amdvlk64.json"
+    monkeypatch.setattr(ilp, "os", _WindowsPaths({here}))
+    got = ilp._windows_vulkan_driver_value_paths(
+        _FakeIcdWinreg,
+        [here, gone, r"FileRepository\amd-vulkan64.json", "", None],
+        _FakeIcdWinreg.REG_MULTI_SZ,
+    )
+    assert got == [here]
+
+
+# ---------------------------------------------------------------------------
+# Matching what the loader will actually read
+# ---------------------------------------------------------------------------
+
+
+_DN_HAS_PROBLEM = 0x00000400  # cfg.h
+_CM_PROB_NEED_RESTART = 0x0000000E
+_DN_NEED_RESTART = 0x00000100  # DN_LIAR
+
+
+@pytest.mark.parametrize("problem", [_CM_PROB_NEED_RESTART, _DN_NEED_RESTART])
+def test_a_device_pending_reboot_is_not_evidence_of_a_loadable_driver(monkeypatch, problem):
+    # A driver update writes VulkanDriverName and drops its manifest before the reboot
+    # that binds it. Between the two the adapter is PRESENT, the file is on disk, and
+    # the loader skips the devnode: routing to Vulkan there installs a bundle whose
+    # driver cannot load, i.e. the silent CPU fallback the probe exists to prevent.
+    device = "PCI\\VEN_1002&DEV_1586\\0"
+    fake = _FakeCfgMgr(
+        {_DISPLAY_GUID: [device]},
+        driver_of = {device: _DISPLAY_GUID + "\\0000"},
+        status_of = {device: (_DN_HAS_PROBLEM, problem)},
+    )
+    _with_cfgmgr(monkeypatch, fake)
+    assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == set()
+
+
+def test_an_unrelated_device_problem_does_not_hide_a_working_adapter(monkeypatch):
+    # Only the pending-reboot problem codes are disqualifying; the loader reads every
+    # other flagged devnode, so a disabled sibling must not cost the real adapter.
+    working = "PCI\\VEN_1002&DEV_1586\\0"
+    disabled = "PCI\\VEN_1002&DEV_7448\\1"
+    fake = _FakeCfgMgr(
+        {_DISPLAY_GUID: [working, disabled]},
+        driver_of = {
+            working: _DISPLAY_GUID + "\\0000",
+            disabled: _DISPLAY_GUID + "\\0003",
+        },
+        status_of = {disabled: (_DN_HAS_PROBLEM, 0x00000016)},  # CM_PROB_DISABLED
+    )
+    _with_cfgmgr(monkeypatch, fake)
+    assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == {
+        "0000",
+        "0003",
+    }
+
+
+def test_a_device_whose_status_cannot_be_read_is_skipped(monkeypatch):
+    # Same call the loader makes and the same answer it gives: a status it cannot read
+    # is not a device it will use. Failing towards ROCm leaves the host where it was.
+    device = "PCI\\VEN_1002&DEV_1586\\0"
+    fake = _FakeCfgMgr(
+        {_DISPLAY_GUID: [device]},
+        fail_at = "status",
+        driver_of = {device: _DISPLAY_GUID + "\\0000"},
+    )
+    _with_cfgmgr(monkeypatch, fake)
+    assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == set()
+
+
+def test_a_device_arriving_mid_enumeration_is_read_on_the_retry(monkeypatch):
+    # CM_Get_Device_ID_ListW refuses an undersized buffer rather than truncating, so a
+    # panel or a finishing driver install landing between the size and the read answers
+    # CR_BUFFER_SMALL. Without the resize retry that transient reports presence as
+    # unknown, both classes are skipped, and the gfx115x host this feature exists for
+    # quietly installs the HIP bundle instead.
+    settled = "PCI\\VEN_1002&DEV_1586\\0"
+    late = "PCI\\VEN_1002&DEV_7448\\1"
+    fake = _FakeCfgMgr(
+        {_DISPLAY_GUID: [settled]},
+        driver_of = {settled: _DISPLAY_GUID + "\\0000", late: _DISPLAY_GUID + "\\0003"},
+        arriving = [late],
+    )
+    _with_cfgmgr(monkeypatch, fake)
+    assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) == {
+        "0000",
+        "0003",
+    }
+    assert [call[0] for call in fake.calls].count("list") == 2, "the read was retried"
+
+
+def test_a_list_that_never_settles_answers_unknown_rather_than_spinning(monkeypatch):
+    class _AlwaysGrowing(_FakeCfgMgr):
+        def CM_Get_Device_ID_ListW(self, guid, buffer, length, flags):
+            self.calls.append(("list", guid, flags))
+            return ilp._CR_BUFFER_SMALL
+
+    fake = _AlwaysGrowing({_DISPLAY_GUID: ["PCI\\VEN_1002&DEV_1586\\0"]})
+    _with_cfgmgr(monkeypatch, fake)
+    assert ilp._windows_present_class_instances(ilp._WINDOWS_DISPLAY_CLASS_KEY) is None
+    assert [call[0] for call in fake.calls].count("list") == ilp._CM_DEVICE_LIST_ATTEMPTS
+
+
+def test_one_unreadable_instance_does_not_cost_the_rest_of_the_class(monkeypatch, tmp_path):
+    # The catch is per instance, not per class. An integrated part often enumerates
+    # first, so a class-wide catch would drop the very registration being looked for.
+    manifest = _icd(tmp_path / "store" / "amd-vulkan64.json")
+
+    class _HalfBrokenWinreg(_FakeIcdWinreg):
+        def QueryValueEx(self, instance, value_name):
+            if instance.get("explode"):
+                raise RuntimeError("an unexpected registry payload")
+            return _FakeIcdWinreg.QueryValueEx(self, instance, value_name)
+
+    devices = {
+        _DISPLAY_CLASS_KEY: _FakeDeviceClass(
+            {
+                "0000": {"explode": True, ilp._WINDOWS_VULKAN_DRIVER_VALUE: (manifest, 1)},
+                "0001": {ilp._WINDOWS_VULKAN_DRIVER_VALUE: (manifest, 1)},
+            }
+        )
+    }
+    monkeypatch.setattr(ilp, "_windows_present_class_instances", lambda _key: {"0000", "0001"})
+    assert _HalfBrokenWinreg({}, devices) is not None
+    winreg = _HalfBrokenWinreg({}, devices)
+    assert ilp._windows_device_icd_manifest_paths(winreg) == [manifest]

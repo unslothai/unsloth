@@ -7843,20 +7843,36 @@ def _vulkan_icd_search_dirs() -> list[Path]:
     return unique
 
 
-# Device presence constants from cfgmgr32.h.
+# Device presence constants from cfgmgr32.h and cfg.h.
 _CM_LOCATE_DEVNODE_NORMAL = 0x00000000
 _CM_GETIDLIST_FILTER_PRESENT = 0x00000100
 _CM_GETIDLIST_FILTER_CLASS = 0x00000200
 _CM_DRP_DRIVER = 0x0000000A
 _CR_SUCCESS = 0x00000000
+# The list can grow between sizing and reading it, exactly as it can for the loader.
+_CR_BUFFER_SMALL = 0x0000001A
+# A device pending reboot is present and registered but the loader skips it, so counting
+# it would install the Vulkan bundle for a driver that will not load until the restart.
+_DN_HAS_PROBLEM = 0x00000400
+_CM_PROB_NEED_RESTART = 0x0000000E
+_DN_NEED_RESTART = 0x00000100  # DN_LIAR, the second spelling the loader accepts.
+# One resize is what a settled machine needs; more means the list is churning faster than
+# it can be read, and answering "unknown" beats spinning inside an installer.
+_CM_DEVICE_LIST_ATTEMPTS = 4
 
 
 def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
     """Return present class instances ("0000"), or None if enumeration fails.
 
     CM_DRP_DRIVER maps each device to "{class guid}\\NNNN". An empty set means
-    no devices are present. SoftwareComponents are filtered by presence only;
-    unlike the Vulkan loader, this does not check their adapter association.
+    no devices are present.
+
+    Follows windows_get_device_registry_files in the loader's loader_windows.c
+    for everything that decides whether a devnode counts: the same class +
+    present filters, the same CR_BUFFER_SMALL resize retry, and the same
+    pending-reboot skip. It does NOT reproduce the loader's traversal, which
+    reaches SoftwareComponents only as children of a present display adapter;
+    the caller enumerates that class directly, so discovery there is wider.
     """
     guid = class_key_path.rsplit("\\", 1)[-1]
     try:
@@ -7868,10 +7884,24 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
     try:
         length = wintypes.ULONG(0)
         flags = _CM_GETIDLIST_FILTER_CLASS | _CM_GETIDLIST_FILTER_PRESENT
-        if cfgmgr.CM_Get_Device_ID_List_SizeW(ctypes.pointer(length), guid, flags) != _CR_SUCCESS:
-            return None
-        buffer = ctypes.create_unicode_buffer(length.value)
-        if cfgmgr.CM_Get_Device_ID_ListW(guid, buffer, length.value, flags) != _CR_SUCCESS:
+        # A device arriving between the two calls (a hotplugged panel, a driver install
+        # finishing) makes the block outgrow the buffer, and the API refuses rather than
+        # truncating. Without the retry that transient turns the whole feature off for
+        # the run: presence reads as unknown, both classes are skipped, and a gfx115x
+        # host silently installs the HIP bundle it was meant to be routed away from.
+        for _attempt in range(_CM_DEVICE_LIST_ATTEMPTS):
+            if (
+                cfgmgr.CM_Get_Device_ID_List_SizeW(ctypes.pointer(length), guid, flags)
+                != _CR_SUCCESS
+            ):
+                return None
+            buffer = ctypes.create_unicode_buffer(length.value)
+            listed = cfgmgr.CM_Get_Device_ID_ListW(guid, buffer, length.value, flags)
+            if listed == _CR_SUCCESS:
+                break
+            if listed != _CR_BUFFER_SMALL:
+                return None
+        else:
             return None
         # One double-NUL-terminated block of device ids.
         device_ids = [entry for entry in buffer[: length.value].split("\0") if entry]
@@ -7884,6 +7914,8 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
                 )
                 != _CR_SUCCESS
             ):
+                continue
+            if not _windows_devnode_is_usable(cfgmgr, ctypes, wintypes, devinst):
                 continue
             size = wintypes.ULONG(0)
             # First call sizes the value; a device with no driver bound has none.
@@ -7908,6 +7940,32 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
         return None
 
 
+def _windows_devnode_is_usable(cfgmgr: Any, ctypes: Any, wintypes: Any, devinst: Any) -> bool:
+    """Whether this devnode is one the Vulkan loader would read, not merely present.
+
+    A driver update registers VulkanDriverName and drops its manifest before the
+    reboot that binds it, so between the two the adapter is PRESENT, the file is on
+    disk and the driver cannot load. The loader skips that devnode; counting it would
+    hand a gfx115x host the Vulkan bundle and let llama-server fall back to CPU, the
+    outcome _amd_vulkan_icd_present exists to prevent. An unreadable status is skipped
+    for the same reason the loader skips it: the answer would be a guess, and guessing
+    wrong here replaces a working ROCm install, while guessing conservatively only
+    leaves the host where it already was.
+    """
+    status = wintypes.ULONG(0)
+    problem = wintypes.ULONG(0)
+    if (
+        cfgmgr.CM_Get_DevNode_Status(
+            ctypes.pointer(status), ctypes.pointer(problem), devinst, 0
+        )
+        != _CR_SUCCESS
+    ):
+        return False
+    if not status.value & _DN_HAS_PROBLEM:
+        return True
+    return problem.value not in (_CM_PROB_NEED_RESTART, _DN_NEED_RESTART)
+
+
 def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
     """Read Vulkan manifests from present adapters and SoftwareComponents.
 
@@ -7929,15 +7987,15 @@ def _windows_device_icd_manifest_paths(winreg: Any) -> list[str]:
                         if not name.isdigit() or name not in present:
                             continue
                         with winreg.OpenKey(class_key, name) as device_key:
-                            try:
-                                value, kind = winreg.QueryValueEx(
-                                    device_key, _WINDOWS_VULKAN_DRIVER_VALUE
-                                )
-                            except OSError:
-                                continue
-                    except OSError:
+                            value, kind = winreg.QueryValueEx(
+                                device_key, _WINDOWS_VULKAN_DRIVER_VALUE
+                            )
+                        paths.extend(_windows_vulkan_driver_value_paths(winreg, value, kind))
+                    # Per instance, not per class: a two-adapter host whose first entry
+                    # is unreadable must still reach the second, which is where the AMD
+                    # registration lives when the integrated part enumerates first.
+                    except Exception:
                         continue
-                    paths.extend(_windows_vulkan_driver_value_paths(winreg, value, kind))
         except OSError:
             continue
         except Exception:
