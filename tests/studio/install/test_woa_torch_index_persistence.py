@@ -5689,8 +5689,10 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         [
             "Remove-WoaTomlComment",
             "Split-WoaTomlKey",
+            "Read-WoaUvInlineIndexArray",
             "Read-WoaUvTomlIndexKeys",
             "Get-WoaUvConfigIndexPolicy",
+            "Test-WoaUvIndexPolicyUnreadable",
             "Get-WoaDependencyIndexArgs",
         ],
     )
@@ -5702,7 +5704,10 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         trio = INSTALL_SRC[INSTALL_SRC.index("# NVIDIA's index publishes only the trio") :][:900]
         assert "$_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)" in trio
         assert '"--extra-index-url", "https://pypi.org/simple"' not in trio
-        shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :][:500]
+        # The whole block, not a fixed slice of it: a guard added ahead of the call pushed the
+        # call past a 500-character window and failed an assertion that was still true.
+        shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :]
+        shared = shared[: shared.index("\n} else {")]
         assert (
             '$_woaResolver = if ($UseUv) { "uv" } else { "pip" }' in shared
         ), "the resolver that runs the install"
@@ -6179,3 +6184,103 @@ class TestBothNvidiaSmiProbesSearchTheSameLocations:
         body = _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch")
         assert "$_woaDriver = Get-WoaDriverCudaVersion" in body
         assert "if ($_woaDriver -and $_woaTorchVersion -match '\\+cu(\\d+)')" in body
+
+
+class TestTheInlineIndexSpellingIsRead:
+    """`index = [{ url = "...", default = true }]` is valid, documented uv config, and the parser
+    refused it outright with `return $null`. Every downstream disagreement about Unreadable was a
+    symptom of that: a corporate mirror written this way read as "cannot know", and
+    Get-WoaDependencyIndexArgs then substituted public PyPI for it."""
+
+    @pytest.mark.parametrize(
+        "value, want_default, want_extras",
+        [
+            ('[{ url = "https://pypi.corp.test/simple", default = true }]',
+             "https://pypi.corp.test/simple", []),
+            ('[{ url = "https://pypi.org/simple", default = true }]',
+             "https://pypi.org/simple", []),
+            ('[{ url = "https://a/simple" }, { url = "https://b/simple", default = true }]',
+             "https://b/simple", ["https://a/simple"]),
+            ('[{ name = "corp", url = "https://c/simple", default = true }]',
+             "https://c/simple", []),
+            ("[]", None, []),
+        ],
+    )
+    @requires_pwsh
+    def test_a_flat_inline_array_is_read(self, tmp_path, value, want_default, want_extras):
+        cfg = tmp_path / "uv.toml"
+        cfg.write_text(f"index = {value}\n", encoding = "utf-8")
+        script = _script(
+            _function_source(INSTALL_SRC, "Remove-WoaTomlComment"),
+            _function_source(INSTALL_SRC, "Split-WoaTomlKey"),
+            _function_source(INSTALL_SRC, "Read-WoaUvInlineIndexArray"),
+            _function_source(INSTALL_SRC, "Read-WoaUvTomlIndexKeys"),
+            f"$p = Read-WoaUvTomlIndexKeys -Path '{cfg}' -Top ''",
+            "if ($null -eq $p) { Write-Output 'NULL' } else { "
+            "Write-Output (([string]$p.DefaultIndex) + '|' + (@($p.ExtraIndexes) -join ',')) }",
+        )
+        expected = f"{want_default or ''}|{','.join(want_extras)}"
+        assert _ps_last(script) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # Ambiguity that must stay Unreadable rather than be guessed at.
+            '[{ url = "https://a/simple", explicit = true }]',   # serves only pinned packages
+            '[{ default = true }]',                              # no url at all
+            '[{ url = "https://a/simple", default = "yes" }]',   # not a bool
+            '[{ url = { host = "a" } }]',                        # nested table
+            '[{ url = "https://a/simple" }, "https://b"]',       # a bare entry beside a table
+            '[{ url = "https://a/simple" }',                     # unbalanced / continues next line
+        ],
+    )
+    @requires_pwsh
+    def test_anything_ambiguous_stays_unreadable(self, tmp_path, value):
+        cfg = tmp_path / "uv.toml"
+        cfg.write_text(f"index = {value}\n", encoding = "utf-8")
+        script = _script(
+            _function_source(INSTALL_SRC, "Remove-WoaTomlComment"),
+            _function_source(INSTALL_SRC, "Split-WoaTomlKey"),
+            _function_source(INSTALL_SRC, "Read-WoaUvInlineIndexArray"),
+            _function_source(INSTALL_SRC, "Read-WoaUvTomlIndexKeys"),
+            f"$p = Read-WoaUvTomlIndexKeys -Path '{cfg}' -Top ''",
+            "Write-Output $(if ($null -eq $p) { 'NULL' } else { 'READ' })",
+        )
+        assert _ps_last(script) == "NULL"
+
+    def test_the_parser_no_longer_refuses_the_key_outright(self):
+        """No pwsh needed, so this runs everywhere. `return $null` on sight of the key was the
+        defect; it must now go through the array reader, which still answers $null on doubt."""
+        for src, label in ((INSTALL_SRC, "install.ps1"), (SETUP_SRC, "setup.ps1")):
+            body = _function_source(src, "Read-WoaUvTomlIndexKeys")
+            assert "if ($key -eq 'index') { return $null }" not in body, label
+            assert "Read-WoaUvInlineIndexArray -Value $val" in body, label
+            # The conservative answer is still reachable from the caller.
+            assert "if ($null -eq $inline) { return $null }" in body, label
+
+    def test_an_unreadable_policy_never_substitutes_public_pypi(self):
+        """The consumer half. Get-WoaDependencyIndexArgs read NoIndex, DefaultIndex and
+        ExtraIndexes but not Unreadable, so it fell through to the https://pypi.org/simple
+        default and silently overrode the mirror the file configured."""
+        for src, label in ((INSTALL_SRC, "install.ps1"), (SETUP_SRC, "setup.ps1")):
+            body = _function_source(src, "Get-WoaDependencyIndexArgs")
+            assert "if ($cfg.Unreadable -and -not $default) { return @() }" in body, label
+            # Ordering is the whole point: the guard must precede the PyPI fallback.
+            assert body.index("$cfg.Unreadable") < body.index('"https://pypi.org/simple"'), label
+
+    def test_the_site_that_cannot_read_config_stops_instead_of_guessing(self):
+        """setup.ps1's trio runs under Fast-Install with --index-url, which sets UV_NO_CONFIG and
+        scrubs UV_*, so uv cannot read the file itself and an empty answer would leave the trio
+        index as the only source. install.ps1 calls uv directly and can take the empty answer."""
+        block = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :]
+        block = block[: block.index("\n} else {")]
+        assert "Test-WoaUvIndexPolicyUnreadable" in block
+        assert "Exit-SetupFailure" in block
+        # The message has to be actionable: the file, the spelling, and both ways out.
+        assert "UnreadablePath" in block
+        assert "[[index]]" in block
+        assert "UV_DEFAULT_INDEX" in block
+        # install.ps1's trio step deliberately does NOT stop; it lets uv read the config.
+        assert "Test-WoaUvIndexPolicyUnreadable" not in _function_source(
+            INSTALL_SRC, "Get-WoaDependencyIndexArgs"
+        )

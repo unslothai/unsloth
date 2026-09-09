@@ -578,6 +578,77 @@ function Install-UnslothStudio {
         return ,$parts
     }
 
+    # uv's inline spelling of [[index]]: `index = [{ url = "...", default = true }]`. Valid and
+    # documented, so refusing it outright made every legitimate corporate mirror written this way
+    # read as Unreadable. Returns @{ DefaultUrl; Extras }, or $null on ANY doubt -- the caller turns
+    # $null into Unreadable, which the consumers already treat conservatively, so guessing is the
+    # only outcome worse than not parsing. Accepts a single-line, brace-balanced array of FLAT
+    # inline tables and nothing else: a multi-line array, a nested structure or a bare entry is $null.
+    #
+    # The brace characters are built from their code points on purpose. The parity and composition
+    # tests extract a function by counting braces without understanding quoting, so a literal one
+    # inside a string here would make this body unextractable and silently un-tested.
+    function Read-WoaUvInlineIndexArray {
+        param([string]$Value)
+        $lb = [char]0x7B; $rb = [char]0x7D
+        $v = ([string]$Value).Trim()
+        # A multi-line array never reaches here whole, so it fails this and stays Unreadable.
+        if ($v -notmatch '^\[(.*)\]$') { return $null }
+        $inner = $Matches[1].Trim()
+        $result = @{ DefaultUrl = $null; Extras = @() }
+        # `index = []` is a definite answer -- no indexes -- not a failure to read one.
+        if (-not $inner) { return $result }
+        $groups = @()
+        $depth = 0; $start = -1; $inD = $false; $inS = $false
+        for ($i = 0; $i -lt $inner.Length; $i++) {
+            $c = $inner[$i]
+            if ($inD) { if ($c -eq '\') { $i++ } elseif ($c -eq '"') { $inD = $false }; continue }
+            if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
+            # A quote at depth 0 opens a BARE entry, not an inline table. Tested before string
+            # mode starts, or the literal is consumed whole and the reject below never sees it.
+            if (($c -eq '"' -or $c -eq "'") -and $depth -eq 0) { return $null }
+            if ($c -eq '"') { $inD = $true; continue }
+            if ($c -eq "'") { $inS = $true; continue }
+            if ($c -eq $lb) { if ($depth -eq 0) { $start = $i + 1 }; $depth++; continue }
+            if ($c -eq $rb) {
+                $depth--
+                if ($depth -lt 0) { return $null }
+                if ($depth -eq 0) { $groups += $inner.Substring($start, $i - $start); $start = -1 }
+                continue
+            }
+            # Nested arrays and bare entries are not modelled; only separators sit between tables.
+            if ($depth -eq 0 -and ([string]$c) -notmatch '[\s,]') { return $null }
+        }
+        if ($depth -ne 0 -or $inD -or $inS -or -not $groups.Count) { return $null }
+        foreach ($g in $groups) {
+            # Nothing nested inside an entry either: a sub-table would carry keys this cannot rank.
+            if ($g.IndexOf($lb) -ge 0 -or $g.IndexOf('[') -ge 0) { return $null }
+            $url = $null; $isDefault = $false
+            foreach ($pair in ($g -split ',')) {
+                $pair = $pair.Trim()
+                if (-not $pair) { continue }
+                $eq = $pair.IndexOf('=')
+                if ($eq -lt 1) { return $null }
+                $k = $pair.Substring(0, $eq).Trim().Trim('"').Trim("'").ToLowerInvariant()
+                $raw = $pair.Substring($eq + 1).Trim()
+                $str = if ($raw -match '^"(.*)"$' -or $raw -match "^'(.*)'$") { $Matches[1] } else { $null }
+                $bool = if ($raw -match '^(true|false)$') { $raw -eq 'true' } else { $null }
+                if ($k -eq 'url') { if (-not $str) { return $null }; $url = $str }
+                elseif ($k -eq 'default') { if ($null -eq $bool) { return $null }; $isDefault = $bool }
+                # An explicit index serves only packages pinned to it, so it is neither the default
+                # nor a general extra. Not modelled, so it is doubt, so it is $null.
+                elseif ($k -eq 'explicit') { if ($null -eq $bool -or $bool) { return $null } }
+                # name, format, authenticate and friends do not change which indexes are consulted
+                # for an unpinned package, so they are read past rather than refused.
+            }
+            if (-not $url) { return $null }
+            # First default wins, matching the [[index]] flush below.
+            if ($isDefault) { if (-not $result.DefaultUrl) { $result.DefaultUrl = $url } }
+            else { $result.Extras += $url }
+        }
+        return $result
+    }
+
     function Read-WoaUvTomlIndexKeys {
         param([string]$Path, [string]$Top)
         try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
@@ -643,7 +714,14 @@ function Install-UnslothStudio {
                     }
                 } elseif ($str) { $scope.Extras += $str }
             }
-            if ($key -eq 'index') { return $null }
+            if ($key -eq 'index') {
+                $inline = Read-WoaUvInlineIndexArray -Value $val
+                # Still $null for anything it will not vouch for, which keeps the old behaviour
+                # exactly where the old behaviour was the honest answer.
+                if ($null -eq $inline) { return $null }
+                if ($inline.DefaultUrl -and -not $entry.DefaultUrl) { $entry.DefaultUrl = $inline.DefaultUrl }
+                $entry.Extras += @($inline.Extras)
+            }
         }
         & $flush
         $noIndex = if ($null -ne $pipScope.NoIndex) { $pipScope.NoIndex } else { $topScope.NoIndex }
@@ -653,7 +731,7 @@ function Install-UnslothStudio {
     }
 
     function Get-WoaUvConfigIndexPolicy {
-        $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; ExtraIndexes = @() }
+        $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
         $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
         if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
         $files = @()
@@ -680,7 +758,12 @@ function Install-UnslothStudio {
         foreach ($f in $files) {
             if (-not (Test-Path -LiteralPath $f.Path -PathType Leaf)) { continue }
             $policy = Read-WoaUvTomlIndexKeys -Path $f.Path -Top $f.Top
-            if ($null -eq $policy) { $result.Unreadable = $true; continue }
+            if ($null -eq $policy) {
+                # The first unreadable file, so a message can name what to go and fix.
+                $result.Unreadable = $true
+                if (-not $result.UnreadablePath) { $result.UnreadablePath = $f.Path }
+                continue
+            }
             if (-not $noIndexSet -and $null -ne $policy.NoIndex) { $result.NoIndex = $policy.NoIndex; $noIndexSet = $true }
             if (-not $result.DefaultIndex -and $policy.DefaultIndex) { $result.DefaultIndex = $policy.DefaultIndex }
             # Additive across files, like the option itself.
@@ -726,6 +809,17 @@ function Install-UnslothStudio {
         return $true
     }
 
+    # True when uv's own config decides the indexes and we could not read it, so no dependency index
+    # can be named. Harmless where uv reads that file itself; fatal where the caller scrubs UV_* and
+    # sets UV_NO_CONFIG, because there the trio index would be the only source left.
+    function Test-WoaUvIndexPolicyUnreadable {
+        foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
+            $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            if ($v -and $v.Trim()) { return $false }
+        }
+        return [bool](Get-WoaUvConfigIndexPolicy).Unreadable
+    }
+
     # The index beside the CUDA one for torch's shared dependencies. Invoke-InstallCommand clears the
     # inherited index settings whenever --default-index is passed, so the caller's policy is restated
     # here, for the resolver that runs the install: uv reads UV_* and its configuration files, pip reads
@@ -755,6 +849,11 @@ function Install-UnslothStudio {
         if (-not $pip -and (-not $default -or -not $extras)) {
             $cfg = Get-WoaUvConfigIndexPolicy
             if ($cfg.NoIndex) { return @() }
+            # An unreadable policy with no env default is doubt, and the PyPI fallback below would
+            # resolve that doubt by naming public PyPI -- silently overriding whatever mirror the
+            # file configured. Name nothing instead, the same way Test-WoaResolveReachesPyPI treats
+            # it. The uv call sites let uv read the file itself; the one that cannot stops first.
+            if ($cfg.Unreadable -and -not $default) { return @() }
             if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }
             if (-not $extras) { $extras = @($cfg.ExtraIndexes) }
         }

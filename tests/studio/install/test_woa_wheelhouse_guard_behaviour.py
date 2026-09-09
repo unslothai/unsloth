@@ -50,6 +50,7 @@ HELPERS = (
     "Test-WoaUrlIsPublicPyPI",
     "Remove-WoaTomlComment",
     "Split-WoaTomlKey",
+    "Read-WoaUvInlineIndexArray",
     "Read-WoaUvTomlIndexKeys",
     "Get-WoaUvConfigIndexPolicy",
     "Test-WoaResolveReachesPyPI",
