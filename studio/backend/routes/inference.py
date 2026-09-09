@@ -25109,7 +25109,9 @@ async def produce_openai_chat_completions(
                             try:
                                 _plain_preempt_policy.restart()
                             except Exception:
-                                logger.debug("could not restart the preemption ledger", exc_info = True)
+                                logger.debug(
+                                    "could not restart the preemption ledger", exc_info = True
+                                )
                         full_text = ""
                         completion_usage = None
                         completion_finish = None

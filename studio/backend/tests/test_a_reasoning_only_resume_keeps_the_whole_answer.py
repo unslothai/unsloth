@@ -39,7 +39,14 @@ def _done() -> str:
 
 
 class _Recorder:
-    def __init__(self, monkeypatch, streams, *, signal, pause_after_chunks = 1):
+    def __init__(
+        self,
+        monkeypatch,
+        streams,
+        *,
+        signal,
+        pause_after_chunks = 1,
+    ):
         self.payloads: list[dict] = []
         self.signal = signal
         # Which data chunk of the first attempt the pressure lands on. One by default, so
@@ -187,9 +194,7 @@ _TOOL = {
 
 def _tool_content(items) -> list[str]:
     return [
-        item["text"]
-        for item in items
-        if isinstance(item, dict) and item.get("type") == "content"
+        item["text"] for item in items if isinstance(item, dict) and item.get("type") == "content"
     ]
 
 
@@ -277,6 +282,6 @@ class TestTheToolLoopPromotesTheWholeThought:
         final = _tool_content(items)[-1]
         assert "Half one" in final, f"the paused prose was dropped: {final!r}"
         _, _, fallback = final.rpartition("</think>")
-        assert "Thinking. " not in fallback, (
-            f"a thought the turn already answered around was promoted as the answer: {final!r}"
-        )
+        assert (
+            "Thinking. " not in fallback
+        ), f"a thought the turn already answered around was promoted as the answer: {final!r}"
