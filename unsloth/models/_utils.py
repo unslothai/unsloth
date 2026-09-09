@@ -3179,6 +3179,23 @@ def _unsloth_train_if_needed(model):
     return model
 
 
+def _unsloth_floating_point_ops(self, inputs):
+    """transformers' `Trainer.floating_point_ops` calls `model.num_parameters(exclude_embeddings=True)`
+    on every micro-step, which walks `named_modules()` and `named_parameters()` of the whole
+    model (~13 ms of Python on a PEFT-wrapped 9B model) to count parameters that do not change
+    during training. Count once per model object and reuse it.
+    """
+    model = self.model
+    main_input = getattr(model, "main_input_name", "input_ids")
+    if main_input not in inputs or not hasattr(model, "num_parameters"):
+        return 0
+    cached = getattr(self, "_unsloth_flos_num_params", None)
+    if cached is None or cached[0] is not model:
+        cached = (model, model.num_parameters(exclude_embeddings = True))
+        self._unsloth_flos_num_params = cached
+    return 6 * inputs[main_input].numel() * cached[1]
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3292,6 +3309,10 @@ def patch_gradient_accumulation_fix(Trainer):
 
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
+
+    # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
+    if getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
+        Trainer.floating_point_ops = _unsloth_floating_point_ops
 
     # Settle any deferred compile-mode switch at the start of every step: on recompile-limit
     # exhaustion unsloth_zoo defers the switch to eager rather than flipping mid-call, since
