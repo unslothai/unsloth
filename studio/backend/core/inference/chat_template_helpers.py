@@ -3200,7 +3200,9 @@ def append_assistant_turn(
     Merge over the resumed turn rather than replacing it, or every key the partial
     carried but the continuation does not repeat is lost. ``extra_content`` is such a
     key, and Gemini reads the text part's thought signature back from it alone, so a
-    resumed turn replayed without it is rejected.
+    resumed turn replayed without it is rejected. ``reasoning_content`` is CONCATENATED
+    rather than merged over: replacing it dropped the thought a resumed turn had already
+    produced as soon as the continuation thought anything of its own.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
@@ -3208,6 +3210,12 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        # The thought is one turn's work too: a continuation that went on thinking and then
+        # called a tool carried only its own part, and the earlier part left the context.
+        prev_reasoning = conversation[-1].get("reasoning_content")
+        new_reasoning = assistant_msg.get("reasoning_content")
+        if isinstance(prev_reasoning, str) and isinstance(new_reasoning, str):
+            merged_msg["reasoning_content"] = f"{prev_reasoning}{new_reasoning}"
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)

@@ -29596,11 +29596,11 @@ class LlamaCppBackend:
             # The thought that preceded the prose is the same turn's work: replayed as prose
             # alone, the continuation is conditioned on a different prefix from the one that
             # produced the visible answer, and the model reasons again or drifts from what it
-            # had decided. Merged with a thought an earlier pause left trailing, since the
-            # accumulators reset each round and hold only the LATEST attempt's.
-            prior = trailing_assistant_reasoning(conversation)
-            if reasoning_accum or prior:
-                partial["reasoning_content"] = prior + reasoning_accum
+            # had decided. THIS attempt's thought only: `append_assistant_turn` concatenates
+            # it with one an earlier pause left trailing, and pre-merging it here would
+            # replay the earlier half twice.
+            if reasoning_accum:
+                partial["reasoning_content"] = reasoning_accum
             append_assistant_turn(conversation, partial, continue_final_message = True)
             return True
 
@@ -33165,8 +33165,14 @@ class LlamaCppBackend:
                     if _resumed:
                         preempt_policy.on_resumed()
                 except Exception:
-                    logger.debug("preemption policy raised; resuming anyway", exc_info = True)
-                    _resumed = True
+                    # Not a grant: the lease went back with `on_preempted`, so decoding on
+                    # would run on room nobody booked. The turn ends with its partial, the
+                    # same way a refusal does.
+                    logger.warning(
+                        "preemption policy raised during the wait; ending the turn",
+                        exc_info = True,
+                    )
+                    _resumed = False
                     if preempt_event is not None:
                         preempt_event.clear()
                 if not _resumed:
@@ -34247,8 +34253,13 @@ class LlamaCppBackend:
                     if _resumed_f:
                         preempt_policy.on_resumed()
                 except Exception:
-                    logger.debug("preemption policy raised; resuming anyway", exc_info = True)
-                    _resumed_f = True
+                    # Not a grant, for the reason the round loop gives: the lease is already
+                    # back, so this ends the turn with what the pause left.
+                    logger.warning(
+                        "preemption policy raised during the wait; ending the turn",
+                        exc_info = True,
+                    )
+                    _resumed_f = False
                     if preempt_event is not None:
                         preempt_event.clear()
                 if not _resumed_f:

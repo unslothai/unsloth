@@ -1683,7 +1683,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
         from core.inference import llama_preemption
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
-        spin = body.index("while not self._controller.try_grant_resume")
+        spin = body.index("if self._controller.try_grant_resume")
         assert (
             body.index("cannot_ever_fit(") < spin
         ), "a chat larger than the cache would spin until its client gave up"
@@ -1735,7 +1735,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
         from core.inference import llama_preemption
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
-        first_ask = body.index("while not self._controller.try_grant_resume")
+        first_ask = body.index("if self._controller.try_grant_resume")
         assert (
             body.index("refresh_residency()") < first_ask
         ), "the first grant would be decided on a cached figure"

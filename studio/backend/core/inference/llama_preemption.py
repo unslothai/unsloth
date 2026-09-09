@@ -247,7 +247,12 @@ class PreemptionPolicy(Protocol):
 
     def on_preempted(self, checkpoint: StreamCheckpoint) -> None: ...
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool: ...
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool: ...
 
     def on_resumed(self) -> None: ...
 
@@ -281,8 +286,24 @@ class DeferredPreemptionPolicy:
         if self._inner is not None:
             self._inner.on_preempted(checkpoint)
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
-        return False if self._inner is None else bool(self._inner.await_resume(timeout))
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
+        if self._inner is None:
+            return False
+        # Stop travels through, or every routed chat pauses without it: this wrapper is what
+        # the stream holds, so the caller's keyword raised TypeError here and its fallback
+        # retried the wait with no Stop at all.
+        if cancel_event is None:
+            return bool(self._inner.await_resume(timeout))
+        try:
+            return bool(self._inner.await_resume(timeout, cancel_event = cancel_event))
+        except TypeError:
+            # An inner policy written against the older protocol.
+            return bool(self._inner.await_resume(timeout))
 
     def on_resumed(self) -> None:
         if self._inner is not None:
@@ -302,7 +323,12 @@ class NullPreemptionPolicy:
     def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
         return None
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
         return True
 
     def on_resumed(self) -> None:
@@ -1458,7 +1484,12 @@ class ControllerPreemptionPolicy:
                 # come back when the lease is released either way.
                 pass
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
+    def await_resume(
+        self,
+        timeout: Optional[float] = None,
+        *,
+        cancel_event = None,
+    ) -> bool:
         # None means "caller stated no preference", NOT "wait forever".
         if timeout is None:
             timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
@@ -1514,8 +1545,16 @@ class ControllerPreemptionPolicy:
         # its whole replayed partial.
         self._controller.refresh_residency()
         # try_grant_resume, not room_for: the room must be BOOKED at the instant it is
-        # found, or two waiters both find the same space and both take it.
-        while not self._controller.try_grant_resume(self._gen_id, want):
+        # found, or two waiters both find the same space and both take it. Stop is read
+        # before every attempt, since a grant that succeeds at once would otherwise skip it.
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                # Stop pressed during the pause: there is nothing to resume, and the worker
+                # must not sit here waiting for room for a chat nobody is reading.
+                _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
+                return False
+            if self._controller.try_grant_resume(self._gen_id, want):
+                break
             self._controller.refresh_residency()
             now = time.monotonic()
             current = self._controller.progress_signature()
@@ -1550,11 +1589,14 @@ class ControllerPreemptionPolicy:
         try:
             try:
                 coro = lease.resume_async(
-                    want, timeout_s = timeout, progress = self._controller.progress_signature
+                    want,
+                    timeout_s = timeout,
+                    cancel_event = cancel_event,
+                    progress = self._controller.progress_signature,
                 )
             except TypeError:
                 # An older lease without the stall-aware wait.
-                coro = lease.resume_async(want, timeout_s = timeout)
+                coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             # Backstop for a loop that never runs the coroutine; resume_async is bounded.
             got = bool(future.result(timeout = timeout + 5.0))
