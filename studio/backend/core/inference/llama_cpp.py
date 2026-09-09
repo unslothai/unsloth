@@ -5579,6 +5579,57 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+# Vision AND audio towers run non-causal, and llama.cpp asserts the physical
+# micro-batch covers the whole encoded chunk (llama-context.cpp: "non-causal
+# attention requires n_ubatch >= n_tokens"). ggml-org/llama.cpp#18757 is the image
+# side of it and #21816 the audio side, so the floor is keyed on a projector
+# launching at all, not on the modality it serves. 2048 clears every Gemma 4 visual
+# token budget (the largest is 1120) and the 600-token audio chunk in #21816.
+_MMPROJ_NON_CAUSAL_MIN_BATCH = 2048
+
+
+def _mmproj_batch_floor(
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    env: Optional[Mapping[str, str]] = None,
+    floor: int = _MMPROJ_NON_CAUSAL_MIN_BATCH,
+) -> tuple[int, int]:
+    """The (batch, ubatch) a launch that opens a projector has to emit.
+
+    Called by the loader and by the two estimators that price the same launch, so a
+    panel and a training-guard verdict cannot describe a child sized differently
+    from the one that starts.
+
+    Three things the floor has to respect. A larger first-class field is the user
+    asking for a bigger batch and is kept. So is a larger LLAMA_ARG_BATCH /
+    LLAMA_ARG_UBATCH: the emitted flag beats the environment in llama.cpp, so
+    writing the floor from the field alone would silently downgrade an inherited
+    4096 to 2048 and reinstate the very assert this raises past. And llama.cpp
+    derives ``cparams.n_ubatch = min(n_batch, n_ubatch)``, so a micro-batch above
+    the batch is clamped back down; carry the batch up with it or the raise buys
+    nothing.
+    """
+    source_env = os.environ if env is None else env
+
+    def _resolved(value: Optional[int], env_name: str) -> int:
+        best = floor
+        if value is not None:
+            best = max(best, int(value))
+        raw = source_env.get(env_name)
+        if raw:
+            try:
+                best = max(best, int(raw))
+            except (TypeError, ValueError):
+                # Unparseable env is what llama.cpp itself ignores, so ignore it here
+                # rather than letting it decide the budget.
+                pass
+        return best
+
+    batch = _resolved(n_batch, "LLAMA_ARG_BATCH")
+    ubatch = _resolved(n_ubatch, "LLAMA_ARG_UBATCH")
+    return max(batch, ubatch), ubatch
+
+
 def _extra_args_split_mode(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -12751,7 +12802,6 @@ class LlamaCppBackend:
         )
 
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
-    _MMPROJ_NON_CAUSAL_MIN_BATCH = 2048
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
@@ -19414,23 +19464,37 @@ class LlamaCppBackend:
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if effective_is_vision:
-                    # Vision encoders use non-causal attention, where llama.cpp requires
-                    # the physical micro-batch to cover the full image-token batch.
-                    n_batch = max(
-                        self._MMPROJ_NON_CAUSAL_MIN_BATCH,
-                        int(n_batch or 0),
-                    )
-                    n_ubatch = max(
-                        self._MMPROJ_NON_CAUSAL_MIN_BATCH,
-                        int(n_ubatch or 0),
-                    )
-                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 if is_vision and not effective_is_vision and not _pv_mmproj_unpinnable:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                # A projector is about to launch, so raise past the non-causal
+                # micro-batch assert (#10559). Gated on effective_is_vision because that
+                # is the same condition --mmproj is emitted on below: no projector in the
+                # child, nothing non-causal to size for. Deliberately NOT narrowed to
+                # image-capable projectors -- an audio tower is non-causal too and trips
+                # the identical assert (ggml-org/llama.cpp#21816), so excluding it would
+                # leave speech models crashing on the bug this fixes.
+                #
+                # Before every sizing consumer and after the resolution that decides
+                # whether there is a projector at all, so the fit, the slot search and
+                # every compute-buffer reserve are priced from the batch that launches.
+                if effective_is_vision:
+                    _floor_from = (n_batch, n_ubatch)
+                    n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
+                    if _floor_from != (n_batch, n_ubatch):
+                        # Said out loud for the same reason the slot floor below says it:
+                        # the emitted flag beats an inherited LLAMA_ARG_BATCH, so a user
+                        # who set one deserves to see it move rather than wonder.
+                        logger.info(
+                            "Raising batch to %d and micro-batch to %d for the projector: "
+                            "its encoder runs non-causal and llama.cpp aborts when a "
+                            "micro-batch cannot hold one whole image or audio chunk.",
+                            n_batch,
+                            n_ubatch,
+                        )
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual

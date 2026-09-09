@@ -3163,3 +3163,84 @@ class TestFourMoreLaunchNormalizations:
         )
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)
         assert out.n_parallel == 4
+
+
+class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
+    """load_model raises --batch-size / --ubatch-size to 2048 whenever it emits
+    --mmproj, because a projector's encoder runs non-causal and llama.cpp aborts on a
+    micro-batch that cannot hold one whole image or audio chunk (#10559). Its own fit
+    is sized from the raised value, but the panel and the training-coexistence guard
+    are a different code path: priced at llama.cpp's 512 default they charge a quarter
+    of the compute buffers the child allocates, which on a 12B-class VLM is 1.8-2.3 GB
+    the guard would let a chat load take out from under a running training job.
+    """
+
+    @pytest.fixture
+    def vision(self, tmp_path):
+        weight = _write_gguf(
+            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144},
+            name = "model-Q4_K_M.gguf",
+        )
+        projector = _write_gguf(
+            tmp_path, "clip", {"block_count": 2}, name = "mmproj-F16.gguf"
+        )
+        config = SimpleNamespace(
+            identifier = "local/vision",
+            gguf_file = weight,
+            is_gguf = True,
+            is_vision = True,
+            gguf_variant = None,
+            gguf_mmproj_file = projector,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        return weight, config
+
+    @pytest.fixture(autouse = True)
+    def _no_inherited_batch(self, monkeypatch):
+        for name in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH", "LLAMA_ARG_MMPROJ"):
+            monkeypatch.delenv(name, raising = False)
+
+    def test_the_panel_prices_the_raised_micro_batch(self, vision):
+        weight, config = vision
+        priced = ri._gguf_memory_breakdown(config, weight, n_ctx = 8192)
+        pinned = ri._gguf_memory_breakdown(
+            config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048
+        )
+        # Identical, because the launch runs at 2048 either way. Before the mirror the
+        # left-hand side priced 512 and came out four times smaller.
+        assert priced.compute_bytes == pinned.compute_bytes
+
+    def test_a_text_only_load_still_prices_the_llama_cpp_default(self, vision):
+        weight, config = vision
+        text_only = SimpleNamespace(**{**vars(config), "is_vision": False,
+                                       "gguf_mmproj_file": None})
+        priced = ri._gguf_memory_breakdown(text_only, weight, n_ctx = 8192)
+        floored = ri._gguf_memory_breakdown(
+            text_only, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048
+        )
+        # No projector, no floor: the two must NOT agree, or the mirror leaked into
+        # every text load and inflated the panel for models that never encode an image.
+        assert priced.compute_bytes < floored.compute_bytes
+
+    def test_the_training_guard_charges_the_raised_micro_batch(self, vision):
+        weight, config = vision
+        charged = ri._estimate_gguf_required_gb(config, max_seq_length = 8192)
+        pinned = ri._estimate_gguf_required_gb(
+            config, max_seq_length = 8192, n_batch = 2048, n_ubatch = 2048
+        )
+        assert charged == pytest.approx(pinned)
+
+    def test_no_mmproj_in_the_extras_prices_no_floor(self, vision):
+        weight, config = vision
+        # --no-mmproj stops Unsloth resolving one, so nothing non-causal launches and
+        # the panel must not quote a raise the child never gets.
+        suppressed = ri._gguf_memory_breakdown(
+            config, weight, n_ctx = 8192, llama_extra_args = ["--no-mmproj"]
+        )
+        floored = ri._gguf_memory_breakdown(
+            config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048,
+            llama_extra_args = ["--no-mmproj"],
+        )
+        assert suppressed.compute_bytes < floored.compute_bytes
