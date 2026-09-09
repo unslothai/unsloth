@@ -2386,18 +2386,20 @@ def test_the_versionless_reroute_keeps_the_family_the_request_selected():
     host the mask picks the routable gfx1030 and the block still took the cpu index for it --
     and the CUDA restore then undid the request, exactly the failure the same gate inside
     get_torch_index_url was changed to avoid."""
-    assert _reroute_family(
-        _DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "1"
-    ) == "gfx103X-all"
+    assert (
+        _reroute_family(_DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "1")
+        == "gfx103X-all"
+    )
 
 
 def test_the_same_request_selecting_the_deck_still_loses_the_family():
     """The control that keeps the narrowing honest: the request cannot buy ROCm wheels for
     the arch measured to compute wrong answers (studio/ROCM_RDNA2_APU.md). Same host, mask
     on the gfx1033."""
-    assert _reroute_family(
-        _DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "0"
-    ) == ""
+    assert (
+        _reroute_family(_DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "0")
+        == ""
+    )
 
 
 def test_the_presence_rule_still_holds_for_a_host_that_did_not_ask():
