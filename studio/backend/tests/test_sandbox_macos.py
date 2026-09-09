@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -327,7 +328,12 @@ def test_sysctl_and_shm_rules_survive(profile):
 
 def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
     paths = backend.runtime_read_paths()
-    shim = os.path.join(os.path.dirname(backend.__file__), "sandbox_site")
+    # normpath, because ``backend.__file__`` carries whatever spelling the import
+    # that first loaded the module used, and under a full-suite run that is
+    # "tests/../core/inference" rather than the canonical form the generator
+    # emits. Comparing the two directly makes this test pass or fail on import
+    # order, which it did: green on its own file, red in the whole suite.
+    shim = os.path.normpath(os.path.join(os.path.dirname(backend.__file__), "sandbox_site"))
     assert shim in paths
     # A read root of "/" or "/usr" would hand back most of the host, so a
     # system interpreter that reports one of them as its prefix is expected to
@@ -506,22 +512,40 @@ def test_profile_compiles_under_sandbox_exec(tmp_path):
 
 @_darwin_only
 def test_home_is_unreadable_inside_the_sandbox(tmp_path):
-    """The negative control for the whole exercise."""
+    """The negative control for the whole exercise, with its positive control.
+
+    This used to run ``ls ~/.ssh`` and assert a non-zero exit, which a machine
+    with no ``~/.ssh`` passes whether or not anything is confined -- and a CI
+    runner is exactly such a machine. A read that fails for an unrelated reason
+    proves nothing, so the file is created here and proven readable on the host
+    first. Only then does the sandbox failing to read it mean the sandbox.
+    """
     workdir = tmp_path / "session"
     workdir.mkdir()
-    plan = ToolLaunchPlan(
-        argv = ("/bin/sh", "-c", "ls ~/.ssh"),
-        workdir = str(workdir),
-        env = {"PATH": "/usr/bin:/bin"},
-    )
-    prepared = backend.prepare(plan)
+    canary = Path(os.path.expanduser("~")) / ".unsloth-seatbelt-canary"
+    canary.write_text("UNSLOTH_CANARY_HOME_READABLE")
     try:
-        result = subprocess.run(
-            prepared.argv, capture_output = True, text = True, timeout = 60, check = False
+        # Positive control: the same command, unsandboxed, on this host.
+        argv = ("/bin/sh", "-c", f"cat {shlex.quote(str(canary))}")
+        host = subprocess.run(argv, capture_output = True, text = True, timeout = 60, check = False)
+        assert host.returncode == 0 and "UNSLOTH_CANARY_HOME_READABLE" in host.stdout, (
+            "the canary is not readable even outside the sandbox, so the negative "
+            f"control below would prove nothing: {host.stderr}"
         )
-        assert result.returncode != 0
+
+        prepared = backend.prepare(
+            ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin:/bin"})
+        )
+        try:
+            result = subprocess.run(
+                prepared.argv, capture_output = True, text = True, timeout = 60, check = False
+            )
+            assert result.returncode != 0
+            assert "UNSLOTH_CANARY_HOME_READABLE" not in result.stdout
+        finally:
+            prepared.cleanup()
     finally:
-        prepared.cleanup()
+        canary.unlink(missing_ok = True)
 
 
 def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_readable(monkeypatch, tmp_path):
