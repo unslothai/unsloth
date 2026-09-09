@@ -553,8 +553,27 @@ _CALLER_ENV = tuple(
 )
 assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sentinels must differ"
 
+# Which variables the caller's shell already has. All-present and all-absent between them run both
+# arms of the finally, but they run the SAME arm for all fifteen at once, so every $hadPrevious*
+# flag holds the same value and a restore consulting the wrong variable's flag still lands on the
+# right branch by luck. The mixed patterns split the flags, which is the only way that shows.
+# Two of them, complementary, so no variable is always on the same side. Not exhaustive on purpose:
+# 2**15 patterns would be a worse test, not a better one, and one pair of complements already
+# separates every variable from every other one it could be cross-wired to.
+_PRESENCE_PATTERNS = {
+    "all": lambda i: True,
+    "none": lambda i: False,
+    "mixed": lambda i: i % 2 == 0,
+    "mixed_complement": lambda i: i % 2 == 1,
+}
 
-def _assert_caller_env_restored(out: dict, present: bool, what: str) -> None:
+
+def _present_names(pattern: str) -> tuple[str, ...]:
+    keep = _PRESENCE_PATTERNS[pattern]
+    return tuple(name for i, name in enumerate(_CALLER_ENV_NAMES) if keep(i))
+
+
+def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) -> None:
     """The caller's shell is as it was: same values, or still no variable at all.
 
     Two arms, and they fail differently. With a previous value the finally restores it; with none
@@ -574,13 +593,20 @@ def _assert_caller_env_restored(out: dict, present: bool, what: str) -> None:
     either behaviour here would encode one engine's answer as the contract."""
     for name, sentinel in _CALLER_ENV:
         key = name.lower()
-        if present:
+        if name in present:
             assert out[key + "_set"] is True, f"{what} removed {name}, which the caller had set"
             assert out[key] == sentinel, f"{what} left {name} as install.ps1 set it"
         else:
             assert (
                 out[key + "_set"] is False
             ), f"{what} left {name} behind in a shell that never had it, as {out[key]!r}"
+
+
+def _existing_llama_dir(tmp_path: Path) -> Path:
+    """A directory that really is there, for the success side of --with-llama-cpp-dir."""
+    path = tmp_path / "llama.cpp"
+    path.mkdir(exist_ok = True)
+    return path
 
 
 def _caller_env_report() -> str:
@@ -615,8 +641,11 @@ def _run_handoff_lifecycle(
     inherited: str | None,
     fails: bool,
     bails: bool = False,
-    caller_env_present: bool = True,
+    with_llama_cpp_dir: bool = False,
+    caller_env: str = "all",
 ) -> dict:
+    assert not (bails and with_llama_cpp_dir), "the bail and the success path are exclusive"
+    present = _present_names(caller_env)
     call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
     block = _handoff_lifecycle_block()
     # Loudly: a silent miss leaves the probe unrun and every assertion reading
@@ -645,6 +674,12 @@ def _run_handoff_lifecycle(
                 (
                     f"$WithLlamaCppDir = '{tmp_path / 'no-such-llama.cpp'}'"
                     if bails
+                    # A directory that EXISTS takes the other side of the same test, where the
+                    # block resolves it into UNSLOTH_LOCAL_LLAMA_CPP_DIR and carries on to the
+                    # setup call. Without this the only assignment to that variable in the whole
+                    # block never runs, so its restore was being satisfied by never being dirtied.
+                    else f"$WithLlamaCppDir = '{_existing_llama_dir(tmp_path)}'"
+                    if with_llama_cpp_dir
                     else "$WithLlamaCppDir = $null"
                 )
                 + "; $VenvPython = 'stub-python'; $VenvDir = 'stub-venv'",
@@ -687,10 +722,9 @@ def _run_handoff_lifecycle(
         encoding = "utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
-    # Absent means absent: the child env is built from scratch here, so simply not adding these
-    # leaves the block's own $previous* reads seeing $null, which is the remove arm of the finally.
-    if caller_env_present:
-        env.update({name: sentinel for name, sentinel in _CALLER_ENV})
+    # Absent means absent: the child env is built from scratch here, so simply not adding a name
+    # leaves the block's own $previous* read seeing $null, which is the remove arm of the finally.
+    env.update({name: sentinel for name, sentinel in _CALLER_ENV if name in present})
     if inherited is not None:
         env[HANDOFF] = inherited
     proc = subprocess.run(
@@ -719,7 +753,7 @@ def _run_handoff_lifecycle(
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env_present", [True, False], ids = ["caller_env_set", "caller_env_absent"]
+    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
 @pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
 @pytest.mark.parametrize(
@@ -728,7 +762,7 @@ def _run_handoff_lifecycle(
     ids = ["nothing", "resolved", "inherited", "resolved_over_inherited"],
 )
 def test_the_caller_environment_survives_the_setup_call(
-    tmp_path, arch, inherited, fails, caller_env_present
+    tmp_path, arch, inherited, fails, caller_env
 ):
     """`irm ... | iex` runs install.ps1 in the caller's own shell, so anything set for the child
     has to be put back -- on the failure path too, which is the one that rolls back and retries,
@@ -738,12 +772,12 @@ def test_the_caller_environment_survives_the_setup_call(
         arch = arch,
         inherited = inherited,
         fails = fails,
-        caller_env_present = caller_env_present,
+        caller_env = caller_env,
     )
     assert out["after_set"] is (inherited is not None), "the handoff outlived the setup call"
     assert out["after"] == inherited
     assert out["public"] == "gfx90a", "a user's own override must come back untouched"
-    _assert_caller_env_restored(out, caller_env_present, "the setup call")
+    _assert_caller_env_restored(out, _present_names(caller_env), "the setup call")
 
 
 def test_every_saved_variable_in_the_block_is_covered():
@@ -765,9 +799,9 @@ def test_every_saved_variable_in_the_block_is_covered():
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env_present", [True, False], ids = ["caller_env_set", "caller_env_absent"]
+    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
-def test_the_bail_restores_the_caller_environment(tmp_path, caller_env_present):
+def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     """The --with-llama-cpp-dir bail returns from inside the try, so the finally still runs.
 
     Textual ordering cannot show that: move the try below the bail and `saved < bail <
@@ -783,14 +817,40 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env_present):
         inherited = "gfx1030",
         fails = False,
         bails = True,
-        caller_env_present = caller_env_present,
+        caller_env = caller_env,
     )
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
     assert out["after_set"] is True
     # Set above the bail and put back only by the finally, so a value still showing what
     # install.ps1 wrote would mean the bail escaped the try.
-    _assert_caller_env_restored(out, caller_env_present, "the bail")
+    _assert_caller_env_restored(out, _present_names(caller_env), "the bail")
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+)
+def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_env):
+    """The other side of the bail: --with-llama-cpp-dir naming a directory that is there.
+
+    `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path $WithLlamaCppDir).Path` is the only assignment
+    to that variable in the whole block, and nothing reached it: the bail case returns above it and
+    every other case passes $null. Its restore was therefore being satisfied by never being
+    dirtied, which is not the same as being correct. Here the block really does overwrite it and
+    the finally really does have something to put back."""
+    out = _run_handoff_lifecycle(
+        tmp_path,
+        arch = "gfx1151",
+        inherited = "gfx1030",
+        fails = False,
+        with_llama_cpp_dir = True,
+        caller_env = caller_env,
+    )
+    # Past the bail, unlike the case above: the directory exists, so the block runs on to the child.
+    assert out["seen_by_child"] == "gfx1151", "the block did not reach the setup call"
+    assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored"
+    _assert_caller_env_restored(out, _present_names(caller_env), "the llama.cpp handoff")
 
 
 @requires_pwsh
