@@ -132,6 +132,17 @@ for shell in sh bash; do
     assert_eq "$shell: a BOM and a CRLF do not hide the path" \
         "$SHARED" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
+    # A recorded cache that has gone read-only since the install (a share remounted
+    # read-only): warm, and useless to uv, which aborts on a cache it cannot write.
+    RO="$CASE/read-only recorded/uv"
+    warm "$RO"
+    record "$HOME_DIR" "$RO\\n"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 555 "$RO" 2>/dev/null; then
+        assert_eq "$shell: a warm recorded cache that is not writable loses to the Studio cache" \
+            "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 755 "$RO" 2>/dev/null || true
+    fi
+
     # A cache the user cleared, or one recorded by an install whose cache has since
     # been deleted: content, not the record, has the last word on emptiness.
     COLD="$CASE/emptied cache/uv"

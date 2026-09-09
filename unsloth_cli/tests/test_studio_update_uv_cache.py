@@ -885,3 +885,31 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     (cache / "simple-v20" / "index.msgpack").write_bytes(b"\0")
 
     assert studio._uv_cache_has_packages(cache) is False
+
+
+def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
+    monkeypatch, tmp_path, caches
+):
+    """setup treats the value this hands it as the caller's choice and never probes it
+    again, and uv aborts on a cache it cannot write, so a share remounted read-only since
+    the install has to lose here."""
+    import os as _os
+
+    if _os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    studio_cache, _default = caches
+    recorded = tmp_path / "shared-uv"
+    _fill(recorded)
+    _fill(studio_cache)
+    (studio.STUDIO_HOME / "cache").mkdir(parents = True, exist_ok = True)
+    (studio.STUDIO_HOME / "cache" / "uv-cache-dir").write_text(f"{recorded}\n", encoding = "utf-8")
+    recorded.chmod(0o555)
+    try:
+        seen = _run_posix(monkeypatch, tmp_path)
+    finally:
+        recorded.chmod(0o755)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+    recorded.chmod(0o755)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(recorded)

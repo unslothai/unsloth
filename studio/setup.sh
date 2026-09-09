@@ -1090,9 +1090,12 @@ else
     # reader just preserved.
     _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
     _uv_recorded=${_uv_recorded%x}
-    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded"; then
-        # Only while it still holds packages: a marker for an emptied cache would point
-        # this run at nothing and refetch everything the Studio cache already has.
+    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded" \
+       && _uv_cache_probe_writable "$_uv_recorded"; then
+        # Only while it still holds packages, and only while uv can write to it: a
+        # marker for an emptied cache would point this run at nothing and refetch
+        # everything the Studio cache already has, and uv aborts outright on a cache it
+        # cannot write (a share remounted read-only since the install).
         UV_CACHE_DIR="$_uv_recorded"
         export UV_CACHE_DIR
     else
