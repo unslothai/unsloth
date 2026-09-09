@@ -3480,6 +3480,7 @@ def _ensure_cuda_torch() -> None:
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if not _ran:
         return
+    _label_before = str(_version or "")
     if not _importable:
         # torch present but can't import. Without a pin the base install owns it; but an
         # explicit CUDA pin forces this pass (failed probe) and the base update won't
@@ -3503,6 +3504,8 @@ def _ensure_cuda_torch() -> None:
             index_url,
             constrain = False,
         )
+        # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+        _resync_torch_coupled_packages(_label_before)
         return
     if _version is None:
         # Nothing readable came back, so classify nothing: this is where the per-path
@@ -3576,6 +3579,8 @@ def _ensure_cuda_torch() -> None:
         index_url,
         constrain = False,
     )
+    # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+    _resync_torch_coupled_packages(_label_before)
 
 
 def _ensure_xpu_torch() -> None:
@@ -3596,6 +3601,7 @@ def _ensure_xpu_torch() -> None:
 
     # Un-importable either way installs from the pin below. One shared probe bounds it.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    _label_before = str(_version or "")
     if not _ran:
         # Inconclusive, so ask the disk, which answers without loading SYCL. An unsupported or
         # missing wheel does need the reinstall (the resolver keeps a too-old +xpu wheel because
@@ -3641,6 +3647,8 @@ def _ensure_xpu_torch() -> None:
         pin,
         constrain = False,
     )
+    # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+    _resync_torch_coupled_packages(_label_before)
 
 
 def _installed_torch_version_label() -> str:
@@ -3913,6 +3921,7 @@ def _ensure_cpu_torch() -> None:
     # Classify the torch family. Un-importable means missing or broken, and the
     # explicit CPU pin reinstalls it below.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    _label_before = str(_version or "")
     if not _ran:
         # A hung import is the wedged-driver case this pin exists to rescue, so returning here
         # made the pin a no-op on exactly that host. Classify off disk instead, and only go on
@@ -3939,6 +3948,8 @@ def _ensure_cpu_torch() -> None:
             pin,
             constrain = False,
         )
+        # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+        _resync_torch_coupled_packages(_label_before)
         return
     if _version is None:
         return  # unreadable -- the base install step handles a missing torch
@@ -3976,6 +3987,8 @@ def _ensure_cpu_torch() -> None:
         pin,
         constrain = False,
     )
+    # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+    _resync_torch_coupled_packages(_label_before)
 
 
 def _torch_flavor_tag(version: str) -> str:
@@ -5005,6 +5018,7 @@ def _ensure_rocm_torch() -> None:
     # detection. Marker is the HIP version, else a "rocm" sentinel when only the version
     # string flags ROCm; empty = CPU/CUDA torch, or un-probeable, which reinstalls.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    _label_before = str(_version or "")
     _installed_torch_ver = (_version or "").lower() if (_ran and _importable) else ""
     _hip_marker = ""
     if _ran and _importable:
@@ -5061,6 +5075,8 @@ def _ensure_rocm_torch() -> None:
                 index_url,
                 constrain = False,
             )
+            # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+            _resync_torch_coupled_packages(_label_before)
             rocm_torch_ready = True
             _inferred_arch_installed = True
             # The same reconciliation the reroutes below make: these wheels carry
@@ -5395,6 +5411,8 @@ def _ensure_rocm_torch() -> None:
             index_url,
             constrain = False,
         )
+        # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+        _resync_torch_coupled_packages(_label_before)
         rocm_torch_ready = True
     # gfx906 fires even when has_hip_torch is True: a +rocm7.x build IS the broken
     # combo it repairs. A torch already on rocm6.3 wheels is left alone (the tag
@@ -5418,6 +5436,8 @@ def _ensure_rocm_torch() -> None:
             index_url,
             constrain = False,
         )
+        # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+        _resync_torch_coupled_packages(_label_before)
         rocm_torch_ready = True
     elif not rocm_torch_ready:
         # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from a pin.
@@ -5462,6 +5482,8 @@ def _ensure_rocm_torch() -> None:
                 index_url,
                 constrain = False,
             )
+            # Re-pin torchao / xFormers when this repair moved the torch family (#10493).
+            _resync_torch_coupled_packages(_label_before)
             rocm_torch_ready = True
 
     # gfx906 has no prebuilt bitsandbytes: the continuous-release/PyPI wheels ship

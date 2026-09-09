@@ -1748,6 +1748,116 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert "could not re-check xFormers" in out
 
 
+class TestLinuxRepairResyncsCoupledPackages:
+    """#10493: Linux family repair must call _resync_torch_coupled_packages the way
+    Windows already does from _ensure_expected_torch_flavor. A no-op must not."""
+
+    def test_a_cuda_family_repair_resyncs_torchao(self):
+        with patch.object(stack_mod, "_resync_torch_coupled_packages") as mock_resync:
+            mock_pip = _run_cuda_repair(torch_state = "hip")
+        assert mock_pip.call_count == 1
+        mock_resync.assert_called_once_with("2.9.1+rocm6.4")
+
+    def test_a_healthy_cuda_torch_does_not_resync(self):
+        with patch.object(stack_mod, "_resync_torch_coupled_packages") as mock_resync:
+            mock_pip = _run_cuda_repair(torch_state = "cuda")
+        mock_pip.assert_not_called()
+        mock_resync.assert_not_called()
+
+    def test_a_cpu_family_repair_resyncs_torchao(self):
+        mock_pip, mock_resync = self._run_cpu_repair("cuda|cu128")
+        assert mock_pip.call_count == 1
+        mock_resync.assert_called_once_with("2.9.1+cu128")
+
+    def test_an_already_cpu_torch_does_not_resync(self):
+        mock_pip, mock_resync = self._run_cpu_repair("cpu")
+        mock_pip.assert_not_called()
+        mock_resync.assert_not_called()
+
+    def test_an_xpu_family_repair_resyncs_torchao(self):
+        mock_pip, mock_resync = self._run_xpu_repair("2.9.1+cpu||")
+        assert mock_pip.call_count == 1
+        mock_resync.assert_called_once_with("2.9.1+cpu")
+
+    def test_an_already_xpu_torch_does_not_resync(self):
+        mock_pip, mock_resync = self._run_xpu_repair("2.9.1+xpu||")
+        mock_pip.assert_not_called()
+        mock_resync.assert_not_called()
+
+    def test_a_rocm_family_repair_resyncs_torchao(self):
+        mock_pip, mock_resync = self._run_linux_rocm_repair(_MARK + "2.10.0+cu126||\n")
+        assert mock_pip.call_count == 1
+        mock_resync.assert_called_once_with("2.10.0+cu126")
+
+    def test_an_already_rocm_torch_does_not_resync(self):
+        mock_pip, mock_resync = self._run_linux_rocm_repair(_MARK + "2.10.0+rocm7.1|7.1.12345|\n")
+        mock_pip.assert_not_called()
+        mock_resync.assert_not_called()
+
+    def _run_cpu_repair(self, torch_state):
+        stack_mod._invalidate_torch_runtime_probe()
+        with (
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(
+                stack_mod,
+                "_explicit_cpu_torch_index_url",
+                return_value = "https://download.pytorch.org/whl/cpu",
+            ),
+            patch.object(stack_mod, "pip_install") as mock_pip,
+            patch.object(stack_mod, "_resync_torch_coupled_packages") as mock_resync,
+            patch.object(
+                stack_mod.subprocess,
+                "run",
+                side_effect = _make_run(torch_state = torch_state),
+            ),
+        ):
+            stack_mod._ensure_cpu_torch()
+        return mock_pip, mock_resync
+
+    def _run_xpu_repair(self, fields):
+        stack_mod._invalidate_torch_runtime_probe()
+        probe = MagicMock(returncode = 0, stdout = _MARK + fields + "\n")
+        with (
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_WINDOWS", False),
+            patch.object(
+                stack_mod,
+                "_explicit_xpu_torch_index_url",
+                return_value = "https://download.pytorch.org/whl/xpu",
+            ),
+            patch.object(stack_mod, "pip_install") as mock_pip,
+            patch.object(stack_mod, "_resync_torch_coupled_packages") as mock_resync,
+            patch.object(stack_mod.subprocess, "run", return_value = probe),
+        ):
+            stack_mod._ensure_xpu_torch()
+        return mock_pip, mock_resync
+
+    def _run_linux_rocm_repair(self, stdout):
+        stack_mod._invalidate_torch_runtime_probe()
+        probe = MagicMock(returncode = 0, stdout = stdout)
+        with (
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_WINDOWS", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod.platform, "machine", return_value = "x86_64"),
+            patch.object(stack_mod, "_miscomputing_arch_host", return_value = False),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
+            patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1)),
+            patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None),
+            patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
+            patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []),
+            patch.object(stack_mod, "pip_install") as mock_pip,
+            patch.object(stack_mod, "pip_install_try", return_value = True),
+            patch.object(stack_mod, "_resync_torch_coupled_packages") as mock_resync,
+            patch("os.path.isdir", return_value = True),
+            patch.object(stack_mod.subprocess, "run", return_value = probe),
+        ):
+            stack_mod._ensure_rocm_torch()
+        return mock_pip, mock_resync
+
+
 class TestTheResidentXformersBuildIsReadFromDisk:
     def test_the_recorded_torch_is_returned(self, tmp_path):
         pkg = tmp_path / "xformers"
