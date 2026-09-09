@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from tests.studio._js_source import assert_guard_holds
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -76,143 +77,6 @@ def _call_arguments(text: str, callee: str) -> list[str]:
         else:
             raise AssertionError(f"unbalanced parentheses after {callee} at {start}")
     return calls
-
-
-def _blank_literals_and_comments(source: str) -> str:
-    """``source`` with comments and the INSIDE of string literals blanked, length preserved.
-
-    Every earlier version of this scan handled one of these and was defeated by the other.
-    Stripping comments with a regex eats a `//` that lives inside a URL string; tracking
-    quotes without stripping comments lets a commented-out guard count as live; and doing
-    both separately still counts a guard-shaped STRING as a live guard, which masks a real
-    condition being dropped. One pass settles all three: walk the source once, and replace
-    comment bodies and literal contents with spaces so offsets and delimiters still line up.
-
-    Regex literals are left alone. Telling `/` as division from `/` as a regex needs real
-    parsing, and no guard this file inspects contains one; a guard that did would be read
-    with its slashes intact, which is visible rather than silent.
-    """
-    out, i, n = [], 0, len(source)
-    while i < n:
-        char, nxt = source[i], source[i + 1 : i + 2]
-        if char == "/" and nxt == "/":
-            while i < n and source[i] != "\n":
-                out.append(" ")
-                i += 1
-            continue
-        if char == "/" and nxt == "*":
-            while i < n and not (source[i] == "*" and source[i + 1 : i + 2] == "/"):
-                out.append("\n" if source[i] == "\n" else " ")
-                i += 1
-            out.append("  ")
-            i += 2
-            continue
-        if char in "\"'`":
-            out.append(char)
-            i += 1
-            while i < n:
-                if source[i] == "\\":
-                    out.append("  ")
-                    i += 2
-                    continue
-                if source[i] == char:
-                    out.append(char)
-                    i += 1
-                    break
-                out.append("\n" if source[i] == "\n" else " ")
-                i += 1
-            continue
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
-def _assert_guard_holds(
-    source: str, keyword: str, operator: str, required: set[str], *, expected: int
-) -> None:
-    """Exactly `expected` `keyword` guards must join all of `required` with `operator`.
-
-    Slicing the source on a guard's exact text breaks on a pure reformat: prettier rewraps a
-    guard the moment it gains a condition, which is how #10508 broke two assertions here. So
-    compare conditions instead. Four things this must not do:
-
-    - Take the first `keyword` in the slice: an unrelated earlier `if` gets parsed instead.
-    - Stop at the first `)`: a condition holding a call closes a paren of its own, truncating
-      the body.
-    - Split on both `||` and `&&`: the operator carries the meaning, since an OR guard flipped
-      to AND stops short-circuiting.
-    - Scan the raw source, or treat a paren inside a string as syntax. A commented-out copy
-      of the old guard would then be counted as live, masking a condition dropped from the
-      real one, and a condition holding a paren in a literal would truncate the body.
-    - Accept the first guard that matches, or demand every guard mentioning a condition holds
-      them all. This slice carries the guard twice, so accepting one lets the other rot; but
-      nearby guards legitimately test a subset, so requiring all of them is wrong too. Counting
-      the complete ones catches a dropped condition in either copy and leaves the neighbours be.
-    """
-    complete = [
-        body
-        for body in _parenthesised_bodies(source, keyword)
-        if required <= set(_split_top_level(body, operator))
-    ]
-    assert len(complete) == expected, (
-        f"expected {expected} {keyword} guards joining {sorted(required)} with {operator!r}, "
-        f"found {len(complete)}: {complete}"
-    )
-
-
-def _parenthesised_bodies(source: str, keyword: str):
-    """Each `keyword (...)` body in `source`, whitespace collapsed, parentheses balanced."""
-    source = _blank_literals_and_comments(source)
-    for match in re.finditer(rf"\b{re.escape(keyword)}\s*\(", source):
-        depth, i, quote = 0, match.end() - 1, ""
-        while i < len(source):
-            char = source[i]
-            if quote:
-                if char == "\\":
-                    i += 2
-                    continue
-                if char == quote:
-                    quote = ""
-            elif char in "\"'`":
-                quote = char
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
-        else:
-            continue
-        yield re.sub(r"\s+", " ", source[match.end() : i]).strip()
-
-
-def _split_top_level(body: str, operator: str) -> list[str]:
-    """Split `body` on `operator`, ignoring occurrences nested inside parentheses."""
-    parts, depth, current, j, quote = [], 0, "", 0, ""
-    while j < len(body):
-        char = body[j]
-        if quote:
-            if char == "\\":
-                current += body[j : j + 2]
-                j += 2
-                continue
-            if char == quote:
-                quote = ""
-        elif char in "\"'`":
-            quote = char
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-        if not quote and depth == 0 and body.startswith(operator, j):
-            parts.append(current.strip())
-            current, j = "", j + len(operator)
-            continue
-        current += body[j]
-        j += 1
-    parts.append(current.strip())
-    return [c for c in parts if c]
 
 
 def _read_backend(rel: str) -> str:
@@ -2746,7 +2610,7 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    _assert_guard_holds(
+    assert_guard_holds(
         autoload,
         "if",
         "||",
@@ -3562,7 +3426,7 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    _assert_guard_holds(
+    assert_guard_holds(
         cascade,
         "while",
         "&&",
