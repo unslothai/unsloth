@@ -57,6 +57,24 @@ cannot apply to it. The probe fails closed: a missing `nvidia-smi`, a non-zero e
 timeout, an unparsable matrix, or a device mask that cannot be mapped to PCI indices all
 mean no P2P.
 
+### Partially bridged boxes, and which pairs get checked
+
+The matrix is keyed by nvidia-smi index (PCI enumeration order) while the GPU selection is
+in CUDA index order, and CUDA defaults to `CUDA_DEVICE_ORDER=FASTEST_FIRST`, so the two
+are not interchangeable. Studio joins them on GPU UUID, which torch and nvidia-smi both
+report, and then checks only the pairs actually selected.
+
+If that join cannot be completed (no `nvidia-smi`, a partial device list, a torch build
+that does not expose `uuid`) and `CUDA_DEVICE_ORDER` is not `PCI_BUS_ID`, Studio does not
+guess. It requires **every** pair on the box to be `NV#`, so that the answer is the same
+whichever permutation is real. On a 4-way or 8-way box with NVLink bridges over pairs
+(0-1 and 2-3, say) and PCIe between the islands, that is stricter than necessary: a
+genuinely bridged pair loses P2P because an unrelated cross-island pair is `SYS`. Setting
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` restores the per-pair check.
+
+This is why reading `NV12` for your own pair in `topo -m` is not on its own a guarantee
+that Studio will enable P2P. The log line names the pair that vetoed it.
+
 ## Checking a host
 
 ```
@@ -81,8 +99,12 @@ at several sizes. Exit 0 means intact, 1 means data was lost, 2 means it could n
 | variable | effect |
 |---|---|
 | `UNSLOTH_DISABLE_DC_TUNING=1` | disables all data-center tuning, including FP32 accumulate |
-| `UNSLOTH_DISABLE_DC_P2P=1` | disables only the P2P flags, keeping FP32 accumulate |
-| `UNSLOTH_FORCE_DC_P2P=1` | enables P2P on an unverified fabric (use after the probe passes) |
+| `UNSLOTH_DISABLE_DC_P2P=1` | disables `GGML_CUDA_P2P` only, keeping FP32 accumulate and `CUDA_SCALE_LAUNCH_QUEUES`. Also removes an inherited `GGML_CUDA_P2P`, so it holds even if the variable is already set elsewhere in your environment |
+| `UNSLOTH_FORCE_DC_P2P=1` | enables P2P on an unverified fabric (use after the probe passes). It cannot override `UNSLOTH_DISABLE_DC_P2P=1`, an off-meaning `GGML_CUDA_P2P` in your environment, or the data-center gate itself |
+
+`CUDA_SCALE_LAUNCH_QUEUES` is deliberately not gated on the fabric: it sizes a CUDA command
+buffer, moves no data between devices, and the reporter of #10613 measured it clean in
+isolation on the affected host. The set of hosts that receive it is unchanged by this gate.
 
 ### `GGML_CUDA_P2P=0` does not disable P2P
 

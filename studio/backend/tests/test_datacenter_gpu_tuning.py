@@ -103,6 +103,8 @@ def _isolate_host_topology(monkeypatch):
     either side, and the platform probes are pinned so a CI box that happens to
     have GPUs or a translating IOMMU cannot colour the results."""
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._SMI_INDEX_CACHE = None
+    LlamaCppBackend._IOMMU_CACHE = None
     monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
     monkeypatch.setattr(
         LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: False)
@@ -117,6 +119,8 @@ def _isolate_host_topology(monkeypatch):
     LlamaCppBackend._warned_no_nvlink = False
     yield
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._SMI_INDEX_CACHE = None
+    LlamaCppBackend._IOMMU_CACHE = None
     LlamaCppBackend._warned_no_nvlink = False
 
 
@@ -709,13 +713,7 @@ def test_iommu_unreadable_types_are_unknown(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict = True,
-    reason = "#10613 gap: UNSLOTH_DISABLE_DC_P2P=1 vetoes the DEFAULT but does not "
-             "remove an inherited GGML_CUDA_P2P, so ggml still sees the variable "
-             "and peer copies stay ON despite the user disabling them.",
-)
-def test_disable_dc_p2p_should_also_drop_an_inherited_truthy_value(monkeypatch):
+def test_disable_dc_p2p_also_drops_an_inherited_truthy_value(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setenv("UNSLOTH_DISABLE_DC_P2P", "1")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
@@ -726,14 +724,7 @@ def test_disable_dc_p2p_should_also_drop_an_inherited_truthy_value(monkeypatch):
     assert "GGML_CUDA_P2P" not in env
 
 
-@pytest.mark.xfail(
-    strict = True,
-    reason = "#10613 gap: _apply_datacenter_env trusts the call site to have run "
-             "_sanitize_p2p_env first. Called directly with a falsy value it "
-             "setdefault()s over it, leaving GGML_CUDA_P2P=0 present, which ggml "
-             "reads as ON while the log line reads as off.",
-)
-def test_apply_env_should_not_leave_a_falsy_value_present_when_called_directly(monkeypatch):
+def test_apply_env_does_not_leave_a_falsy_value_present_when_called_directly(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
@@ -742,17 +733,164 @@ def test_apply_env_should_not_leave_a_falsy_value_present_when_called_directly(m
     assert "GGML_CUDA_P2P" not in env
 
 
-@pytest.mark.xfail(
-    strict = True,
-    reason = "#10613 gap: the sanitizer runs only in load_model. The STT sidecar "
-             "and the RAG embedding server build their child env from "
-             "dict(os.environ) and spawn llama-server on the GPU without it, so a "
-             "user's GGML_CUDA_P2P=0 enables peer copies in those children.",
-)
-def test_every_llama_server_env_builder_should_sanitize_p2p(monkeypatch):
-    from utils.native_path_leases import child_env_without_native_path_secret
+def test_shared_llama_server_env_builder_sanitizes_p2p(monkeypatch, tmp_path):
+    """The STT sidecar and the embedding probe both build from
+    _llama_server_env_for_binary, so stripping there covers every llama-server
+    child rather than only the chat path the fix started with."""
+    monkeypatch.setenv("GGML_CUDA_P2P", "0")
+    binary = tmp_path / "llama-server"
+    binary.write_text("", encoding = "utf-8")
+    env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+    assert "GGML_CUDA_P2P" not in env
+
+
+def test_stt_sidecar_env_sanitizes_p2p(monkeypatch, tmp_path):
+    # The dictation server spawns llama-server with -ngl 99, so it is exposed to
+    # the same peer-copy corruption as chat.
+    from core.inference import stt_mtmd_sidecar
 
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
-    # The base every llama-server env builder starts from, including the two
-    # sidecars, neither of which calls _sanitize_p2p_env.
-    assert "GGML_CUDA_P2P" not in child_env_without_native_path_secret()
+    binary = tmp_path / "llama-server"
+    binary.write_text("", encoding = "utf-8")
+    assert "GGML_CUDA_P2P" not in stt_mtmd_sidecar._llama_server_child_env(str(binary))
+
+
+def test_embedding_server_env_sanitizes_p2p(monkeypatch, tmp_path):
+    """The RAG embedding server builds its env from child_env_without_native_path_secret
+    directly, bypassing the shared builder. A corrupt embedding degrades retrieval
+    silently, with no garbled text to notice, so this path matters most."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    monkeypatch.setenv("GGML_CUDA_P2P", "0")
+    binary = tmp_path / "llama-server"
+    binary.write_text("", encoding = "utf-8")
+    server = LlamaServerBackend.__new__(LlamaServerBackend)
+    env = server._build_env(str(binary), use_gpu = False)
+    assert "GGML_CUDA_P2P" not in env
+
+
+# ---------------------------------------------------------------------------
+# Found by the platform/hardware simulation matrix (temp/sim_10613)
+# ---------------------------------------------------------------------------
+
+
+# 4x A100 PCIe with NVLink bridges over (0,1) and (2,3), PCIe between the
+# islands: the standard bridged server build, and the case the whole-matrix
+# fallback used to veto even for a genuinely bridged pair.
+TOPO_BRIDGED_4X = (
+    "\t\x1b[4mGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\x1b[0m\n"
+    "GPU0\t X \tNV12\tSYS\tSYS\t0-23\t0\n"
+    "GPU1\tNV12\t X \tSYS\tSYS\t0-23\t0\n"
+    "GPU2\tSYS\tSYS\t X \tNV12\t24-47\t1\n"
+    "GPU3\tSYS\tSYS\tNV12\t X \t24-47\t1\n"
+    "\nLegend:\n\n  X    = Self\n"
+)
+
+_UUIDS = [f"GPU-0000000{i}-0000-0000-0000-000000000000" for i in range(8)]
+
+
+def _fake_torch_with_uuids(names):
+    t = _fake_torch(names)
+    t.cuda.get_device_properties = lambda i: types.SimpleNamespace(
+        name = names[i], uuid = _UUIDS[i]
+    )
+    return t
+
+
+def _use_topo_and_uuids(monkeypatch, text, n, *, smi_order = None):
+    """Answer both nvidia-smi calls: the topology matrix and the uuid join."""
+    order = smi_order if smi_order is not None else list(range(n))
+    rows = "\n".join(f"{i}, {_UUIDS[order[i]]}" for i in range(n))
+
+    def run(cmd, *a, **k):
+        joined = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+        body = rows if "--query-gpu" in joined else text
+        return types.SimpleNamespace(returncode = 0, stdout = body, stderr = "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._SMI_INDEX_CACHE = None
+
+
+def test_bridged_pair_keeps_p2p_via_the_uuid_join(monkeypatch):
+    """A genuinely NVLinked pair on a partially bridged box keeps P2P. The join
+    is on GPU uuid, so it holds under the default CUDA_DEVICE_ORDER rather than
+    needing PCI_BUS_ID, which is what made this a real optimisation regression."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
+    )
+    _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 4)
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+    assert LlamaCppBackend._p2p_veto_reason([2, 3]) is None
+    # Across the islands the copy really would cross PCIe.
+    assert LlamaCppBackend._p2p_veto_reason([0, 2]) is not None
+
+
+def test_uuid_join_follows_the_uuid_not_the_position(monkeypatch):
+    # nvidia-smi enumerating in the reverse order must not silently check the
+    # wrong pair: CUDA 0,1 are nvidia-smi 3,2, still inside one island.
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
+    )
+    _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 4, smi_order = [3, 2, 1, 0])
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+    assert LlamaCppBackend._p2p_veto_reason([1, 2]) is not None
+
+
+def test_partial_uuid_join_is_refused(monkeypatch):
+    # Half the devices missing from nvidia-smi would silently narrow the pairs
+    # checked, so the join must be discarded rather than half-trusted.
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch_with_uuids(["NVIDIA A100-SXM4-80GB"] * 4)
+    )
+    _use_topo_and_uuids(monkeypatch, TOPO_BRIDGED_4X, 2)
+    assert LlamaCppBackend._physical_to_smi_index() is None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+
+def test_name_gate_veto_still_names_the_iommu(monkeypatch):
+    """The reporter's own host fails the NAME gate first, so without this the one
+    actionable diagnosis never reaches the person who needs it (#10613)."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True)
+    )
+    LlamaCppBackend._IOMMU_CACHE = None
+    _use_topo(monkeypatch, TOPO_PCIE_2X)
+    reason = LlamaCppBackend._p2p_veto_reason([0, 1])
+    assert "translating IOMMU" in reason
+
+
+def test_a_raising_probe_never_fails_the_model_load(monkeypatch):
+    # Losing the tuning is acceptable; an exception escaping into load_model and
+    # taking the whole model load down with it is not.
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
+
+    def boom(*a, **k):
+        raise OSError("sysfs exploded")
+
+    monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(boom))
+    monkeypatch.setattr(LlamaCppBackend, "_nvlink_topology", classmethod(boom))
+    LlamaCppBackend._IOMMU_CACHE = None
+    env: dict = {}
+    assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
+    assert "GGML_CUDA_P2P" not in env
+    assert env["GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F"] == "1"
+
+
+def test_iommu_scan_is_cached_across_loads(monkeypatch):
+    # 175 IOMMU groups on the reporter's host: a boot-time property, so it must
+    # not be re-scanned on every model load.
+    calls = []
+
+    def counted(*a, **k):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(counted))
+    LlamaCppBackend._IOMMU_CACHE = None
+    for _ in range(5):
+        LlamaCppBackend._iommu_is_translating_cached()
+    assert len(calls) == 1

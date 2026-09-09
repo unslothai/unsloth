@@ -9188,6 +9188,73 @@ class LlamaCppBackend:
             cls._NVLINK_TOPO_CACHE = (cls._probe_nvlink_topology(),)
         return cls._NVLINK_TOPO_CACHE[0]
 
+    # Process-lifetime cache for the physical-id -> nvidia-smi-index join, same
+    # 1-tuple sentinel convention as _NVLINK_TOPO_CACHE.
+    _SMI_INDEX_CACHE = None
+
+    @classmethod
+    def _physical_to_smi_index(cls, refresh = False) -> Optional[dict]:
+        """Map CUDA physical id -> nvidia-smi index by joining on GPU UUID, or
+        None when the join cannot be completed.
+
+        The interconnect matrix is keyed by nvidia-smi index (PCI enumeration
+        order) while gpu_indices are CUDA physical ids (FASTEST_FIRST by default),
+        and the two coincide only under CUDA_DEVICE_ORDER=PCI_BUS_ID. Reading that
+        variable is a proxy for the mapping; the UUID is the mapping. torch
+        exposes it on device properties and nvidia-smi will print it, so the join
+        is exact whatever ordering the host happens to use, which lets a
+        partially-bridged box keep P2P for a genuinely NVLinked pair instead of
+        being vetoed by an unrelated pair elsewhere in the matrix."""
+        if not refresh and cls._SMI_INDEX_CACHE is not None:
+            return cls._SMI_INDEX_CACHE[0]
+        result = None
+        try:
+            import torch
+
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                raise RuntimeError("no CUDA")
+            physical_ids = cls._resolve_visible_physical_ids()
+            uuid_to_physical: dict[str, int] = {}
+            for ordinal in range(torch.cuda.device_count()):
+                raw = getattr(torch.cuda.get_device_properties(ordinal), "uuid", None)
+                if raw is None:
+                    raise RuntimeError("torch exposes no device uuid")
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                uuid_to_physical[str(raw).strip().lower().removeprefix("gpu-")] = pid
+
+            probe = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if probe.returncode != 0:
+                raise RuntimeError("nvidia-smi uuid query failed")
+            mapping: dict[int, int] = {}
+            for line in probe.stdout.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                pid = uuid_to_physical.get(parts[1].lower().removeprefix("gpu-"))
+                if pid is not None:
+                    mapping[pid] = int(parts[0])
+            # Partial joins are refused: a missing device would silently narrow
+            # the set of pairs checked, which is the failure mode this prevents.
+            result = mapping if len(mapping) == len(uuid_to_physical) else None
+        except Exception as e:
+            logger.debug(f"GPU uuid join failed: {e}")
+            result = None
+        cls._SMI_INDEX_CACHE = (result,)
+        return result
+
     @staticmethod
     def _running_virtualized() -> bool:
         """True when this kernel runs under a hypervisor. CUDA supports peer
@@ -9206,6 +9273,22 @@ class LlamaCppBackend:
     # Overridable for tests; the kernel exposes one directory per IOMMU group,
     # each with a `type` of identity / DMA / DMA-FQ.
     _IOMMU_GROUPS_ROOT = "/sys/kernel/iommu_groups"
+
+    # Boot-time property, so it is read once per process rather than once per
+    # model load: the #10613 reporter's host has 175 groups, and re-scanning them
+    # every launch is 175 file opens to build a string used only in a log line.
+    # Only the default root is cached; an explicit root (tests) always re-reads.
+    _IOMMU_CACHE = None
+
+    @classmethod
+    def _iommu_is_translating_cached(cls) -> Optional[bool]:
+        if cls._IOMMU_CACHE is None:
+            try:
+                cls._IOMMU_CACHE = (cls._iommu_is_translating(),)
+            except Exception as e:
+                logger.debug(f"IOMMU probe failed: {e}")
+                cls._IOMMU_CACHE = (None,)
+        return cls._IOMMU_CACHE[0]
 
     @staticmethod
     def _iommu_is_translating(root = None) -> Optional[bool]:
@@ -9246,6 +9329,20 @@ class LlamaCppBackend:
 
     @classmethod
     def _p2p_veto_reason(cls, gpu_indices = None) -> Optional[str]:
+        """Total, fail-closed wrapper around _p2p_veto_reason_inner.
+
+        Every helper below already catches, but that is a property of each of
+        them rather than of this call, and losing the tuning is a far better
+        outcome than an exception escaping into load_model and failing the model
+        load outright. Anything unexpected therefore reads as "do not set P2P"."""
+        try:
+            return cls._p2p_veto_reason_inner(gpu_indices)
+        except Exception as e:
+            logger.debug(f"peer-fabric check failed: {e}")
+            return f"the peer-fabric check could not complete ({type(e).__name__})"
+
+    @classmethod
+    def _p2p_veto_reason_inner(cls, gpu_indices = None) -> Optional[str]:
         """Why GGML_CUDA_P2P must NOT be set for this selection, or None once a
         working NVLink fabric is confirmed for every selected pair.
 
@@ -9274,21 +9371,56 @@ class LlamaCppBackend:
             return "disabled by UNSLOTH_DISABLE_DC_P2P=1"
         if os.environ.get("UNSLOTH_FORCE_DC_P2P") == "1":
             return None
+
+        def _pcie(reason: str) -> str:
+            """Append the IOMMU diagnosis to a veto that implies a PCIe peer path.
+
+            Every branch below means "the copy would cross PCIe", and on
+            bare-metal Linux with a translating IOMMU that is not merely slow but
+            unsupported, with the write silently discarded. This has to hang off
+            all of them, not just the topology branch: the reporter's 2x RTX 6000
+            Ada fails the NAME gate first and would otherwise never be told the
+            actual mechanism behind its garbled output (#10613)."""
+            if cls._iommu_is_translating_cached() and not cls._running_virtualized():
+                reason += (
+                    "; bare-metal Linux with a translating IOMMU, where CUDA "
+                    "does not support PCIe peer copies at all"
+                )
+            return reason
+
         if not cls._all_selected_gpus_match(cls._NVLINK_FABRIC_GPU_RE, gpu_indices):
-            return "no NVLink-capable part in the selection, so peer copies would cross PCIe"
+            return _pcie(
+                "no NVLink-capable part in the selection, so peer copies would cross PCIe"
+            )
 
         matrix = cls._nvlink_topology()
         if not matrix:
             return "nvidia-smi topo -m gave no usable interconnect matrix"
 
         gpu_ids = sorted({i for pair in matrix for i in pair})
-        exact = os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+
+        # Physical id -> nvidia-smi index, best evidence first: a UUID join is
+        # exact under any device ordering; CUDA_DEVICE_ORDER=PCI_BUS_ID makes the
+        # two spaces identical by construction; otherwise the mapping is unknown.
+        join = cls._physical_to_smi_index()
+        exact = join is not None or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
         if exact:
             if gpu_indices is not None:
-                selected = sorted(set(gpu_indices))
+                physical = sorted(set(gpu_indices))
             else:
                 visible = cls._resolve_visible_physical_ids()
-                selected = sorted(set(visible)) if visible is not None else list(gpu_ids)
+                physical = sorted(set(visible)) if visible is not None else None
+            if physical is None:
+                selected = list(gpu_ids)
+            elif join is not None:
+                translated = [join[p] for p in physical if p in join]
+                # A selection we cannot fully translate would check the wrong
+                # pairs, so fall back to demanding the whole box qualify.
+                selected = (
+                    translated if len(translated) == len(physical) else list(gpu_ids)
+                )
+            else:
+                selected = physical
         else:
             # Mapping unknown: every pair on the box must be NVLinked, so that
             # whichever pair is really selected, the answer is the same.
@@ -9314,14 +9446,7 @@ class LlamaCppBackend:
                             "PCI_BUS_ID, so CUDA and nvidia-smi may not agree on which "
                             "GPU is which; set it to check only the selected pair)"
                         )
-                    if cls._iommu_is_translating() and not cls._running_virtualized():
-                        # The mechanism, not just the verdict: on this host a PCIe
-                        # peer copy is dropped outright and still reports success.
-                        reason += (
-                            "; bare-metal Linux with a translating IOMMU, where CUDA "
-                            "does not support PCIe peer copies at all"
-                        )
-                    return reason
+                    return _pcie(reason)
         return None
 
     @staticmethod
@@ -9350,21 +9475,50 @@ class LlamaCppBackend:
 
     @staticmethod
     def _sanitize_p2p_env(env: dict) -> Optional[str]:
-        """Drop an inherited GGML_CUDA_P2P whose value reads as OFF; return the
-        removed value for logging, else None.
+        """Drop an inherited GGML_CUDA_P2P that must not reach the child; return
+        the removed value for logging, else None.
 
-        Presence is truth upstream, so honouring the user's intent means deleting
-        the variable, not passing "0" through. Belongs at the call site, on EVERY
-        launch path: env is inherited from os.environ, so a consumer-GPU user who
-        set the flag off by hand is misled exactly as much as a datacenter one,
-        and that user's box never reaches the datacenter gate at all (#10613)."""
+        Two cases, both of which mean OFF and neither of which upstream honours,
+        since ggml tests the variable for PRESENCE and not value:
+          - the value itself reads as falsy ("0", "false", "off", "");
+          - UNSLOTH_DISABLE_DC_P2P=1, where suppressing our own default is not
+            enough because an inherited truthy value would sail past it. A knob
+            named DISABLE that leaves peer copies enabled is the same trap as
+            GGML_CUDA_P2P=0 (#10613).
+
+        Belongs at the call site, on EVERY launch path: env is inherited from
+        os.environ, so a consumer-GPU user who set the flag off by hand is misled
+        exactly as much as a datacenter one, and their box never reaches the
+        datacenter gate at all."""
         value = env.get("GGML_CUDA_P2P")
         if value is None:
             return None
-        if str(value).strip().lower() in LlamaCppBackend._FALSY_ENV_VALUES:
+        if (
+            str(value).strip().lower() in LlamaCppBackend._FALSY_ENV_VALUES
+            or os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1"
+        ):
             del env["GGML_CUDA_P2P"]
+            logger.info(
+                "Dropped inherited GGML_CUDA_P2P=%r from the llama-server "
+                "environment: llama.cpp tests this variable for presence, not "
+                "value, so passing it through would have ENABLED peer copies "
+                "(#10613)",
+                value,
+            )
             return value
         return None
+
+    @staticmethod
+    def _p2p_user_opted_out() -> bool:
+        """Whether the USER asked for peer copies off, read from os.environ
+        rather than from a child env that _sanitize_p2p_env may already have
+        cleaned. Keeps the intent available to _apply_datacenter_env after the
+        variable itself is gone, so the default cannot put it back."""
+        return (
+            os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1"
+            or str(os.environ.get("GGML_CUDA_P2P", "1")).strip().lower()
+            in LlamaCppBackend._FALSY_ENV_VALUES
+        )
 
     @staticmethod
     def _apply_datacenter_env(env: dict, gpu_indices = None, p2p_opted_out = False) -> bool:
@@ -9390,6 +9544,12 @@ class LlamaCppBackend:
         Logs the exact variables set, and the signal that vetoed P2P when it is
         withheld -- the old message named neither, which cost the reporter most of
         a day."""
+        # Defence in depth: the call site sanitizes, but this must not depend on
+        # it. Called directly with a falsy value, setdefault would keep "0" and
+        # the summary below would log "GGML_CUDA_P2P=0 (user)", which a human
+        # reads as off while ggml reads it as ON. Idempotent (#10613).
+        if LlamaCppBackend._sanitize_p2p_env(env) is not None:
+            p2p_opted_out = True
         if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
             return False
         if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
@@ -12329,6 +12489,11 @@ class LlamaCppBackend:
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
+        # Every llama-server child inherits os.environ, so an off-meaning
+        # GGML_CUDA_P2P has to be stripped HERE rather than at one call site:
+        # chat, the STT sidecar and the embedding probe all build from this, and
+        # a path that skips it keeps the #10613 bug (presence, not value).
+        LlamaCppBackend._sanitize_p2p_env(env)
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
         binary_dir = str(_llama_lib_dir(binary))
 
@@ -24030,16 +24195,28 @@ class LlamaCppBackend:
 
                 # An inherited GGML_CUDA_P2P=0 means OFF to the user but ON to
                 # llama.cpp, which tests the variable for presence and not value.
-                # Honour it on every backend, Vulkan and consumer cards included:
-                # those boxes never reach the datacenter block below, and they are
-                # misled by the same trap (#10613).
-                _removed_p2p = self._sanitize_p2p_env(env)
-                if _removed_p2p is not None:
-                    logger.info(
-                        "Dropped inherited GGML_CUDA_P2P=%r: llama.cpp tests this "
-                        "variable for presence, not value, so passing it through "
-                        "would have ENABLED peer copies (#10613)",
-                        _removed_p2p,
+                # _llama_server_env_for_binary already stripped it for every
+                # backend, Vulkan and consumer cards included; this covers an env
+                # assembled by another route, and is a no-op otherwise (#10613).
+                self._sanitize_p2p_env(env)
+
+                # A multi-GPU box that is NOT a datacenter part never reaches the
+                # block below, so warn here or not at all. This is the 2x RTX 3090
+                # case: their own truthy GGML_CUDA_P2P rides through to the child.
+                if (
+                    env.get("GGML_CUDA_P2P")
+                    and self._effective_gpu_count(gpu_indices) > 1
+                    and not LlamaCppBackend._warned_no_nvlink
+                ):
+                    LlamaCppBackend._warned_no_nvlink = True
+                    logger.warning(
+                        "GGML_CUDA_P2P=%s is set in the environment on a multi-GPU "
+                        "host. Peer copies over PCIe can be discarded silently while "
+                        "CUDA still reports success, which surfaces as garbled output "
+                        "rather than an error. Verify with scripts/p2p_integrity_probe.py "
+                        "and unset the variable entirely (not =0, which reads as ON "
+                        "upstream) if it fails (#10613).",
+                        env["GGML_CUDA_P2P"],
                     )
 
                 # DC NVIDIA GPUs: FP32 accum and launch queues, plus P2P once a
@@ -24049,7 +24226,8 @@ class LlamaCppBackend:
                 # UNSLOTH_DISABLE_DC_P2P=1 for the peer flag alone.
                 if not is_vulkan_backend:
                     self._apply_datacenter_env(
-                        env, gpu_indices, p2p_opted_out = _removed_p2p is not None
+                        env, gpu_indices,
+                        p2p_opted_out = self._p2p_user_opted_out(),
                     )
 
                 # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).

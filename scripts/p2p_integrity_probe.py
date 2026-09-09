@@ -83,6 +83,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # A probe that tests nothing must not print PASS: this script's whole job is
+    # to license setting GGML_CUDA_P2P, so an empty run is the worst answer it
+    # could give.
+    if args.repeats <= 0:
+        parser.error("--repeats must be positive")
+    if any(size <= 0 for size in args.sizes_mib):
+        parser.error("--sizes-mib values must all be positive")
+
     _print_topology()
 
     try:
@@ -116,6 +124,7 @@ def main() -> int:
             for mib in args.sizes_mib:
                 elements = mib * 1024 * 1024 // 4
                 worst_dropped = 0
+                worst_wrong = 0
                 error = None
                 for _ in range(args.repeats):
                     s = d = None
@@ -130,9 +139,16 @@ def main() -> int:
                         d.copy_(s)
                         torch.cuda.synchronize(src)
                         torch.cuda.synchronize(dst)
-                        # Untouched elements still hold the sentinel: the copy
-                        # reported success but moved nothing.
-                        dropped = int((d.cpu() == SENTINEL).sum())
+                        # Compare against the source, not just the sentinel. A
+                        # partial or scrambled transfer overwrites the sentinel
+                        # with the wrong data, which a sentinel-only test scores
+                        # as a pass; the sentinel count is kept because "never
+                        # written" is a different diagnosis from "written wrong"
+                        # and points at a dropped DMA specifically.
+                        host_dst = d.cpu()
+                        wrong = int((host_dst != s.cpu()).sum())
+                        dropped = int((host_dst == SENTINEL).sum())
+                        worst_wrong = max(worst_wrong, wrong)
                         worst_dropped = max(worst_dropped, dropped)
                     except Exception as e:  # noqa: BLE001 -- a raising copy is also a failure
                         error = e
@@ -147,12 +163,18 @@ def main() -> int:
                 if error is not None:
                     failures += 1
                     print(f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  ERROR: {error}")
-                elif worst_dropped:
+                elif worst_wrong:
                     failures += 1
-                    pct = 100.0 * worst_dropped / elements
+                    pct = 100.0 * worst_wrong / elements
+                    detail = (
+                        f"{worst_dropped} never written"
+                        if worst_dropped
+                        else "written with the wrong data"
+                    )
                     print(
                         f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  "
-                        f"CORRUPT: {worst_dropped}/{elements} elements never written ({pct:.0f}% dropped)"
+                        f"CORRUPT: {worst_wrong}/{elements} elements wrong "
+                        f"({pct:.0f}%, {detail})"
                     )
                 else:
                     print(f"{pair:>10}  {str(mib) + ' MiB':>8}  {access:>11}  ok")
