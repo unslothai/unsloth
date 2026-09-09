@@ -1479,6 +1479,7 @@ def nccl_bandwidth(
         return None
 
     env = " ".join(f"{k}={v}" for k, v in nccl_env().items())
+
     def _common(trun: str) -> str:
         return (
             f"{env} SPARK_PROBE_MB={mb} {trun} --nnodes=2 --nproc_per_node=1 "
@@ -3666,8 +3667,7 @@ def plan_deployment(
         # Say which of the two it was. "34 GiB exceeds 243 GiB" reads as a bug when the
         # weights fit and it is the KV for the requested concurrency that does not.
         what = (
-            f"{size_gib:.1f} GiB of weights plus KV for {concurrency} "
-            f"({split_need:.1f} GiB)"
+            f"{size_gib:.1f} GiB of weights plus KV for {concurrency} " f"({split_need:.1f} GiB)"
             if split_need > size_gib
             else f"{size_gib:.1f} GiB"
         )

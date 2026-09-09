@@ -121,7 +121,11 @@ def test_a_silent_listener_is_not_the_same_as_an_absent_one(cluster, monkeypatch
     """A peer that accepts and never answers HELLO holds the port, so a new server cannot
     bind it. It used to be classed with `refused`, the normal pre-launch state."""
 
-    def _probe(host, port = 0, **kw):
+    def _probe(
+        host,
+        port = 0,
+        **kw,
+    ):
         return {"host": host, "port": port, "state": "silent", "version": None}
 
     monkeypatch.setattr(cluster, "rpc_hello_probe_detail", _probe)
