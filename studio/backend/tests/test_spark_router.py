@@ -547,3 +547,47 @@ def test_a_client_that_leaves_while_queued_gives_its_slot_back():
             await a.stop()
 
     run(scenario())
+
+
+def test_a_peer_that_died_since_its_health_probe_does_not_cost_a_request():
+    # The connect failure happens before any response header is written, so the request can
+    # still be placed on the surviving node instead of closing the client's connection.
+    async def scenario():
+        a = await FakeLlama("a").start()
+        b = await FakeLlama("b").start()
+        router = await _router(a, b)
+        try:
+            key_on_b = next(k for k in (f"t{i}" for i in range(200)) if router.pick(k).name == "b")
+            await b.stop()  # gone, but still healthy as far as the last probe knows
+            assert router.get_backend("b").healthy
+            async with httpx.AsyncClient(timeout = 10) as client:
+                frames = await _chat(
+                    client, router.base_url, {"prompt": "x", CONVERSATION_FIELD: key_on_b}
+                )
+                assert frames == ["a-0", "a-1", "a-2", "a-3", "[DONE]"]
+            assert not router.get_backend("b").healthy
+            assert router.status()["retried_elsewhere"] == 1
+            assert router.get_backend("b").in_flight == 0
+        finally:
+            await router.stop()
+            await a.stop()
+
+    run(scenario())
+
+
+def test_every_backend_being_gone_still_ends_the_request():
+    # The retry is bounded by the backend count: each failure takes one out of rotation.
+    async def scenario():
+        a = await FakeLlama("a").start()
+        router = await _router(a)
+        try:
+            await a.stop()
+            async with httpx.AsyncClient(timeout = 10) as client:
+                with pytest.raises(httpx.HTTPError):
+                    await _chat(client, router.base_url, {"prompt": "x"})
+            assert not router.get_backend("a").healthy
+            assert router.get_backend("a").in_flight == 0
+        finally:
+            await router.stop()
+
+    run(scenario())

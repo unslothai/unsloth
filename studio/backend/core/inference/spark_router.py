@@ -308,6 +308,8 @@ class SparkRouter:
         self.started_at: Optional[float] = None
         self.routed_sticky = 0
         self.routed_keyless = 0
+        # Requests placed on another backend after the first refused the connection.
+        self.retried_elsewhere = 0
         self.rejected = 0
 
     def add_backend(
@@ -642,6 +644,30 @@ class SparkRouter:
             parsed.pop(CONVERSATION_FIELD, None)
             body = json.dumps(parsed, ensure_ascii = False).encode("utf-8")
 
+        # A peer that exits after its last health probe is not discovered until a request
+        # tries to connect to it, and that connect failure happens before any response header
+        # has been written, so the request can still be placed elsewhere. Marking the peer
+        # down and failing the caller cost one request per outage even with the primary
+        # healthy. Bounded by the backend count: mark_down takes the dead one out of
+        # healthy_backends, so each pass has one fewer to try and the loop cannot spin.
+        attempts = len(self.backends) if is_generation else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._dispatch_once(method, path, headers, body, key, is_generation)
+            except UpstreamUnreachable:
+                if attempt >= attempts or not self.healthy_backends():
+                    raise
+                self.retried_elsewhere += 1
+
+    async def _dispatch_once(
+        self,
+        method: str,
+        path: str,
+        headers: Dict[str, str],
+        body: bytes,
+        key: Optional[str],
+        is_generation: bool,
+    ) -> Routed:
         if is_generation:
             backend = self._choose(key)
             if key:
@@ -736,6 +762,7 @@ class SparkRouter:
             "healthy_backends": sum(1 for b in self.backends if b.healthy),
             "routed_sticky": self.routed_sticky,
             "routed_keyless": self.routed_keyless,
+            "retried_elsewhere": self.retried_elsewhere,
             "rejected": self.rejected,
             "backends": backends,
         }
