@@ -1791,9 +1791,36 @@ _setup_persist_uv_path() {
     done
 }
 
+_setup_find_installed_uv() {
+    # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
+    # shell launched before the install and never relaunched from Explorer, a CI step with
+    # a fresh PATH, a login shell whose profile line has not been read yet. Without this
+    # the miss re-downloaded the pinned archive on every update -- 19 MB and 42 of the 53
+    # seconds a Windows no-op update took, measured on the staging matrix. The same
+    # priority list _setup_install_uv_pinned writes to, so what is found is what was
+    # installed, and it has to run, not merely exist.
+    for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
+        "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
+        [ -n "$_sfu_dir" ] || continue
+        if [ -x "$_sfu_dir/uv" ] && "$_sfu_dir/uv" --version >/dev/null 2>&1; then
+            printf '%s' "$_sfu_dir"
+            unset _sfu_dir
+            return 0
+        fi
+    done
+    unset _sfu_dir
+    return 1
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif _setup_uv_dir=$(_setup_find_installed_uv); then
+    # Read-only reuse, so it is right under a stage root too.
+    export PATH="$_setup_uv_dir:$PATH"
+    step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
+    USE_UV=true
+    unset _setup_uv_dir
 elif [ -n "$STAGE_ROOT" ]; then
     step "uv" "using pip inside the staged environment"
 elif {

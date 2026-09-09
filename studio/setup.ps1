@@ -4814,9 +4814,36 @@ function Enter-StudioVenv {
 Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
 
+function Find-InstalledUv {
+    # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
+    # shell launched before the install and never relaunched from Explorer, a CI step with a
+    # fresh PATH. Without this the miss re-downloaded the pinned archive on every update --
+    # 19 MB and 42 of the 53 seconds a Windows no-op update took, measured on the staging
+    # matrix. The same priority list Install-UvFromPinnedRelease writes to, so what is found
+    # is what was installed, and it has to run, not merely exist.
+    $candidates = @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
+    if ($env:XDG_DATA_HOME) { $candidates += (Join-Path $env:XDG_DATA_HOME "../bin") }
+    $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    if ($userHome) { $candidates += (Join-Path $userHome ".local\bin") }
+    foreach ($dir in $candidates) {
+        if (-not $dir) { continue }
+        $exe = Join-Path $dir "uv.exe"
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        if ((Get-SetupUvExecutableVerdict -Path $exe) -eq "failed") { continue }
+        return $dir
+    }
+    return $null
+}
+
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
+$installedUvDir = $null
 if (Get-Command uv -ErrorAction SilentlyContinue) {
+    $UseUv = $true
+} elseif (($installedUvDir = Find-InstalledUv)) {
+    # Read-only reuse, so it is right under a stage root too.
+    $env:PATH = "$installedUvDir;$env:PATH"
+    substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
     substep "installing uv package manager..."
