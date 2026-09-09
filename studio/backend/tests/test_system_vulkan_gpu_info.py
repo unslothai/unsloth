@@ -66,7 +66,8 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
 
     fresh_device = {**vulkan_device, "vram_free_gb": 3.0}
     monkeypatch.setattr(
-        hardware, "get_vulkan_inference_gpu_info",
+        hardware,
+        "get_vulkan_inference_gpu_info",
         lambda: {**inference_gpu, "devices": [fresh_device]},
     )
     logger = SimpleNamespace(debug = lambda *args: None)
