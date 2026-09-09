@@ -26,7 +26,7 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 def _slice(src: str, start: str, end: str) -> str:
     begin = src.index(start)
-    return src[begin:src.index(end, begin)]
+    return src[begin : src.index(end, begin)]
 
 
 def _runtime_parent(env: dict[str, str]) -> tuple[str, str]:
@@ -38,14 +38,16 @@ def _runtime_parent(env: dict[str, str]) -> tuple[str, str]:
     src = SETUP_SH.read_text(encoding = "utf-8")
     master = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
     node = _slice(src, "# Mirror the llama.cpp UNSLOTH_HOME derivation", "NODE_DIR=")
-    llama = _slice(src, "if [ -n \"$STAGE_ROOT\" ]; then\n    UNSLOTH_HOME=", "LLAMA_CPP_DIR=")
-    script = "\n".join((
-        "set -u",
-        master,
-        node,
-        llama,
-        'printf "%s\\n%s\\n" "$_NODE_PARENT" "$UNSLOTH_HOME"',
-    ))
+    llama = _slice(src, 'if [ -n "$STAGE_ROOT" ]; then\n    UNSLOTH_HOME=', "LLAMA_CPP_DIR=")
+    script = "\n".join(
+        (
+            "set -u",
+            master,
+            node,
+            llama,
+            'printf "%s\\n%s\\n" "$_NODE_PARENT" "$UNSLOTH_HOME"',
+        )
+    )
     completed = subprocess.run(
         ["bash", "-c", script],
         env = env,
@@ -228,9 +230,17 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
     win the new precedence and name a relative "   /whisper.cpp"."""
     studio = tmp_path / "elsewhere" / "studio"
     completed = subprocess.run(
-        ["bash", "-c", "\n".join((
-            "set -eu", _whisper_root_block(), 'printf "%s\\n" "$INSTALL_DIR"',
-        ))],
+        [
+            "bash",
+            "-c",
+            "\n".join(
+                (
+                    "set -eu",
+                    _whisper_root_block(),
+                    'printf "%s\\n" "$INSTALL_DIR"',
+                )
+            ),
+        ],
         env = {
             "HOME": str(tmp_path / "home"),
             "PATH": "/usr/bin:/bin",
@@ -249,9 +259,17 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
 def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path):
     home = tmp_path / "home"
     completed = subprocess.run(
-        ["bash", "-c", "\n".join((
-            "set -eu", _whisper_root_block(), 'printf "%s\\n" "$INSTALL_DIR"',
-        ))],
+        [
+            "bash",
+            "-c",
+            "\n".join(
+                (
+                    "set -eu",
+                    _whisper_root_block(),
+                    'printf "%s\\n" "$INSTALL_DIR"',
+                )
+            ),
+        ],
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": "~/portable"},
         capture_output = True,
         text = True,
@@ -268,11 +286,13 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     caller = tmp_path / "caller"
     caller.mkdir()
     src = SETUP_SH.read_text(encoding = "utf-8")
-    script = "\n".join((
-        "set -u",
-        _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
-        'printf "%s\\n" "$_MASTER_ROOT"',
-    ))
+    script = "\n".join(
+        (
+            "set -u",
+            _slice(src, "# Stripped before anything else", "# Directory-local evidence"),
+            'printf "%s\\n" "$_MASTER_ROOT"',
+        )
+    )
     completed = subprocess.run(
         ["bash", "-c", script],
         cwd = str(caller),
