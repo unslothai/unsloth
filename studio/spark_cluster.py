@@ -692,6 +692,20 @@ def llama_bundle_dir() -> Path:
     return Path.home() / ".unsloth" / "llama.cpp"
 
 
+def _peer_dir_exists(peer_ip: str, user: str, remote_dir: str) -> bool:
+    """Read-only `test -d` on the peer. Used only by the dry run, which must not write."""
+    try:
+        return subprocess.run(
+            [
+                "ssh", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                f"{user}@{peer_ip}", "test", "-d", remote_dir,
+            ],
+            capture_output = True, timeout = 30,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
 def _find_in_bundle(
     root: Path,
     names: Tuple[str, ...],
@@ -2281,13 +2295,28 @@ def provision_peer(
             # rsync creates only the LAST component of the destination, so a brand-new peer
             # with no ~/.unsloth/studio fails; create the parent remotely first.
             remote_parent = _peer_path(osp.dirname(path))
+            # `--rsync-path` runs on the PEER before rsync starts, so `--dry-run` does not
+            # suppress it: a dry run was creating the directories it was only meant to report.
+            # Under a dry run the wrapper is dropped, and a missing parent is reported as
+            # something the real run would create rather than as a failure, since with nothing
+            # on the far side there is also nothing for rsync to compare against.
+            if dry_run:
+                if not _peer_dir_exists(peer_ip, user, remote_parent):
+                    results["skipped"].append((label, f"would create {remote_parent}"))
+                    results["timings"].append(
+                        (label, mode, moved, time.monotonic() - started, workers),
+                    )
+                    continue
+                rsync_path = "rsync"
+            else:
+                rsync_path = f'mkdir -p "{remote_parent}" && rsync'
             # --delete is OFF by default: a stale file costs disk, while deleting a live one
             # takes a running interpreter out from under a job mid-flight.
             cmd = [
                 "rsync",
                 "-a",
                 "--rsync-path",
-                f'mkdir -p "{remote_parent}" && rsync',
+                rsync_path,
                 "-e",
                 "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
                 local + "/",
