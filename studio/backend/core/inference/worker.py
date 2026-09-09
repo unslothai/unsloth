@@ -408,7 +408,15 @@ def _load_download_repos(
     base = getattr(mc, "base_model", None)
     if base:
         repos.append(str(base))
-        if getattr(backend, "device", None) != "mlx":
+        mapped = None
+        if getattr(backend, "device", None) == "mlx":
+            try:
+                from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
+
+                mapped = _remap_unsloth_bnb_hub_id_for_mlx(str(base), None)[0]
+            except Exception:
+                mapped = None
+        else:
             try:
                 from unsloth.models import loader
                 from unsloth.models.loader_utils import get_model_name
@@ -423,8 +431,8 @@ def _load_download_repos(
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
                 mapped = None
-            if mapped:
-                repos.append(str(mapped))
+        if mapped:
+            repos.append(str(mapped))
     repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
     hub_ids: list[str] = []
     for repo in repos:

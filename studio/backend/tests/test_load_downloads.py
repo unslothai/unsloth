@@ -200,11 +200,22 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     loader.ALLOW_PREQUANTIZED_MODELS = True
     loader.ALLOW_BITSANDBYTES = True
     loader._strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-bnb-4bit")
+    zoo = types.ModuleType("unsloth_zoo")
+    zoo_mlx = types.ModuleType("unsloth_zoo.mlx")
+    zoo_loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    zoo_loader._remap_unsloth_bnb_hub_id_for_mlx = lambda name, revision: (
+        (name.removesuffix("-unsloth-bnb-4bit"), None, name)
+        if name.startswith("unsloth/") and name.endswith("-unsloth-bnb-4bit")
+        else (name, revision, None)
+    )
     for name, module in (
         ("unsloth", package),
         ("unsloth.models", models),
         ("unsloth.models.loader", loader),
         ("unsloth.models.loader_utils", loader_utils),
+        ("unsloth_zoo", zoo),
+        ("unsloth_zoo.mlx", zoo_mlx),
+        ("unsloth_zoo.mlx.loader", zoo_loader),
     ):
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -220,6 +231,12 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     assert worker._load_download_repos(adapter, True, SimpleNamespace(device = "mlx")) == [
         "owner/adapter",
         "owner/base",
+    ]
+    bnb = SimpleNamespace(identifier = "owner/adapter", base_model = "unsloth/base-unsloth-bnb-4bit")
+    assert worker._load_download_repos(bnb, True, SimpleNamespace(device = "mlx")) == [
+        "owner/adapter",
+        "unsloth/base-unsloth-bnb-4bit",
+        "unsloth/base",
     ]
     local = SimpleNamespace(identifier = "/models/adapter", base_model = "owner/base")
     assert worker._load_download_repos(local, True, SimpleNamespace(device = "mlx")) == ["owner/base"]
