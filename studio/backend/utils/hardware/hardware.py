@@ -5824,35 +5824,57 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     skip_prefixes = ("checkpoint-", "global_step")
     found = []
     indexed_dirs = []
-    siblings_by_directory: dict = {}
+    index_files = []
+    weight_sizes: dict = {}
     homes_by_directory: dict = {}
     vendor: set = set()
+    # Where a folder sits is a property of the folder, so it is settled once per folder
+    # rather than once per file: a model directory holds a handful of folders and, if the
+    # user also keeps datasets or logs there, a great many files.
+    placed: dict = {}
     for file in model_path.rglob("*"):
         if not file.is_file():
             continue
-        rel = file.relative_to(model_path)
-        if any(part.startswith(skip_prefixes) for part in rel.parts):
+        parent = file.parent
+        if parent not in placed:
+            rel_parent = parent.relative_to(model_path)
+            # A top-level original/ answers to the directory above it, files and index alike.
+            # Its real location is recorded, since a nested component's vendor copy keeps shape.
+            is_vendor = rel_parent.parts[:1] == ("original",)
+            placed[parent] = (
+                any(part.startswith(skip_prefixes) for part in rel_parent.parts),
+                is_vendor,
+                Path(*rel_parent.parts[1:]) if is_vendor else rel_parent,
+                rel_parent,
+            )
+        skipped, is_vendor, home, rel_parent = placed[parent]
+        if skipped or file.name.startswith(skip_prefixes):
             continue
-        # A top-level original/ answers to the directory above; its real location is recorded.
-        is_vendor = rel.parts[:1] == ("original",)
-        home = Path(*rel.parent.parts[1:]) if is_vendor else rel.parent
         if is_vendor:
             vendor.add(file)
-        siblings_by_directory.setdefault(home, {})[file] = file.stat().st_size
-        homes_by_directory.setdefault(home, {})[model_path / rel.parent] = is_vendor
+        homes_by_directory.setdefault(home, {})[parent] = is_vendor
         if file.suffix in _WEIGHT_EXTS:
-            found.append(rel)
+            try:
+                weight_sizes[file] = file.stat().st_size
+            except OSError:
+                continue
+            found.append(rel_parent / file.name)
         elif file.name.endswith(".index.json"):
+            index_files.append(file)
             indexed_dirs.append(home)
 
     # A vendor copy of a file the directory above already has is those weights renamed.
     sizes_by_directory: dict = {}
+    names_by_directory: dict = {}
     for rel in sorted(found, key = lambda r: r.parts[:1] == ("original",)):
         directory = Path(*rel.parent.parts[1:]) if rel.parts[:1] == ("original",) else rel.parent
-        sizes = sizes_by_directory.setdefault(directory, {})
-        if any(path.name == rel.name for path in sizes):
+        names = names_by_directory.setdefault(directory, set())
+        if rel.name in names:
             continue
-        sizes[model_path / rel] = siblings_by_directory[directory][model_path / rel]
+        names.add(rel.name)
+        sizes_by_directory.setdefault(directory, {})[model_path / rel] = weight_sizes[
+            model_path / rel
+        ]
 
     # An index may name shards that carry no recognised suffix, so its directory is read too.
     for directory in indexed_dirs:
@@ -5860,14 +5882,30 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
 
     # A shallower index can name a shard inside a deeper folder, so it decides first, and by
     # stem: the twin of a claimed shard is that weight saved twice, not a second component.
+    # Only the weights and what an index actually names are measured; a folder's other files
+    # are left unread, so sizing a model kept beside a dataset costs one stat per weight. The
+    # indexes are read once here and handed on, so no later pass opens them again.
+    files = dict(weight_sizes)
+    read: dict = {}
+    for index in index_files:
+        read[index] = _index_targets(index, index.parent)
+        for target in read[index]:
+            if target in files:
+                continue
+            try:
+                relative = target.relative_to(model_path)
+                if not target.is_file():
+                    continue
+                files[target] = target.stat().st_size
+            except (OSError, ValueError):
+                continue
+            if any(part.startswith(skip_prefixes) for part in relative.parts):
+                del files[target]
+            elif relative.parts[:1] == ("original",):
+                vendor.add(target)
+
     settled: set = set()
-    tree = {
-        "files": {
-            path: size for sizes in siblings_by_directory.values() for path, size in sizes.items()
-        },
-        "settled": settled,
-        "read": {},
-    }
+    tree = {"files": files, "settled": settled, "read": read}
     total = 0
     for directory in sorted(sizes_by_directory, key = lambda d: (len(d.parts), d.as_posix())):
         unclaimed = {
